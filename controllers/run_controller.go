@@ -12,6 +12,7 @@ import (
 	"github.com/davidlangworthy/jobtree/pkg/budget"
 	"github.com/davidlangworthy/jobtree/pkg/cover"
 	"github.com/davidlangworthy/jobtree/pkg/forecast"
+	"github.com/davidlangworthy/jobtree/pkg/metrics"
 	"github.com/davidlangworthy/jobtree/pkg/pack"
 	"github.com/davidlangworthy/jobtree/pkg/resolver"
 	"github.com/davidlangworthy/jobtree/pkg/topology"
@@ -62,6 +63,13 @@ func (c *RunController) Reconcile(namespace, name string) error {
 	if !ok {
 		return fmt.Errorf("run %s/%s not found", namespace, name)
 	}
+
+	flavor := run.Spec.Resources.GPUType
+	start := time.Now()
+	result := "noop"
+	defer func() {
+		metrics.ObserveAdmission(flavor, result, time.Since(start))
+	}()
 	if run.Status.Phase == RunPhaseComplete {
 		run.Status.Width = summarizeRunWidth(run, c.State.Leases)
 		return nil
@@ -92,6 +100,7 @@ func (c *RunController) Reconcile(namespace, name string) error {
 	if run.Status.Phase == RunPhaseRunning {
 		if run.Spec.Malleable != nil {
 			if err := c.reconcileElasticRun(run, snapshot, inventory, now); err != nil {
+				result = "error"
 				return err
 			}
 			run.Status.Width = summarizeRunWidth(run, c.State.Leases)
@@ -107,10 +116,16 @@ func (c *RunController) Reconcile(namespace, name string) error {
 			if run.Spec.Funding != nil {
 				request.Sponsors = append(request.Sponsors, run.Spec.Funding.Sponsors...)
 			}
-			return c.planReservation(run, snapshot, nil, planErr, nil, states, request, now)
+			if err := c.planReservation(run, snapshot, nil, planErr, nil, states, request, now); err != nil {
+				result = "error"
+				return err
+			}
+			result = "reserved"
+			return nil
 		}
 		run.Status.Phase = RunPhasePending
 		run.Status.Message = err.Error()
+		result = "waiting"
 		return nil
 	}
 
@@ -139,25 +154,33 @@ func (c *RunController) Reconcile(namespace, name string) error {
 	coverPlan, err := inventory.Plan(request)
 	if err != nil {
 		if planErr, ok := err.(*cover.PlanError); ok && planErr.Reason != cover.FailureReasonInvalidRequest {
-			return c.planReservation(run, snapshot, &packPlan, nil, planErr, states, request, now)
+			if err := c.planReservation(run, snapshot, &packPlan, nil, planErr, states, request, now); err != nil {
+				result = "error"
+				return err
+			}
+			result = "reserved"
+			return nil
 		}
 		run.Status.Phase = RunPhasePending
 		run.Status.Message = err.Error()
+		result = "waiting"
 		return nil
 	}
 
-	result, err := binder.Materialize(binder.Request{Run: run.DeepCopy(), CoverPlan: coverPlan, PackPlan: packPlan, Now: now})
+	bindResult, err := binder.Materialize(binder.Request{Run: run.DeepCopy(), CoverPlan: coverPlan, PackPlan: packPlan, Now: now})
 	if err != nil {
+		result = "error"
 		return err
 	}
 
-	c.State.Pods = append(c.State.Pods, result.Pods...)
-	c.State.Leases = append(c.State.Leases, result.Leases...)
+	c.State.Pods = append(c.State.Pods, bindResult.Pods...)
+	c.State.Leases = append(c.State.Leases, bindResult.Leases...)
 
 	run.Status.Phase = RunPhaseRunning
 	run.Status.Message = fmt.Sprintf("bound %d GPUs", packPlan.TotalGPUs)
 	run.Status.Width = summarizeRunWidth(run, c.State.Leases)
 	run.Status.Funding = summarizeRunFunding(run, c.State.Leases, now)
+	result = "bound"
 	return nil
 }
 
@@ -447,6 +470,13 @@ func (c *RunController) planReservation(run *v1.Run, snapshot *topology.Snapshot
 
 	reservationName := fmt.Sprintf("%s-res-%d", run.Name, now.Unix())
 	earliest := v1.NewTime(forecastResult.EarliestStart)
+	if !forecastResult.EarliestStart.IsZero() {
+		delta := forecastResult.EarliestStart.Sub(now).Seconds()
+		if delta < 0 {
+			delta = 0
+		}
+		metrics.SetReservationBacklog(run.Spec.Resources.GPUType, delta)
+	}
 	status := v1.ReservationStatus{
 		State:    "Pending",
 		Reason:   forecastResult.Reason,

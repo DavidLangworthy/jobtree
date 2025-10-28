@@ -49,7 +49,7 @@ If no spare is available, the run transitions to the `Failed` phase, signalling 
 The following commands highlight the spare lifecycle:
 
 ```bash
-kubectl runs submit -f config/samples/runs/run-with-spares.yaml
+kubectl runs submit --file config/samples/runs/run-with-spares.json
 kubectl runs watch train-64-with-spares    # shows active + spare leases
 kubectl runs explain train-64-with-spares # details swap reasons after a failure
 ```

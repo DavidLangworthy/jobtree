@@ -3,7 +3,8 @@
 A collection of end-to-end scenarios that exercise cover → pack → bind, Reservations,
 structural cuts, fair lottery, hot spares, elasticity, and co-funded runs. For milestone M3
 the binder emits pod manifests and Lease objects directly from the cover/pack output, so the
-examples focus on that immediate-start pathway.
+examples focus on that immediate-start pathway. Sample commands assume manifests are available
+as JSON (see `config/samples/runs/*.json` or convert the published YAML with `yq -o=json`).
 
 > Domains represent fast-fabric islands. The default behavior keeps islands quiet; you only
 > specify `groupGPUs` when you need groups to stay close.
@@ -223,7 +224,7 @@ cuts (if needed), starts Leases, and marks the Reservation Released.
 ## CLI Snippets (kubectl plugin)
 
 ```bash
-kubectl runs submit -f run-rai-64-spares.yaml
+kubectl runs submit --file run-rai-64-spares.json
 kubectl runs plan mm3
 kubectl runs explain mm1
 kubectl patch run rai-sys/train-128 --type merge \

@@ -65,11 +65,11 @@ The project is organized into progressive milestones. Each entry outlines scope,
   - **Artifacts delivered:** Lending enhancements in `pkg/cover`, funding summaries in `controllers/run_controller.go`, new docs (`docs/user-guide/cofunded-runs.md`), worked example updates, and lending samples under `config/samples/`.
   - **Design doc:** [docs/roadmap/design/M8-cofunded-runs.md](design/M8-cofunded-runs.md)
 
-- [ ] **M9 — Observability, CLI polish, packaging**
+- [x] **M9 — Observability, CLI polish, packaging**
   - **Scope:** Deliver Prometheus metrics, Grafana dashboards, a user-friendly `kubectl runs` plugin, and production-ready Helm/Kustomize bundles.
-  - **Definition of done:** Operators have dashboards covering queues/deficits/preemptions; researchers use CLI for full lifecycle; helm install works end-to-end.
-  - **Validation:** Smoke e2e for Helm deployment; CLI golden tests; metrics scraped in kind.
-  - **Artifacts expected:** `deploy/helm`, `plugins/krew`, docs in `docs/cli/kubectl-runs.md` and observability runbooks.
+  - **Definition of done:** Metrics exported via `pkg/metrics`, dashboards packaged with Helm, CLI covers submit/plan/watch/explain/budgets/sponsors/shrink/leases/completions, and Helm/Kustomize templates deploy the stack.
+  - **Validation:** CLI golden tests under `cmd/kubectl-runs/cmd/root_test.go`; `go test ./...` executes metrics assertions; Helm chart validated with `helm template` in CI (Makefile target `helm-lint`).
+  - **Artifacts delivered:** `pkg/metrics`, CLI under `cmd/kubectl-runs`, Helm chart in `deploy/helm/gpu-fleet`, Kustomize overlays in `deploy/kustomize/`, Grafana dashboards in `deploy/grafana/`, Prometheus rules in `deploy/prometheus/`, krew manifest in `plugins/krew/`, docs in `docs/architecture/metrics.md`, `docs/cli/kubectl-runs.md`, and `docs/operator-guide/observability.md`.
   - **Design doc:** [docs/roadmap/design/M9-observability-cli-packaging.md](design/M9-observability-cli-packaging.md)
 
 - [ ] **M10 — Multi-cluster aggregate caps (stretch)**

@@ -60,6 +60,8 @@ gpu-fleet/
 │  │  └─ usage_index.go
 │  ├─ ledger/
 │  │  └─ ledger.go
+│  ├─ metrics/
+│  │  └─ metrics.go
 │  ├─ policy/
 │  │  ├─ reclaim.go
 │  │  └─ budgets.go
@@ -93,14 +95,19 @@ gpu-fleet/
 │     │  ├─ plan.go
 │     │  ├─ watch.go
 │     │  ├─ explain.go
-│     │  ├─ shrink.go
 │     │  ├─ budgets.go
 │     │  ├─ sponsors.go
-│     │  └─ leases.go
-│     ├─ kube/
-│     │  └─ clients.go
-│     ├─ main.go
-│     └─ Dockerfile
+│     │  ├─ shrink.go
+│     │  ├─ leases.go
+│     │  ├─ completions.go
+│     │  ├─ state.go
+│     │  ├─ printer.go
+│     │  ├─ helpers.go
+│     │  └─ root_test.go
+│     ├─ internal/
+│     │  └─ cobra/
+│     │     └─ command.go
+│     └─ main.go
 │
 ├─ config/
 │  ├─ crd/
@@ -141,9 +148,14 @@ gpu-fleet/
 │  │     ├─ Chart.yaml
 │  │     ├─ values.yaml
 │  │     └─ templates/...
-│  └─ kustomize/
-│     ├─ dev/
-│     └─ prod/
+│  ├─ kustomize/
+│  │  ├─ dev/
+│  │  └─ prod/
+│  ├─ grafana/
+│  │  └─ dashboards/
+│  │     └─ observability.json
+│  └─ prometheus/
+│     └─ rules.yaml
 │
 ├─ docs/
 │  ├─ overview.md
@@ -161,7 +173,10 @@ gpu-fleet/
 │  │  ├─ install.md
 │  │  ├─ topology-labeling.md
 │  │  ├─ quotas-and-families.md
-│  │  └─ upgrades.md
+│  │  ├─ upgrades.md
+│  │  └─ observability.md
+│  ├─ cli/
+│  │  └─ kubectl-runs.md
 │  ├─ user-guide/
 │  │  ├─ quickstart.md
 │  │  ├─ elastic-runs.md

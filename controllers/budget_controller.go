@@ -6,6 +6,7 @@ import (
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	"github.com/davidlangworthy/jobtree/pkg/budget"
+	"github.com/davidlangworthy/jobtree/pkg/metrics"
 )
 
 // Clock abstracts time for testing.
@@ -78,6 +79,7 @@ func (c *BudgetController) ReconcileBudget(budgetObj *v1.Budget, leases []v1.Lea
 	now := c.clock.Now()
 	state := budget.BuildBudgetState(budgetObj, leases, now)
 	headroom := make([]v1.EnvelopeHeadroom, 0, len(state.Envelopes))
+	spareByFlavor := make(map[string]float64)
 	for _, env := range state.Envelopes {
 		additional := budget.Usage{}
 		h := budget.EnvelopeHeadroom(env, additional)
@@ -92,6 +94,7 @@ func (c *BudgetController) ReconcileBudget(budgetObj *v1.Budget, leases []v1.Lea
 		}
 		headroom = append(headroom, head)
 		c.updateMetrics(budgetObj, env)
+		spareByFlavor[env.Spec.Flavor] += float64(env.Usage.SpareConcurrency)
 	}
 
 	aggregateHeadroom := make([]v1.AggregateHeadroom, 0, len(state.Aggregates))
@@ -110,6 +113,10 @@ func (c *BudgetController) ReconcileBudget(budgetObj *v1.Budget, leases []v1.Lea
 			head.GPUHours = &value
 		}
 		aggregateHeadroom = append(aggregateHeadroom, head)
+	}
+
+	for flavor, value := range spareByFlavor {
+		metrics.SetSpareUsage(flavor, value)
 	}
 
 	updated := v1.BudgetStatus{
@@ -137,6 +144,12 @@ func (c *BudgetController) updateMetrics(budgetObj *v1.Budget, env *budget.Envel
 		BorrowedGPUHours:    env.Usage.BorrowedGPUHours,
 	}
 	c.metrics.record(key, snapshot)
+
+	owned := float64(env.Usage.Concurrency - env.Usage.BorrowedConcurrency - env.Usage.SpareConcurrency)
+	if owned < 0 {
+		owned = 0
+	}
+	metrics.RecordBudgetUsage(env.Owner, budgetObj.ObjectMeta.Name, env.Spec.Name, env.Spec.Flavor, owned, float64(env.Usage.BorrowedConcurrency), float64(env.Usage.SpareConcurrency))
 }
 
 func ptrInt32(v int32) *int32 { return &v }

@@ -1,0 +1,56 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "description": "Jobtree scheduler health",
+  "editable": true,
+  "gnetId": null,
+  "graphTooltip": 0,
+  "id": null,
+  "iteration": 1659720000000,
+  "links": [],
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Run admission latency",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(jobtree_runs_admission_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "Reservation backlog",
+      "targets": [
+        {
+          "expr": "sum(jobtree_reservations_backlog_seconds)",
+          "legendFormat": "seconds"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "Resolver actions",
+      "targets": [
+        {
+          "expr": "sum(rate(jobtree_resolver_actions_total[5m])) by (kind)",
+          "legendFormat": "{{kind}}"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 36,
+  "style": "dark",
+  "tags": ["jobtree"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "timezone": "browser",
+  "title": "Jobtree Overview",
+  "version": 1
+}

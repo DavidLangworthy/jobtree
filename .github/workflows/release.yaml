@@ -1,0 +1,29 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.22'
+      - name: Build kubectl plugin
+        run: go build -o dist/kubectl-runs ./cmd/kubectl-runs
+      - name: Lint Helm chart
+        run: |
+          helm lint deploy/helm/gpu-fleet
+      - name: Package Helm chart
+        run: |
+          helm package deploy/helm/gpu-fleet --destination dist
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts
+          path: dist

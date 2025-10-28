@@ -1,0 +1,6 @@
+controller:
+  replicas: 1
+notifier:
+  enabled: false
+monitoring:
+  enabled: true

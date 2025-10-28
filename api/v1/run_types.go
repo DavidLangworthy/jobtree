@@ -60,38 +60,38 @@ type RunFunding struct {
 
 // RunStatus reports lifecycle information.
 type RunStatus struct {
-        Phase              string          `json:"phase,omitempty"`
-        Message            string          `json:"message,omitempty"`
-        Generation         int64           `json:"generation,omitempty"`
-        PendingReservation *string         `json:"pendingReservation,omitempty"`
-        EarliestStart      *Time           `json:"earliestStart,omitempty"`
-        Width              *RunWidthStatus `json:"width,omitempty"`
-        Funding            *RunFundingStatus `json:"funding,omitempty"`
+	Phase              string            `json:"phase,omitempty"`
+	Message            string            `json:"message,omitempty"`
+	Generation         int64             `json:"generation,omitempty"`
+	PendingReservation *string           `json:"pendingReservation,omitempty"`
+	EarliestStart      *Time             `json:"earliestStart,omitempty"`
+	Width              *RunWidthStatus   `json:"width,omitempty"`
+	Funding            *RunFundingStatus `json:"funding,omitempty"`
 }
 
 // RunWidthStatus summarises elastic width bookkeeping.
 type RunWidthStatus struct {
-        Min       int32  `json:"min,omitempty"`
-        Max       int32  `json:"max,omitempty"`
-        Desired   int32  `json:"desired,omitempty"`
-        Allocated int32  `json:"allocated,omitempty"`
-        Pending   string `json:"pending,omitempty"`
+	Min       int32  `json:"min,omitempty"`
+	Max       int32  `json:"max,omitempty"`
+	Desired   int32  `json:"desired,omitempty"`
+	Allocated int32  `json:"allocated,omitempty"`
+	Pending   string `json:"pending,omitempty"`
 }
 
 // RunFundingStatus reports current and accrued funding usage.
 type RunFundingStatus struct {
-        OwnedGPUs         int32                    `json:"ownedGPUs,omitempty"`
-        OwnedGPUHours     float64                  `json:"ownedGPUHours,omitempty"`
-        BorrowedGPUs      int32                    `json:"borrowedGPUs,omitempty"`
-        BorrowedGPUHours  float64                  `json:"borrowedGPUHours,omitempty"`
-        Sponsors          []RunFundingSponsorShare `json:"sponsors,omitempty"`
+	OwnedGPUs        int32                    `json:"ownedGPUs,omitempty"`
+	OwnedGPUHours    float64                  `json:"ownedGPUHours,omitempty"`
+	BorrowedGPUs     int32                    `json:"borrowedGPUs,omitempty"`
+	BorrowedGPUHours float64                  `json:"borrowedGPUHours,omitempty"`
+	Sponsors         []RunFundingSponsorShare `json:"sponsors,omitempty"`
 }
 
 // RunFundingSponsorShare describes a sponsor's contribution.
 type RunFundingSponsorShare struct {
-        Owner    string  `json:"owner"`
-        GPUs     int32   `json:"gpus,omitempty"`
-        GPUHours float64 `json:"gpuHours,omitempty"`
+	Owner    string  `json:"owner"`
+	GPUs     int32   `json:"gpus,omitempty"`
+	GPUHours float64 `json:"gpuHours,omitempty"`
 }
 
 // RunList contains a list of Run.
@@ -240,41 +240,41 @@ func (in *RunList) DeepCopyInto(out *RunList) {
 
 // DeepCopy creates a deep copy of RunStatus.
 func (in *RunStatus) DeepCopy() *RunStatus {
-        if in == nil {
-                return nil
-        }
-        out := new(RunStatus)
+	if in == nil {
+		return nil
+	}
+	out := new(RunStatus)
 	*out = *in
 	if in.PendingReservation != nil {
 		value := *in.PendingReservation
 		out.PendingReservation = &value
 	}
-        if in.EarliestStart != nil {
-                value := in.EarliestStart.DeepCopy()
-                out.EarliestStart = &value
-        }
-        if in.Width != nil {
-                value := *in.Width
-                out.Width = &value
-        }
-        if in.Funding != nil {
-                out.Funding = in.Funding.DeepCopy()
-        }
-        return out
+	if in.EarliestStart != nil {
+		value := in.EarliestStart.DeepCopy()
+		out.EarliestStart = &value
+	}
+	if in.Width != nil {
+		value := *in.Width
+		out.Width = &value
+	}
+	if in.Funding != nil {
+		out.Funding = in.Funding.DeepCopy()
+	}
+	return out
 }
 
 // DeepCopy creates a deep copy of RunFundingStatus.
 func (in *RunFundingStatus) DeepCopy() *RunFundingStatus {
-        if in == nil {
-                return nil
-        }
-        out := new(RunFundingStatus)
-        *out = *in
-        if in.Sponsors != nil {
-                out.Sponsors = make([]RunFundingSponsorShare, len(in.Sponsors))
-                copy(out.Sponsors, in.Sponsors)
-        }
-        return out
+	if in == nil {
+		return nil
+	}
+	out := new(RunFundingStatus)
+	*out = *in
+	if in.Sponsors != nil {
+		out.Sponsors = make([]RunFundingSponsorShare, len(in.Sponsors))
+		copy(out.Sponsors, in.Sponsors)
+	}
+	return out
 }
 
 // DeepCopy deep copies RunList.

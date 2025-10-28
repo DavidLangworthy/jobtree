@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gpu-fleet.controllerName" . }}
+  labels: {{- include "gpu-fleet.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.controller.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "gpu-fleet.controllerName" . }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "gpu-fleet.controllerName" . }}
+        {{- include "gpu-fleet.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ .Values.controller.serviceAccount }}
+      imagePullSecrets:
+        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
+      containers:
+        - name: manager
+          image: {{ .Values.controller.image }}
+          args:
+            - "--metrics-bind-address=:{{ .Values.controller.metricsPort }}"
+            {{- range $arg := .Values.controller.extraArgs }}
+            - {{ $arg | quote }}
+            {{- end }}
+          ports:
+            - containerPort: {{ .Values.controller.metricsPort }}
+              name: metrics
+          resources: {{- toYaml .Values.controller.resources | nindent 12 }}
+      nodeSelector: {{- toYaml .Values.nodeSelector | nindent 8 }}
+      tolerations: {{- toYaml .Values.tolerations | nindent 8 }}
+      affinity: {{- toYaml .Values.affinity | nindent 8 }}
+---
+{{- if .Values.notifier.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gpu-fleet.notifierName" . }}
+  labels: {{- include "gpu-fleet.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.notifier.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "gpu-fleet.notifierName" . }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "gpu-fleet.notifierName" . }}
+        {{- include "gpu-fleet.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ .Values.controller.serviceAccount }}
+      containers:
+        - name: notifier
+          image: {{ .Values.notifier.image }}
+          resources: {{- toYaml .Values.notifier.resources | nindent 12 }}
+{{- end }}

@@ -12,6 +12,7 @@ import (
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	"github.com/davidlangworthy/jobtree/pkg/binder"
+	"github.com/davidlangworthy/jobtree/pkg/metrics"
 	"github.com/davidlangworthy/jobtree/pkg/topology"
 )
 
@@ -86,14 +87,16 @@ func Resolve(in Input) (Result, error) {
 		}
 		freed := len(cand.Lease.Spec.Slice.Nodes)
 		deficit -= freed
-		actions = append(actions, Action{
+		action := Action{
 			Kind:       ActionDropSpare,
 			Lease:      cand.Lease,
 			Run:        cand.Run,
 			GroupIndex: cand.GroupIndex,
 			GPUs:       freed,
 			Reason:     "DropSpare",
-		})
+		}
+		actions = append(actions, action)
+		metrics.IncResolverAction(string(ActionDropSpare))
 		cand.Marked = true
 	}
 	if deficit <= 0 {
@@ -102,7 +105,10 @@ func Resolve(in Input) (Result, error) {
 
 	// 2. Shrink malleable runs.
 	shrinkActions, shrinkFreed := shrinkMalleable(deficit, candidates)
-	actions = append(actions, shrinkActions...)
+	for _, action := range shrinkActions {
+		actions = append(actions, action)
+		metrics.IncResolverAction(string(ActionShrink))
+	}
 	deficit -= shrinkFreed
 	if deficit <= 0 {
 		return Result{Actions: actions}, nil
@@ -113,7 +119,10 @@ func Resolve(in Input) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	actions = append(actions, lotteryActions...)
+	for _, action := range lotteryActions {
+		actions = append(actions, action)
+		metrics.IncResolverAction(string(ActionLottery))
+	}
 	return Result{Actions: actions, Seed: seed}, nil
 }
 

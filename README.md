@@ -4,15 +4,23 @@ Kubernetes-native gang scheduling of job forests under time-scoped organizationa
 
 ## Getting started
 
-1. Install the custom resource definitions (CRDs) once they are published (coming in a later milestone).
-2. Build the controller manager:
+1. Run unit tests and build the controller binaries:
 
    ```bash
-   make test
+   go test ./...
    go build ./cmd/manager
+   go build -o kubectl-runs ./cmd/kubectl-runs
    ```
 
-3. Explore the API using the samples in `config/samples/`.
+2. Explore the API using the samples in `config/samples/` and the simulated CLI (`kubectl runs --state cluster.yaml plan <run>`).
+
+3. Deploy the observability stack with Helm:
+
+   ```bash
+   helm install jobtree ./deploy/helm/gpu-fleet --namespace jobtree-system --create-namespace
+   ```
+
+   For overlays, use the Kustomize bundles under `deploy/kustomize/`.
 
 ## Roadmap snapshot
 
@@ -27,7 +35,7 @@ The full roadmap lives in [`docs/roadmap/milestones.md`](docs/roadmap/milestones
 - [x] **M6 – Failure handling & hot spares**
 - [x] **M7 – Elastic runs (INCR) & voluntary shrink**
 - [x] **M8 – Co-funded runs (borrowing)**
-- [ ] **M9 – Observability, CLI polish, packaging**
+- [x] **M9 – Observability, CLI polish, packaging**
 - [ ] **M10 – Multi-cluster aggregate caps (stretch)**
 
 ## Repository layout (planned)
