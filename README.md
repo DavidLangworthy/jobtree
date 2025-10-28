@@ -19,7 +19,7 @@ Kubernetes-native gang scheduling of job forests under time-scoped organizationa
 The full roadmap lives in [`docs/roadmap/milestones.md`](docs/roadmap/milestones.md). A quick summary of the current state:
 
 - [x] **M0 – Repository bootstrap & CRD shells**
-- [ ] **M1 – Budget accounting engine**
+- [x] **M1 – Budget accounting engine**
 - [ ] **M2 – Topology discovery & group-aware packing**
 - [ ] **M3 – Binder & Leases (runs that can start immediately)**
 - [ ] **M4 – Reservations & forecasting**

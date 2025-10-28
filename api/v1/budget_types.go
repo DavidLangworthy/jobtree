@@ -71,16 +71,26 @@ type AggregateCap struct {
 
 // BudgetStatus surfaces derived accounting data.
 type BudgetStatus struct {
-	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
-	Headroom           []EnvelopeHeadroom `json:"headroom,omitempty"`
+        ObservedGeneration int64              `json:"observedGeneration,omitempty"`
+        Headroom           []EnvelopeHeadroom `json:"headroom,omitempty"`
+        AggregateHeadroom  []AggregateHeadroom `json:"aggregateHeadroom,omitempty"`
+        UpdatedAt          *Time              `json:"updatedAt,omitempty"`
 }
 
 // EnvelopeHeadroom reports remaining capacity for an envelope.
 type EnvelopeHeadroom struct {
-	Name        string `json:"name"`
-	Flavor      string `json:"flavor"`
-	Concurrency int32  `json:"concurrency"`
-	GPUHours    *int64 `json:"gpuHours,omitempty"`
+        Name        string `json:"name"`
+        Flavor      string `json:"flavor"`
+        Concurrency int32  `json:"concurrency"`
+        GPUHours    *int64 `json:"gpuHours,omitempty"`
+}
+
+// AggregateHeadroom reports remaining capacity for an aggregate cap.
+type AggregateHeadroom struct {
+        Name        string  `json:"name"`
+        Flavor      string  `json:"flavor"`
+        Concurrency *int32  `json:"concurrency,omitempty"`
+        GPUHours    *int64  `json:"gpuHours,omitempty"`
 }
 
 // BudgetList contains a list of Budgets.

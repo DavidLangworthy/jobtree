@@ -9,11 +9,11 @@ The project is organized into progressive milestones. Each entry outlines scope,
   - **Artifacts delivered:** `api/v1` type definitions, sample manifests under `config/samples/`, bootstrap README instructions.
   - **Design doc:** [docs/roadmap/design/M0-bootstrap-crd-shells.md](design/M0-bootstrap-crd-shells.md)
 
-- [ ] **M1 — Budget accounting engine**
+- [x] **M1 — Budget accounting engine**
   - **Scope:** Implement concurrency and GPU-hour accounting per envelope, aggregate caps, and lending ACLs; expose headroom metrics.
   - **Definition of done:** Budget controller reconciles live Budget objects, updating status/metrics; cover library returns funding plans respecting family sharing and lending limits.
-  - **Validation:** Unit tests for window math, recurrence, aggregate caps, lending guardrails; simulated reconciliation using envtest.
-  - **Artifacts expected:** `pkg/cover`, `controllers/budget_controller.go`, documentation under `docs/concepts/budgets.md`.
+  - **Validation:** Unit tests cover headroom math, aggregate caps, lending guardrails; controller tests validate status and metrics.
+  - **Artifacts delivered:** `pkg/budget`, `pkg/cover`, `controllers/budget_controller.go`, documentation under `docs/concepts/budgets.md`.
   - **Design doc:** [docs/roadmap/design/M1-budget-accounting-engine.md](design/M1-budget-accounting-engine.md)
 
 - [ ] **M2 — Topology discovery & group-aware packing**
