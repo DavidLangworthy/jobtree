@@ -41,3 +41,11 @@ The full roadmap lives in [`docs/roadmap/milestones.md`](docs/roadmap/milestones
 ## Repository layout (planned)
 
 The long-term directory structure is documented in [`docs/architecture/directory-tree.md`](docs/architecture/directory-tree.md). As milestones land, the repository will grow toward that shape.
+
+## Project governance & docs
+
+- Maintainers and escalation paths: [`MAINTAINERS.md`](MAINTAINERS.md)
+- First-class readiness checklist: [`docs/project/first-class-readiness.md`](docs/project/first-class-readiness.md)
+- Read the Docs rollout plan: [`docs/website/readthedocs.md`](docs/website/readthedocs.md)
+- Cluster visualization guide: [`docs/visualizations/cluster-allocation.md`](docs/visualizations/cluster-allocation.md)
+- Researcher budget UX spec: [`docs/product/researcher-budget-ux.md`](docs/product/researcher-budget-ux.md)
