@@ -25,7 +25,7 @@ The full roadmap lives in [`docs/roadmap/milestones.md`](docs/roadmap/milestones
 - [x] **M4 – Reservations & forecasting**
 - [x] **M5 – Oversubscription resolver**
 - [x] **M6 – Failure handling & hot spares**
-- [ ] **M7 – Elastic runs (INCR) & voluntary shrink**
+- [x] **M7 – Elastic runs (INCR) & voluntary shrink**
 - [ ] **M8 – Co-funded runs (borrowing)**
 - [ ] **M9 – Observability, CLI polish, packaging**
 - [ ] **M10 – Multi-cluster aggregate caps (stretch)**

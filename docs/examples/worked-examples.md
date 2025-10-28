@@ -135,7 +135,55 @@ Training continues without resharding; ledger shows deterministic Start/End/Swap
 
 ---
 
-## 4. Co-funded Run (borrow to finish early)
+## 4. Elastic run growth and voluntary shrink
+
+**Supply:** Fast-fabric domain with 160 GPUs (5 × 32).
+
+**Budget:** `org:rai` envelope `concurrency=256` covering the domain.
+
+**Run:**
+
+- `totalGPUs = 96`, `groupGPUs = 32`
+- `malleable: { minTotalGPUs: 96, maxTotalGPUs: 160, stepGPUs: 32 }`
+- `desiredTotalGPUs` defaults to 160.
+
+### Timeline
+
+- **T0 — Admit at min width.** Run binds 96 GPUs (three groups). Status reports:
+
+  ```yaml
+  status:
+    phase: Running
+    message: "bound 96 GPUs"
+    width: { min: 96, max: 160, desired: 160, allocated: 96 }
+  ```
+
+- **T1 — Grow opportunistically.** Controller sees headroom and increases width
+  by one step (32 GPUs). Binder emits leases with `reason: Grow`. Status becomes:
+
+  ```yaml
+  status:
+    message: "grew to 128 GPUs"
+    width: { min: 96, max: 160, desired: 160, allocated: 128, pending: "Grow to 160" }
+  ```
+
+- **T2 — Voluntary shrink.** User patches the Run to `desiredTotalGPUs: 96`. The
+  highest-index group (and its spare, if any) closes with
+  `closureReason: Shrink`, pods disappear, and status returns to:
+
+  ```yaml
+  status:
+    message: "shrunk to 96 GPUs"
+    width: { min: 96, max: 160, desired: 96, allocated: 96 }
+  ```
+
+Reservational shrink (resolver-triggered) still happens first when deficits
+arise, but the controller now reconciles back toward the desired width once
+capacity returns.
+
+---
+
+## 5. Co-funded Run (borrow to finish early)
 
 **Envelopes:**
 
@@ -157,7 +205,7 @@ Training continues without resharding; ledger shows deterministic Start/End/Swap
 
 ---
 
-## 5. Future-dated Budget window with staged Reservation
+## 6. Future-dated Budget window with staged Reservation
 
 **Envelope:** `rai:west-h100`, window starts tomorrow 00:00, `concurrency=5000`.
 
@@ -176,7 +224,10 @@ cuts (if needed), starts Leases, and marks the Reservation Released.
 kubectl runs submit -f run-rai-64-spares.yaml
 kubectl runs plan mm3
 kubectl runs explain mm1
-kubectl runs shrink ra2 --by 8
+kubectl patch run rai-sys/train-128 --type merge \
+  -p '{"spec":{"malleable":{"desiredTotalGPUs":96}}}'
 kubectl runs budgets usage --owner org:ai:rai:sys
 ```
+
+*(A dedicated `kubectl runs shrink` helper will wrap the patch step in a later milestone.)*
 EOF

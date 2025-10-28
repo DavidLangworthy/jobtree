@@ -2,6 +2,8 @@ package controllers
 
 import (
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -60,7 +62,8 @@ func (c *RunController) Reconcile(namespace, name string) error {
 	if !ok {
 		return fmt.Errorf("run %s/%s not found", namespace, name)
 	}
-	if run.Status.Phase == RunPhaseRunning || run.Status.Phase == RunPhaseComplete {
+	if run.Status.Phase == RunPhaseComplete {
+		run.Status.Width = summarizeRunWidth(run, c.State.Leases)
 		return nil
 	}
 
@@ -70,6 +73,7 @@ func (c *RunController) Reconcile(namespace, name string) error {
 	if err != nil {
 		run.Status.Phase = RunPhasePending
 		run.Status.Message = err.Error()
+		run.Status.Width = summarizeRunWidth(run, c.State.Leases)
 		return nil
 	}
 
@@ -77,20 +81,35 @@ func (c *RunController) Reconcile(namespace, name string) error {
 	if err != nil {
 		return err
 	}
+	inventory, err := c.coverInventoryFromStates(states)
+	if err != nil {
+		return err
+	}
+
+	run.Status.Width = summarizeRunWidth(run, c.State.Leases)
+
+	if run.Status.Phase == RunPhaseRunning {
+		if run.Spec.Malleable != nil {
+			if err := c.reconcileElasticRun(run, snapshot, inventory, now); err != nil {
+				return err
+			}
+			run.Status.Width = summarizeRunWidth(run, c.State.Leases)
+		}
+		return nil
+	}
 
 	packPlan, err := planPlacement(run, snapshot)
 	if err != nil {
 		if planErr, ok := err.(*pack.PlanError); ok && planErr.Reason != pack.FailureReasonInvalidRequest {
-			return c.planReservation(run, snapshot, nil, planErr, nil, states, cover.Request{Owner: run.Spec.Owner, Flavor: run.Spec.Resources.GPUType, Quantity: run.Spec.Resources.TotalGPUs, Now: now, AllowBorrow: run.Spec.Funding != nil && run.Spec.Funding.AllowBorrow}, now)
+			request := cover.Request{Owner: run.Spec.Owner, Flavor: run.Spec.Resources.GPUType, Quantity: run.Spec.Resources.TotalGPUs, Now: now, AllowBorrow: run.Spec.Funding != nil && run.Spec.Funding.AllowBorrow}
+			if run.Spec.Funding != nil {
+				request.Sponsors = append(request.Sponsors, run.Spec.Funding.Sponsors...)
+			}
+			return c.planReservation(run, snapshot, nil, planErr, nil, states, request, now)
 		}
 		run.Status.Phase = RunPhasePending
 		run.Status.Message = err.Error()
 		return nil
-	}
-
-	inventory, err := c.coverInventoryFromStates(states)
-	if err != nil {
-		return err
 	}
 
 	location := deriveLocation(packPlan)
@@ -128,6 +147,7 @@ func (c *RunController) Reconcile(namespace, name string) error {
 
 	run.Status.Phase = RunPhaseRunning
 	run.Status.Message = fmt.Sprintf("bound %d GPUs", packPlan.TotalGPUs)
+	run.Status.Width = summarizeRunWidth(run, c.State.Leases)
 	return nil
 }
 
@@ -501,6 +521,7 @@ func (c *RunController) applyResolution(result resolver.Result, now time.Time) {
 			run.Status.Phase = RunPhaseRunning
 			run.Status.Message = "shrunk by resolver"
 		}
+		run.Status.Width = summarizeRunWidth(run, c.State.Leases)
 	}
 }
 
@@ -555,6 +576,9 @@ func activeGPUsForRun(runKey string, leases []v1.Lease) int {
 		}
 		key := namespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name)
 		if key != runKey {
+			continue
+		}
+		if lease.Spec.Slice.Role == binder.RoleSpare {
 			continue
 		}
 		total += len(lease.Spec.Slice.Nodes)
@@ -649,6 +673,320 @@ func expectedSpareTotal(run *v1.Run, plan *pack.Plan) int32 {
 		}
 	}
 	return spares * groups
+}
+
+func (c *RunController) reconcileElasticRun(run *v1.Run, snapshot *topology.Snapshot, inventory *cover.Inventory, now time.Time) error {
+	if run.Spec.Malleable == nil {
+		return nil
+	}
+
+	width := summarizeRunWidth(run, c.State.Leases)
+	desired := width.Desired
+	allocated := width.Allocated
+	if run.Status.Width != nil {
+		run.Status.Width.Pending = ""
+	}
+
+	if desired > allocated {
+		growBy := desired - allocated
+		step := run.Spec.Malleable.StepGPUs
+		if growBy > step {
+			growBy = step
+		}
+		if growBy <= 0 {
+			return nil
+		}
+		if err := c.growRun(run, snapshot, inventory, now, int(growBy)); err != nil {
+			if run.Status.Width == nil {
+				run.Status.Width = width
+			}
+			run.Status.Width.Pending = fmt.Sprintf("Grow to %d", desired)
+			run.Status.Message = fmt.Sprintf("waiting to grow: %v", err)
+			return nil
+		}
+		newWidth := summarizeRunWidth(run, c.State.Leases)
+		run.Status.Width = newWidth
+		if newWidth.Allocated < desired {
+			run.Status.Width.Pending = fmt.Sprintf("Grow to %d", desired)
+		}
+		run.Status.Message = fmt.Sprintf("grew to %d GPUs", newWidth.Allocated)
+		return nil
+	}
+
+	if desired < allocated {
+		if err := c.shrinkRun(run, desired, now); err != nil {
+			if run.Status.Width == nil {
+				run.Status.Width = width
+			}
+			run.Status.Width.Pending = fmt.Sprintf("Shrink to %d", desired)
+			run.Status.Message = fmt.Sprintf("unable to shrink: %v", err)
+			return nil
+		}
+		newWidth := summarizeRunWidth(run, c.State.Leases)
+		run.Status.Width = newWidth
+		if newWidth.Allocated > desired {
+			run.Status.Width.Pending = fmt.Sprintf("Shrink to %d", desired)
+		}
+		run.Status.Message = fmt.Sprintf("shrunk to %d GPUs", newWidth.Allocated)
+	}
+
+	return nil
+}
+
+func (c *RunController) growRun(run *v1.Run, snapshot *topology.Snapshot, inventory *cover.Inventory, now time.Time, add int) error {
+	if add <= 0 {
+		return nil
+	}
+
+	allowSpread := true
+	if run.Spec.Locality != nil && run.Spec.Locality.AllowCrossGroupSpread != nil {
+		allowSpread = *run.Spec.Locality.AllowCrossGroupSpread
+	}
+	var groupSize *int
+	if run.Spec.Locality != nil && run.Spec.Locality.GroupGPUs != nil {
+		value := int(*run.Spec.Locality.GroupGPUs)
+		groupSize = &value
+	}
+	spares := 0
+	if run.Spec.Spares != nil && *run.Spec.Spares > 0 {
+		spares = int(*run.Spec.Spares)
+	}
+
+	plan, err := pack.Planner(snapshot, pack.Request{
+		Flavor:                run.Spec.Resources.GPUType,
+		TotalGPUs:             add,
+		GroupGPUs:             groupSize,
+		AllowCrossGroupSpread: allowSpread,
+		SparesPerGroup:        spares,
+	})
+	if err != nil {
+		return err
+	}
+
+	quantity := add + plan.TotalSpares
+	request := cover.Request{
+		Owner:       run.Spec.Owner,
+		Flavor:      run.Spec.Resources.GPUType,
+		Quantity:    int32(quantity),
+		Location:    deriveLocation(plan),
+		Now:         now,
+		AllowBorrow: run.Spec.Funding != nil && run.Spec.Funding.AllowBorrow,
+	}
+	if run.Spec.Funding != nil {
+		request.Sponsors = append(request.Sponsors, run.Spec.Funding.Sponsors...)
+	}
+
+	coverPlan, err := inventory.Plan(request)
+	if err != nil {
+		return err
+	}
+
+	offset := maxGroupIndexForRun(namespacedKey(run.Namespace, run.Name), c.State.Leases) + 1
+	result, err := binder.Materialize(binder.Request{
+		Run:              run.DeepCopy(),
+		CoverPlan:        coverPlan,
+		PackPlan:         plan,
+		Now:              now,
+		GroupIndexOffset: offset,
+		LeaseReason:      "Grow",
+	})
+	if err != nil {
+		return err
+	}
+
+	c.State.Pods = append(c.State.Pods, result.Pods...)
+	c.State.Leases = append(c.State.Leases, result.Leases...)
+	return nil
+}
+
+func (c *RunController) shrinkRun(run *v1.Run, target int32, now time.Time) error {
+	runKey := namespacedKey(run.Namespace, run.Name)
+	groups := collectElasticGroups(runKey, c.State.Leases)
+	if len(groups) == 0 {
+		return fmt.Errorf("no active groups to shrink")
+	}
+
+	width := summarizeRunWidth(run, c.State.Leases)
+	current := width.Allocated
+	if target >= current {
+		return nil
+	}
+
+	var ordered []*elasticGroup
+	for _, grp := range groups {
+		if grp.ActiveGPUs == 0 {
+			continue
+		}
+		ordered = append(ordered, grp)
+	}
+	if len(ordered) == 0 {
+		return fmt.Errorf("no active groups to shrink")
+	}
+
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].BorrowedGPUs == ordered[j].BorrowedGPUs {
+			return ordered[i].Index > ordered[j].Index
+		}
+		return ordered[i].BorrowedGPUs > ordered[j].BorrowedGPUs
+	})
+
+	freed := int32(0)
+	removed := make(map[string]struct{})
+	for _, grp := range ordered {
+		if current-freed <= target {
+			break
+		}
+		if current-freed-int32(grp.ActiveGPUs) < target {
+			continue
+		}
+		for _, lease := range grp.Active {
+			closeLease(lease, "Shrink", now)
+		}
+		for _, lease := range grp.Spares {
+			closeLease(lease, "Shrink", now)
+		}
+		freed += int32(grp.ActiveGPUs)
+		removed[strconv.Itoa(grp.Index)] = struct{}{}
+	}
+
+	if current-freed > target {
+		return fmt.Errorf("insufficient groups available to reach target width")
+	}
+
+	if len(removed) > 0 {
+		c.removePodsForGroups(runKey, removed)
+	}
+	return nil
+}
+
+func summarizeRunWidth(run *v1.Run, leases []v1.Lease) *v1.RunWidthStatus {
+	if run == nil {
+		return nil
+	}
+	runKey := namespacedKey(run.Namespace, run.Name)
+	allocated := int32(0)
+	for i := range leases {
+		lease := &leases[i]
+		if lease.Status.Closed {
+			continue
+		}
+		if namespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
+			continue
+		}
+		if lease.Spec.Slice.Role == binder.RoleSpare {
+			continue
+		}
+		allocated += int32(len(lease.Spec.Slice.Nodes))
+	}
+
+	status := &v1.RunWidthStatus{Allocated: allocated}
+	if run.Spec.Malleable != nil {
+		status.Min = run.Spec.Malleable.MinTotalGPUs
+		status.Max = run.Spec.Malleable.MaxTotalGPUs
+		desired := run.Spec.Malleable.MaxTotalGPUs
+		if run.Spec.Malleable.DesiredTotalGPUs != nil {
+			desired = *run.Spec.Malleable.DesiredTotalGPUs
+		}
+		status.Desired = desired
+	} else {
+		total := run.Spec.Resources.TotalGPUs
+		status.Min = total
+		status.Max = total
+		status.Desired = total
+	}
+	return status
+}
+
+type elasticGroup struct {
+	Index        int
+	Active       []*v1.Lease
+	Spares       []*v1.Lease
+	ActiveGPUs   int
+	BorrowedGPUs int
+}
+
+func collectElasticGroups(runKey string, leases []v1.Lease) map[int]*elasticGroup {
+	groups := make(map[int]*elasticGroup)
+	for i := range leases {
+		lease := &leases[i]
+		if lease.Status.Closed {
+			continue
+		}
+		if namespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
+			continue
+		}
+		idxStr := "0"
+		if lease.Labels != nil {
+			if val, ok := lease.Labels[binder.LabelGroupIndex]; ok {
+				idxStr = val
+			}
+		}
+		idx, err := strconv.Atoi(idxStr)
+		if err != nil {
+			continue
+		}
+		grp, ok := groups[idx]
+		if !ok {
+			grp = &elasticGroup{Index: idx}
+			groups[idx] = grp
+		}
+		if lease.Spec.Slice.Role == binder.RoleSpare {
+			grp.Spares = append(grp.Spares, lease)
+			continue
+		}
+		grp.Active = append(grp.Active, lease)
+		slots := len(lease.Spec.Slice.Nodes)
+		grp.ActiveGPUs += slots
+		if lease.Spec.Slice.Role == binder.RoleBorrowed {
+			grp.BorrowedGPUs += slots
+		}
+	}
+	return groups
+}
+
+func (c *RunController) removePodsForGroups(runKey string, groups map[string]struct{}) {
+	if len(groups) == 0 {
+		return
+	}
+	var pods []binder.PodManifest
+	for _, pod := range c.State.Pods {
+		runLabel := pod.Labels[binder.LabelRunName]
+		group := pod.Labels[binder.LabelGroupIndex]
+		if namespacedKey(pod.Namespace, runLabel) == runKey {
+			if _, ok := groups[group]; ok {
+				continue
+			}
+		}
+		pods = append(pods, pod)
+	}
+	c.State.Pods = pods
+}
+
+func maxGroupIndexForRun(runKey string, leases []v1.Lease) int {
+	maxIdx := -1
+	for i := range leases {
+		lease := &leases[i]
+		if lease.Status.Closed {
+			continue
+		}
+		if namespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
+			continue
+		}
+		idxStr := "0"
+		if lease.Labels != nil {
+			if val, ok := lease.Labels[binder.LabelGroupIndex]; ok {
+				idxStr = val
+			}
+		}
+		idx, err := strconv.Atoi(idxStr)
+		if err != nil {
+			continue
+		}
+		if idx > maxIdx {
+			maxIdx = idx
+		}
+	}
+	return maxIdx
 }
 
 func leaseContainsNode(lease *v1.Lease, node string) bool {

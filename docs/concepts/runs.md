@@ -45,8 +45,10 @@ The planner interprets the spec as follows:
 - `allowCrossGroupSpread=false` forces all groups to reside in the same domain;
   the planner fails fast if no domain has enough free GPUs.
 
-Future milestones (elastic runs, spares) will extend this translation, but the
-planner already keeps group semantics isolated from funding decisions.
+Elastic runs extend the same translation: when `spec.malleable` is present the
+controller keeps group semantics identical while deciding whether to materialise
+additional groups or end high-index groups. `desiredTotalGPUs` acts purely as a
+target—funding and placement remain per-group decisions.
 
 ## Pack-to-empty heuristics
 

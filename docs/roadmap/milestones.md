@@ -51,11 +51,11 @@ The project is organized into progressive milestones. Each entry outlines scope,
   - **Artifacts expected:** Spare-handling logic in `controllers/run_controller.go` and `pkg/policy`, documentation in `docs/user-guide/spares-and-fill.md`.
   - **Design doc:** [docs/roadmap/design/M6-failure-and-spares.md](design/M6-failure-and-spares.md)
 
-- [ ] **M7 — Elastic runs (INCR) & voluntary shrink**
-  - **Scope:** Enable malleable runs to scale within `[minTotalGPUs, maxTotalGPUs]` using `stepGPUs`, including voluntary shrink APIs.
-  - **Definition of done:** Elastic runs expand and contract as capacity changes; CLI can trigger voluntary shrink with correct ledger entries.
-  - **Validation:** e2e demonstrating growth, shrinkage, and voluntary shrink; unit tests for funding plan recalculation.
-  - **Artifacts expected:** Enhancements in `pkg/binder`, `pkg/resolver`, CLI `shrink` command, docs in `docs/user-guide/elastic-runs.md`.
+- [x] **M7 — Elastic runs (INCR) & voluntary shrink**
+  - **Scope:** Enable malleable runs to scale within `[minTotalGPUs, maxTotalGPUs]` using `stepGPUs`, including voluntary shrink via the Run spec.
+  - **Definition of done:** Elastic runs expand when headroom exists, shrink deterministically when desired width drops, and record width/pending state in status.
+  - **Validation:** Controller tests covering growth and voluntary shrink, binder unit tests for group index offsets, and repository-wide `go test ./...`.
+  - **Artifacts delivered:** Elasticity logic in `controllers/run_controller.go`, updated `pkg/binder` lease materialisation, Run status width tracking, new examples/tests, and docs in `docs/user-guide/elastic-runs.md`.
   - **Design doc:** [docs/roadmap/design/M7-elastic-runs-and-shrink.md](design/M7-elastic-runs-and-shrink.md)
 
 - [ ] **M8 — Co-funded runs (borrowing)**

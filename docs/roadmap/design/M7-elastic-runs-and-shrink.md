@@ -19,10 +19,10 @@ Extend the scheduler to support malleable Runs that can expand or contract betwe
 - Budget accounting (M1) to recalculate debit when width changes, including borrowed envelopes (M8).
 
 ## Architecture & Components
-- **Elasticity manager (`pkg/binder/elastic`):** Determines new desired width, orchestrates add/remove group operations.
-- **Run controller updates:** Monitor capacity signals and voluntary shrink requests, reconciling desired vs. actual width.
-- **CLI integration:** `kubectl runs shrink` and optional `kubectl runs grow` commands hitting subresources or CRD fields.
-- **Status tracking:** `Run.status.width` capturing `desired`, `allocated`, `min`, `max`, and pending operations.
+- **Run controller elasticity loop:** Reconciles running malleable Runs, computes gaps between `desired` and `allocated`, invokes growth or shrink helpers, and records width/pending state in status.
+- **Binder enhancements:** Accepts a `GroupIndexOffset` and `LeaseReason` so new groups receive monotonic indices and leases log `Grow` events.
+- **Run API updates:** `Run.spec.malleable.desiredTotalGPUs` persists user intent (defaults to `maxTotalGPUs`); `Run.status.width` captures `min`, `max`, `desired`, `allocated`, and any pending operation.
+- **Voluntary shrink trigger:** Users edit `spec.malleable.desiredTotalGPUs` (CLI shortcut to follow) and the controller releases highest-index groups, prioritising borrowed leases.
 
 ## Detailed Design
 1. **Desired width computation**
@@ -39,15 +39,15 @@ Extend the scheduler to support malleable Runs that can expand or contract betwe
    - Track payer for each group; when shrinking, release borrowed leases first to return capacity to sponsors.
    - Update Budget status to reflect reduced usage and repay GPU-hour accounting.
 5. **User interface**
-   - CLI `kubectl runs shrink train-128 --by 16` updates desired width; controller acknowledges with status condition `VoluntaryShrinkInProgress` until completion.
-   - Provide events summarizing growth/shrink decisions, including reason and payer changes.
+   - Today the desired width is updated by editing `spec.malleable.desiredTotalGPUs`; a `kubectl runs shrink` helper will wrap this in a later milestone.
+   - Controller status surfaces `Run.status.width` (`min`, `max`, `desired`, `allocated`, `pending`) and `Run.status.message` (e.g. `grew to 128 GPUs`).
 6. **Documentation**
    - Expand `docs/user-guide/elastic-runs.md` with workflows, tradeoffs, and interaction with Reservations.
 
 ## Testing Strategy
-- Unit tests for elasticity manager (growth/shrink decision logic, payer ordering).
-- Envtest verifying Run status transitions and voluntary shrink subresource.
-- e2e scenario: Run starts at min width, grows to max as capacity appears, voluntarily shrinks, and survives resolver-mandated shrink.
+- Unit tests: `pkg/binder` (offset/reason), `controllers/run_controller` (growth + voluntary shrink, failure paths).
+- Repository test suite: `go test ./...` (ensures API validation, binder logic, controller flows).
+- Worked examples updated with elasticity scenarios for manual validation and future e2e automation.
 
 ## Observability & Telemetry
 - Metrics: `elastic_grows_total`, `elastic_shrinks_total`, `elastic_width_current` (gauge).

@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -204,6 +205,166 @@ func TestRunControllerCreatesReservationForFutureWindow(t *testing.T) {
 	}
 	if reservation.Status.Forecast == nil || reservation.Status.Forecast.Confidence != "window-aligned" {
 		t.Fatalf("expected window-aligned forecast")
+	}
+}
+
+func TestElasticRunGrowsToDesired(t *testing.T) {
+	now := time.Date(2024, 2, 2, 10, 0, 0, 0, time.UTC)
+	state := &ClusterState{
+		Budgets: []v1.Budget{{
+			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			Spec: v1.BudgetSpec{
+				Owner: "org:ai:rai",
+				Envelopes: []v1.BudgetEnvelope{{
+					Name:        "west",
+					Flavor:      "H100-80GB",
+					Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
+					Concurrency: 256,
+				}},
+			},
+		}},
+	}
+	for i := 0; i < 5; i++ {
+		state.Nodes = append(state.Nodes, topology.SourceNode{
+			Name: fmt.Sprintf("node-%d", i),
+			Labels: map[string]string{
+				topology.LabelRegion:       "us-west",
+				topology.LabelCluster:      "cluster-a",
+				topology.LabelFabricDomain: "island-a",
+				topology.LabelGPUFlavor:    "H100-80GB",
+			},
+			GPUs: 32,
+		})
+	}
+	desired := int32(160)
+	group := int32(32)
+	state.Runs = map[string]*v1.Run{
+		"default/train": {
+			ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"},
+			Spec: v1.RunSpec{
+				Owner: "org:ai:rai",
+				Resources: v1.RunResources{
+					GPUType:   "H100-80GB",
+					TotalGPUs: 96,
+				},
+				Locality: &v1.RunLocality{GroupGPUs: &group},
+				Malleable: &v1.RunMalleability{
+					MinTotalGPUs:     96,
+					MaxTotalGPUs:     160,
+					StepGPUs:         32,
+					DesiredTotalGPUs: &desired,
+				},
+			},
+		},
+	}
+
+	controller := NewRunController(state, runClock{now: now})
+	if err := controller.Reconcile("default", "train"); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	run := state.Runs["default/train"]
+	if run.Status.Width == nil || run.Status.Width.Allocated != 96 {
+		t.Fatalf("expected allocated width 96, got %+v", run.Status.Width)
+	}
+
+	controller.Clock = runClock{now: now.Add(time.Minute)}
+	if err := controller.Reconcile("default", "train"); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	if run.Status.Width == nil || run.Status.Width.Allocated != 128 {
+		t.Fatalf("expected allocated width 128 after growth, got %+v", run.Status.Width)
+	}
+	foundGrow := false
+	for _, lease := range state.Leases {
+		if lease.Spec.Reason == "Grow" {
+			foundGrow = true
+			break
+		}
+	}
+	if !foundGrow {
+		t.Fatalf("expected at least one grow lease")
+	}
+}
+
+func TestElasticRunVoluntaryShrink(t *testing.T) {
+	now := time.Date(2024, 2, 2, 10, 0, 0, 0, time.UTC)
+	state := &ClusterState{
+		Budgets: []v1.Budget{{
+			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			Spec: v1.BudgetSpec{
+				Owner: "org:ai:rai",
+				Envelopes: []v1.BudgetEnvelope{{
+					Name:        "west",
+					Flavor:      "H100-80GB",
+					Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
+					Concurrency: 256,
+				}},
+			},
+		}},
+	}
+	for i := 0; i < 5; i++ {
+		state.Nodes = append(state.Nodes, topology.SourceNode{
+			Name: fmt.Sprintf("node-%d", i),
+			Labels: map[string]string{
+				topology.LabelRegion:       "us-west",
+				topology.LabelCluster:      "cluster-a",
+				topology.LabelFabricDomain: "island-a",
+				topology.LabelGPUFlavor:    "H100-80GB",
+			},
+			GPUs: 32,
+		})
+	}
+	desired := int32(160)
+	group := int32(32)
+	state.Runs = map[string]*v1.Run{
+		"default/train": {
+			ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"},
+			Spec: v1.RunSpec{
+				Owner:     "org:ai:rai",
+				Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 96},
+				Locality:  &v1.RunLocality{GroupGPUs: &group},
+				Malleable: &v1.RunMalleability{
+					MinTotalGPUs:     96,
+					MaxTotalGPUs:     160,
+					StepGPUs:         32,
+					DesiredTotalGPUs: &desired,
+				},
+			},
+		},
+	}
+
+	controller := NewRunController(state, runClock{now: now})
+	if err := controller.Reconcile("default", "train"); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	controller.Clock = runClock{now: now.Add(time.Minute)}
+	if err := controller.Reconcile("default", "train"); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	target := int32(96)
+	run := state.Runs["default/train"]
+	run.Spec.Malleable.DesiredTotalGPUs = &target
+	controller.Clock = runClock{now: now.Add(2 * time.Minute)}
+	if err := controller.Reconcile("default", "train"); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	if run.Status.Width == nil || run.Status.Width.Allocated != 96 {
+		t.Fatalf("expected allocated width 96 after shrink, got %+v", run.Status.Width)
+	}
+	closedShrink := 0
+	for i := range state.Leases {
+		lease := state.Leases[i]
+		if lease.Status.Closed && lease.Status.ClosureReason == "Shrink" {
+			closedShrink++
+		}
+	}
+	if closedShrink == 0 {
+		t.Fatalf("expected shrink to close leases")
+	}
+	if len(state.Pods) == 0 {
+		t.Fatalf("expected remaining pods after shrink")
 	}
 }
 

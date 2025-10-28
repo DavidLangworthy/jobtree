@@ -1,6 +1,7 @@
 package binder
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -141,5 +142,48 @@ func TestMaterializeIncludesSpares(t *testing.T) {
 	}
 	if len(res.Leases[1].Spec.Slice.Nodes) != 2 {
 		t.Fatalf("expected 2 GPUs for spare lease, got %d", len(res.Leases[1].Spec.Slice.Nodes))
+	}
+}
+
+func TestMaterializeAppliesOffsetAndReason(t *testing.T) {
+	run := &v1.Run{ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"}}
+	run.Spec.Owner = "org:ai:rai"
+	packPlan := pack.Plan{
+		Flavor:    "H100-80GB",
+		TotalGPUs: 4,
+		Groups: []pack.GroupPlacement{
+			{
+				GroupIndex: 0,
+				Size:       4,
+				NodePlacements: []pack.NodeAllocation{
+					{Node: "node-a", GPUs: 4},
+				},
+			},
+		},
+	}
+	coverPlan := cover.Plan{Segments: []cover.Segment{{BudgetName: "rai", EnvelopeName: "core", Owner: "org:ai:rai", Quantity: 4}}}
+
+	res, err := Materialize(Request{
+		Run:              run,
+		PackPlan:         packPlan,
+		CoverPlan:        coverPlan,
+		Now:              time.Unix(0, 0),
+		GroupIndexOffset: 3,
+		LeaseReason:      "Grow",
+	})
+	if err != nil {
+		t.Fatalf("materialize failed: %v", err)
+	}
+	if len(res.Pods) != 1 {
+		t.Fatalf("expected 1 pod, got %d", len(res.Pods))
+	}
+	if res.Pods[0].Labels[LabelGroupIndex] != "3" {
+		t.Fatalf("expected group index label 3, got %s", res.Pods[0].Labels[LabelGroupIndex])
+	}
+	if res.Leases[0].Spec.Reason != "Grow" {
+		t.Fatalf("expected lease reason Grow, got %s", res.Leases[0].Spec.Reason)
+	}
+	if !strings.Contains(res.Leases[0].Name, "g03") {
+		t.Fatalf("expected lease name to include offset index, got %s", res.Leases[0].Name)
 	}
 }

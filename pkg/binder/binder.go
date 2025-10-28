@@ -27,10 +27,12 @@ const (
 
 // Request gathers the context required to materialize pods and leases for a Run.
 type Request struct {
-	Run       *v1.Run
-	CoverPlan cover.Plan
-	PackPlan  pack.Plan
-	Now       time.Time
+	Run              *v1.Run
+	CoverPlan        cover.Plan
+	PackPlan         pack.Plan
+	Now              time.Time
+	GroupIndexOffset int
+	LeaseReason      string
 }
 
 // Result contains the Kubernetes objects that should be created.
@@ -72,7 +74,13 @@ func Materialize(req Request) (Result, error) {
 	var leases []v1.Lease
 	run := req.Run
 
+	reason := req.LeaseReason
+	if reason == "" {
+		reason = "Start"
+	}
+
 	for _, group := range req.PackPlan.Groups {
+		actualIndex := group.GroupIndex + req.GroupIndexOffset
 		allocationNodes := flattenAllocations(group.NodePlacements)
 		offset := 0
 		remaining := group.Size
@@ -88,10 +96,10 @@ func Materialize(req Request) (Result, error) {
 			if seg.segment.Borrowed {
 				role = RoleBorrowed
 			}
-			pod := buildPod(run, group, sliceNodes, role)
+			pod := buildPod(run, actualIndex, group, sliceNodes, role)
 			pods = append(pods, pod)
 
-			lease := buildLease(run, group, sliceNodes, seg, req.Now, role)
+			lease := buildLease(run, actualIndex, group, sliceNodes, seg, req.Now, role, reason)
 			leases = append(leases, lease)
 
 			remaining -= take
@@ -116,6 +124,7 @@ func Materialize(req Request) (Result, error) {
 		if group.Spares <= 0 {
 			continue
 		}
+		actualIndex := group.GroupIndex + req.GroupIndexOffset
 		spareNodes := flattenAllocations(group.SparePlacements)
 		if len(spareNodes) == 0 {
 			return Result{}, fmt.Errorf("group %d requested spares but no placements provided", group.GroupIndex)
@@ -133,10 +142,10 @@ func Materialize(req Request) (Result, error) {
 			}
 			sliceNodes := spareNodes[offset : offset+take]
 
-			pod := buildPod(run, group, sliceNodes, RoleSpare)
+			pod := buildPod(run, actualIndex, group, sliceNodes, RoleSpare)
 			pods = append(pods, pod)
 
-			lease := buildLease(run, group, sliceNodes, seg, req.Now, RoleSpare)
+			lease := buildLease(run, actualIndex, group, sliceNodes, seg, req.Now, RoleSpare, reason)
 			leases = append(leases, lease)
 
 			remaining -= take
@@ -197,26 +206,26 @@ type nodeSlot struct {
 	ordinal int
 }
 
-func buildPod(run *v1.Run, group pack.GroupPlacement, slots []nodeSlot, role string) PodManifest {
+func buildPod(run *v1.Run, actualIndex int, group pack.GroupPlacement, slots []nodeSlot, role string) PodManifest {
 	// All slots belong to the same node allocation chunk by construction.
 	nodeName := slots[0].node
 	gpuCount := len(slots)
 	labels := map[string]string{
 		LabelRunName:    run.Name,
-		LabelGroupIndex: fmt.Sprintf("%d", group.GroupIndex),
+		LabelGroupIndex: fmt.Sprintf("%d", actualIndex),
 		LabelRunRole:    role,
 	}
 	suffix := fmt.Sprintf("%s-%s", strings.ToLower(role), nodeName)
 	return PodManifest{
 		Namespace: run.Namespace,
-		Name:      fmt.Sprintf("%s-g%02d-%s", run.Name, group.GroupIndex, suffix),
+		Name:      fmt.Sprintf("%s-g%02d-%s", run.Name, actualIndex, suffix),
 		NodeName:  nodeName,
 		GPUs:      gpuCount,
 		Labels:    labels,
 	}
 }
 
-func buildLease(run *v1.Run, group pack.GroupPlacement, slots []nodeSlot, seg segmentCursor, now time.Time, role string) v1.Lease {
+func buildLease(run *v1.Run, actualIndex int, group pack.GroupPlacement, slots []nodeSlot, seg segmentCursor, now time.Time, role string, reason string) v1.Lease {
 	nodes := make([]string, len(slots))
 	for i, slot := range slots {
 		nodes[i] = fmt.Sprintf("%s#%d", slot.node, slot.ordinal)
@@ -224,13 +233,16 @@ func buildLease(run *v1.Run, group pack.GroupPlacement, slots []nodeSlot, seg se
 	if role == RoleActive && seg.segment.Borrowed {
 		role = RoleBorrowed
 	}
+	if reason == "" {
+		reason = "Start"
+	}
 	lease := v1.Lease{
 		ObjectMeta: v1.ObjectMeta{
 			Namespace: run.Namespace,
-			Name:      fmt.Sprintf("%s-g%02d-%s-%d", run.Name, group.GroupIndex, seg.segment.EnvelopeName, now.UnixNano()),
+			Name:      fmt.Sprintf("%s-g%02d-%s-%d", run.Name, actualIndex, seg.segment.EnvelopeName, now.UnixNano()),
 			Labels: map[string]string{
 				LabelRunName:    run.Name,
-				LabelGroupIndex: fmt.Sprintf("%d", group.GroupIndex),
+				LabelGroupIndex: fmt.Sprintf("%d", actualIndex),
 				LabelRunRole:    role,
 			},
 		},
@@ -248,7 +260,7 @@ func buildLease(run *v1.Run, group pack.GroupPlacement, slots []nodeSlot, seg se
 				Start: v1.NewTime(now),
 			},
 			PaidByEnvelope: seg.segment.EnvelopeName,
-			Reason:         "Start",
+			Reason:         reason,
 		},
 	}
 	return lease

@@ -45,9 +45,10 @@ type RunRuntime struct {
 
 // RunMalleability allows elastic scaling.
 type RunMalleability struct {
-	MinTotalGPUs int32 `json:"minTotalGPUs"`
-	MaxTotalGPUs int32 `json:"maxTotalGPUs"`
-	StepGPUs     int32 `json:"stepGPUs"`
+	MinTotalGPUs     int32  `json:"minTotalGPUs"`
+	MaxTotalGPUs     int32  `json:"maxTotalGPUs"`
+	StepGPUs         int32  `json:"stepGPUs"`
+	DesiredTotalGPUs *int32 `json:"desiredTotalGPUs,omitempty"`
 }
 
 // RunFunding captures borrowing intents.
@@ -59,11 +60,21 @@ type RunFunding struct {
 
 // RunStatus reports lifecycle information.
 type RunStatus struct {
-	Phase              string  `json:"phase,omitempty"`
-	Message            string  `json:"message,omitempty"`
-	Generation         int64   `json:"generation,omitempty"`
-	PendingReservation *string `json:"pendingReservation,omitempty"`
-	EarliestStart      *Time   `json:"earliestStart,omitempty"`
+	Phase              string          `json:"phase,omitempty"`
+	Message            string          `json:"message,omitempty"`
+	Generation         int64           `json:"generation,omitempty"`
+	PendingReservation *string         `json:"pendingReservation,omitempty"`
+	EarliestStart      *Time           `json:"earliestStart,omitempty"`
+	Width              *RunWidthStatus `json:"width,omitempty"`
+}
+
+// RunWidthStatus summarises elastic width bookkeeping.
+type RunWidthStatus struct {
+	Min       int32  `json:"min,omitempty"`
+	Max       int32  `json:"max,omitempty"`
+	Desired   int32  `json:"desired,omitempty"`
+	Allocated int32  `json:"allocated,omitempty"`
+	Pending   string `json:"pending,omitempty"`
 }
 
 // RunList contains a list of Run.
@@ -82,6 +93,10 @@ func (r *Run) Default() {
 	if r.Spec.Locality.AllowCrossGroupSpread == nil {
 		value := true
 		r.Spec.Locality.AllowCrossGroupSpread = &value
+	}
+	if r.Spec.Malleable != nil && r.Spec.Malleable.DesiredTotalGPUs == nil {
+		desired := r.Spec.Malleable.MaxTotalGPUs
+		r.Spec.Malleable.DesiredTotalGPUs = &desired
 	}
 }
 
@@ -125,6 +140,21 @@ func (r *Run) validate() error {
 		}
 		if m.MinTotalGPUs > m.MaxTotalGPUs {
 			return fmt.Errorf("malleable.minTotalGPUs must be <= maxTotalGPUs")
+		}
+		if r.Spec.Resources.TotalGPUs < m.MinTotalGPUs || r.Spec.Resources.TotalGPUs > m.MaxTotalGPUs {
+			return fmt.Errorf("resources.totalGPUs must fall within malleable min/max")
+		}
+		if (r.Spec.Resources.TotalGPUs-m.MinTotalGPUs)%m.StepGPUs != 0 {
+			return fmt.Errorf("resources.totalGPUs must align with malleable.stepGPUs")
+		}
+		if m.DesiredTotalGPUs != nil {
+			desired := *m.DesiredTotalGPUs
+			if desired < m.MinTotalGPUs || desired > m.MaxTotalGPUs {
+				return fmt.Errorf("malleable.desiredTotalGPUs must fall within min/max")
+			}
+			if (desired-m.MinTotalGPUs)%m.StepGPUs != 0 {
+				return fmt.Errorf("malleable.desiredTotalGPUs must align with stepGPUs")
+			}
 		}
 	}
 	if r.Spec.Funding != nil {
@@ -206,6 +236,10 @@ func (in *RunStatus) DeepCopy() *RunStatus {
 		value := in.EarliestStart.DeepCopy()
 		out.EarliestStart = &value
 	}
+	if in.Width != nil {
+		value := *in.Width
+		out.Width = &value
+	}
 	return out
 }
 
@@ -242,6 +276,10 @@ func (in *RunSpec) DeepCopy() *RunSpec {
 	}
 	if in.Malleable != nil {
 		copy := *in.Malleable
+		if in.Malleable.DesiredTotalGPUs != nil {
+			desired := *in.Malleable.DesiredTotalGPUs
+			copy.DesiredTotalGPUs = &desired
+		}
 		out.Malleable = &copy
 	}
 	if in.Funding != nil {
