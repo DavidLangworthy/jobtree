@@ -53,6 +53,11 @@ Introduce the mechanisms that restore feasibility when Reservations activate or 
 - Lottery determinism tests: given seed and conflict set, outcome is reproducible.
 - e2e scenario: Reservation activation causing deficit, resolver executes, affected runs receive preemption events.
 
+## Implementation status (landed in repo)
+- `pkg/resolver` implements spare drops, INCR shrink, and the deterministic lottery, returning actions with reasons and seeds.
+- `controllers/run_controller.go` exposes `ActivateReservations` to run the resolver before binding; leases now carry a `status.closureReason`.
+- Unit tests cover spare/shrink/lottery ordering, and controller tests simulate a full activation that shrinks one run and preempts another.
+
 ## Observability & Telemetry
 - Metrics: `resolver_invocations_total`, `resolver_spares_dropped_total`, `resolver_shrinks_total`, `resolver_lottery_draws_total`.
 - Logs include conflict scope, deficit, seed, and winners.

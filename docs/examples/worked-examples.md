@@ -106,7 +106,8 @@ Unallocated root headroom: 16.
   `MM2(4)` on B (Multimedia borrows 12 from parent).
 - **T1 — `MM3` arrives (64 on B).** Reservation for B at `+20m`; deficit 60 at activation.
 - **T2 — Resolve deficit.** Shrink `RA2` 16 → 0 (frees 16). Lottery ends `MM1(48)`. Activate `MM3(64)`.
-  Ledger shows `Shrink` + `RandomPreempt(seed)`.
+  Ledger shows `Shrink` + `RandomPreempt(seed)` and each affected lease records the closure reason for
+  audit via `status.closureReason`.
 - **T3 — Failure on A.** Swap from spares; opportunistic tenants on spares are reclaimed.
 
 ---

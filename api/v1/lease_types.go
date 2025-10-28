@@ -44,8 +44,9 @@ type LeaseInterval struct {
 
 // LeaseStatus captures closure state.
 type LeaseStatus struct {
-	Closed bool  `json:"closed"`
-	Ended  *Time `json:"ended,omitempty"`
+	Closed        bool   `json:"closed"`
+	Ended         *Time  `json:"ended,omitempty"`
+	ClosureReason string `json:"closureReason,omitempty"`
 }
 
 // LeaseList lists leases.

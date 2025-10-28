@@ -11,6 +11,7 @@ import (
 	"github.com/davidlangworthy/jobtree/pkg/cover"
 	"github.com/davidlangworthy/jobtree/pkg/forecast"
 	"github.com/davidlangworthy/jobtree/pkg/pack"
+	"github.com/davidlangworthy/jobtree/pkg/resolver"
 	"github.com/davidlangworthy/jobtree/pkg/topology"
 )
 
@@ -128,6 +129,156 @@ func (c *RunController) Reconcile(namespace, name string) error {
 	return nil
 }
 
+// ActivateReservations attempts to start any due reservations, invoking the resolver if deficits remain.
+func (c *RunController) ActivateReservations(now time.Time) error {
+	for key, reservation := range c.State.Reservations {
+		if reservation.Status.State != "Pending" && reservation.Status.State != "" {
+			continue
+		}
+		if reservation.Spec.EarliestStart.Time.After(now) {
+			continue
+		}
+		if err := c.activateReservation(key, reservation, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *RunController) activateReservation(key string, reservation *v1.Reservation, now time.Time) error {
+	runKey := namespacedKey(reservation.Spec.RunRef.Namespace, reservation.Spec.RunRef.Name)
+	run, ok := c.State.Runs[runKey]
+	if !ok {
+		return fmt.Errorf("run %s referenced by reservation %s not found", runKey, key)
+	}
+
+	usage := computeUsage(c.State.Leases, now)
+	snapshot, err := topology.BuildSnapshotForFlavor(c.State.Nodes, usage, run.Spec.Resources.GPUType)
+	if err != nil {
+		return err
+	}
+
+	states, err := c.budgetStates(now)
+	if err != nil {
+		return err
+	}
+	inventory, err := c.coverInventoryFromStates(states)
+	if err != nil {
+		return err
+	}
+
+	location := reservation.Spec.IntendedSlice.Domain
+	request := cover.Request{
+		Owner:       run.Spec.Owner,
+		Flavor:      run.Spec.Resources.GPUType,
+		Quantity:    run.Spec.Resources.TotalGPUs,
+		Location:    location,
+		Now:         now,
+		AllowBorrow: run.Spec.Funding != nil && run.Spec.Funding.AllowBorrow,
+	}
+	if run.Spec.Funding != nil {
+		request.Sponsors = append(request.Sponsors, run.Spec.Funding.Sponsors...)
+	}
+
+	plan, err := planPlacement(run, snapshot)
+	var packErr *pack.PlanError
+	if err != nil {
+		if pe, ok := err.(*pack.PlanError); ok {
+			if pe.Reason != pack.FailureReasonInsufficientCapacity {
+				return err
+			}
+			packErr = pe
+		} else {
+			return err
+		}
+	}
+
+	coverPlan, err := inventory.Plan(request)
+	var coverPlanErr *cover.PlanError
+	if err != nil {
+		if ce, ok := err.(*cover.PlanError); ok {
+			if ce.Reason != cover.FailureReasonInsufficientCapacity {
+				return err
+			}
+			coverPlanErr = ce
+		} else {
+			return err
+		}
+	}
+
+	if packErr != nil || coverPlanErr != nil {
+		scope := reservation.Spec.IntendedSlice.Domain
+		if scope == nil {
+			scope = deriveLocation(plan)
+		}
+		deficit := computeDeficit(snapshot, scope, int(run.Spec.Resources.TotalGPUs))
+		if deficit <= 0 {
+			deficit = int(run.Spec.Resources.TotalGPUs)
+		}
+		leases := activeLeasePointers(c.State.Leases)
+		resInput := resolver.Input{
+			Deficit:    deficit,
+			Flavor:     run.Spec.Resources.GPUType,
+			Scope:      scope,
+			SeedSource: reservation.Name,
+			Now:        now,
+			Nodes:      c.State.Nodes,
+			Leases:     leases,
+			Runs:       c.State.Runs,
+		}
+		resolution, err := resolver.Resolve(resInput)
+		if err != nil {
+			return err
+		}
+		c.applyResolution(resolution, now)
+
+		// rebuild snapshot and states after resolution
+		usage = computeUsage(c.State.Leases, now)
+		snapshot, err = topology.BuildSnapshotForFlavor(c.State.Nodes, usage, run.Spec.Resources.GPUType)
+		if err != nil {
+			return err
+		}
+		plan, err = planPlacement(run, snapshot)
+		if err != nil {
+			return err
+		}
+		states, err = c.budgetStates(now)
+		if err != nil {
+			return err
+		}
+		inventory, err = c.coverInventoryFromStates(states)
+		if err != nil {
+			return err
+		}
+		coverPlan, err = inventory.Plan(request)
+		if err != nil {
+			return err
+		}
+	}
+
+	result, err := binder.Materialize(binder.Request{Run: run.DeepCopy(), CoverPlan: coverPlan, PackPlan: plan, Now: now})
+	if err != nil {
+		return err
+	}
+
+	c.State.Pods = append(c.State.Pods, result.Pods...)
+	c.State.Leases = append(c.State.Leases, result.Leases...)
+
+	activated := v1.NewTime(now)
+	reservation.Status.State = "Released"
+	reservation.Status.Reason = "Activated"
+	reservation.Status.ActivatedAt = &activated
+	reservation.Status.ReleasedAt = &activated
+	reservation.Status.CountdownSeconds = nil
+
+	run.Status.Phase = RunPhaseRunning
+	run.Status.Message = fmt.Sprintf("reservation %s activated", reservation.Name)
+	run.Status.PendingReservation = nil
+	run.Status.EarliestStart = nil
+
+	return nil
+}
+
 func (c *RunController) coverInventory(now time.Time) (*cover.Inventory, error) {
 	states, err := c.budgetStates(now)
 	if err != nil {
@@ -228,6 +379,117 @@ func (c *RunController) planReservation(run *v1.Run, snapshot *topology.Snapshot
 	run.Status.PendingReservation = ptrString(reservationName)
 	run.Status.EarliestStart = &earliest
 	return nil
+}
+
+func (c *RunController) applyResolution(result resolver.Result, now time.Time) {
+	if len(result.Actions) == 0 {
+		return
+	}
+	closedGroups := map[string]struct{}{}
+	affectedRuns := map[string]struct{}{}
+	for _, action := range result.Actions {
+		lease := action.Lease
+		if lease == nil || lease.Status.Closed {
+			continue
+		}
+		ended := v1.NewTime(now)
+		lease.Status.Closed = true
+		lease.Status.Ended = &ended
+		lease.Status.ClosureReason = action.Reason
+		runKey := namespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name)
+		affectedRuns[runKey] = struct{}{}
+		if action.GroupIndex != "" {
+			key := runKey + "::" + action.GroupIndex
+			closedGroups[key] = struct{}{}
+		}
+	}
+
+	if len(closedGroups) > 0 {
+		var pods []binder.PodManifest
+		for _, pod := range c.State.Pods {
+			runName := pod.Labels[binder.LabelRunName]
+			group := pod.Labels[binder.LabelGroupIndex]
+			key := namespacedKey(pod.Namespace, runName) + "::" + group
+			if _, ok := closedGroups[key]; ok {
+				continue
+			}
+			pods = append(pods, pod)
+		}
+		c.State.Pods = pods
+	}
+
+	for runKey := range affectedRuns {
+		run := c.State.Runs[runKey]
+		if run == nil {
+			continue
+		}
+		active := activeGPUsForRun(runKey, c.State.Leases)
+		if active == 0 {
+			run.Status.Phase = RunPhaseFailed
+			run.Status.Message = "ended by resolver"
+		} else {
+			run.Status.Phase = RunPhaseRunning
+			run.Status.Message = "shrunk by resolver"
+		}
+	}
+}
+
+func activeLeasePointers(leases []v1.Lease) []*v1.Lease {
+	var result []*v1.Lease
+	for i := range leases {
+		if leases[i].Status.Closed {
+			continue
+		}
+		result = append(result, &leases[i])
+	}
+	return result
+}
+
+func computeDeficit(snapshot *topology.Snapshot, scope map[string]string, requested int) int {
+	if snapshot == nil {
+		return requested
+	}
+	free := totalFreeInScope(snapshot, scope)
+	if free >= requested {
+		return 0
+	}
+	return requested - free
+}
+
+func totalFreeInScope(snapshot *topology.Snapshot, scope map[string]string) int {
+	if len(scope) == 0 {
+		return snapshot.TotalFreeGPUs()
+	}
+	total := 0
+	for _, dom := range snapshot.Domains {
+		if scope[topology.LabelRegion] != "" && dom.Key.Region != scope[topology.LabelRegion] {
+			continue
+		}
+		if scope[topology.LabelCluster] != "" && dom.Key.Cluster != scope[topology.LabelCluster] {
+			continue
+		}
+		if scope[topology.LabelFabricDomain] != "" && dom.Key.Fabric != scope[topology.LabelFabricDomain] {
+			continue
+		}
+		total += dom.FreeGPUs()
+	}
+	return total
+}
+
+func activeGPUsForRun(runKey string, leases []v1.Lease) int {
+	total := 0
+	for i := range leases {
+		lease := leases[i]
+		if lease.Status.Closed {
+			continue
+		}
+		key := namespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name)
+		if key != runKey {
+			continue
+		}
+		total += len(lease.Spec.Slice.Nodes)
+	}
+	return total
 }
 
 func filterLeasesByOwner(all []v1.Lease, owner string) []v1.Lease {

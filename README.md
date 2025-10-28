@@ -23,7 +23,7 @@ The full roadmap lives in [`docs/roadmap/milestones.md`](docs/roadmap/milestones
 - [x] **M2 – Topology discovery & group-aware packing**
 - [x] **M3 – Binder & Leases (runs that can start immediately)**
 - [x] **M4 – Reservations & forecasting**
-- [ ] **M5 – Oversubscription resolver**
+- [x] **M5 – Oversubscription resolver**
 - [ ] **M6 – Failure handling & hot spares**
 - [ ] **M7 – Elastic runs (INCR) & voluntary shrink**
 - [ ] **M8 – Co-funded runs (borrowing)**

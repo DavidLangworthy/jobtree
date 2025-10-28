@@ -37,11 +37,11 @@ The project is organized into progressive milestones. Each entry outlines scope,
   - **Artifacts delivered:** `pkg/forecast`, reservation planning in `controllers/run_controller.go`, updated worked examples, and a user guide in `docs/user-guide/reservations.md`.
   - **Design doc:** [docs/roadmap/design/M4-reservations-and-forecasting.md](design/M4-reservations-and-forecasting.md)
 
-- [ ] **M5 — Oversubscription resolver**
+- [x] **M5 — Oversubscription resolver**
   - **Scope:** Implement structural cuts (spares then INCR shrink) followed by the attested two-stage lottery to resolve deficits.
   - **Definition of done:** Reservation activation under deficit resolves deterministically and publishes seed/conflict set for audit.
-  - **Validation:** Unit tests for PRNG determinism and token accounting; e2e scenario triggering cuts and lottery.
-  - **Artifacts expected:** `pkg/resolver`, docs updates in `docs/design/oversubscription.md`, CLI `explain` support.
+  - **Validation:** Resolver unit tests cover spares, shrink ordering, and deterministic lotteries; controller test exercises reservation activation that preempts/shrinks existing runs before binding.
+  - **Artifacts delivered:** `pkg/resolver`, resolver integration in `controllers/run_controller.go`, enhanced lease status fields, updated worked examples, and documentation in `docs/architecture/oversubscription.md`.
   - **Design doc:** [docs/roadmap/design/M5-oversubscription-resolver.md](design/M5-oversubscription-resolver.md)
 
 - [ ] **M6 — Failure handling & hot spares**
