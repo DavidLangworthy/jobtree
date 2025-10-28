@@ -14,9 +14,22 @@ Kubernetes-native gang scheduling of job forests under time-scoped organizationa
 
 3. Explore the API using the samples in `config/samples/`.
 
-## Milestone status
+## Roadmap snapshot
 
-- ✅ **M0 – Repository bootstrap & CRD shells:** Implemented strongly typed CRD definitions, defaulting/validation logic, and CI that enforces formatting and runs unit tests.
-- ⏳ **M1+ – Budget accounting, placement, binder, reservations, oversubscription, spares, elasticity, co-funding, observability:** Not yet started in this repository snapshot.
+The full roadmap lives in [`docs/roadmap/milestones.md`](docs/roadmap/milestones.md). A quick summary of the current state:
 
-This milestone provides strongly typed CRD definitions, defaulting and validation logic, and continuous integration that enforces formatting and runs unit tests.
+- [x] **M0 – Repository bootstrap & CRD shells**
+- [ ] **M1 – Budget accounting engine**
+- [ ] **M2 – Topology discovery & group-aware packing**
+- [ ] **M3 – Binder & Leases (runs that can start immediately)**
+- [ ] **M4 – Reservations & forecasting**
+- [ ] **M5 – Oversubscription resolver**
+- [ ] **M6 – Failure handling & hot spares**
+- [ ] **M7 – Elastic runs (INCR) & voluntary shrink**
+- [ ] **M8 – Co-funded runs (borrowing)**
+- [ ] **M9 – Observability, CLI polish, packaging**
+- [ ] **M10 – Multi-cluster aggregate caps (stretch)**
+
+## Repository layout (planned)
+
+The long-term directory structure is documented in [`docs/architecture/directory-tree.md`](docs/architecture/directory-tree.md). As milestones land, the repository will grow toward that shape.
