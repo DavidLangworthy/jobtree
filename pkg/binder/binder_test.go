@@ -45,6 +45,9 @@ func TestMaterializeSplitsCoverAcrossAllocations(t *testing.T) {
 	if res.Pods[0].NodeName != "node-a" {
 		t.Fatalf("expected first pod on node-a, got %s", res.Pods[0].NodeName)
 	}
+	if res.Pods[0].Labels[LabelRunRole] != RoleActive {
+		t.Fatalf("expected first pod role active, got %s", res.Pods[0].Labels[LabelRunRole])
+	}
 	if len(res.Leases) != 2 {
 		t.Fatalf("expected 2 leases, got %d", len(res.Leases))
 	}
@@ -87,5 +90,56 @@ func TestMaterializeErrorsWhenSegmentsInsufficient(t *testing.T) {
 	_, err := Materialize(Request{Run: run, PackPlan: packPlan, CoverPlan: coverPlan, Now: time.Unix(0, 0)})
 	if err == nil {
 		t.Fatalf("expected error due to insufficient cover quantity")
+	}
+}
+
+func TestMaterializeIncludesSpares(t *testing.T) {
+	run := &v1.Run{}
+	run.Name = "train"
+	run.Namespace = "default"
+	run.Spec.Owner = "org:ai:rai"
+
+	packPlan := pack.Plan{
+		Flavor:      "H100-80GB",
+		TotalGPUs:   4,
+		TotalSpares: 2,
+		Groups: []pack.GroupPlacement{
+			{
+				GroupIndex: 0,
+				Size:       4,
+				NodePlacements: []pack.NodeAllocation{
+					{Node: "node-a", GPUs: 4},
+				},
+				Spares: 2,
+				SparePlacements: []pack.NodeAllocation{
+					{Node: "node-b", GPUs: 2},
+				},
+			},
+		},
+	}
+
+	coverPlan := cover.Plan{Segments: []cover.Segment{
+		{BudgetName: "rai", EnvelopeName: "core", Owner: "org:ai:rai", Quantity: 4},
+		{BudgetName: "rai", EnvelopeName: "core", Owner: "org:ai:rai", Quantity: 2},
+	}}
+
+	res, err := Materialize(Request{Run: run, PackPlan: packPlan, CoverPlan: coverPlan, Now: time.Unix(0, 0)})
+	if err != nil {
+		t.Fatalf("materialize failed: %v", err)
+	}
+	if len(res.Pods) != 2 {
+		t.Fatalf("expected 2 pods (active + spare), got %d", len(res.Pods))
+	}
+	if res.Pods[1].Labels[LabelRunRole] != RoleSpare {
+		t.Fatalf("expected spare pod role, got %s", res.Pods[1].Labels[LabelRunRole])
+	}
+	if len(res.Leases) != 2 {
+		t.Fatalf("expected 2 leases, got %d", len(res.Leases))
+	}
+	if res.Leases[1].Spec.Slice.Role != RoleSpare {
+		t.Fatalf("expected spare lease role, got %s", res.Leases[1].Spec.Slice.Role)
+	}
+	if len(res.Leases[1].Spec.Slice.Nodes) != 2 {
+		t.Fatalf("expected 2 GPUs for spare lease, got %d", len(res.Leases[1].Spec.Slice.Nodes))
 	}
 }

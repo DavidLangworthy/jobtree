@@ -50,6 +50,17 @@ Enable resilient execution by provisioning per-group spares, running opportunist
 - Envtest simulation of node failure events leading to swap.
 - e2e scenario: Run with spares + opportunistic filler → inject node failure → verify active workload continues, filler preempted, leases updated.
 
+## Implementation Notes (Completed)
+- Pack planner now allocates `sparesPerGroup` alongside active placements and exposes `TotalSpares` so the cover planner can fund them explicitly.
+- Binder emits spare pods and leases (role = `Spare`) with labels that allow later reconciliation and ledger accounting.
+- Budget usage tracks spare concurrency/GPU-hours to support future discounting policy.
+- Run controller provisions spare leases during admission, synthesises reservations with spare capacity, and exposes `HandleNodeFailure` to perform deterministic swaps that:
+  - close the failed lease with reason `NodeFailure`,
+  - reclaim opportunistic borrowers with `ReclaimedBySpare`,
+  - close the spare lease with reason `Swap`, and
+  - mint a new active lease on the spare nodes while refreshing pod manifests.
+- Controller tests cover the swap path, ensuring borrowed work is reclaimed and status messaging remains accurate.
+
 ## Observability & Telemetry
 - Metrics: `spares_allocated_total`, `spares_active`, `spares_swaps_total`, `filler_preemptions_total`.
 - Logs capture node failures, swap decisions, and filler eviction reasoning.

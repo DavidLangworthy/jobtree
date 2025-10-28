@@ -94,10 +94,12 @@ func (c *RunController) Reconcile(namespace, name string) error {
 	}
 
 	location := deriveLocation(packPlan)
+	spareTotal := expectedSpareTotal(run, &packPlan)
+	quantity := run.Spec.Resources.TotalGPUs + spareTotal
 	request := cover.Request{
 		Owner:       run.Spec.Owner,
 		Flavor:      run.Spec.Resources.GPUType,
-		Quantity:    run.Spec.Resources.TotalGPUs,
+		Quantity:    quantity,
 		Location:    location,
 		Now:         now,
 		AllowBorrow: run.Spec.Funding != nil && run.Spec.Funding.AllowBorrow,
@@ -193,6 +195,8 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 		}
 	}
 
+	spareTotal := expectedSpareTotal(run, &plan)
+	request.Quantity = run.Spec.Resources.TotalGPUs + spareTotal
 	coverPlan, err := inventory.Plan(request)
 	var coverPlanErr *cover.PlanError
 	if err != nil {
@@ -211,9 +215,10 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 		if scope == nil {
 			scope = deriveLocation(plan)
 		}
-		deficit := computeDeficit(snapshot, scope, int(run.Spec.Resources.TotalGPUs))
+		totalNeeded := int(run.Spec.Resources.TotalGPUs + spareTotal)
+		deficit := computeDeficit(snapshot, scope, totalNeeded)
 		if deficit <= 0 {
-			deficit = int(run.Spec.Resources.TotalGPUs)
+			deficit = totalNeeded
 		}
 		leases := activeLeasePointers(c.State.Leases)
 		resInput := resolver.Input{
@@ -250,6 +255,8 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 		if err != nil {
 			return err
 		}
+		spareTotal = expectedSpareTotal(run, &plan)
+		request.Quantity = run.Spec.Resources.TotalGPUs + spareTotal
 		coverPlan, err = inventory.Plan(request)
 		if err != nil {
 			return err
@@ -276,6 +283,67 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 	run.Status.PendingReservation = nil
 	run.Status.EarliestStart = nil
 
+	return nil
+}
+
+// HandleNodeFailure performs a spare swap when a node fails.
+func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error {
+	if now.IsZero() {
+		now = c.Clock.Now()
+	}
+	handled := false
+	for i := range c.State.Leases {
+		lease := &c.State.Leases[i]
+		if lease.Status.Closed {
+			continue
+		}
+		if lease.Spec.Slice.Role == binder.RoleSpare {
+			continue
+		}
+		if !leaseContainsNode(lease, nodeName) {
+			continue
+		}
+		handled = true
+		runKey := namespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name)
+		run := c.State.Runs[runKey]
+		groupIndex := lease.Labels[binder.LabelGroupIndex]
+		if run == nil {
+			closeLease(lease, "NodeFailure", now)
+			continue
+		}
+		spareLease, spareIdx := findSpareLease(c.State.Leases, runKey, groupIndex)
+		if spareLease == nil {
+			closeLease(lease, "NodeFailure", now)
+			run.Status.Phase = RunPhaseFailed
+			run.Status.Message = fmt.Sprintf("node %s failed without spare coverage", nodeName)
+			continue
+		}
+		spareNodes := leaseNodeNames(spareLease)
+		spareSet := buildNodeSet(spareNodes)
+		for j := range c.State.Leases {
+			if j == spareIdx || j == i {
+				continue
+			}
+			other := &c.State.Leases[j]
+			if other.Status.Closed {
+				continue
+			}
+			if !leasesOverlap(other, spareSet) {
+				continue
+			}
+			closeLease(other, "ReclaimedBySpare", now)
+		}
+		closeLease(spareLease, "Swap", now)
+		closeLease(lease, "NodeFailure", now)
+		newLease := createSwapLease(run, groupIndex, spareLease, now)
+		c.State.Leases = append(c.State.Leases, newLease)
+		c.updatePodsAfterSwap(run, groupIndex, nodeName, spareSet)
+		run.Status.Phase = RunPhaseRunning
+		run.Status.Message = fmt.Sprintf("group %s swapped to spare after node %s failure", groupIndex, nodeName)
+	}
+	if !handled {
+		return fmt.Errorf("no active lease found on node %s", nodeName)
+	}
 	return nil
 }
 
@@ -321,6 +389,8 @@ func (c *RunController) planReservation(run *v1.Run, snapshot *topology.Snapshot
 		copy := *packPlan
 		planPtr = &copy
 	}
+	spareTotal := expectedSpareTotal(run, planPtr)
+	request.Quantity = run.Spec.Resources.TotalGPUs + spareTotal
 	forecastResult, err := forecast.Plan(forecast.Input{
 		Run:          run,
 		Now:          now,
@@ -536,11 +606,16 @@ func planPlacement(run *v1.Run, snapshot *topology.Snapshot) (pack.Plan, error) 
 		value := int(*run.Spec.Locality.GroupGPUs)
 		groupSize = &value
 	}
+	spares := 0
+	if run.Spec.Spares != nil {
+		spares = int(*run.Spec.Spares)
+	}
 	req := pack.Request{
 		Flavor:                run.Spec.Resources.GPUType,
 		TotalGPUs:             int(run.Spec.Resources.TotalGPUs),
 		GroupGPUs:             groupSize,
 		AllowCrossGroupSpread: allowSpread,
+		SparesPerGroup:        spares,
 	}
 	return pack.Planner(snapshot, req)
 }
@@ -555,4 +630,161 @@ func deriveLocation(plan pack.Plan) map[string]string {
 		topology.LabelCluster:      first.Cluster,
 		topology.LabelFabricDomain: first.Fabric,
 	}
+}
+
+func expectedSpareTotal(run *v1.Run, plan *pack.Plan) int32 {
+	if plan != nil {
+		return int32(plan.TotalSpares)
+	}
+	if run.Spec.Spares == nil || *run.Spec.Spares <= 0 {
+		return 0
+	}
+	spares := *run.Spec.Spares
+	groups := int32(1)
+	if run.Spec.Locality != nil && run.Spec.Locality.GroupGPUs != nil && *run.Spec.Locality.GroupGPUs > 0 {
+		groupSize := *run.Spec.Locality.GroupGPUs
+		if groupSize > 0 {
+			total := run.Spec.Resources.TotalGPUs
+			groups = (total + groupSize - 1) / groupSize
+		}
+	}
+	return spares * groups
+}
+
+func leaseContainsNode(lease *v1.Lease, node string) bool {
+	for _, slot := range lease.Spec.Slice.Nodes {
+		if nodeFromSlot(slot) == node {
+			return true
+		}
+	}
+	return false
+}
+
+func findSpareLease(leases []v1.Lease, runKey, group string) (*v1.Lease, int) {
+	for idx := range leases {
+		lease := &leases[idx]
+		if lease.Status.Closed {
+			continue
+		}
+		if lease.Spec.Slice.Role != binder.RoleSpare {
+			continue
+		}
+		if namespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
+			continue
+		}
+		if lease.Labels[binder.LabelGroupIndex] != group {
+			continue
+		}
+		return lease, idx
+	}
+	return nil, -1
+}
+
+func leaseNodeNames(lease *v1.Lease) []string {
+	result := make([]string, len(lease.Spec.Slice.Nodes))
+	for i, slot := range lease.Spec.Slice.Nodes {
+		result[i] = nodeFromSlot(slot)
+	}
+	return result
+}
+
+func buildNodeSet(nodes []string) map[string]int {
+	counts := make(map[string]int, len(nodes))
+	for _, node := range nodes {
+		counts[node]++
+	}
+	return counts
+}
+
+func leasesOverlap(lease *v1.Lease, nodes map[string]int) bool {
+	for _, slot := range lease.Spec.Slice.Nodes {
+		if _, ok := nodes[nodeFromSlot(slot)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func closeLease(lease *v1.Lease, reason string, now time.Time) {
+	if lease.Status.Closed {
+		return
+	}
+	lease.Status.Closed = true
+	ended := v1.NewTime(now)
+	lease.Status.Ended = &ended
+	lease.Status.ClosureReason = reason
+}
+
+func createSwapLease(run *v1.Run, group string, spare *v1.Lease, now time.Time) v1.Lease {
+	nodes := append([]string{}, spare.Spec.Slice.Nodes...)
+	labels := map[string]string{
+		binder.LabelRunName:    run.Name,
+		binder.LabelGroupIndex: group,
+		binder.LabelRunRole:    binder.RoleActive,
+	}
+	return v1.Lease{
+		ObjectMeta: v1.ObjectMeta{
+			Namespace: run.Namespace,
+			Name:      fmt.Sprintf("%s-g%s-swap-%d", run.Name, group, now.UnixNano()),
+			Labels:    labels,
+		},
+		Spec: v1.LeaseSpec{
+			Owner: run.Spec.Owner,
+			RunRef: v1.RunReference{
+				Name:      run.Name,
+				Namespace: run.Namespace,
+			},
+			Slice: v1.LeaseSlice{
+				Nodes: nodes,
+				Role:  binder.RoleActive,
+			},
+			Interval:       v1.LeaseInterval{Start: v1.NewTime(now)},
+			PaidByEnvelope: spare.Spec.PaidByEnvelope,
+			Reason:         "Swap",
+		},
+	}
+}
+
+func (c *RunController) updatePodsAfterSwap(run *v1.Run, group, failedNode string, spareNodes map[string]int) {
+	var pods []binder.PodManifest
+	for _, pod := range c.State.Pods {
+		runName := pod.Labels[binder.LabelRunName]
+		groupIndex := pod.Labels[binder.LabelGroupIndex]
+		role := pod.Labels[binder.LabelRunRole]
+		if runName == run.Name && groupIndex == group {
+			if pod.NodeName == failedNode {
+				continue
+			}
+			if _, ok := spareNodes[pod.NodeName]; ok {
+				continue
+			}
+		}
+		if _, ok := spareNodes[pod.NodeName]; ok && role != binder.RoleActive {
+			continue
+		}
+		pods = append(pods, pod)
+	}
+	c.State.Pods = pods
+	for node, count := range spareNodes {
+		labels := map[string]string{
+			binder.LabelRunName:    run.Name,
+			binder.LabelGroupIndex: group,
+			binder.LabelRunRole:    binder.RoleActive,
+		}
+		podName := fmt.Sprintf("%s-g%s-swap-%s", run.Name, group, node)
+		c.State.Pods = append(c.State.Pods, binder.PodManifest{
+			Namespace: run.Namespace,
+			Name:      podName,
+			NodeName:  node,
+			GPUs:      count,
+			Labels:    labels,
+		})
+	}
+}
+
+func nodeFromSlot(slot string) string {
+	if idx := strings.IndexRune(slot, '#'); idx >= 0 {
+		return slot[:idx]
+	}
+	return slot
 }

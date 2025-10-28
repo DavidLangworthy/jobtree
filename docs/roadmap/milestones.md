@@ -44,7 +44,7 @@ The project is organized into progressive milestones. Each entry outlines scope,
   - **Artifacts delivered:** `pkg/resolver`, resolver integration in `controllers/run_controller.go`, enhanced lease status fields, updated worked examples, and documentation in `docs/architecture/oversubscription.md`.
   - **Design doc:** [docs/roadmap/design/M5-oversubscription-resolver.md](design/M5-oversubscription-resolver.md)
 
-- [ ] **M6 — Failure handling & hot spares**
+- [x] **M6 — Failure handling & hot spares**
   - **Scope:** Support per-group spares, opportunistic filler workloads, and deterministic spare swaps on node failure.
   - **Definition of done:** Runs configured with spares survive node failures without losing world-size; opportunistic tenants are reclaimed cleanly.
   - **Validation:** e2e failure injection tests; unit tests around spare accounting.

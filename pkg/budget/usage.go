@@ -13,6 +13,8 @@ type Usage struct {
 	GPUHours            float64
 	BorrowedConcurrency int32
 	BorrowedGPUHours    float64
+	SpareConcurrency    int32
+	SpareGPUHours       float64
 }
 
 // Headroom expresses the remaining capacity for an envelope or aggregate cap.
@@ -71,6 +73,10 @@ func BuildBudgetState(budget *v1.Budget, leases []v1.Lease, now time.Time) *Budg
 			envState.Usage.BorrowedConcurrency += usage.Concurrency
 			envState.Usage.BorrowedGPUHours += usage.GPUHours
 		}
+		if lease.Spec.Slice.Role == "Spare" {
+			envState.Usage.SpareConcurrency += usage.SpareConcurrency
+			envState.Usage.SpareGPUHours += usage.SpareGPUHours
+		}
 	}
 
 	aggregates := make(map[string]*AggregateState)
@@ -88,6 +94,8 @@ func BuildBudgetState(budget *v1.Budget, leases []v1.Lease, now time.Time) *Budg
 			agg := aggregates[cap.Name]
 			agg.Usage.Concurrency += envState.Usage.Concurrency
 			agg.Usage.GPUHours += envState.Usage.GPUHours
+			agg.Usage.SpareConcurrency += envState.Usage.SpareConcurrency
+			agg.Usage.SpareGPUHours += envState.Usage.SpareGPUHours
 			envState.Aggregates = append(envState.Aggregates, agg)
 		}
 	}
@@ -125,6 +133,10 @@ func computeLeaseUsage(lease *v1.Lease, now time.Time) Usage {
 	}
 	if isActive(lease, now) {
 		usage.Concurrency = quantity
+	}
+	if lease.Spec.Slice.Role == "Spare" {
+		usage.SpareConcurrency = quantity
+		usage.SpareGPUHours = usage.GPUHours
 	}
 	return usage
 }

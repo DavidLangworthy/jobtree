@@ -13,6 +13,7 @@ type Request struct {
 	TotalGPUs             int
 	GroupGPUs             *int
 	AllowCrossGroupSpread bool
+	SparesPerGroup        int
 }
 
 // FailureReason explains why planning failed.
@@ -40,18 +41,21 @@ type NodeAllocation struct {
 
 // GroupPlacement captures where a logical group of GPUs will run.
 type GroupPlacement struct {
-	GroupIndex     int
-	Size           int
-	Domain         topology.DomainKey
-	NodePlacements []NodeAllocation
+	GroupIndex      int
+	Size            int
+	Domain          topology.DomainKey
+	NodePlacements  []NodeAllocation
+	Spares          int
+	SparePlacements []NodeAllocation
 }
 
 // Plan is the outcome of a packing request.
 type Plan struct {
-	Flavor    string
-	TotalGPUs int
-	Groups    []GroupPlacement
-	Residual  map[topology.DomainKey]int
+	Flavor      string
+	TotalGPUs   int
+	Groups      []GroupPlacement
+	Residual    map[topology.DomainKey]int
+	TotalSpares int
 }
 
 // Planner chooses placements for run groups on available topology.
@@ -105,11 +109,12 @@ func planSingleDomain(snapshot *topology.Snapshot, req Request) (Plan, error) {
 			NodePlacements: allocs,
 		})
 	}
-	residual := map[topology.DomainKey]int{}
-	for _, dom := range snapshot.Domains {
-		residual[dom.Key] = dom.FreeGPUs()
+	totalSpares, err := assignSpares(snapshot, placements, req.SparesPerGroup)
+	if err != nil {
+		return Plan{}, err
 	}
-	return Plan{Flavor: req.Flavor, TotalGPUs: req.TotalGPUs, Groups: placements, Residual: residual}, nil
+	residual := computeResidual(snapshot)
+	return Plan{Flavor: req.Flavor, TotalGPUs: req.TotalGPUs, Groups: placements, Residual: residual, TotalSpares: totalSpares}, nil
 }
 
 func planWithGroups(snapshot *topology.Snapshot, req Request) (Plan, error) {
@@ -137,11 +142,12 @@ func planWithGroups(snapshot *topology.Snapshot, req Request) (Plan, error) {
 			NodePlacements: allocs,
 		})
 	}
-	residual := make(map[topology.DomainKey]int)
-	for _, dom := range snapshot.Domains {
-		residual[dom.Key] = dom.FreeGPUs()
+	totalSpares, err := assignSpares(snapshot, placements, req.SparesPerGroup)
+	if err != nil {
+		return Plan{}, err
 	}
-	return Plan{Flavor: req.Flavor, TotalGPUs: req.TotalGPUs, Groups: placements, Residual: residual}, nil
+	residual := computeResidual(snapshot)
+	return Plan{Flavor: req.Flavor, TotalGPUs: req.TotalGPUs, Groups: placements, Residual: residual, TotalSpares: totalSpares}, nil
 }
 
 func planFillDomains(snapshot *topology.Snapshot, req Request) (Plan, error) {
@@ -177,11 +183,82 @@ func planFillDomains(snapshot *topology.Snapshot, req Request) (Plan, error) {
 		remaining -= assign
 		groupIndex++
 	}
+	totalSpares, err := assignSpares(snapshot, placements, req.SparesPerGroup)
+	if err != nil {
+		return Plan{}, err
+	}
+	residual := computeResidual(snapshot)
+	return Plan{Flavor: req.Flavor, TotalGPUs: req.TotalGPUs, Groups: placements, Residual: residual, TotalSpares: totalSpares}, nil
+}
+
+func assignSpares(snapshot *topology.Snapshot, placements []GroupPlacement, sparesPerGroup int) (int, error) {
+	if sparesPerGroup <= 0 {
+		return 0, nil
+	}
+	total := 0
+	for i := range placements {
+		remaining := sparesPerGroup
+		var spareAllocs []NodeAllocation
+		tried := map[topology.DomainKey]struct{}{}
+		if dom, ok := snapshot.DomainByKey(placements[i].Domain); ok {
+			tried[dom.Key] = struct{}{}
+			take := minInt(remaining, dom.FreeGPUs())
+			if take > 0 {
+				allocs, err := allocateInDomain(dom, take)
+				if err != nil {
+					return 0, err
+				}
+				spareAllocs = append(spareAllocs, allocs...)
+				remaining -= take
+			}
+		}
+		for remaining > 0 {
+			dom := chooseDomainForSpare(snapshot, tried)
+			if dom == nil {
+				return 0, &PlanError{Reason: FailureReasonInsufficientCapacity, Msg: "insufficient capacity for spares"}
+			}
+			tried[dom.Key] = struct{}{}
+			take := minInt(remaining, dom.FreeGPUs())
+			if take == 0 {
+				continue
+			}
+			allocs, err := allocateInDomain(dom, take)
+			if err != nil {
+				return 0, err
+			}
+			spareAllocs = append(spareAllocs, allocs...)
+			remaining -= take
+		}
+		if remaining > 0 {
+			return 0, &PlanError{Reason: FailureReasonInsufficientCapacity, Msg: "unable to satisfy spare request"}
+		}
+		placements[i].Spares = sparesPerGroup
+		placements[i].SparePlacements = spareAllocs
+		total += sparesPerGroup
+	}
+	return total, nil
+}
+
+func chooseDomainForSpare(snapshot *topology.Snapshot, tried map[topology.DomainKey]struct{}) *topology.Domain {
+	sorted := snapshot.SortedDomains()
+	for _, dom := range sorted {
+		if _, seen := tried[dom.Key]; seen {
+			continue
+		}
+		if dom.FreeGPUs() <= 0 {
+			continue
+		}
+		return dom
+	}
+	return nil
+}
+
+func computeResidual(snapshot *topology.Snapshot) map[topology.DomainKey]int {
 	residual := make(map[topology.DomainKey]int)
 	for _, dom := range snapshot.Domains {
 		residual[dom.Key] = dom.FreeGPUs()
 	}
-	return Plan{Flavor: req.Flavor, TotalGPUs: req.TotalGPUs, Groups: placements, Residual: residual}, nil
+	return residual
 }
 
 func chooseDomainForGroup(domains []*topology.Domain, usage map[*topology.Domain]int, size int) *topology.Domain {
@@ -270,4 +347,11 @@ func deriveGroups(total int, groupSizePtr *int) []int {
 		remaining -= size
 	}
 	return groups
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

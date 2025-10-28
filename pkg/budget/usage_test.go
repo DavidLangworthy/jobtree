@@ -67,6 +67,13 @@ func TestBuildBudgetState(t *testing.T) {
 			Slice:          v1.LeaseSlice{Nodes: []string{"n7"}},
 			Interval:       v1.LeaseInterval{Start: start},
 		},
+	}, {
+		Spec: v1.LeaseSpec{
+			Owner:          "org:a",
+			PaidByEnvelope: "env-a",
+			Slice:          v1.LeaseSlice{Nodes: []string{"n8"}, Role: "Spare"},
+			Interval:       v1.LeaseInterval{Start: start},
+		},
 	}}
 
 	state := BuildBudgetState(budget, leases, now)
@@ -74,12 +81,18 @@ func TestBuildBudgetState(t *testing.T) {
 		t.Fatalf("expected 1 envelope, got %d", len(state.Envelopes))
 	}
 	env := state.Envelopes["env-a"]
-	if env.Usage.Concurrency != 3 {
-		t.Fatalf("expected concurrency 3, got %d", env.Usage.Concurrency)
+	if env.Usage.Concurrency != 4 {
+		t.Fatalf("expected concurrency 4, got %d", env.Usage.Concurrency)
 	}
-	expectedHours := float64(3*2 + 2*1)
+	expectedHours := float64(3*2 + 2*1 + 1*2)
 	if diff := env.Usage.GPUHours - expectedHours; diff > 1e-6 || diff < -1e-6 {
 		t.Fatalf("expected gpu hours %.2f, got %.2f", expectedHours, env.Usage.GPUHours)
+	}
+	if env.Usage.SpareConcurrency != 1 {
+		t.Fatalf("expected spare concurrency 1, got %d", env.Usage.SpareConcurrency)
+	}
+	if env.Usage.SpareGPUHours <= 0 {
+		t.Fatalf("expected spare gpu hours to be positive")
 	}
 	agg := state.Aggregates["agg"]
 	if agg.Usage.Concurrency != env.Usage.Concurrency {
@@ -132,5 +145,8 @@ func TestBuildBudgetStateCountsBorrowedUsage(t *testing.T) {
 	}
 	if env.Usage.BorrowedGPUHours <= 0 {
 		t.Fatalf("expected borrowed gpu hours to be positive")
+	}
+	if env.Usage.SpareConcurrency != 0 {
+		t.Fatalf("expected no spare concurrency for borrowed lease")
 	}
 }

@@ -117,6 +117,58 @@ func TestPlanWorkedExampleShard(t *testing.T) {
 	}
 }
 
+func TestPlanAllocatesSparesInSameDomain(t *testing.T) {
+	snapshot := buildSnapshot(t, []topology.SourceNode{
+		fakeNode("a1", "us-west", "gpu-a", "A", 32),
+		fakeNode("a2", "us-west", "gpu-a", "A", 8),
+	}, nil)
+
+	plan, err := Planner(snapshot, Request{Flavor: "H100-80GB", TotalGPUs: 32, GroupGPUs: intPtr(32), AllowCrossGroupSpread: true, SparesPerGroup: 4})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if plan.TotalSpares != 4 {
+		t.Fatalf("expected 4 total spares, got %d", plan.TotalSpares)
+	}
+	if len(plan.Groups) != 1 {
+		t.Fatalf("expected single group, got %d", len(plan.Groups))
+	}
+	if len(plan.Groups[0].SparePlacements) != 1 || plan.Groups[0].SparePlacements[0].Node != "a2" {
+		t.Fatalf("expected spare on node a2, got %+v", plan.Groups[0].SparePlacements)
+	}
+	if plan.Groups[0].SparePlacements[0].GPUs != 4 {
+		t.Fatalf("expected 4 GPUs allocated as spare, got %d", plan.Groups[0].SparePlacements[0].GPUs)
+	}
+}
+
+func TestPlanAllocatesSparesFallback(t *testing.T) {
+	snapshot := buildSnapshot(t, []topology.SourceNode{
+		fakeNode("a1", "us-west", "gpu-a", "A", 32),
+		fakeNode("a2", "us-west", "gpu-a", "A", 2),
+		fakeNode("b1", "us-west", "gpu-a", "B", 8),
+	}, nil)
+
+	plan, err := Planner(snapshot, Request{Flavor: "H100-80GB", TotalGPUs: 32, GroupGPUs: intPtr(32), AllowCrossGroupSpread: true, SparesPerGroup: 4})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if plan.TotalSpares != 4 {
+		t.Fatalf("expected 4 total spares, got %d", plan.TotalSpares)
+	}
+	if len(plan.Groups[0].SparePlacements) != 2 {
+		t.Fatalf("expected spare placements across domains, got %d", len(plan.Groups[0].SparePlacements))
+	}
+	fallbackFound := false
+	for _, alloc := range plan.Groups[0].SparePlacements {
+		if alloc.Node == "b1" {
+			fallbackFound = true
+		}
+	}
+	if !fallbackFound {
+		t.Fatalf("expected spare fallback onto domain B, got %+v", plan.Groups[0].SparePlacements)
+	}
+}
+
 func buildSnapshot(t *testing.T, nodes []topology.SourceNode, usage map[string]int) *topology.Snapshot {
 	t.Helper()
 	snapshot, err := topology.BuildSnapshotForFlavor(nodes, usage, "H100-80GB")

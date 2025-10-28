@@ -6,6 +6,7 @@ import (
 	"time"
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
+	"github.com/davidlangworthy/jobtree/pkg/binder"
 	"github.com/davidlangworthy/jobtree/pkg/forecast"
 	"github.com/davidlangworthy/jobtree/pkg/topology"
 )
@@ -316,6 +317,114 @@ func TestActivateReservationRunsResolver(t *testing.T) {
 
 	if reservation.Status.State != "Released" {
 		t.Fatalf("expected reservation released, got %s", reservation.Status.State)
+	}
+}
+
+func TestHandleNodeFailureSwapsToSpare(t *testing.T) {
+	now := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+	state := &ClusterState{
+		Budgets: []v1.Budget{{
+			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			Spec: v1.BudgetSpec{
+				Owner: "org:ai:team",
+				Envelopes: []v1.BudgetEnvelope{{
+					Name:        "west",
+					Flavor:      "H100-80GB",
+					Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
+					Concurrency: 8,
+				}},
+			},
+		}},
+		Nodes: []topology.SourceNode{
+			{Name: "node-a", GPUs: 4, Labels: map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a", topology.LabelGPUFlavor: "H100-80GB"}},
+			{Name: "node-b", GPUs: 4, Labels: map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a", topology.LabelGPUFlavor: "H100-80GB"}},
+		},
+	}
+	state.Runs = map[string]*v1.Run{
+		"default/run": {
+			ObjectMeta: v1.ObjectMeta{Name: "run", Namespace: "default"},
+			Spec: v1.RunSpec{
+				Owner:     "org:ai:team",
+				Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
+				Locality:  &v1.RunLocality{GroupGPUs: int32Ptr(4)},
+				Spares:    int32Ptr(2),
+			},
+		},
+	}
+
+	controller := NewRunController(state, runClock{now: now})
+	if err := controller.Reconcile("default", "run"); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	var spareLease *v1.Lease
+	for i := range state.Leases {
+		if state.Leases[i].Spec.Slice.Role == binder.RoleSpare {
+			spareLease = &state.Leases[i]
+			break
+		}
+	}
+	if spareLease == nil {
+		t.Fatalf("expected spare lease to be created")
+	}
+
+	fillerLease := v1.Lease{
+		ObjectMeta: v1.ObjectMeta{Name: "filler"},
+		Spec: v1.LeaseSpec{
+			Owner:          "org:ai:other",
+			RunRef:         v1.RunReference{Name: "filler", Namespace: "default"},
+			Slice:          v1.LeaseSlice{Nodes: append([]string{}, spareLease.Spec.Slice.Nodes...), Role: binder.RoleBorrowed},
+			Interval:       v1.LeaseInterval{Start: v1.NewTime(now)},
+			PaidByEnvelope: "west",
+			Reason:         "Start",
+		},
+	}
+	state.Leases = append(state.Leases, fillerLease)
+	state.Pods = append(state.Pods, binder.PodManifest{
+		Namespace: "default",
+		Name:      "filler",
+		NodeName:  nodeFromSlot(spareLease.Spec.Slice.Nodes[0]),
+		GPUs:      len(spareLease.Spec.Slice.Nodes),
+		Labels: map[string]string{
+			binder.LabelRunName:    "filler",
+			binder.LabelGroupIndex: "0",
+			binder.LabelRunRole:    binder.RoleBorrowed,
+		},
+	})
+
+	failTime := now.Add(5 * time.Minute)
+	controller.Clock = runClock{now: failTime}
+	if err := controller.HandleNodeFailure("node-a", failTime); err != nil {
+		t.Fatalf("handle node failure failed: %v", err)
+	}
+
+	run := state.Runs["default/run"]
+	if run.Status.Phase != RunPhaseRunning {
+		t.Fatalf("expected run to remain running, got %s", run.Status.Phase)
+	}
+	if !strings.Contains(run.Status.Message, "swapped") {
+		t.Fatalf("expected swap message, got %s", run.Status.Message)
+	}
+
+	var activeOnSpare *v1.Lease
+	fillerClosed := false
+	for i := range state.Leases {
+		lease := state.Leases[i]
+		if lease.Spec.RunRef.Name == "run" && lease.Spec.Slice.Role == binder.RoleActive && !lease.Status.Closed && lease.Spec.Interval.Start.Time.Equal(failTime) {
+			activeOnSpare = &lease
+		}
+		if lease.Spec.RunRef.Name == "filler" && lease.Status.ClosureReason == "ReclaimedBySpare" {
+			fillerClosed = true
+		}
+	}
+	if activeOnSpare == nil {
+		t.Fatalf("expected new active lease on spare nodes")
+	}
+	if !fillerClosed {
+		t.Fatalf("expected filler lease reclaimed by spare")
+	}
+	if len(state.Pods) == 0 || state.Pods[len(state.Pods)-1].NodeName != nodeFromSlot(spareLease.Spec.Slice.Nodes[0]) {
+		t.Fatalf("expected new pod on spare node, got %+v", state.Pods)
 	}
 }
 

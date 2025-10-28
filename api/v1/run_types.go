@@ -23,6 +23,7 @@ type RunSpec struct {
 	Runtime   *RunRuntime      `json:"runtime,omitempty"`
 	Malleable *RunMalleability `json:"malleable,omitempty"`
 	Funding   *RunFunding      `json:"funding,omitempty"`
+	Spares    *int32           `json:"sparesPerGroup,omitempty"`
 }
 
 // RunResources describes GPU requirements.
@@ -129,6 +130,11 @@ func (r *Run) validate() error {
 	if r.Spec.Funding != nil {
 		if err := r.Spec.Funding.Validate(); err != nil {
 			return err
+		}
+	}
+	if r.Spec.Spares != nil {
+		if *r.Spec.Spares < 0 {
+			return fmt.Errorf("sparesPerGroup must be >= 0 when set")
 		}
 	}
 	return nil
@@ -240,6 +246,10 @@ func (in *RunSpec) DeepCopy() *RunSpec {
 	}
 	if in.Funding != nil {
 		out.Funding = in.Funding.DeepCopy()
+	}
+	if in.Spares != nil {
+		value := *in.Spares
+		out.Spares = &value
 	}
 	return out
 }

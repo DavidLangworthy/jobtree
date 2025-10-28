@@ -129,6 +129,7 @@ Unallocated root headroom: 16.
   - end `J2` shards with `reason=ReclaimedBySpare`
   - start `J1` active Leases on those spare nodes
   - cordon failed node
+  - controller reports `group 0 swapped to spare after node failure`; spare lease closes with `reason=Swap`
 
 Training continues without resharding; ledger shows deterministic Start/End/Swap ordering.
 

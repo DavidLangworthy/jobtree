@@ -2,6 +2,7 @@ package binder
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
@@ -14,6 +15,14 @@ const (
 	LabelRunName = "rq.davidlangworthy.io/run"
 	// LabelGroupIndex marks the logical group index.
 	LabelGroupIndex = "rq.davidlangworthy.io/group-index"
+	// LabelRunRole marks whether a pod is active, borrowed, or spare.
+	LabelRunRole = "rq.davidlangworthy.io/role"
+)
+
+const (
+	RoleActive   = "Active"
+	RoleBorrowed = "Borrowed"
+	RoleSpare    = "Spare"
 )
 
 // Request gathers the context required to materialize pods and leases for a Run.
@@ -75,10 +84,14 @@ func Materialize(req Request) (Result, error) {
 			}
 			sliceNodes := allocationNodes[offset : offset+take]
 
-			pod := buildPod(run, group, sliceNodes)
+			role := RoleActive
+			if seg.segment.Borrowed {
+				role = RoleBorrowed
+			}
+			pod := buildPod(run, group, sliceNodes, role)
 			pods = append(pods, pod)
 
-			lease := buildLease(run, group, sliceNodes, seg, req.Now)
+			lease := buildLease(run, group, sliceNodes, seg, req.Now, role)
 			leases = append(leases, lease)
 
 			remaining -= take
@@ -96,6 +109,50 @@ func Materialize(req Request) (Result, error) {
 		if offset != len(allocationNodes) {
 			// Each GPU must be consumed exactly once.
 			return Result{}, fmt.Errorf("placement allocation mismatch for group %d", group.GroupIndex)
+		}
+	}
+
+	for _, group := range req.PackPlan.Groups {
+		if group.Spares <= 0 {
+			continue
+		}
+		spareNodes := flattenAllocations(group.SparePlacements)
+		if len(spareNodes) == 0 {
+			return Result{}, fmt.Errorf("group %d requested spares but no placements provided", group.GroupIndex)
+		}
+		offset := 0
+		remaining := len(spareNodes)
+		for remaining > 0 {
+			if len(segments) == 0 {
+				return Result{}, fmt.Errorf("cover plan exhausted before assigning spares")
+			}
+			seg := segments[0]
+			take := min(seg.remaining, remaining)
+			if take == 0 {
+				return Result{}, fmt.Errorf("segment with zero remaining while assigning spares")
+			}
+			sliceNodes := spareNodes[offset : offset+take]
+
+			pod := buildPod(run, group, sliceNodes, RoleSpare)
+			pods = append(pods, pod)
+
+			lease := buildLease(run, group, sliceNodes, seg, req.Now, RoleSpare)
+			leases = append(leases, lease)
+
+			remaining -= take
+			offset += take
+			seg.remaining -= take
+			if seg.remaining == 0 {
+				segments = segments[1:]
+				if len(segments) == 0 && (remaining > 0 || offset < len(spareNodes)) {
+					return Result{}, fmt.Errorf("cover plan exhausted before spare assignments completed")
+				}
+			} else {
+				segments[0] = seg
+			}
+		}
+		if offset != len(spareNodes) {
+			return Result{}, fmt.Errorf("spare allocation mismatch for group %d", group.GroupIndex)
 		}
 	}
 
@@ -140,31 +197,32 @@ type nodeSlot struct {
 	ordinal int
 }
 
-func buildPod(run *v1.Run, group pack.GroupPlacement, slots []nodeSlot) PodManifest {
+func buildPod(run *v1.Run, group pack.GroupPlacement, slots []nodeSlot, role string) PodManifest {
 	// All slots belong to the same node allocation chunk by construction.
 	nodeName := slots[0].node
 	gpuCount := len(slots)
 	labels := map[string]string{
 		LabelRunName:    run.Name,
 		LabelGroupIndex: fmt.Sprintf("%d", group.GroupIndex),
+		LabelRunRole:    role,
 	}
+	suffix := fmt.Sprintf("%s-%s", strings.ToLower(role), nodeName)
 	return PodManifest{
 		Namespace: run.Namespace,
-		Name:      fmt.Sprintf("%s-g%02d-%s", run.Name, group.GroupIndex, nodeName),
+		Name:      fmt.Sprintf("%s-g%02d-%s", run.Name, group.GroupIndex, suffix),
 		NodeName:  nodeName,
 		GPUs:      gpuCount,
 		Labels:    labels,
 	}
 }
 
-func buildLease(run *v1.Run, group pack.GroupPlacement, slots []nodeSlot, seg segmentCursor, now time.Time) v1.Lease {
+func buildLease(run *v1.Run, group pack.GroupPlacement, slots []nodeSlot, seg segmentCursor, now time.Time, role string) v1.Lease {
 	nodes := make([]string, len(slots))
 	for i, slot := range slots {
 		nodes[i] = fmt.Sprintf("%s#%d", slot.node, slot.ordinal)
 	}
-	role := "Active"
-	if seg.segment.Borrowed {
-		role = "Borrowed"
+	if role == RoleActive && seg.segment.Borrowed {
+		role = RoleBorrowed
 	}
 	lease := v1.Lease{
 		ObjectMeta: v1.ObjectMeta{
@@ -173,6 +231,7 @@ func buildLease(run *v1.Run, group pack.GroupPlacement, slots []nodeSlot, seg se
 			Labels: map[string]string{
 				LabelRunName:    run.Name,
 				LabelGroupIndex: fmt.Sprintf("%d", group.GroupIndex),
+				LabelRunRole:    role,
 			},
 		},
 		Spec: v1.LeaseSpec{

@@ -15,9 +15,15 @@ func TestRunValidation(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	val := int32(-1)
-	run.Spec.Locality = &RunLocality{GroupGPUs: &val}
-	if err := run.ValidateCreate(); err == nil {
-		t.Fatalf("expected validation error for negative groupGPUs")
-	}
+        val := int32(-1)
+        run.Spec.Locality = &RunLocality{GroupGPUs: &val}
+        if err := run.ValidateCreate(); err == nil {
+                t.Fatalf("expected validation error for negative groupGPUs")
+        }
+
+        run.Spec.Locality = nil
+        run.Spec.Spares = &val
+        if err := run.ValidateCreate(); err == nil {
+                t.Fatalf("expected validation error for negative spares")
+        }
 }
