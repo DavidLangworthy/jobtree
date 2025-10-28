@@ -3,6 +3,8 @@
 ## Summary
 Implement the first end-to-end execution path: admit feasible Runs, bind their pods atomically to nodes, and materialize immutable Lease records. This milestone turns the static APIs and planning libraries into a functioning scheduler for runs that can start immediately.
 
+> **Implementation note (current state):** The repository now contains a deterministic binder that produces pod manifests and Leases directly from cover/pack output, plus a Run controller that admits runs against an in-memory cluster state. The Kubernetes integration described below remains the long-term goal.
+
 ## Goals
 - Integrate cover (M1) and pack (M2) outputs to produce a complete binding plan for each Run submission.
 - Create Kubernetes Pods (or StatefulSet equivalents) with pre-assigned `nodeName` values to ensure gang scheduling semantics.

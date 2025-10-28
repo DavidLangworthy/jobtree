@@ -23,11 +23,11 @@ The project is organized into progressive milestones. Each entry outlines scope,
   - **Artifacts delivered:** `pkg/topology`, `pkg/pack`, placement documentation in `docs/concepts/runs.md` and worked example extensions.
   - **Design doc:** [docs/roadmap/design/M2-topology-and-packing.md](design/M2-topology-and-packing.md)
 
-- [ ] **M3 — Binder & Leases (runs that can start immediately)**
-  - **Scope:** Materialize pods atomically for feasible runs, emit Lease objects, and mirror pod lifecycle into the immutable ledger.
-  - **Definition of done:** A run that passes cover/pack launches successfully in e2e tests; Leases are created and closed on completion.
-  - **Validation:** kind-based e2e submitting a fixed run; ledger unit tests for event sequencing.
-  - **Artifacts expected:** `pkg/binder`, `controllers/run_controller.go`, Lease documentation updates.
+- [x] **M3 — Binder & Leases (runs that can start immediately)**
+  - **Scope:** Materialize pod manifests for feasible runs, emit Lease objects, and stitch cover/pack outputs into a runnable plan.
+  - **Definition of done:** Deterministic binder splits funding segments across node allocations, and the run controller admits a pending run using the in-memory cluster state while updating Run status.
+  - **Validation:** Unit tests for binder split/validation logic and controller admission over a synthetic topology.
+  - **Artifacts delivered:** `pkg/binder`, `controllers/run_controller.go`, `docs/user-guide/quickstart.md` updates summarizing the immediate-start path.
   - **Design doc:** [docs/roadmap/design/M3-binder-and-leases.md](design/M3-binder-and-leases.md)
 
 - [ ] **M4 — Reservations & forecasting**

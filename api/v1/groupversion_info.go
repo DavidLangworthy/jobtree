@@ -9,7 +9,5 @@ var SchemeGroupVersion = struct {
 	Version: "v1",
 }
 
-// AddToScheme is a placeholder to mirror controller-runtime scaffolding.
-func AddToScheme(interface{}) error {
-	return nil
-}
+// AddToScheme is a no-op placeholder mirroring controller-runtime scaffolding.
+func AddToScheme(interface{}) error { return nil }

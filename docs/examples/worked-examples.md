@@ -1,7 +1,9 @@
 # Worked Examples for RQλ (Budget / Run / Reservation / Lease)
 
 A collection of end-to-end scenarios that exercise cover → pack → bind, Reservations,
-structural cuts, fair lottery, hot spares, elasticity, and co-funded runs.
+structural cuts, fair lottery, hot spares, elasticity, and co-funded runs. For milestone M3
+the binder emits pod manifests and Lease objects directly from the cover/pack output, so the
+examples focus on that immediate-start pathway.
 
 > Domains represent fast-fabric islands. The default behavior keeps islands quiet; you only
 > specify `groupGPUs` when you need groups to stay close.
