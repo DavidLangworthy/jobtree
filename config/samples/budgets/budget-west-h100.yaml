@@ -1,0 +1,19 @@
+apiVersion: rq.davidlangworthy.io/v1
+kind: Budget
+metadata:
+  name: example-budget
+spec:
+  owner: org:example
+  envelopes:
+    - name: west-h100
+      flavor: H100-80GB
+      selector:
+        region: us-west
+        cluster: gpu-a
+      concurrency: 512
+      start: "2025-11-01T00:00:00Z"
+      end: "2025-11-15T00:00:00Z"
+      maxGPUHours: 122880
+      preActivation:
+        allowReservations: true
+        allowAdmission: false
