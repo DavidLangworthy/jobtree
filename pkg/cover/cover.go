@@ -21,6 +21,7 @@ type Request struct {
 	ExpectedDuration time.Duration
 	AllowBorrow      bool
 	Sponsors         []string
+	MaxBorrowGPUs    *int32
 }
 
 // Segment is a single envelope assignment.
@@ -45,6 +46,7 @@ const (
 	FailureReasonNoMatchingEnvelope   FailureReason = "NoEnvelope"
 	FailureReasonInsufficientCapacity FailureReason = "InsufficientCapacity"
 	FailureReasonACLRejected          FailureReason = "ACLDenied"
+	FailureReasonBorrowLimit          FailureReason = "BorrowLimit"
 )
 
 // PlanError describes why planning failed.
@@ -95,6 +97,9 @@ func (inv *Inventory) Plan(req Request) (Plan, error) {
 	var segments []Segment
 	alloc := newAllocationTracker(req.ExpectedDuration)
 
+	borrowAttempted := false
+	borrowLimited := false
+
 	for _, phase := range phases {
 		if remaining == 0 {
 			break
@@ -121,10 +126,18 @@ func (inv *Inventory) Plan(req Request) (Plan, error) {
 					if !windowAllowsAdmission(env.Spec, req.Now) {
 						continue
 					}
-					if phase.sponsor && !req.AllowBorrow {
+					borrow := phase.sponsor && env.Owner != req.Owner
+					if borrow {
+						borrowAttempted = true
+					}
+					if borrow && !req.AllowBorrow {
 						return Plan{}, &PlanError{Reason: FailureReasonACLRejected, Msg: "borrowing not allowed"}
 					}
-					if phase.sponsor {
+					if phase.sponsor && env.Owner == req.Owner {
+						// Sponsors may include the owner for explicit ordering; treat as owned capacity.
+						borrow = false
+					}
+					if borrow {
 						if env.Spec.Lending == nil || !env.Spec.Lending.Allow {
 							continue
 						}
@@ -133,14 +146,28 @@ func (inv *Inventory) Plan(req Request) (Plan, error) {
 						}
 					}
 
-					maxAlloc := inv.headroomForEnvelope(env, alloc, phase.sponsor)
+					maxAlloc := inv.headroomForEnvelope(env, alloc, borrow)
 					if maxAlloc <= 0 {
 						continue
+					}
+					if borrow && req.MaxBorrowGPUs != nil {
+						allowed := *req.MaxBorrowGPUs - alloc.totalBorrowed()
+						if allowed <= 0 {
+							borrowLimited = true
+							continue
+						}
+						if maxAlloc > allowed {
+							maxAlloc = allowed
+							borrowLimited = true
+						}
+						if maxAlloc <= 0 {
+							continue
+						}
 					}
 					if maxAlloc > remaining {
 						maxAlloc = remaining
 					}
-					allocated := alloc.allocate(env, maxAlloc, phase.sponsor)
+					allocated := alloc.allocate(env, maxAlloc, borrow)
 					if allocated == 0 {
 						continue
 					}
@@ -149,7 +176,7 @@ func (inv *Inventory) Plan(req Request) (Plan, error) {
 						EnvelopeName: env.Spec.Name,
 						Owner:        env.Owner,
 						Quantity:     allocated,
-						Borrowed:     phase.sponsor && env.Owner != req.Owner,
+						Borrowed:     borrow,
 					})
 					remaining -= allocated
 				}
@@ -161,6 +188,8 @@ func (inv *Inventory) Plan(req Request) (Plan, error) {
 		reason := FailureReasonInsufficientCapacity
 		if len(segments) == 0 {
 			reason = FailureReasonNoMatchingEnvelope
+		} else if borrowAttempted && borrowLimited && req.MaxBorrowGPUs != nil {
+			reason = FailureReasonBorrowLimit
 		}
 		return Plan{}, &PlanError{Reason: reason, Msg: "insufficient capacity for request"}
 	}
@@ -168,7 +197,7 @@ func (inv *Inventory) Plan(req Request) (Plan, error) {
 	return Plan{Segments: segments}, nil
 }
 
-func (inv *Inventory) headroomForEnvelope(env *budget.EnvelopeState, alloc *allocationTracker, sponsor bool) int32 {
+func (inv *Inventory) headroomForEnvelope(env *budget.EnvelopeState, alloc *allocationTracker, borrow bool) int32 {
 	expectedHours := alloc.expectedHoursPerGPU
 	additional := budget.Usage{GPUHours: float64(alloc.pendingAllocation(env)) * expectedHours}
 	headroom := budget.EnvelopeHeadroom(env, additional)
@@ -192,7 +221,7 @@ func (inv *Inventory) headroomForEnvelope(env *budget.EnvelopeState, alloc *allo
 			limit = min(limit, int32(math.Floor(*aggHeadroom.GPUHours/expectedHours)))
 		}
 	}
-	if sponsor {
+	if borrow {
 		policy := env.Spec.Lending
 		if policy != nil {
 			if policy.MaxConcurrency != nil {
@@ -329,6 +358,7 @@ type allocationTracker struct {
 	envBorrowedHours    map[*budget.EnvelopeState]float64
 	aggAlloc            map[*budget.AggregateState]int32
 	aggHours            map[*budget.AggregateState]float64
+	borrowedTotal       int32
 }
 
 func newAllocationTracker(duration time.Duration) *allocationTracker {
@@ -363,7 +393,11 @@ func (a *allocationTracker) pendingBorrowedHours(env *budget.EnvelopeState) floa
 	return a.envBorrowedHours[env]
 }
 
-func (a *allocationTracker) allocate(env *budget.EnvelopeState, qty int32, sponsor bool) int32 {
+func (a *allocationTracker) totalBorrowed() int32 {
+	return a.borrowedTotal
+}
+
+func (a *allocationTracker) allocate(env *budget.EnvelopeState, qty int32, borrow bool) int32 {
 	if qty <= 0 {
 		return 0
 	}
@@ -377,11 +411,12 @@ func (a *allocationTracker) allocate(env *budget.EnvelopeState, qty int32, spons
 			a.aggHours[cap] += float64(qty) * a.expectedHoursPerGPU
 		}
 	}
-	if sponsor {
+	if borrow {
 		a.envBorrowed[env] += qty
 		if a.expectedHoursPerGPU > 0 {
 			a.envBorrowedHours[env] += float64(qty) * a.expectedHoursPerGPU
 		}
+		a.borrowedTotal += qty
 	}
 	return qty
 }

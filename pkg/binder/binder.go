@@ -247,7 +247,7 @@ func buildLease(run *v1.Run, actualIndex int, group pack.GroupPlacement, slots [
 			},
 		},
 		Spec: v1.LeaseSpec{
-			Owner: run.Spec.Owner,
+			Owner: seg.segment.Owner,
 			RunRef: v1.RunReference{
 				Name:      run.Name,
 				Namespace: run.Namespace,

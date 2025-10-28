@@ -141,6 +141,11 @@ func computeLeaseUsage(lease *v1.Lease, now time.Time) Usage {
 	return usage
 }
 
+// ComputeLeaseUsage exposes lease usage calculation for other packages.
+func ComputeLeaseUsage(lease *v1.Lease, now time.Time) Usage {
+	return computeLeaseUsage(lease, now)
+}
+
 func effectiveEnd(lease *v1.Lease, now time.Time) time.Time {
 	candidates := []time.Time{}
 	if lease.Spec.Interval.End != nil && !lease.Spec.Interval.End.IsZero() {

@@ -50,6 +50,22 @@ controller keeps group semantics identical while deciding whether to materialise
 additional groups or end high-index groups. `desiredTotalGPUs` acts purely as a
 target—funding and placement remain per-group decisions.
 
+## Funding & borrowing
+
+Runs can optionally describe how additional GPUs should be funded:
+
+- `funding.allowBorrow: true` enables the scheduler to look beyond the owner's
+  budgets once family sharing is exhausted.
+- `funding.maxBorrowGPUs` caps how many GPUs may be borrowed in a single
+  admission or elastic growth step.
+- `funding.sponsors` lists the preferred lending teams; each lending budget must
+  set `spec.envelopes[].lending.allow: true` and authorise the borrower via
+  `lending.to`.
+
+Every Lease records the paying envelope's owner, and `Run.status.funding`
+summarises the live split between owned and borrowed GPUs/GPU-hours so chargeback
+and dashboards remain accurate.
+
 ## Pack-to-empty heuristics
 
 The packing engine (`pkg/pack`) uses three rules:

@@ -200,8 +200,10 @@ capacity returns.
 
 - Cover assigns 96 GPUs to `rai` and 32 to `mm:vision` within lending limits.
 - Pack places 3 groups (96) on domain A and 1 group (32) on domain B.
-- Admit starts all 128 Leases; ledger shows payer per Lease. Structural cuts target the borrowed
-  group only because of INCR semantics (payer identity provides no priority).
+- Admit starts all 128 Leases; ledger shows payer per Lease. `Run.status.funding` reports
+  `ownedGPUs: 96` and `borrowedGPUs: 32` with a sponsor entry for `org:ai:mm:vision` so the split
+  is visible to both teams. Structural cuts target the borrowed group only because of INCR
+  semantics (payer identity provides no priority).
 
 ---
 

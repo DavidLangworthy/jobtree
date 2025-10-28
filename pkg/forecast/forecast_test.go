@@ -126,3 +126,46 @@ func TestPlanFutureWindow(t *testing.T) {
 		t.Fatalf("earliest start %s before expected %s", result.EarliestStart, expectedEarliest)
 	}
 }
+
+func TestPlanBorrowLimitReason(t *testing.T) {
+	now := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
+	run := &v1.Run{Spec: v1.RunSpec{
+		Owner:     "org:ai:team",
+		Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 16},
+	}, ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"}}
+
+	bud := &v1.Budget{ObjectMeta: v1.ObjectMeta{Name: "team"}, Spec: v1.BudgetSpec{
+		Owner: "org:ai:team",
+		Envelopes: []v1.BudgetEnvelope{{
+			Name:        "west",
+			Flavor:      "H100-80GB",
+			Selector:    map[string]string{topology.LabelRegion: "us-west"},
+			Concurrency: 8,
+		}},
+	}}
+	state := budget.BuildBudgetState(bud, nil, now)
+
+	borrowCap := int32(4)
+	result, err := Plan(Input{
+		Run:          run,
+		Now:          now,
+		CoverErr:     &cover.PlanError{Reason: cover.FailureReasonBorrowLimit},
+		CoverRequest: cover.Request{Owner: run.Spec.Owner, MaxBorrowGPUs: &borrowCap},
+		BudgetStates: []*budget.BudgetState{state},
+	})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if result.Forecast.DeficitGPUs == 0 {
+		t.Fatalf("expected deficit due to borrow cap")
+	}
+	if result.Reason == "" || result.Forecast.DeficitGPUs == 0 {
+		t.Fatalf("expected borrow limit reason and deficit")
+	}
+	if result.Forecast.DeficitGPUs != 4 {
+		t.Fatalf("expected deficit of 4 GPUs, got %d", result.Forecast.DeficitGPUs)
+	}
+	if result.Reason != "borrow limit of 4 GPUs exhausted for requested width" {
+		t.Fatalf("unexpected reason: %s", result.Reason)
+	}
+}

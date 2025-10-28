@@ -87,6 +87,7 @@ func (c *RunController) Reconcile(namespace, name string) error {
 	}
 
 	run.Status.Width = summarizeRunWidth(run, c.State.Leases)
+	run.Status.Funding = summarizeRunFunding(run, c.State.Leases, now)
 
 	if run.Status.Phase == RunPhaseRunning {
 		if run.Spec.Malleable != nil {
@@ -94,6 +95,7 @@ func (c *RunController) Reconcile(namespace, name string) error {
 				return err
 			}
 			run.Status.Width = summarizeRunWidth(run, c.State.Leases)
+			run.Status.Funding = summarizeRunFunding(run, c.State.Leases, now)
 		}
 		return nil
 	}
@@ -125,6 +127,13 @@ func (c *RunController) Reconcile(namespace, name string) error {
 	}
 	if run.Spec.Funding != nil {
 		request.Sponsors = append(request.Sponsors, run.Spec.Funding.Sponsors...)
+		if run.Spec.Funding.MaxBorrowGPUs != nil {
+			remaining := *run.Spec.Funding.MaxBorrowGPUs - c.borrowedGPUsForRun(run, now)
+			if remaining < 0 {
+				remaining = 0
+			}
+			request.MaxBorrowGPUs = &remaining
+		}
 	}
 
 	coverPlan, err := inventory.Plan(request)
@@ -148,6 +157,7 @@ func (c *RunController) Reconcile(namespace, name string) error {
 	run.Status.Phase = RunPhaseRunning
 	run.Status.Message = fmt.Sprintf("bound %d GPUs", packPlan.TotalGPUs)
 	run.Status.Width = summarizeRunWidth(run, c.State.Leases)
+	run.Status.Funding = summarizeRunFunding(run, c.State.Leases, now)
 	return nil
 }
 
@@ -200,6 +210,13 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 	}
 	if run.Spec.Funding != nil {
 		request.Sponsors = append(request.Sponsors, run.Spec.Funding.Sponsors...)
+		if run.Spec.Funding.MaxBorrowGPUs != nil {
+			remaining := *run.Spec.Funding.MaxBorrowGPUs - c.borrowedGPUsForRun(run, now)
+			if remaining < 0 {
+				remaining = 0
+			}
+			request.MaxBorrowGPUs = &remaining
+		}
 	}
 
 	plan, err := planPlacement(run, snapshot)
@@ -302,6 +319,7 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 	run.Status.Message = fmt.Sprintf("reservation %s activated", reservation.Name)
 	run.Status.PendingReservation = nil
 	run.Status.EarliestStart = nil
+	run.Status.Funding = summarizeRunFunding(run, c.State.Leases, now)
 
 	return nil
 }
@@ -774,6 +792,13 @@ func (c *RunController) growRun(run *v1.Run, snapshot *topology.Snapshot, invent
 	}
 	if run.Spec.Funding != nil {
 		request.Sponsors = append(request.Sponsors, run.Spec.Funding.Sponsors...)
+		if run.Spec.Funding.MaxBorrowGPUs != nil {
+			remaining := *run.Spec.Funding.MaxBorrowGPUs - c.borrowedGPUsForRun(run, now)
+			if remaining < 0 {
+				remaining = 0
+			}
+			request.MaxBorrowGPUs = &remaining
+		}
 	}
 
 	coverPlan, err := inventory.Plan(request)
@@ -796,6 +821,7 @@ func (c *RunController) growRun(run *v1.Run, snapshot *topology.Snapshot, invent
 
 	c.State.Pods = append(c.State.Pods, result.Pods...)
 	c.State.Leases = append(c.State.Leases, result.Leases...)
+	run.Status.Funding = summarizeRunFunding(run, c.State.Leases, now)
 	return nil
 }
 
@@ -897,6 +923,67 @@ func summarizeRunWidth(run *v1.Run, leases []v1.Lease) *v1.RunWidthStatus {
 	return status
 }
 
+func summarizeRunFunding(run *v1.Run, leases []v1.Lease, now time.Time) *v1.RunFundingStatus {
+	if run == nil {
+		return nil
+	}
+	runKey := namespacedKey(run.Namespace, run.Name)
+	status := &v1.RunFundingStatus{}
+	sponsorShares := make(map[string]*v1.RunFundingSponsorShare)
+
+	for i := range leases {
+		lease := &leases[i]
+		if namespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
+			continue
+		}
+		usage := budget.ComputeLeaseUsage(lease, now)
+		payer := lease.Spec.Owner
+		if payer == "" {
+			payer = run.Spec.Owner
+		}
+		active := leaseActive(lease, now)
+		gpuSlots := int32(len(lease.Spec.Slice.Nodes))
+		if lease.Spec.Slice.Role == binder.RoleSpare {
+			gpuSlots = 0
+		}
+		if payer == run.Spec.Owner {
+			if active {
+				status.OwnedGPUs += gpuSlots
+			}
+			status.OwnedGPUHours += usage.GPUHours
+			continue
+		}
+		if active {
+			status.BorrowedGPUs += gpuSlots
+		}
+		status.BorrowedGPUHours += usage.GPUHours
+		share, ok := sponsorShares[payer]
+		if !ok {
+			share = &v1.RunFundingSponsorShare{Owner: payer}
+			sponsorShares[payer] = share
+		}
+		if active {
+			share.GPUs += int32(len(lease.Spec.Slice.Nodes))
+		}
+		share.GPUHours += usage.GPUHours
+	}
+
+	if len(sponsorShares) > 0 {
+		status.Sponsors = make([]v1.RunFundingSponsorShare, 0, len(sponsorShares))
+		for _, share := range sponsorShares {
+			status.Sponsors = append(status.Sponsors, *share)
+		}
+		sort.Slice(status.Sponsors, func(i, j int) bool {
+			return status.Sponsors[i].Owner < status.Sponsors[j].Owner
+		})
+	}
+
+	if status.OwnedGPUs == 0 && status.BorrowedGPUs == 0 && status.OwnedGPUHours == 0 && status.BorrowedGPUHours == 0 && len(status.Sponsors) == 0 {
+		return nil
+	}
+	return status
+}
+
 type elasticGroup struct {
 	Index        int
 	Active       []*v1.Lease
@@ -942,6 +1029,44 @@ func collectElasticGroups(runKey string, leases []v1.Lease) map[int]*elasticGrou
 		}
 	}
 	return groups
+}
+
+func (c *RunController) borrowedGPUsForRun(run *v1.Run, now time.Time) int32 {
+	if run == nil {
+		return 0
+	}
+	runKey := namespacedKey(run.Namespace, run.Name)
+	total := int32(0)
+	for i := range c.State.Leases {
+		lease := &c.State.Leases[i]
+		if namespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
+			continue
+		}
+		if lease.Spec.Slice.Role != binder.RoleBorrowed {
+			continue
+		}
+		if !leaseActive(lease, now) {
+			continue
+		}
+		total += int32(len(lease.Spec.Slice.Nodes))
+	}
+	return total
+}
+
+func leaseActive(lease *v1.Lease, now time.Time) bool {
+	if lease.Status.Closed {
+		return false
+	}
+	if now.Before(lease.Spec.Interval.Start.Time) {
+		return false
+	}
+	if lease.Spec.Interval.End != nil && !now.Before(lease.Spec.Interval.End.Time) {
+		return false
+	}
+	if lease.Status.Ended != nil && !now.Before(lease.Status.Ended.Time) {
+		return false
+	}
+	return true
 }
 
 func (c *RunController) removePodsForGroups(runKey string, groups map[string]struct{}) {

@@ -78,6 +78,195 @@ func TestRunControllerAdmitsRun(t *testing.T) {
 	}
 }
 
+func TestRunControllerCoFundedRunUpdatesFundingStatus(t *testing.T) {
+	now := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
+	lendAllow := true
+	limit := int32(32)
+	state := &ClusterState{
+		Budgets: []v1.Budget{
+			{
+				ObjectMeta: v1.ObjectMeta{Name: "rai"},
+				Spec: v1.BudgetSpec{
+					Owner: "org:ai:rai",
+					Envelopes: []v1.BudgetEnvelope{{
+						Name:        "west-h100",
+						Flavor:      "H100-80GB",
+						Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
+						Concurrency: 96,
+					}},
+				},
+			},
+			{
+				ObjectMeta: v1.ObjectMeta{Name: "vision"},
+				Spec: v1.BudgetSpec{
+					Owner: "org:ai:mm:vision",
+					Envelopes: []v1.BudgetEnvelope{{
+						Name:        "west-h100",
+						Flavor:      "H100-80GB",
+						Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
+						Concurrency: 64,
+						Lending: &v1.LendingPolicy{
+							Allow:          lendAllow,
+							To:             []string{"org:ai:rai", "org:ai:rai:*"},
+							MaxConcurrency: &limit,
+						},
+					}},
+				},
+			},
+		},
+	}
+
+	for i := 0; i < 4; i++ {
+		state.Nodes = append(state.Nodes, topology.SourceNode{
+			Name: fmt.Sprintf("node-%d", i),
+			Labels: map[string]string{
+				topology.LabelRegion:       "us-west",
+				topology.LabelCluster:      "cluster-a",
+				topology.LabelFabricDomain: "island-a",
+				topology.LabelGPUFlavor:    "H100-80GB",
+			},
+			GPUs: 32,
+		})
+	}
+
+	maxBorrow := int32(32)
+	groupSize := int32(32)
+	state.Runs = map[string]*v1.Run{
+		"default/train-128": {
+			ObjectMeta: v1.ObjectMeta{Name: "train-128", Namespace: "default"},
+			Spec: v1.RunSpec{
+				Owner: "org:ai:rai",
+				Resources: v1.RunResources{
+					GPUType:   "H100-80GB",
+					TotalGPUs: 128,
+				},
+				Locality: &v1.RunLocality{GroupGPUs: &groupSize},
+				Funding: &v1.RunFunding{
+					AllowBorrow:   true,
+					MaxBorrowGPUs: &maxBorrow,
+					Sponsors:      []string{"org:ai:mm:vision"},
+				},
+			},
+		},
+	}
+
+	controller := NewRunController(state, runClock{now: now})
+	if err := controller.Reconcile("default", "train-128"); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	run := state.Runs["default/train-128"]
+	if run.Status.Phase != RunPhaseRunning {
+		t.Fatalf("expected run phase running, got %s", run.Status.Phase)
+	}
+	if run.Status.Funding == nil {
+		t.Fatalf("expected funding status populated")
+	}
+	if run.Status.Funding.OwnedGPUs != 96 {
+		t.Fatalf("expected 96 owned GPUs, got %d", run.Status.Funding.OwnedGPUs)
+	}
+	if run.Status.Funding.BorrowedGPUs != 32 {
+		t.Fatalf("expected 32 borrowed GPUs, got %d", run.Status.Funding.BorrowedGPUs)
+	}
+	if len(run.Status.Funding.Sponsors) != 1 {
+		t.Fatalf("expected single sponsor entry, got %d", len(run.Status.Funding.Sponsors))
+	}
+	share := run.Status.Funding.Sponsors[0]
+	if share.Owner != "org:ai:mm:vision" {
+		t.Fatalf("expected sponsor owner org:ai:mm:vision, got %s", share.Owner)
+	}
+	if share.GPUs != 32 {
+		t.Fatalf("expected sponsor GPUs 32, got %d", share.GPUs)
+	}
+}
+
+func TestRunControllerBorrowLimitCreatesReservation(t *testing.T) {
+	now := time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC)
+	allow := true
+	state := &ClusterState{
+		Budgets: []v1.Budget{
+			{
+				ObjectMeta: v1.ObjectMeta{Name: "rai"},
+				Spec: v1.BudgetSpec{
+					Owner: "org:ai:rai",
+					Envelopes: []v1.BudgetEnvelope{{
+						Name:        "west-h100",
+						Flavor:      "H100-80GB",
+						Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
+						Concurrency: 64,
+					}},
+				},
+			},
+			{
+				ObjectMeta: v1.ObjectMeta{Name: "vision"},
+				Spec: v1.BudgetSpec{
+					Owner: "org:ai:mm:vision",
+					Envelopes: []v1.BudgetEnvelope{{
+						Name:        "west-h100",
+						Flavor:      "H100-80GB",
+						Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
+						Concurrency: 64,
+						Lending: &v1.LendingPolicy{
+							Allow: allow,
+							To:    []string{"org:ai:rai", "org:ai:rai:*"},
+						},
+					}},
+				},
+			},
+		},
+	}
+
+	for i := 0; i < 4; i++ {
+		state.Nodes = append(state.Nodes, topology.SourceNode{
+			Name: fmt.Sprintf("node-b-%d", i),
+			Labels: map[string]string{
+				topology.LabelRegion:       "us-west",
+				topology.LabelCluster:      "cluster-a",
+				topology.LabelFabricDomain: "island-a",
+				topology.LabelGPUFlavor:    "H100-80GB",
+			},
+			GPUs: 32,
+		})
+	}
+
+	maxBorrow := int32(8)
+	groupSize := int32(32)
+	state.Runs = map[string]*v1.Run{
+		"default/train-128": {
+			ObjectMeta: v1.ObjectMeta{Name: "train-128", Namespace: "default"},
+			Spec: v1.RunSpec{
+				Owner: "org:ai:rai",
+				Resources: v1.RunResources{
+					GPUType:   "H100-80GB",
+					TotalGPUs: 128,
+				},
+				Locality: &v1.RunLocality{GroupGPUs: &groupSize},
+				Funding: &v1.RunFunding{
+					AllowBorrow:   true,
+					MaxBorrowGPUs: &maxBorrow,
+					Sponsors:      []string{"org:ai:mm:vision"},
+				},
+			},
+		},
+	}
+
+	controller := NewRunController(state, runClock{now: now})
+	if err := controller.Reconcile("default", "train-128"); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	run := state.Runs["default/train-128"]
+	if run.Status.PendingReservation == nil {
+		t.Fatalf("expected reservation due to borrow limit")
+	}
+	if run.Status.Phase != RunPhasePending {
+		t.Fatalf("expected phase pending when borrow limit hit, got %s", run.Status.Phase)
+	}
+	if len(state.Reservations) != 1 {
+		t.Fatalf("expected reservation created, got %d", len(state.Reservations))
+	}
+}
+
 func TestRunControllerCreatesReservationWhenCapacityMissing(t *testing.T) {
 	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	state := &ClusterState{

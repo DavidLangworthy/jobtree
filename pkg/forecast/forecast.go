@@ -170,6 +170,17 @@ func estimateDeficit(in Input) int {
 				return 0
 			}
 			return total - headroom
+		case cover.FailureReasonBorrowLimit:
+			headroom := computeHeadroom(in)
+			borrowCap := 0
+			if in.CoverRequest.MaxBorrowGPUs != nil {
+				borrowCap = int(*in.CoverRequest.MaxBorrowGPUs)
+			}
+			capacity := headroom + borrowCap
+			if capacity >= total {
+				return 0
+			}
+			return total - capacity
 		case cover.FailureReasonNoMatchingEnvelope:
 			return total
 		default:
@@ -285,6 +296,12 @@ func buildReason(in Input, env *budget.EnvelopeState, deficit int) string {
 			return "no eligible envelope available"
 		case cover.FailureReasonInsufficientCapacity:
 			return fmt.Sprintf("budget headroom short by %d GPUs", deficit)
+		case cover.FailureReasonBorrowLimit:
+			limit := "configured borrow limit"
+			if in.CoverRequest.MaxBorrowGPUs != nil {
+				limit = fmt.Sprintf("borrow limit of %d GPUs", *in.CoverRequest.MaxBorrowGPUs)
+			}
+			return fmt.Sprintf("%s exhausted for requested width", limit)
 		case cover.FailureReasonACLRejected:
 			return "borrowing policy rejected request"
 		}

@@ -159,6 +159,49 @@ func TestPlanBorrowingDeniedByACL(t *testing.T) {
 	}
 }
 
+func TestPlanRespectsBorrowLimit(t *testing.T) {
+	now := time.Date(2025, 11, 1, 12, 0, 0, 0, time.UTC)
+	budgetOwner := budgetState("budget-owner", "org:child", nil, []envSpec{{
+		name:        "env-owner",
+		flavor:      "H100",
+		concurrency: 2,
+		selector:    map[string]string{"region": "us-west"},
+	}})
+	budgetSponsor := budgetState("budget-sponsor", "org:lender", nil, []envSpec{{
+		name:        "env-sponsor",
+		flavor:      "H100",
+		concurrency: 8,
+		selector:    map[string]string{"region": "us-west"},
+		lending: &v1.LendingPolicy{
+			Allow:          true,
+			MaxConcurrency: ptrInt32(4),
+		},
+	}})
+	inv := NewInventory([]*budget.BudgetState{budgetOwner, budgetSponsor})
+
+	limit := int32(2)
+	_, err := inv.Plan(Request{
+		Owner:         "org:child",
+		Flavor:        "H100",
+		Quantity:      6,
+		Location:      map[string]string{"region": "us-west"},
+		Now:           now,
+		AllowBorrow:   true,
+		Sponsors:      []string{"org:lender"},
+		MaxBorrowGPUs: &limit,
+	})
+	if err == nil {
+		t.Fatalf("expected failure due to borrow limit")
+	}
+	planErr, ok := err.(*PlanError)
+	if !ok {
+		t.Fatalf("expected PlanError, got %v", err)
+	}
+	if planErr.Reason != FailureReasonBorrowLimit {
+		t.Fatalf("expected borrow limit failure, got %s", planErr.Reason)
+	}
+}
+
 type envSpec struct {
 	name        string
 	flavor      string

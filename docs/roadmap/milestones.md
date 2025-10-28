@@ -58,11 +58,11 @@ The project is organized into progressive milestones. Each entry outlines scope,
   - **Artifacts delivered:** Elasticity logic in `controllers/run_controller.go`, updated `pkg/binder` lease materialisation, Run status width tracking, new examples/tests, and docs in `docs/user-guide/elastic-runs.md`.
   - **Design doc:** [docs/roadmap/design/M7-elastic-runs-and-shrink.md](design/M7-elastic-runs-and-shrink.md)
 
-- [ ] **M8 — Co-funded runs (borrowing)**
-  - **Scope:** Enforce lending ACLs, borrower guardrails, and sponsor preferences so runs can consume from multiple budgets safely.
-  - **Definition of done:** Runs can start with a mix of owned and borrowed leases; ledger/reporting attribute usage correctly.
-  - **Validation:** e2e scenario with sponsor budgets; unit tests for lending limits and selection order.
-  - **Artifacts expected:** Lending logic in `pkg/cover`, CLI `sponsors` command, docs in `docs/user-guide/cofunded-runs.md`.
+- [x] **M8 — Co-funded runs (borrowing)**
+  - **Scope:** Enforce lending ACLs, borrower guardrails, sponsor ordering, and expose per-run funding splits so usage is attributable across teams.
+  - **Definition of done:** Runs start with a mix of owned and borrowed leases; `Run.status.funding` reports the split and budgets record borrowed GPU-hours.
+  - **Validation:** Unit tests for lending limits/ACLs, controller tests covering co-funded admission and borrow-limit reservations, forecast tests for borrow-limit messaging.
+  - **Artifacts delivered:** Lending enhancements in `pkg/cover`, funding summaries in `controllers/run_controller.go`, new docs (`docs/user-guide/cofunded-runs.md`), worked example updates, and lending samples under `config/samples/`.
   - **Design doc:** [docs/roadmap/design/M8-cofunded-runs.md](design/M8-cofunded-runs.md)
 
 - [ ] **M9 — Observability, CLI polish, packaging**

@@ -58,6 +58,12 @@ func TestMaterializeSplitsCoverAcrossAllocations(t *testing.T) {
 	if res.Leases[1].Spec.Slice.Role != "Borrowed" {
 		t.Fatalf("expected borrowed lease role, got %s", res.Leases[1].Spec.Slice.Role)
 	}
+	if res.Leases[0].Spec.Owner != "org:ai:rai" {
+		t.Fatalf("expected first lease owned by org:ai:rai, got %s", res.Leases[0].Spec.Owner)
+	}
+	if res.Leases[1].Spec.Owner != "org:ai:mm" {
+		t.Fatalf("expected borrowed lease owned by sponsor, got %s", res.Leases[1].Spec.Owner)
+	}
 	if len(res.Leases[0].Spec.Slice.Nodes) != 4 {
 		t.Fatalf("expected 4 gpu slots in first lease, got %d", len(res.Leases[0].Spec.Slice.Nodes))
 	}
