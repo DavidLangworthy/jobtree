@@ -92,3 +92,45 @@ func TestBuildBudgetState(t *testing.T) {
 
 func ptrInt32(v int32) *int32 { return &v }
 func ptrInt64(v int64) *int64 { return &v }
+
+func TestBuildBudgetStateCountsBorrowedUsage(t *testing.T) {
+	now := time.Date(2025, 11, 1, 12, 0, 0, 0, time.UTC)
+
+	budget := &v1.Budget{
+		ObjectMeta: v1.ObjectMeta{Name: "lender"},
+		Spec: v1.BudgetSpec{
+			Owner: "org:lender",
+			Envelopes: []v1.BudgetEnvelope{{
+				Name:        "west-h100",
+				Flavor:      "H100-80GB",
+				Selector:    map[string]string{"region": "us-west"},
+				Concurrency: 10,
+			}},
+		},
+	}
+
+	start := v1.NewTime(now.Add(-30 * time.Minute))
+	leases := []v1.Lease{{
+		Spec: v1.LeaseSpec{
+			Owner:          "org:lender",
+			PaidByEnvelope: "west-h100",
+			Slice: v1.LeaseSlice{
+				Nodes: []string{"n1", "n2", "n3", "n4"},
+				Role:  "Borrowed",
+			},
+			Interval: v1.LeaseInterval{Start: start},
+		},
+	}}
+
+	state := BuildBudgetState(budget, leases, now)
+	env := state.Envelopes["west-h100"]
+	if env.Usage.Concurrency != 4 {
+		t.Fatalf("expected concurrency 4, got %d", env.Usage.Concurrency)
+	}
+	if env.Usage.BorrowedConcurrency != 4 {
+		t.Fatalf("expected borrowed concurrency 4, got %d", env.Usage.BorrowedConcurrency)
+	}
+	if env.Usage.BorrowedGPUHours <= 0 {
+		t.Fatalf("expected borrowed gpu hours to be positive")
+	}
+}
