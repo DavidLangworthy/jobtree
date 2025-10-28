@@ -16,11 +16,11 @@ The project is organized into progressive milestones. Each entry outlines scope,
   - **Artifacts delivered:** `pkg/budget`, `pkg/cover`, `controllers/budget_controller.go`, documentation under `docs/concepts/budgets.md`.
   - **Design doc:** [docs/roadmap/design/M1-budget-accounting-engine.md](design/M1-budget-accounting-engine.md)
 
-- [ ] **M2 — Topology discovery & group-aware packing**
+- [x] **M2 — Topology discovery & group-aware packing**
   - **Scope:** Build topology indexes from node labels and pack groups to fast-fabric domains using pack-to-empty heuristics.
   - **Definition of done:** Packing library produces deterministic placement plans honoring `groupGPUs` across heterogeneous clusters.
   - **Validation:** Unit tests over synthetic topologies; fuzzing for fragmentation scenarios.
-  - **Artifacts expected:** `pkg/pack`, topology documentation in `docs/design/calculus.md`.
+  - **Artifacts delivered:** `pkg/topology`, `pkg/pack`, placement documentation in `docs/concepts/runs.md` and worked example extensions.
   - **Design doc:** [docs/roadmap/design/M2-topology-and-packing.md](design/M2-topology-and-packing.md)
 
 - [ ] **M3 — Binder & Leases (runs that can start immediately)**
