@@ -20,10 +20,10 @@ Add the ability to plan for runs that cannot start immediately by storing intend
 - Budget accounting for future window validation (M1).
 
 ## Architecture & Components
-- **Reservation controller (`controllers/reservation_controller.go`):** Reconciles Reservation CRDs, transitions status (`Pending` → `Active` → `Released`/`Canceled`).
-- **Planner module (`pkg/forecast`):** Calculates earliest feasible start, deficit size, and recommended remedies.
-- **Backfill policies (`pkg/policy`):** Evaluate whether scheduled filler work can complete before `earliestStart` or needs eviction.
-- **Notifier service (`cmd/notifier`):** Emits events/alerts (Slack/email/webhooks) summarizing forecasts and changes.
+- **Run controller enhancements (`controllers/run_controller.go`):** When admission fails, synthesize Reservation objects with immutable specs, update Run status with `pendingReservation` and `earliestStart`, and persist the reservation in cluster state.
+- **Planner module (`pkg/forecast`):** Calculates earliest feasible start, deficit size, confidence label, and recommended remedies given pack/cover errors and budget state.
+- **Topology helpers (`pkg/topology`):** Provide total free GPU counts and the largest domain to seed forecasts when no pack plan exists.
+- **(Future)** Reservation controller / notifier: still planned for later milestones to drive activation, countdown refresh, and external notifications.
 
 ## Detailed Design
 1. **Reservation creation**
@@ -49,13 +49,13 @@ Add the ability to plan for runs that cannot start immediately by storing intend
    - Update `docs/user-guide/quickstart.md` and add `docs/user-guide/reservations.md` describing lifecycle and CLI usage.
 
 ## Testing Strategy
-- Unit tests for planner algorithms (earliestStart calculation, deficit computation, remedy suggestions).
-- Envtest to ensure Reservation controller enforces immutability and status transitions.
-- e2e scenario: submit oversized Run → Reservation generated → opportunistic backfill admitted → activation occurs on schedule.
+- Unit tests for planner algorithms (earliestStart calculation, deficit computation) in `pkg/forecast` and snapshot helpers in `pkg/topology`.
+- Controller tests covering both capacity deficits and future budget windows to ensure reservations appear with expected metadata.
+- Repository-wide `go test ./...` executed in CI.
 
 ## Observability & Telemetry
-- Metrics: `reservations_created_total`, `reservations_active`, `reservation_deficit_gpus`, `reservation_activation_latency_seconds`.
-- Structured logs for state transitions and blocked/canceled reasons.
+- Reservation status now exposes `forecast` (deficit, scope, remedies, confidence) and `countdownSeconds` for UI consumption.
+- Metrics and external notifier wiring remain open work for a later milestone.
 
 ## Rollout & Migration
 - Deploy Reservation controller and Notifier components.

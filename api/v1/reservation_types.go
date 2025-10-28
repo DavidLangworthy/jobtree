@@ -40,11 +40,21 @@ type RunReference struct {
 
 // ReservationStatus reports lifecycle transitions.
 type ReservationStatus struct {
-	State       string `json:"state,omitempty"`
-	Reason      string `json:"reason,omitempty"`
-	ActivatedAt *Time  `json:"activatedAt,omitempty"`
-	ReleasedAt  *Time  `json:"releasedAt,omitempty"`
-	CanceledAt  *Time  `json:"canceledAt,omitempty"`
+	State            string               `json:"state,omitempty"`
+	Reason           string               `json:"reason,omitempty"`
+	ActivatedAt      *Time                `json:"activatedAt,omitempty"`
+	ReleasedAt       *Time                `json:"releasedAt,omitempty"`
+	CanceledAt       *Time                `json:"canceledAt,omitempty"`
+	CountdownSeconds *int64               `json:"countdownSeconds,omitempty"`
+	Forecast         *ReservationForecast `json:"forecast,omitempty"`
+}
+
+// ReservationForecast communicates expected activation details.
+type ReservationForecast struct {
+	DeficitGPUs int32             `json:"deficitGPUs,omitempty"`
+	Scope       map[string]string `json:"scope,omitempty"`
+	Remedies    []string          `json:"remedies,omitempty"`
+	Confidence  string            `json:"confidence,omitempty"`
 }
 
 // ReservationList lists reservations.
@@ -188,6 +198,32 @@ func (in *ReservationStatus) DeepCopy() *ReservationStatus {
 	if in.CanceledAt != nil {
 		value := in.CanceledAt.DeepCopy()
 		out.CanceledAt = &value
+	}
+	if in.CountdownSeconds != nil {
+		value := *in.CountdownSeconds
+		out.CountdownSeconds = &value
+	}
+	if in.Forecast != nil {
+		out.Forecast = in.Forecast.DeepCopy()
+	}
+	return out
+}
+
+// DeepCopy creates a deep copy of ReservationForecast.
+func (in *ReservationForecast) DeepCopy() *ReservationForecast {
+	if in == nil {
+		return nil
+	}
+	out := new(ReservationForecast)
+	*out = *in
+	if in.Scope != nil {
+		out.Scope = make(map[string]string, len(in.Scope))
+		for k, v := range in.Scope {
+			out.Scope[k] = v
+		}
+	}
+	if in.Remedies != nil {
+		out.Remedies = append([]string{}, in.Remedies...)
 	}
 	return out
 }

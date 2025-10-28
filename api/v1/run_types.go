@@ -58,9 +58,11 @@ type RunFunding struct {
 
 // RunStatus reports lifecycle information.
 type RunStatus struct {
-	Phase      string `json:"phase,omitempty"`
-	Message    string `json:"message,omitempty"`
-	Generation int64  `json:"generation,omitempty"`
+	Phase              string  `json:"phase,omitempty"`
+	Message            string  `json:"message,omitempty"`
+	Generation         int64   `json:"generation,omitempty"`
+	PendingReservation *string `json:"pendingReservation,omitempty"`
+	EarliestStart      *Time   `json:"earliestStart,omitempty"`
 }
 
 // RunList contains a list of Run.
@@ -149,7 +151,7 @@ func (in *Run) DeepCopyInto(out *Run) {
 	out.TypeMeta = in.TypeMeta
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
 	out.Spec = *in.Spec.DeepCopy()
-	out.Status = in.Status
+	out.Status = *in.Status.DeepCopy()
 }
 
 // DeepCopy Deep copies the Run.
@@ -181,6 +183,24 @@ func (in *RunList) DeepCopyInto(out *RunList) {
 			in.Items[i].DeepCopyInto(&out.Items[i])
 		}
 	}
+}
+
+// DeepCopy creates a deep copy of RunStatus.
+func (in *RunStatus) DeepCopy() *RunStatus {
+	if in == nil {
+		return nil
+	}
+	out := new(RunStatus)
+	*out = *in
+	if in.PendingReservation != nil {
+		value := *in.PendingReservation
+		out.PendingReservation = &value
+	}
+	if in.EarliestStart != nil {
+		value := in.EarliestStart.DeepCopy()
+		out.EarliestStart = &value
+	}
+	return out
 }
 
 // DeepCopy deep copies RunList.

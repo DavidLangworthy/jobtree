@@ -9,6 +9,7 @@ import (
 	"github.com/davidlangworthy/jobtree/pkg/binder"
 	"github.com/davidlangworthy/jobtree/pkg/budget"
 	"github.com/davidlangworthy/jobtree/pkg/cover"
+	"github.com/davidlangworthy/jobtree/pkg/forecast"
 	"github.com/davidlangworthy/jobtree/pkg/pack"
 	"github.com/davidlangworthy/jobtree/pkg/topology"
 )
@@ -23,11 +24,12 @@ const (
 
 // ClusterState stores the in-memory view of the cluster for the simplified controller.
 type ClusterState struct {
-	Runs    map[string]*v1.Run
-	Budgets []v1.Budget
-	Nodes   []topology.SourceNode
-	Leases  []v1.Lease
-	Pods    []binder.PodManifest
+	Runs         map[string]*v1.Run
+	Budgets      []v1.Budget
+	Nodes        []topology.SourceNode
+	Leases       []v1.Lease
+	Pods         []binder.PodManifest
+	Reservations map[string]*v1.Reservation
 }
 
 // RunController drives immediate admissions using the local state.
@@ -43,6 +45,9 @@ func NewRunController(state *ClusterState, clock Clock) *RunController {
 	}
 	if state.Runs == nil {
 		state.Runs = make(map[string]*v1.Run)
+	}
+	if state.Reservations == nil {
+		state.Reservations = make(map[string]*v1.Reservation)
 	}
 	return &RunController{State: state, Clock: clock}
 }
@@ -67,14 +72,22 @@ func (c *RunController) Reconcile(namespace, name string) error {
 		return nil
 	}
 
+	states, err := c.budgetStates(now)
+	if err != nil {
+		return err
+	}
+
 	packPlan, err := planPlacement(run, snapshot)
 	if err != nil {
+		if planErr, ok := err.(*pack.PlanError); ok && planErr.Reason != pack.FailureReasonInvalidRequest {
+			return c.planReservation(run, snapshot, nil, planErr, nil, states, cover.Request{Owner: run.Spec.Owner, Flavor: run.Spec.Resources.GPUType, Quantity: run.Spec.Resources.TotalGPUs, Now: now, AllowBorrow: run.Spec.Funding != nil && run.Spec.Funding.AllowBorrow}, now)
+		}
 		run.Status.Phase = RunPhasePending
 		run.Status.Message = err.Error()
 		return nil
 	}
 
-	inventory, err := c.coverInventory(now)
+	inventory, err := c.coverInventoryFromStates(states)
 	if err != nil {
 		return err
 	}
@@ -94,6 +107,9 @@ func (c *RunController) Reconcile(namespace, name string) error {
 
 	coverPlan, err := inventory.Plan(request)
 	if err != nil {
+		if planErr, ok := err.(*cover.PlanError); ok && planErr.Reason != cover.FailureReasonInvalidRequest {
+			return c.planReservation(run, snapshot, &packPlan, nil, planErr, states, request, now)
+		}
 		run.Status.Phase = RunPhasePending
 		run.Status.Message = err.Error()
 		return nil
@@ -113,6 +129,18 @@ func (c *RunController) Reconcile(namespace, name string) error {
 }
 
 func (c *RunController) coverInventory(now time.Time) (*cover.Inventory, error) {
+	states, err := c.budgetStates(now)
+	if err != nil {
+		return nil, err
+	}
+	return cover.NewInventory(states), nil
+}
+
+func (c *RunController) coverInventoryFromStates(states []*budget.BudgetState) (*cover.Inventory, error) {
+	return cover.NewInventory(states), nil
+}
+
+func (c *RunController) budgetStates(now time.Time) ([]*budget.BudgetState, error) {
 	states := make([]*budget.BudgetState, 0, len(c.State.Budgets))
 	for i := range c.State.Budgets {
 		budgetObj := c.State.Budgets[i]
@@ -121,7 +149,85 @@ func (c *RunController) coverInventory(now time.Time) (*cover.Inventory, error) 
 		st := budget.BuildBudgetState(&copy, filtered, now)
 		states = append(states, st)
 	}
-	return cover.NewInventory(states), nil
+	return states, nil
+}
+
+func ptrString(value string) *string { return &value }
+
+func ptrInt64(value int64) *int64 { return &value }
+
+func (c *RunController) planReservation(run *v1.Run, snapshot *topology.Snapshot, packPlan *pack.Plan, packErr *pack.PlanError, coverErr *cover.PlanError, states []*budget.BudgetState, request cover.Request, now time.Time) error {
+	if states == nil {
+		computed, err := c.budgetStates(now)
+		if err != nil {
+			return err
+		}
+		states = computed
+	}
+
+	var planPtr *pack.Plan
+	if packPlan != nil {
+		copy := *packPlan
+		planPtr = &copy
+	}
+	forecastResult, err := forecast.Plan(forecast.Input{
+		Run:          run,
+		Now:          now,
+		Snapshot:     snapshot,
+		PackPlan:     planPtr,
+		PackErr:      packErr,
+		CoverErr:     coverErr,
+		CoverRequest: request,
+		BudgetStates: states,
+	})
+	if err != nil {
+		run.Status.Phase = RunPhasePending
+		run.Status.Message = fmt.Sprintf("reservation planning failed: %v", err)
+		return nil
+	}
+
+	reservationName := fmt.Sprintf("%s-res-%d", run.Name, now.Unix())
+	earliest := v1.NewTime(forecastResult.EarliestStart)
+	status := v1.ReservationStatus{
+		State:    "Pending",
+		Reason:   forecastResult.Reason,
+		Forecast: forecastResult.Forecast.DeepCopy(),
+	}
+	if forecastResult.EarliestStart.After(now) {
+		seconds := int64(forecastResult.EarliestStart.Sub(now).Seconds())
+		status.CountdownSeconds = ptrInt64(seconds)
+	}
+
+	reservation := &v1.Reservation{
+		ObjectMeta: v1.ObjectMeta{
+			Name:      reservationName,
+			Namespace: run.Namespace,
+		},
+		Spec: v1.ReservationSpec{
+			RunRef: v1.RunReference{
+				Name:      run.Name,
+				Namespace: run.Namespace,
+			},
+			IntendedSlice:  forecastResult.IntendedSlice,
+			PayingEnvelope: forecastResult.PayingEnvelope,
+			EarliestStart:  earliest,
+		},
+		Status: status,
+	}
+
+	key := namespacedKey(run.Namespace, reservationName)
+	for existingKey, existing := range c.State.Reservations {
+		if existing.Spec.RunRef.Name == run.Name && existing.Spec.RunRef.Namespace == run.Namespace {
+			delete(c.State.Reservations, existingKey)
+		}
+	}
+	c.State.Reservations[key] = reservation
+
+	run.Status.Phase = RunPhasePending
+	run.Status.Message = fmt.Sprintf("reservation %s scheduled for %s (deficit %d GPUs)", reservationName, forecastResult.EarliestStart.Format(time.RFC3339), forecastResult.Forecast.DeficitGPUs)
+	run.Status.PendingReservation = ptrString(reservationName)
+	run.Status.EarliestStart = &earliest
+	return nil
 }
 
 func filterLeasesByOwner(all []v1.Lease, owner string) []v1.Lease {

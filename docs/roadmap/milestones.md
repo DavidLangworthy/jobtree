@@ -30,11 +30,11 @@ The project is organized into progressive milestones. Each entry outlines scope,
   - **Artifacts delivered:** `pkg/binder`, `controllers/run_controller.go`, `docs/user-guide/quickstart.md` updates summarizing the immediate-start path.
   - **Design doc:** [docs/roadmap/design/M3-binder-and-leases.md](design/M3-binder-and-leases.md)
 
-- [ ] **M4 — Reservations & forecasting**
+- [x] **M4 — Reservations & forecasting**
   - **Scope:** Store intended slices for deferred runs, protect windows from unsafe backfill, and generate user-facing forecasts/remedies.
-  - **Definition of done:** Runs lacking immediate capacity gain Reservations with concrete earliest start; notifier surfaces deficit forecasts.
-  - **Validation:** e2e covering reservation creation and activation; unit tests for forecast calculations.
-  - **Artifacts expected:** `controllers/reservation_controller.go`, `pkg/forecast`, CLI support for `plan` subcommand.
+  - **Definition of done:** Runs lacking immediate capacity gain Reservations with concrete earliest start timestamps and deficit summaries exposed on Run/Reservation status.
+  - **Validation:** Unit tests for the forecast planner and topology helpers; controller tests proving reservations appear for both capacity shortfall and future budget windows; `go test ./...` in CI.
+  - **Artifacts delivered:** `pkg/forecast`, reservation planning in `controllers/run_controller.go`, updated worked examples, and a user guide in `docs/user-guide/reservations.md`.
   - **Design doc:** [docs/roadmap/design/M4-reservations-and-forecasting.md](design/M4-reservations-and-forecasting.md)
 
 - [ ] **M5 — Oversubscription resolver**

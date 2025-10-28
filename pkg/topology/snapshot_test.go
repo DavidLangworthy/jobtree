@@ -62,6 +62,41 @@ func TestBuildSnapshotForFlavor(t *testing.T) {
 	}
 }
 
+func TestSnapshotHelpers(t *testing.T) {
+	snapshot, err := BuildSnapshotForFlavor([]SourceNode{{
+		Name: "node-a",
+		Labels: map[string]string{
+			LabelRegion:       "us-west",
+			LabelCluster:      "cluster-a",
+			LabelFabricDomain: "island-a",
+			LabelGPUFlavor:    "H100",
+		},
+		GPUs: 4,
+	}, {
+		Name: "node-b",
+		Labels: map[string]string{
+			LabelRegion:       "us-west",
+			LabelCluster:      "cluster-a",
+			LabelFabricDomain: "island-b",
+			LabelGPUFlavor:    "H100",
+		},
+		GPUs: 2,
+	}}, map[string]int{"node-a": 1}, "H100")
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if snapshot.TotalFreeGPUs() != 5 {
+		t.Fatalf("expected 5 free GPUs, got %d", snapshot.TotalFreeGPUs())
+	}
+	dom, ok := snapshot.LargestDomain()
+	if !ok {
+		t.Fatalf("expected domain")
+	}
+	if dom.Key.Fabric != "island-a" {
+		t.Fatalf("expected island-a, got %s", dom.Key.Fabric)
+	}
+}
+
 func TestBuildSnapshotMissingLabels(t *testing.T) {
 	nodes := []SourceNode{
 		fakeNode("broken", map[string]string{

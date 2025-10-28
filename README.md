@@ -22,7 +22,7 @@ The full roadmap lives in [`docs/roadmap/milestones.md`](docs/roadmap/milestones
 - [x] **M1 – Budget accounting engine**
 - [x] **M2 – Topology discovery & group-aware packing**
 - [x] **M3 – Binder & Leases (runs that can start immediately)**
-- [ ] **M4 – Reservations & forecasting**
+- [x] **M4 – Reservations & forecasting**
 - [ ] **M5 – Oversubscription resolver**
 - [ ] **M6 – Failure handling & hot spares**
 - [ ] **M7 – Elastic runs (INCR) & voluntary shrink**

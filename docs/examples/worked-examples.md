@@ -28,7 +28,21 @@ examples focus on that immediate-start pathway.
 - **T1 — Budget update.** Team A concurrency drops to 24, Team B rises to 48. Running Leases continue.
   The extra 8 GPUs for `J1` are now accounted as borrowed (no priorities, no kills).
 - **T2 — New Run `J4 = 32`.** No immediate space → Reservation with `earliestStart = +15m`.
-  Forecast shows deficit 8 at activation.
+  Forecast shows deficit 8 at activation. Reservation status looks like:
+
+  ```yaml
+  status:
+    state: Pending
+    reason: "cluster short by 8 GPUs in scope"
+    countdownSeconds: 900
+    forecast:
+      deficitGPUs: 8
+      confidence: conservative
+      remedies:
+        - Drop spares in scope
+        - Shrink elastic runs by step size
+        - Run fair lottery if deficit remains
+  ```
 - **T3 — Activation (deficit).** No spares or INCR headroom on scope → enter lottery. End `J3(2)`
   then 6 ranks from `J1`; start `J4(32)`. Publish attested seed + conflict set.
 - **T4 — Failure.** One node under `J2` fails → shrink `J2` from 24 → 16 (INCR). Training continues.
@@ -148,8 +162,9 @@ Training continues without resharding; ledger shows deterministic Start/End/Swap
 **Run:** Fixed 4096 GPUs submitted today.
 
 **Admission:** `cover@today` cannot debit (no future borrowing) → create Reservation with intended
-slice and `earliestStart = tomorrow 00:00:10`. Backfill allowed until then. At midnight, activation
-runs structural cuts (if needed), starts Leases, and marks the Reservation Released.
+slice and `earliestStart = tomorrow 00:00:10`. Status reports `confidence: window-aligned` and
+`countdownSeconds` to activation. Backfill allowed until then. At midnight, activation runs structural
+cuts (if needed), starts Leases, and marks the Reservation Released.
 
 ---
 

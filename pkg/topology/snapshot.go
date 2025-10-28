@@ -65,6 +65,30 @@ type Snapshot struct {
 	byKey map[DomainKey]*Domain
 }
 
+// TotalFreeGPUs returns the aggregate free capacity across all domains.
+func (s *Snapshot) TotalFreeGPUs() int {
+	if s == nil {
+		return 0
+	}
+	total := 0
+	for _, dom := range s.Domains {
+		total += dom.FreeGPUs()
+	}
+	return total
+}
+
+// LargestDomain returns the domain with the highest free GPU count.
+func (s *Snapshot) LargestDomain() (*Domain, bool) {
+	if s == nil || len(s.Domains) == 0 {
+		return nil, false
+	}
+	sorted := s.SortedDomains()
+	if len(sorted) == 0 {
+		return nil, false
+	}
+	return sorted[0], true
+}
+
 // DomainByKey retrieves a domain from the snapshot.
 func (s *Snapshot) DomainByKey(key DomainKey) (*Domain, bool) {
 	dom, ok := s.byKey[key]
