@@ -8,4 +8,6 @@
 | `jobtree_budgets_concurrency_gpus` | gauge | `owner`,`budget`,`envelope`,`flavor`,`class` | Current concurrency split into owned/borrowed/spare. |
 | `jobtree_spares_concurrency_gpus` | gauge | `flavor` | Aggregate spare usage across envelopes. |
 
+The in-process controllers expose these metrics via the standard Prometheus text exposition. The helper `pkg/metrics.Handler()` returns an `http.Handler` that can be wired to `/metrics` on the manager so existing Prometheus scrapers keep working.
+
 The helm chart surfaces these metrics via a ServiceMonitor; see [docs/operator-guide/observability.md](../operator-guide/observability.md).
