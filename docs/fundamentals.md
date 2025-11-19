@@ -71,10 +71,10 @@ We write \(\Sigma \longrightarrow \Sigma'\) to mean “append events to the ledg
 
 ### Admission
 \[
-\frac{\text{Cover}(o, J, t) = \varphi \quad \text{Pack}(S, J) = \text{slice}}{\Sigma \longrightarrow \Sigma \cup \{\text{Start}(\text{Leases}(J, \text{slice}, \varphi))\}}\;\text{[Bind-Now]}
+\frac{\text{Cover}(o, J, t) = \varphi \quad \text{Pack}(S, J) = \text{slice}}{\Sigma \longrightarrow \Sigma \cup \{\text{Start}(\text{Leases}(J, \text{slice}, \varphi))\}}\;[\text{Bind-Now}]
 \]
 \[
-\frac{\text{Cover}(o, J, t_0) = \varphi \quad \text{Pack}(S, J) = \text{None} \quad \text{choose intendedSlice},\; \text{earliestStart} \ge t_0}{\Sigma \longrightarrow \Sigma \cup \{\text{Create}(\text{Reservation}\langle J, \text{intendedSlice}, \text{payer} \in \varphi, \text{earliestStart}\rangle)\}}\;\text{[Plan-Later]}
+\frac{\text{Cover}(o, J, t_0) = \varphi \quad \text{Pack}(S, J) = \text{None} \quad \text{choose intendedSlice},\; t_{\text{earliest}} \ge t_0}{\Sigma \longrightarrow \Sigma \cup \{\text{Create}(\text{Reservation}\langle J, \text{intendedSlice}, \text{payer} \in \varphi, t_{\text{earliest}}\rangle)\}}\;[\text{Plan-Later}]
 \]
 
 ### Reservation activation (at \(t = \text{earliestStart}\))
