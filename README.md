@@ -1,5 +1,7 @@
 # jobtree
 
+[![Docs](https://img.shields.io/badge/docs-readthedocs-blue)](https://jobtree.readthedocs.io)
+
 Kubernetes-native gang scheduling of job forests under time-scoped organizational budgets.
 
 ## Getting started
@@ -42,10 +44,12 @@ The full roadmap lives in [`docs/roadmap/milestones.md`](docs/roadmap/milestones
 
 The long-term directory structure is documented in [`docs/architecture/directory-tree.md`](docs/architecture/directory-tree.md). As milestones land, the repository will grow toward that shape.
 
-## Project governance & docs
+## Documentation
 
+- Hosted site: [jobtree.readthedocs.io](https://jobtree.readthedocs.io) (MkDocs + Material).
+- Preview locally: `pip install -r docs/requirements.txt && mkdocs serve`.
 - Maintainers and escalation paths: [`MAINTAINERS.md`](MAINTAINERS.md)
 - First-class readiness checklist: [`docs/project/first-class-readiness.md`](docs/project/first-class-readiness.md)
-- Read the Docs rollout plan: [`docs/website/readthedocs.md`](docs/website/readthedocs.md)
+- Read the Docs implementation notes: [`docs/website/readthedocs.md`](docs/website/readthedocs.md)
 - Cluster visualization guide: [`docs/visualizations/cluster-allocation.md`](docs/visualizations/cluster-allocation.md)
 - Researcher budget UX spec: [`docs/product/researcher-budget-ux.md`](docs/product/researcher-budget-ux.md)

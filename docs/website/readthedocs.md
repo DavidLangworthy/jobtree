@@ -1,106 +1,83 @@
-# Publishing on Read the Docs
+# Read the Docs Site
 
-The jobtree documentation already ships as Markdown under `docs/`. This guide explains how to
-publish it on [Read the Docs](https://readthedocs.io) so the project feels first-class for new
-contributors.
+Jobtree now ships a **fully navigable documentation site** backed by MkDocs + Material and published
+on [Read the Docs](https://readthedocs.io). This page describes how we structure the site, build it
+locally, and keep the hosted version healthy.
 
-## 1. Choose a documentation engine
+## 1. Tooling
 
-Read the Docs supports Sphinx and MkDocs. We recommend **MkDocs** because:
+* **Engine:** MkDocs with the Material theme (great search, mobile-friendly, Markdown-first).
+* **Config:** `mkdocs.yml` at the repo root defines navigation, palette, and search.
+* **Dependencies:** listed in `docs/requirements.txt` (installed by CI and Read the Docs).
 
-* All content is Markdown today.
-* The navigation structure maps cleanly to the existing `docs/` tree.
-* It integrates with Material for MkDocs for a polished look.
-
-Install tooling locally:
+Install locally:
 
 ```bash
-pip install mkdocs mkdocs-material
+python3 -m venv .venv-docs
+source .venv-docs/bin/activate
+pip install -r docs/requirements.txt
 ```
 
-## 2. Create `mkdocs.yml`
+Serve with hot reload:
 
-Add a configuration file at the repository root:
+```bash
+mkdocs serve
+# open http://127.0.0.1:8000
+```
+
+## 2. Navigation model
+
+The live site organizes content for three primary audiences:
+
+1. **Researchers** – `docs/user-guide/researcher-guide.md` (quick start, elasticity, borrowing).
+2. **Operators** – `docs/operator-guide/admin-setup.md` plus observability + visualization guides.
+3. **Migrators** – SLURM and Kueue bridges that map their vocabulary to Jobtree’s abstractions.
+
+Reference sections cover Budgets, Runs, Leases, CLI usage, worked examples, and project governance.
+Navigation is defined in `mkdocs.yml` so Read the Docs renders the same structure we preview locally.
+
+## 3. Continuous integration
+
+`.github/workflows/docs.yaml` builds the site on every pull request that touches docs, MkDocs
+configuration, or the MAINTAINERS roster:
 
 ```yaml
-site_name: Jobtree
-site_url: https://jobtree.readthedocs.io
-repo_url: https://github.com/davidlangworthy/jobtree
-nav:
-  - Overview: docs/concepts/overview.md
-  - Quick start:
-      - CLI quickstart: docs/user-guide/quickstart.md
-      - Elastic runs: docs/user-guide/elastic-runs.md
-  - Concepts:
-      - Budgets: docs/concepts/budgets.md
-      - Runs: docs/concepts/runs.md
-      - Reservations: docs/user-guide/reservations.md
-      - Leases: docs/concepts/leases.md
-  - Operator guide:
-      - Install: docs/operator-guide/install.md
-      - Observability: docs/operator-guide/observability.md
-  - Roadmap: docs/roadmap/milestones.md
-  - Community: MAINTAINERS.md
-theme:
-  name: material
-markdown_extensions:
-  - admonition
-  - footnotes
-  - toc:
-      permalink: true
+runs-on: ubuntu-latest
+steps:
+  - uses: actions/checkout@v4
+  - uses: actions/setup-python@v5
+    with:
+      python-version: '3.11'
+  - run: pip install -r docs/requirements.txt
+  - run: mkdocs build --strict
 ```
 
-Commit this file along with `docs/` content.
+This prevents broken navigation, missing pages, or formatting regressions from landing in `main`.
 
-## 3. Configure Read the Docs
+## 4. Read the Docs project settings
 
-1. Create a project at https://readthedocs.org/dashboard/.
-2. Point it at `github.com/davidlangworthy/jobtree`.
-3. In project settings:
-   * **Documentation type:** MkDocs.
-   * **Python version:** 3.11.
-   * **Install requirements:** supply a `docs/requirements.txt` with `mkdocs` and `mkdocs-material`.
-   * Enable PR previews for documentation branches.
-4. Trigger a build to ensure the site renders.
+1. Create the project at https://readthedocs.org/dashboard/ and point it to
+   `github.com/davidlangworthy/jobtree`.
+2. In **Advanced Settings**:
+   * Documentation type: *MkDocs*.
+   * Python version: *3.11*.
+   * Requirements file: `docs/requirements.txt`.
+   * Enable pull-request previews for docs-heavy branches.
+3. Add the Read the Docs badge to `README.md` (already done) so users can discover the site.
 
-## 4. Continuous integration
+## 5. Content review checklist
 
-Add a GitHub workflow to build docs on pull requests:
-
-```yaml
-name: docs
-on:
-  pull_request:
-    paths:
-      - 'docs/**'
-      - 'mkdocs.yml'
-      - 'MAINTAINERS.md'
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - run: pip install mkdocs mkdocs-material
-      - run: mkdocs build --strict
-```
-
-This keeps the site buildable before Read the Docs renders it.
-
-## 5. Badges and discoverability
-
-Once the site is live:
-
-* Add a Read the Docs badge to `README.md`.
-* Update onboarding docs to reference `https://jobtree.readthedocs.io` as the canonical entry point.
+* New features must add or update a page referenced in `mkdocs.yml`.
+* Worked examples should be runnable via manifests in `config/samples/**`.
+* When editing specs (Budget/Run/Reservation/Lease), keep the corresponding concept page in sync.
+* Add images (cluster allocation heatmaps, CLI screenshots) under `docs/visualizations/` when
+  they materially help the story.
 
 ## 6. Future enhancements
 
-* Host API reference docs generated from CRD schemas.
-* Publish CLI command reference using `kubectl runs --help` output.
-* Embed Grafana dashboard screenshots in the observability section.
+* Generate API reference pages from CRD Go doc comments using `mkdocs-gen-files`.
+* Publish CLI reference directly from `kubectl runs --help` output as part of CI.
+* Embed Grafana dashboard PNGs in the observability section for quick recognition.
 
-With these steps, jobtree becomes approachable like other first-class schedulers.
+With these steps Jobtree feels like a first-class project: newcomers land on a polished site, see
+examples tailored to their persona, and can cross-reference specs, guides, and roadmap updates.
