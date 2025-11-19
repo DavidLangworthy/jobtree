@@ -1,0 +1,26 @@
+{
+  "apiVersion": "rq.davidlangworthy.io/v1",
+  "kind": "Run",
+  "metadata": {
+    "name": "train-128-cofunded",
+    "namespace": "example"
+  },
+  "spec": {
+    "owner": "org:example:sys",
+    "resources": {
+      "gpuType": "H100-80GB",
+      "totalGPUs": 128
+    },
+    "locality": {
+      "groupGPUs": 32,
+      "allowCrossGroupSpread": true
+    },
+    "funding": {
+      "allowBorrow": true,
+      "maxBorrowGPUs": 32,
+      "sponsors": [
+        "org:example:vision"
+      ]
+    }
+  }
+}

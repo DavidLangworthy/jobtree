@@ -1,0 +1,781 @@
+package controllers
+
+import (
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	v1 "github.com/davidlangworthy/jobtree/api/v1"
+	"github.com/davidlangworthy/jobtree/pkg/binder"
+	"github.com/davidlangworthy/jobtree/pkg/forecast"
+	"github.com/davidlangworthy/jobtree/pkg/topology"
+)
+
+type runClock struct{ now time.Time }
+
+func (f runClock) Now() time.Time { return f.now }
+
+func TestRunControllerAdmitsRun(t *testing.T) {
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	state := &ClusterState{
+		Budgets: []v1.Budget{{
+			ObjectMeta: v1.ObjectMeta{Name: "rai"},
+			Spec: v1.BudgetSpec{
+				Owner: "org:ai:rai",
+				Envelopes: []v1.BudgetEnvelope{{
+					Name:        "west-h100",
+					Flavor:      "H100-80GB",
+					Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
+					Concurrency: 8,
+				}},
+			},
+		}},
+		Nodes: []topology.SourceNode{{
+			Name: "node-a",
+			Labels: map[string]string{
+				topology.LabelRegion:       "us-west",
+				topology.LabelCluster:      "cluster-a",
+				topology.LabelFabricDomain: "island-a",
+				topology.LabelGPUFlavor:    "H100-80GB",
+			},
+			GPUs: 4,
+		}},
+	}
+	state.Runs = map[string]*v1.Run{
+		"default/train-8": {
+			ObjectMeta: v1.ObjectMeta{Name: "train-8", Namespace: "default"},
+			Spec: v1.RunSpec{
+				Owner: "org:ai:rai",
+				Resources: v1.RunResources{
+					GPUType:   "H100-80GB",
+					TotalGPUs: 4,
+				},
+			},
+		},
+	}
+
+	controller := NewRunController(state, runClock{now: now})
+	if err := controller.Reconcile("default", "train-8"); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	run := state.Runs["default/train-8"]
+	if run.Status.Phase != RunPhaseRunning {
+		t.Fatalf("expected run phase running, got %s", run.Status.Phase)
+	}
+	if len(state.Pods) != 1 {
+		t.Fatalf("expected 1 pod manifest, got %d", len(state.Pods))
+	}
+	if state.Pods[0].NodeName != "node-a" {
+		t.Fatalf("expected pod bound to node-a, got %s", state.Pods[0].NodeName)
+	}
+	if len(state.Leases) != 1 {
+		t.Fatalf("expected 1 lease, got %d", len(state.Leases))
+	}
+	if state.Leases[0].Spec.PaidByEnvelope != "west-h100" {
+		t.Fatalf("expected lease paid by west-h100, got %s", state.Leases[0].Spec.PaidByEnvelope)
+	}
+}
+
+func TestRunControllerCoFundedRunUpdatesFundingStatus(t *testing.T) {
+	now := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
+	lendAllow := true
+	limit := int32(32)
+	state := &ClusterState{
+		Budgets: []v1.Budget{
+			{
+				ObjectMeta: v1.ObjectMeta{Name: "rai"},
+				Spec: v1.BudgetSpec{
+					Owner: "org:ai:rai",
+					Envelopes: []v1.BudgetEnvelope{{
+						Name:        "west-h100",
+						Flavor:      "H100-80GB",
+						Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
+						Concurrency: 96,
+					}},
+				},
+			},
+			{
+				ObjectMeta: v1.ObjectMeta{Name: "vision"},
+				Spec: v1.BudgetSpec{
+					Owner: "org:ai:mm:vision",
+					Envelopes: []v1.BudgetEnvelope{{
+						Name:        "west-h100",
+						Flavor:      "H100-80GB",
+						Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
+						Concurrency: 64,
+						Lending: &v1.LendingPolicy{
+							Allow:          lendAllow,
+							To:             []string{"org:ai:rai", "org:ai:rai:*"},
+							MaxConcurrency: &limit,
+						},
+					}},
+				},
+			},
+		},
+	}
+
+	for i := 0; i < 4; i++ {
+		state.Nodes = append(state.Nodes, topology.SourceNode{
+			Name: fmt.Sprintf("node-%d", i),
+			Labels: map[string]string{
+				topology.LabelRegion:       "us-west",
+				topology.LabelCluster:      "cluster-a",
+				topology.LabelFabricDomain: "island-a",
+				topology.LabelGPUFlavor:    "H100-80GB",
+			},
+			GPUs: 32,
+		})
+	}
+
+	maxBorrow := int32(32)
+	groupSize := int32(32)
+	state.Runs = map[string]*v1.Run{
+		"default/train-128": {
+			ObjectMeta: v1.ObjectMeta{Name: "train-128", Namespace: "default"},
+			Spec: v1.RunSpec{
+				Owner: "org:ai:rai",
+				Resources: v1.RunResources{
+					GPUType:   "H100-80GB",
+					TotalGPUs: 128,
+				},
+				Locality: &v1.RunLocality{GroupGPUs: &groupSize},
+				Funding: &v1.RunFunding{
+					AllowBorrow:   true,
+					MaxBorrowGPUs: &maxBorrow,
+					Sponsors:      []string{"org:ai:mm:vision"},
+				},
+			},
+		},
+	}
+
+	controller := NewRunController(state, runClock{now: now})
+	if err := controller.Reconcile("default", "train-128"); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	run := state.Runs["default/train-128"]
+	if run.Status.Phase != RunPhaseRunning {
+		t.Fatalf("expected run phase running, got %s", run.Status.Phase)
+	}
+	if run.Status.Funding == nil {
+		t.Fatalf("expected funding status populated")
+	}
+	if run.Status.Funding.OwnedGPUs != 96 {
+		t.Fatalf("expected 96 owned GPUs, got %d", run.Status.Funding.OwnedGPUs)
+	}
+	if run.Status.Funding.BorrowedGPUs != 32 {
+		t.Fatalf("expected 32 borrowed GPUs, got %d", run.Status.Funding.BorrowedGPUs)
+	}
+	if len(run.Status.Funding.Sponsors) != 1 {
+		t.Fatalf("expected single sponsor entry, got %d", len(run.Status.Funding.Sponsors))
+	}
+	share := run.Status.Funding.Sponsors[0]
+	if share.Owner != "org:ai:mm:vision" {
+		t.Fatalf("expected sponsor owner org:ai:mm:vision, got %s", share.Owner)
+	}
+	if share.GPUs != 32 {
+		t.Fatalf("expected sponsor GPUs 32, got %d", share.GPUs)
+	}
+}
+
+func TestRunControllerBorrowLimitCreatesReservation(t *testing.T) {
+	now := time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC)
+	allow := true
+	state := &ClusterState{
+		Budgets: []v1.Budget{
+			{
+				ObjectMeta: v1.ObjectMeta{Name: "rai"},
+				Spec: v1.BudgetSpec{
+					Owner: "org:ai:rai",
+					Envelopes: []v1.BudgetEnvelope{{
+						Name:        "west-h100",
+						Flavor:      "H100-80GB",
+						Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
+						Concurrency: 64,
+					}},
+				},
+			},
+			{
+				ObjectMeta: v1.ObjectMeta{Name: "vision"},
+				Spec: v1.BudgetSpec{
+					Owner: "org:ai:mm:vision",
+					Envelopes: []v1.BudgetEnvelope{{
+						Name:        "west-h100",
+						Flavor:      "H100-80GB",
+						Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
+						Concurrency: 64,
+						Lending: &v1.LendingPolicy{
+							Allow: allow,
+							To:    []string{"org:ai:rai", "org:ai:rai:*"},
+						},
+					}},
+				},
+			},
+		},
+	}
+
+	for i := 0; i < 4; i++ {
+		state.Nodes = append(state.Nodes, topology.SourceNode{
+			Name: fmt.Sprintf("node-b-%d", i),
+			Labels: map[string]string{
+				topology.LabelRegion:       "us-west",
+				topology.LabelCluster:      "cluster-a",
+				topology.LabelFabricDomain: "island-a",
+				topology.LabelGPUFlavor:    "H100-80GB",
+			},
+			GPUs: 32,
+		})
+	}
+
+	maxBorrow := int32(8)
+	groupSize := int32(32)
+	state.Runs = map[string]*v1.Run{
+		"default/train-128": {
+			ObjectMeta: v1.ObjectMeta{Name: "train-128", Namespace: "default"},
+			Spec: v1.RunSpec{
+				Owner: "org:ai:rai",
+				Resources: v1.RunResources{
+					GPUType:   "H100-80GB",
+					TotalGPUs: 128,
+				},
+				Locality: &v1.RunLocality{GroupGPUs: &groupSize},
+				Funding: &v1.RunFunding{
+					AllowBorrow:   true,
+					MaxBorrowGPUs: &maxBorrow,
+					Sponsors:      []string{"org:ai:mm:vision"},
+				},
+			},
+		},
+	}
+
+	controller := NewRunController(state, runClock{now: now})
+	if err := controller.Reconcile("default", "train-128"); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	run := state.Runs["default/train-128"]
+	if run.Status.PendingReservation == nil {
+		t.Fatalf("expected reservation due to borrow limit")
+	}
+	if run.Status.Phase != RunPhasePending {
+		t.Fatalf("expected phase pending when borrow limit hit, got %s", run.Status.Phase)
+	}
+	if len(state.Reservations) != 1 {
+		t.Fatalf("expected reservation created, got %d", len(state.Reservations))
+	}
+}
+
+func TestRunControllerCreatesReservationWhenCapacityMissing(t *testing.T) {
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	state := &ClusterState{
+		Budgets: []v1.Budget{{
+			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			Spec: v1.BudgetSpec{
+				Owner: "org:ai:team",
+				Envelopes: []v1.BudgetEnvelope{{
+					Name:        "west",
+					Flavor:      "H100-80GB",
+					Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
+					Concurrency: 16,
+				}},
+			},
+		}},
+		Nodes: []topology.SourceNode{{
+			Name: "node-a",
+			Labels: map[string]string{
+				topology.LabelRegion:       "us-west",
+				topology.LabelCluster:      "cluster-a",
+				topology.LabelFabricDomain: "island-a",
+				topology.LabelGPUFlavor:    "H100-80GB",
+			},
+			GPUs: 4,
+		}},
+	}
+	state.Runs = map[string]*v1.Run{
+		"default/train-8": {
+			ObjectMeta: v1.ObjectMeta{Name: "train-8", Namespace: "default"},
+			Spec: v1.RunSpec{
+				Owner: "org:ai:team",
+				Resources: v1.RunResources{
+					GPUType:   "H100-80GB",
+					TotalGPUs: 8,
+				},
+			},
+		},
+	}
+
+	controller := NewRunController(state, runClock{now: now})
+	if err := controller.Reconcile("default", "train-8"); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	run := state.Runs["default/train-8"]
+	if run.Status.PendingReservation == nil {
+		t.Fatalf("expected pending reservation recorded")
+	}
+	if run.Status.EarliestStart == nil {
+		t.Fatalf("expected earliest start set")
+	}
+	if len(state.Reservations) != 1 {
+		t.Fatalf("expected one reservation, got %d", len(state.Reservations))
+	}
+	for _, res := range state.Reservations {
+		if res.Spec.EarliestStart.Time.Before(now) {
+			t.Fatalf("expected reservation earliest start in future")
+		}
+		if res.Status.Forecast == nil || res.Status.Forecast.DeficitGPUs == 0 {
+			t.Fatalf("expected forecast deficit")
+		}
+	}
+}
+
+func TestRunControllerCreatesReservationForFutureWindow(t *testing.T) {
+	now := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
+	start := v1.NewTime(now.Add(2 * time.Hour))
+	state := &ClusterState{
+		Budgets: []v1.Budget{{
+			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			Spec: v1.BudgetSpec{
+				Owner: "org:ai:team",
+				Envelopes: []v1.BudgetEnvelope{{
+					Name:        "west",
+					Flavor:      "H100-80GB",
+					Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
+					Concurrency: 16,
+					Start:       &start,
+					PreActivation: &v1.PreActivationPolicy{
+						AllowReservations: true,
+						AllowAdmission:    false,
+					},
+				}},
+			},
+		}},
+		Nodes: []topology.SourceNode{{
+			Name: "node-a",
+			Labels: map[string]string{
+				topology.LabelRegion:       "us-west",
+				topology.LabelCluster:      "cluster-a",
+				topology.LabelFabricDomain: "island-a",
+				topology.LabelGPUFlavor:    "H100-80GB",
+			},
+			GPUs: 8,
+		}},
+	}
+	state.Runs = map[string]*v1.Run{
+		"default/train-8": {
+			ObjectMeta: v1.ObjectMeta{Name: "train-8", Namespace: "default"},
+			Spec: v1.RunSpec{
+				Owner:     "org:ai:team",
+				Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 8},
+			},
+		},
+	}
+
+	controller := NewRunController(state, runClock{now: now})
+	if err := controller.Reconcile("default", "train-8"); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	if len(state.Reservations) != 1 {
+		t.Fatalf("expected reservation created")
+	}
+	var reservation *v1.Reservation
+	for _, res := range state.Reservations {
+		reservation = res
+	}
+	if reservation == nil {
+		t.Fatalf("reservation missing")
+	}
+	expectedEarliest := start.Time.Add(forecast.WindowActivationOffset)
+	if reservation.Spec.EarliestStart.Time.Before(expectedEarliest) {
+		t.Fatalf("expected earliest start >= %s, got %s", expectedEarliest, reservation.Spec.EarliestStart.Time)
+	}
+	if reservation.Status.Forecast == nil || reservation.Status.Forecast.Confidence != "window-aligned" {
+		t.Fatalf("expected window-aligned forecast")
+	}
+}
+
+func TestElasticRunGrowsToDesired(t *testing.T) {
+	now := time.Date(2024, 2, 2, 10, 0, 0, 0, time.UTC)
+	state := &ClusterState{
+		Budgets: []v1.Budget{{
+			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			Spec: v1.BudgetSpec{
+				Owner: "org:ai:rai",
+				Envelopes: []v1.BudgetEnvelope{{
+					Name:        "west",
+					Flavor:      "H100-80GB",
+					Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
+					Concurrency: 256,
+				}},
+			},
+		}},
+	}
+	for i := 0; i < 5; i++ {
+		state.Nodes = append(state.Nodes, topology.SourceNode{
+			Name: fmt.Sprintf("node-%d", i),
+			Labels: map[string]string{
+				topology.LabelRegion:       "us-west",
+				topology.LabelCluster:      "cluster-a",
+				topology.LabelFabricDomain: "island-a",
+				topology.LabelGPUFlavor:    "H100-80GB",
+			},
+			GPUs: 32,
+		})
+	}
+	desired := int32(160)
+	group := int32(32)
+	state.Runs = map[string]*v1.Run{
+		"default/train": {
+			ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"},
+			Spec: v1.RunSpec{
+				Owner: "org:ai:rai",
+				Resources: v1.RunResources{
+					GPUType:   "H100-80GB",
+					TotalGPUs: 96,
+				},
+				Locality: &v1.RunLocality{GroupGPUs: &group},
+				Malleable: &v1.RunMalleability{
+					MinTotalGPUs:     96,
+					MaxTotalGPUs:     160,
+					StepGPUs:         32,
+					DesiredTotalGPUs: &desired,
+				},
+			},
+		},
+	}
+
+	controller := NewRunController(state, runClock{now: now})
+	if err := controller.Reconcile("default", "train"); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	run := state.Runs["default/train"]
+	if run.Status.Width == nil || run.Status.Width.Allocated != 96 {
+		t.Fatalf("expected allocated width 96, got %+v", run.Status.Width)
+	}
+
+	controller.Clock = runClock{now: now.Add(time.Minute)}
+	if err := controller.Reconcile("default", "train"); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	if run.Status.Width == nil || run.Status.Width.Allocated != 128 {
+		t.Fatalf("expected allocated width 128 after growth, got %+v", run.Status.Width)
+	}
+	foundGrow := false
+	for _, lease := range state.Leases {
+		if lease.Spec.Reason == "Grow" {
+			foundGrow = true
+			break
+		}
+	}
+	if !foundGrow {
+		t.Fatalf("expected at least one grow lease")
+	}
+}
+
+func TestElasticRunVoluntaryShrink(t *testing.T) {
+	now := time.Date(2024, 2, 2, 10, 0, 0, 0, time.UTC)
+	state := &ClusterState{
+		Budgets: []v1.Budget{{
+			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			Spec: v1.BudgetSpec{
+				Owner: "org:ai:rai",
+				Envelopes: []v1.BudgetEnvelope{{
+					Name:        "west",
+					Flavor:      "H100-80GB",
+					Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
+					Concurrency: 256,
+				}},
+			},
+		}},
+	}
+	for i := 0; i < 5; i++ {
+		state.Nodes = append(state.Nodes, topology.SourceNode{
+			Name: fmt.Sprintf("node-%d", i),
+			Labels: map[string]string{
+				topology.LabelRegion:       "us-west",
+				topology.LabelCluster:      "cluster-a",
+				topology.LabelFabricDomain: "island-a",
+				topology.LabelGPUFlavor:    "H100-80GB",
+			},
+			GPUs: 32,
+		})
+	}
+	desired := int32(160)
+	group := int32(32)
+	state.Runs = map[string]*v1.Run{
+		"default/train": {
+			ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"},
+			Spec: v1.RunSpec{
+				Owner:     "org:ai:rai",
+				Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 96},
+				Locality:  &v1.RunLocality{GroupGPUs: &group},
+				Malleable: &v1.RunMalleability{
+					MinTotalGPUs:     96,
+					MaxTotalGPUs:     160,
+					StepGPUs:         32,
+					DesiredTotalGPUs: &desired,
+				},
+			},
+		},
+	}
+
+	controller := NewRunController(state, runClock{now: now})
+	if err := controller.Reconcile("default", "train"); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	controller.Clock = runClock{now: now.Add(time.Minute)}
+	if err := controller.Reconcile("default", "train"); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	target := int32(96)
+	run := state.Runs["default/train"]
+	run.Spec.Malleable.DesiredTotalGPUs = &target
+	controller.Clock = runClock{now: now.Add(2 * time.Minute)}
+	if err := controller.Reconcile("default", "train"); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	if run.Status.Width == nil || run.Status.Width.Allocated != 96 {
+		t.Fatalf("expected allocated width 96 after shrink, got %+v", run.Status.Width)
+	}
+	closedShrink := 0
+	for i := range state.Leases {
+		lease := state.Leases[i]
+		if lease.Status.Closed && lease.Status.ClosureReason == "Shrink" {
+			closedShrink++
+		}
+	}
+	if closedShrink == 0 {
+		t.Fatalf("expected shrink to close leases")
+	}
+	if len(state.Pods) == 0 {
+		t.Fatalf("expected remaining pods after shrink")
+	}
+}
+
+func TestActivateReservationRunsResolver(t *testing.T) {
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	nodes := []topology.SourceNode{
+		{Name: "node-a", GPUs: 8, Labels: map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a", topology.LabelGPUFlavor: "H100-80GB"}},
+		{Name: "node-b", GPUs: 8, Labels: map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a", topology.LabelGPUFlavor: "H100-80GB"}},
+		{Name: "node-c", GPUs: 8, Labels: map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a", topology.LabelGPUFlavor: "H100-80GB"}},
+	}
+
+	budgets := []v1.Budget{
+		{ObjectMeta: v1.ObjectMeta{Name: "owner-a"}, Spec: v1.BudgetSpec{Owner: "org:owner:a", Envelopes: []v1.BudgetEnvelope{{
+			Name:        "west",
+			Flavor:      "H100-80GB",
+			Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
+			Concurrency: 16,
+		}}}},
+		{ObjectMeta: v1.ObjectMeta{Name: "owner-b"}, Spec: v1.BudgetSpec{Owner: "org:owner:b", Envelopes: []v1.BudgetEnvelope{{
+			Name:        "west",
+			Flavor:      "H100-80GB",
+			Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
+			Concurrency: 16,
+		}}}},
+		{ObjectMeta: v1.ObjectMeta{Name: "owner-c"}, Spec: v1.BudgetSpec{Owner: "org:owner:c", Envelopes: []v1.BudgetEnvelope{{
+			Name:        "west",
+			Flavor:      "H100-80GB",
+			Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
+			Concurrency: 16,
+		}}}},
+	}
+
+	state := &ClusterState{Nodes: nodes, Budgets: budgets}
+	state.Runs = map[string]*v1.Run{
+		"default/run-a": {
+			ObjectMeta: v1.ObjectMeta{Name: "run-a", Namespace: "default"},
+			Spec:       v1.RunSpec{Owner: "org:owner:a", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 8}, Locality: &v1.RunLocality{GroupGPUs: int32Ptr(8)}},
+		},
+		"default/run-b": {
+			ObjectMeta: v1.ObjectMeta{Name: "run-b", Namespace: "default"},
+			Spec:       v1.RunSpec{Owner: "org:owner:b", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 16}, Locality: &v1.RunLocality{GroupGPUs: int32Ptr(8)}, Malleable: &v1.RunMalleability{MinTotalGPUs: 8, MaxTotalGPUs: 16, StepGPUs: 8}},
+		},
+	}
+
+	controller := NewRunController(state, runClock{now: now})
+	if err := controller.Reconcile("default", "run-a"); err != nil {
+		t.Fatalf("run-a reconcile failed: %v", err)
+	}
+	if err := controller.Reconcile("default", "run-b"); err != nil {
+		t.Fatalf("run-b reconcile failed: %v", err)
+	}
+
+	// Add the pending run that will trigger a reservation.
+	state.Runs["default/run-c"] = &v1.Run{
+		ObjectMeta: v1.ObjectMeta{Name: "run-c", Namespace: "default"},
+		Spec:       v1.RunSpec{Owner: "org:owner:c", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 16}, Locality: &v1.RunLocality{GroupGPUs: int32Ptr(8)}},
+	}
+
+	if err := controller.Reconcile("default", "run-c"); err != nil {
+		t.Fatalf("run-c reconcile failed: %v", err)
+	}
+
+	var reservation *v1.Reservation
+	for _, res := range state.Reservations {
+		reservation = res
+	}
+	if reservation == nil {
+		t.Fatalf("expected reservation for run-c")
+	}
+
+	activationTime := now.Add(30 * time.Minute)
+	controller.Clock = runClock{now: activationTime}
+	if err := controller.ActivateReservations(activationTime); err != nil {
+		t.Fatalf("activate reservations failed: %v", err)
+	}
+
+	runA := state.Runs["default/run-a"]
+	runB := state.Runs["default/run-b"]
+	runC := state.Runs["default/run-c"]
+
+	if runC.Status.Phase != RunPhaseRunning {
+		t.Fatalf("expected run-c running after activation, got %s", runC.Status.Phase)
+	}
+	if runA.Status.Phase != RunPhaseFailed {
+		t.Fatalf("expected run-a failed after lottery, got %s", runA.Status.Phase)
+	}
+	if runB.Status.Phase != RunPhaseRunning {
+		t.Fatalf("expected run-b running after shrink, got %s", runB.Status.Phase)
+	}
+
+	// Ensure leases closed with reasons.
+	closedLottery := false
+	closedShrink := false
+	for _, lease := range state.Leases {
+		if !lease.Status.Closed {
+			continue
+		}
+		if strings.Contains(lease.Status.ClosureReason, "RandomPreempt") {
+			closedLottery = true
+		}
+		if lease.Status.ClosureReason == "Shrink" {
+			closedShrink = true
+		}
+	}
+	if !closedLottery {
+		t.Fatalf("expected at least one lottery preempted lease")
+	}
+	if !closedShrink {
+		t.Fatalf("expected shrink closure reason")
+	}
+
+	if reservation.Status.State != "Released" {
+		t.Fatalf("expected reservation released, got %s", reservation.Status.State)
+	}
+}
+
+func TestHandleNodeFailureSwapsToSpare(t *testing.T) {
+	now := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+	state := &ClusterState{
+		Budgets: []v1.Budget{{
+			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			Spec: v1.BudgetSpec{
+				Owner: "org:ai:team",
+				Envelopes: []v1.BudgetEnvelope{{
+					Name:        "west",
+					Flavor:      "H100-80GB",
+					Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
+					Concurrency: 8,
+				}},
+			},
+		}},
+		Nodes: []topology.SourceNode{
+			{Name: "node-a", GPUs: 4, Labels: map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a", topology.LabelGPUFlavor: "H100-80GB"}},
+			{Name: "node-b", GPUs: 4, Labels: map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a", topology.LabelGPUFlavor: "H100-80GB"}},
+		},
+	}
+	state.Runs = map[string]*v1.Run{
+		"default/run": {
+			ObjectMeta: v1.ObjectMeta{Name: "run", Namespace: "default"},
+			Spec: v1.RunSpec{
+				Owner:     "org:ai:team",
+				Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
+				Locality:  &v1.RunLocality{GroupGPUs: int32Ptr(4)},
+				Spares:    int32Ptr(2),
+			},
+		},
+	}
+
+	controller := NewRunController(state, runClock{now: now})
+	if err := controller.Reconcile("default", "run"); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	var spareLease *v1.Lease
+	for i := range state.Leases {
+		if state.Leases[i].Spec.Slice.Role == binder.RoleSpare {
+			spareLease = &state.Leases[i]
+			break
+		}
+	}
+	if spareLease == nil {
+		t.Fatalf("expected spare lease to be created")
+	}
+
+	fillerLease := v1.Lease{
+		ObjectMeta: v1.ObjectMeta{Name: "filler"},
+		Spec: v1.LeaseSpec{
+			Owner:          "org:ai:other",
+			RunRef:         v1.RunReference{Name: "filler", Namespace: "default"},
+			Slice:          v1.LeaseSlice{Nodes: append([]string{}, spareLease.Spec.Slice.Nodes...), Role: binder.RoleBorrowed},
+			Interval:       v1.LeaseInterval{Start: v1.NewTime(now)},
+			PaidByEnvelope: "west",
+			Reason:         "Start",
+		},
+	}
+	state.Leases = append(state.Leases, fillerLease)
+	state.Pods = append(state.Pods, binder.PodManifest{
+		Namespace: "default",
+		Name:      "filler",
+		NodeName:  nodeFromSlot(spareLease.Spec.Slice.Nodes[0]),
+		GPUs:      len(spareLease.Spec.Slice.Nodes),
+		Labels: map[string]string{
+			binder.LabelRunName:    "filler",
+			binder.LabelGroupIndex: "0",
+			binder.LabelRunRole:    binder.RoleBorrowed,
+		},
+	})
+
+	failTime := now.Add(5 * time.Minute)
+	controller.Clock = runClock{now: failTime}
+	if err := controller.HandleNodeFailure("node-a", failTime); err != nil {
+		t.Fatalf("handle node failure failed: %v", err)
+	}
+
+	run := state.Runs["default/run"]
+	if run.Status.Phase != RunPhaseRunning {
+		t.Fatalf("expected run to remain running, got %s", run.Status.Phase)
+	}
+	if !strings.Contains(run.Status.Message, "swapped") {
+		t.Fatalf("expected swap message, got %s", run.Status.Message)
+	}
+
+	var activeOnSpare *v1.Lease
+	fillerClosed := false
+	for i := range state.Leases {
+		lease := state.Leases[i]
+		if lease.Spec.RunRef.Name == "run" && lease.Spec.Slice.Role == binder.RoleActive && !lease.Status.Closed && lease.Spec.Interval.Start.Time.Equal(failTime) {
+			activeOnSpare = &lease
+		}
+		if lease.Spec.RunRef.Name == "filler" && lease.Status.ClosureReason == "ReclaimedBySpare" {
+			fillerClosed = true
+		}
+	}
+	if activeOnSpare == nil {
+		t.Fatalf("expected new active lease on spare nodes")
+	}
+	if !fillerClosed {
+		t.Fatalf("expected filler lease reclaimed by spare")
+	}
+	if len(state.Pods) == 0 || state.Pods[len(state.Pods)-1].NodeName != nodeFromSlot(spareLease.Spec.Slice.Nodes[0]) {
+		t.Fatalf("expected new pod on spare node, got %+v", state.Pods)
+	}
+}
+
+func int32Ptr(v int32) *int32 { return &v }

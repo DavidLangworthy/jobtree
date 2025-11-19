@@ -1,0 +1,22 @@
+apiVersion: rq.davidlangworthy.io/v1
+kind: Reservation
+metadata:
+  name: res-train-128
+spec:
+  runRef:
+    name: train-128
+    namespace: rai-sys
+  intendedSlice:
+    domain:
+      fabric.domain: "17"
+    nodes:
+      - n17-01
+      - n17-02
+      - n17-03
+      - n17-04
+      - n17-05
+      - n17-06
+      - n17-07
+      - n17-08
+  payingEnvelope: west-h100
+  earliestStart: "2025-11-01T00:00:10Z"

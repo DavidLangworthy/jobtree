@@ -1,0 +1,31 @@
+controller:
+  image: ghcr.io/davidlangworthy/jobtree-controller:latest
+  replicas: 1
+  resources: {}
+  serviceAccount: jobtree-controller
+  metricsPort: 8080
+  extraArgs: []
+
+notifier:
+  enabled: true
+  image: ghcr.io/davidlangworthy/jobtree-notifier:latest
+  replicas: 1
+  resources: {}
+
+monitoring:
+  enabled: true
+  scrapeInterval: 30s
+  serviceMonitorNamespace: ""
+
+webhook:
+  enableTLS: true
+  certSecretName: jobtree-webhook-cert
+
+rbac:
+  create: true
+
+imagePullSecrets: []
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

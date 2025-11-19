@@ -1,0 +1,19 @@
+apiVersion: rq.davidlangworthy.io/v1
+kind: Budget
+metadata:
+  name: example-vision
+spec:
+  owner: org:example:vision
+  envelopes:
+    - name: west-h100
+      flavor: H100-80GB
+      selector:
+        region: us-west
+        cluster: gpu-a
+      concurrency: 256
+      lending:
+        allow: true
+        to:
+          - org:example:*
+        maxConcurrency: 64
+        maxGPUHours: 20480

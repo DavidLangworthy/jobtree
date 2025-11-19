@@ -1,0 +1,21 @@
+apiVersion: krew.googlecontainertools.github.com/v1alpha2
+kind: Plugin
+metadata:
+  name: runs
+spec:
+  version: v0.1.0
+  platforms:
+    - selector:
+        matchLabels:
+          os: linux
+          arch: amd64
+      files:
+        - from: cmd/kubectl-runs/kubectl-runs
+          to: kubectl-runs
+      bin: kubectl-runs
+  shortDescription: "Interact with Jobtree Run, Reservation, and Lease CRDs"
+  homepage: https://github.com/davidlangworthy/jobtree
+  description: |
+    The runs plugin provides convenient commands to submit, plan, watch,
+    and explain GPU research runs managed by Jobtree. It operates against
+    a JSON state snapshot for development and demos.

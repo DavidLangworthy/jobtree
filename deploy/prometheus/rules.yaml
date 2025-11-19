@@ -1,0 +1,26 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: jobtree-slo
+  labels:
+    app: jobtree
+spec:
+  groups:
+    - name: jobtree.alerts
+      rules:
+        - alert: JobtreeReservationDelay
+          expr: sum(jobtree_reservations_backlog_seconds) > 1800
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Jobtree reservations delayed"
+            description: "Pending reservations have more than 30 minutes of backlog."
+        - alert: JobtreeResolverStorm
+          expr: sum(rate(jobtree_resolver_actions_total[15m])) > 5
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High resolver activity"
+            description: "Resolver is performing more than five actions per minute."

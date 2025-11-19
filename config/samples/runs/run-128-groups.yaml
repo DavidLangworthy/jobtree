@@ -1,0 +1,23 @@
+apiVersion: rq.davidlangworthy.io/v1
+kind: Run
+metadata:
+  name: train-128
+spec:
+  owner: org:example:sys
+  resources:
+    gpuType: H100-80GB
+    totalGPUs: 128
+  locality:
+    groupGPUs: 64
+    allowCrossGroupSpread: true
+  runtime:
+    checkpoint: 30m
+  malleable:
+    minTotalGPUs: 64
+    maxTotalGPUs: 160
+    stepGPUs: 16
+  funding:
+    allowBorrow: true
+    maxBorrowGPUs: 32
+    sponsors:
+      - org:example:vision

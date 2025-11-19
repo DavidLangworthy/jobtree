@@ -1,0 +1,8 @@
+Thank you for installing gpu-fleet!
+
+Metrics are exposed on the service {{ include "gpu-fleet.controllerName" . }} port {{ .Values.controller.metricsPort }}.
+
+If monitoring.enabled=true, a ServiceMonitor has been created for Prometheus Operator.
+
+Use the kubectl plugin installed via krew to interact with runs:
+  kubectl runs --state <state-file> plan <run-name>
