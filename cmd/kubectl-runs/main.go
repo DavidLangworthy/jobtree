@@ -1,14 +1,14 @@
 package main
 
 import (
-    "os"
+	"os"
 
-    "github.com/davidlangworthy/jobtree/cmd/kubectl-runs/cmd"
+	"github.com/davidlangworthy/jobtree/cmd/kubectl-runs/cmd"
 )
 
 func main() {
-    root := cmd.NewRootCommand()
-    if err := root.Execute(); err != nil {
-        os.Exit(1)
-    }
+	root := cmd.NewRootCommand()
+	if err := root.Execute(); err != nil {
+		os.Exit(1)
+	}
 }
