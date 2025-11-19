@@ -56,14 +56,31 @@ This prevents broken navigation, missing pages, or formatting regressions from l
 
 ## 4. Read the Docs project settings
 
-1. Create the project at https://readthedocs.org/dashboard/ and point it to
+We ship a first-class config at the repo root: `.readthedocs.yaml`. Read the Docs detects it
+automatically and uses it to pin the build image, Python version, MkDocs configuration, and
+dependency installation. Key settings:
+
+```yaml
+version: 2
+build:
+  os: ubuntu-22.04
+  tools:
+    python: "3.11"
+mkdocs:
+  configuration: mkdocs.yml
+  fail_on_warning: true
+python:
+  install:
+    - requirements: docs/requirements.txt
+```
+
+To enable the project:
+
+1. Create it at https://readthedocs.org/dashboard/ and point it to
    `github.com/davidlangworthy/jobtree`.
-2. In **Advanced Settings**:
-   * Documentation type: *MkDocs*.
-   * Python version: *3.11*.
-   * Requirements file: `docs/requirements.txt`.
-   * Enable pull-request previews for docs-heavy branches.
-3. Add the Read the Docs badge to `README.md` (already done) so users can discover the site.
+2. Leave “Documentation type” on *Default* (the config file controls the builder).
+3. Enable pull-request previews for docs-heavy branches.
+4. Add the Read the Docs badge to `README.md` (already done) so users can discover the site.
 
 ## 5. Content review checklist
 
