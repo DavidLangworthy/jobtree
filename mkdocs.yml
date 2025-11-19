@@ -27,44 +27,31 @@ plugins:
   - search
 nav:
   - Welcome:
-      - What is Jobtree?: concepts/overview.md
-      - Directory tree: architecture/directory-tree.md
-      - First-class readiness: project/first-class-readiness.md
-      - Roadmap: roadmap/milestones.md
+      - What is Jobtree?: docs/concepts/overview.md
+      - Directory tree: docs/architecture/directory-tree.md
+      - Roadmap: docs/roadmap/milestones.md
       - Maintainers: MAINTAINERS.md
   - Researchers:
-      - Researcher guide: user-guide/researcher-guide.md
-      - Reservations & forecasts: user-guide/reservations.md
-      - Elastic runs: user-guide/elastic-runs.md
-      - Co-funded runs: user-guide/cofunded-runs.md
-      - Spares & opportunistic fill: user-guide/spares-and-fill.md
-      - Worked examples: examples/worked-examples.md
+      - Researcher guide: docs/user-guide/researcher-guide.md
+      - Reservations & forecasts: docs/user-guide/reservations.md
+      - Elastic runs: docs/user-guide/elastic-runs.md
+      - Co-funded runs: docs/user-guide/cofunded-runs.md
+      - Spares & opportunistic fill: docs/user-guide/spares-and-fill.md
   - Operators:
-      - Cluster setup: operator-guide/admin-setup.md
-      - Observability: operator-guide/observability.md
-      - Visualizing allocation: visualizations/cluster-allocation.md
-      - Read the Docs plan: website/readthedocs.md
-  - Concepts:
-      - Budgets: concepts/budgets.md
-      - Runs: concepts/runs.md
-      - Leases: concepts/leases.md
-      - Researcher budget UX: product/researcher-budget-ux.md
-      - Metrics: architecture/metrics.md
-      - Oversubscription: architecture/oversubscription.md
-  - CLI:
-      - kubectl runs: cli/kubectl-runs.md
+      - Cluster setup: docs/operator-guide/admin-setup.md
+      - Observability: docs/operator-guide/observability.md
+      - Visualizing allocation: docs/visualizations/cluster-allocation.md
   - Bridges:
-      - From SLURM: migrations/slurm.md
-      - From Kueue: migrations/kueue.md
-  - Roadmap design notes:
-      - M0 — bootstrap CRD shells: roadmap/design/M0-bootstrap-crd-shells.md
-      - M1 — budget accounting engine: roadmap/design/M1-budget-accounting-engine.md
-      - M2 — topology and packing: roadmap/design/M2-topology-and-packing.md
-      - M3 — binder and leases: roadmap/design/M3-binder-and-leases.md
-      - M4 — reservations and forecasting: roadmap/design/M4-reservations-and-forecasting.md
-      - M5 — oversubscription resolver: roadmap/design/M5-oversubscription-resolver.md
-      - M6 — failure and spares: roadmap/design/M6-failure-and-spares.md
-      - M7 — elastic runs and shrink: roadmap/design/M7-elastic-runs-and-shrink.md
-      - M8 — cofunded runs: roadmap/design/M8-cofunded-runs.md
-      - M9 — observability, CLI, packaging: roadmap/design/M9-observability-cli-packaging.md
-      - M10 — multicluster aggregate caps: roadmap/design/M10-multicluster-aggregate-caps.md
+      - From SLURM: docs/migrations/slurm.md
+      - From Kueue: docs/migrations/kueue.md
+  - Concepts:
+      - Budgets: docs/concepts/budgets.md
+      - Runs: docs/concepts/runs.md
+      - Leases: docs/concepts/leases.md
+      - Researcher budget UX: docs/product/researcher-budget-ux.md
+  - CLI:
+      - kubectl runs: docs/cli/kubectl-runs.md
+  - Examples:
+      - Worked examples: docs/examples/worked-examples.md
+  - Website:
+      - Read the Docs plan: docs/website/readthedocs.md
