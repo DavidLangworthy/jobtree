@@ -26,6 +26,7 @@ markdown_extensions:
 plugins:
   - search
 nav:
+  - Home: index.md
   - Welcome:
       - What is Jobtree?: concepts/overview.md
       - Directory tree: architecture/directory-tree.md
