@@ -23,11 +23,12 @@ markdown_extensions:
   - footnotes
   - toc:
       permalink: true
+  - pymdownx.arithmatex:
+      generic: true
 plugins:
   - search
 nav:
   - Home: index.md
-  - Fundamentals: fundamentals.md
   - Welcome:
       - What is Jobtree?: concepts/overview.md
       - Directory tree: architecture/directory-tree.md
@@ -55,5 +56,9 @@ nav:
       - kubectl runs: cli/kubectl-runs.md
   - Examples:
       - Worked examples: examples/worked-examples.md
+  - Fundamentals: fundamentals.md
   - Website:
       - Read the Docs plan: website/readthedocs.md
+extra_javascript:
+  - https://polyfill.io/v3/polyfill.min.js?features=es6
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
