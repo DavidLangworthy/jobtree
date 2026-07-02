@@ -1,0 +1,124 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: reservations.rq.davidlangworthy.io
+spec:
+  group: rq.davidlangworthy.io
+  names:
+    kind: Reservation
+    listKind: ReservationList
+    plural: reservations
+    singular: reservation
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.runRef.name
+      name: Run
+      type: string
+    - jsonPath: .spec.earliestStart
+      name: Earliest
+      type: string
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Reservation plans future consumption.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ReservationSpec captures the immutable plan.
+            properties:
+              earliestStart:
+                format: date-time
+                type: string
+              intendedSlice:
+                description: IntendedSlice defines the target topology.
+                properties:
+                  domain:
+                    additionalProperties:
+                      type: string
+                    type: object
+                  nodes:
+                    items:
+                      type: string
+                    type: array
+                type: object
+              payingEnvelope:
+                type: string
+              runRef:
+                description: RunReference links to the Run.
+                properties:
+                  name:
+                    type: string
+                  namespace:
+                    type: string
+                required:
+                - name
+                type: object
+            required:
+            - earliestStart
+            - intendedSlice
+            - payingEnvelope
+            - runRef
+            type: object
+          status:
+            description: ReservationStatus reports lifecycle transitions.
+            properties:
+              activatedAt:
+                format: date-time
+                type: string
+              canceledAt:
+                format: date-time
+                type: string
+              countdownSeconds:
+                format: int64
+                type: integer
+              forecast:
+                description: ReservationForecast communicates expected activation
+                  details.
+                properties:
+                  confidence:
+                    type: string
+                  deficitGPUs:
+                    format: int32
+                    type: integer
+                  remedies:
+                    items:
+                      type: string
+                    type: array
+                  scope:
+                    additionalProperties:
+                      type: string
+                    type: object
+                type: object
+              reason:
+                type: string
+              releasedAt:
+                format: date-time
+                type: string
+              state:
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

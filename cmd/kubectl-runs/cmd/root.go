@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	cobra "github.com/davidlangworthy/jobtree/cmd/kubectl-runs/internal/cobra"
+	"github.com/spf13/cobra"
 )
 
 // RootOptions captures configuration shared across subcommands.

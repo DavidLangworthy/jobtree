@@ -1,6 +1,10 @@
 package v1
 
-import "fmt"
+import (
+	"fmt"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
 
 // Run captures the researcher-friendly request.
 // +kubebuilder:object:root=true
@@ -8,8 +12,8 @@ import "fmt"
 // +kubebuilder:printcolumn:name="Owner",type=string,JSONPath=`.spec.owner`
 // +kubebuilder:printcolumn:name="GPUs",type=integer,JSONPath=`.spec.resources.totalGPUs`
 type Run struct {
-	TypeMeta   `json:",inline"`
-	ObjectMeta `json:"metadata,omitempty"`
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
 
 	Spec   RunSpec   `json:"spec,omitempty"`
 	Status RunStatus `json:"status,omitempty"`
@@ -40,7 +44,7 @@ type RunLocality struct {
 
 // RunRuntime covers runtime behavior hints.
 type RunRuntime struct {
-	Checkpoint Duration `json:"checkpoint,omitempty"`
+	Checkpoint metav1.Duration `json:"checkpoint,omitempty"`
 }
 
 // RunMalleability allows elastic scaling.
@@ -64,7 +68,7 @@ type RunStatus struct {
 	Message            string            `json:"message,omitempty"`
 	Generation         int64             `json:"generation,omitempty"`
 	PendingReservation *string           `json:"pendingReservation,omitempty"`
-	EarliestStart      *Time             `json:"earliestStart,omitempty"`
+	EarliestStart      *metav1.Time      `json:"earliestStart,omitempty"`
 	Width              *RunWidthStatus   `json:"width,omitempty"`
 	Funding            *RunFundingStatus `json:"funding,omitempty"`
 }
@@ -97,9 +101,9 @@ type RunFundingSponsorShare struct {
 // RunList contains a list of Run.
 // +kubebuilder:object:root=true
 type RunList struct {
-	TypeMeta `json:",inline"`
-	ListMeta `json:"metadata,omitempty"`
-	Items    []Run `json:"items"`
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []Run `json:"items"`
 }
 
 // AllowCrossGroupSpread returns the effective cross-group-spread setting,
@@ -216,167 +220,4 @@ func (f *RunFunding) Validate() error {
 		return fmt.Errorf("funding.maxBorrowGPUs must be positive when set")
 	}
 	return nil
-}
-
-// DeepCopyInto deep copies the Run.
-func (in *Run) DeepCopyInto(out *Run) {
-	*out = *in
-	out.TypeMeta = in.TypeMeta
-	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
-	out.Spec = *in.Spec.DeepCopy()
-	out.Status = *in.Status.DeepCopy()
-}
-
-// DeepCopy Deep copies the Run.
-func (in *Run) DeepCopy() *Run {
-	if in == nil {
-		return nil
-	}
-	out := new(Run)
-	in.DeepCopyInto(out)
-	return out
-}
-
-// DeepCopyObject deep copies runtime object.
-func (in *Run) DeepCopyObject() RuntimeObject {
-	if c := in.DeepCopy(); c != nil {
-		return c
-	}
-	return nil
-}
-
-// DeepCopyInto deep copies the RunList.
-func (in *RunList) DeepCopyInto(out *RunList) {
-	*out = *in
-	out.TypeMeta = in.TypeMeta
-	in.ListMeta.DeepCopyInto(&out.ListMeta)
-	if in.Items != nil {
-		out.Items = make([]Run, len(in.Items))
-		for i := range in.Items {
-			in.Items[i].DeepCopyInto(&out.Items[i])
-		}
-	}
-}
-
-// DeepCopy creates a deep copy of RunStatus.
-func (in *RunStatus) DeepCopy() *RunStatus {
-	if in == nil {
-		return nil
-	}
-	out := new(RunStatus)
-	*out = *in
-	if in.PendingReservation != nil {
-		value := *in.PendingReservation
-		out.PendingReservation = &value
-	}
-	if in.EarliestStart != nil {
-		value := in.EarliestStart.DeepCopy()
-		out.EarliestStart = &value
-	}
-	if in.Width != nil {
-		value := *in.Width
-		out.Width = &value
-	}
-	if in.Funding != nil {
-		out.Funding = in.Funding.DeepCopy()
-	}
-	return out
-}
-
-// DeepCopy creates a deep copy of RunFundingStatus.
-func (in *RunFundingStatus) DeepCopy() *RunFundingStatus {
-	if in == nil {
-		return nil
-	}
-	out := new(RunFundingStatus)
-	*out = *in
-	if in.Sponsors != nil {
-		out.Sponsors = make([]RunFundingSponsorShare, len(in.Sponsors))
-		copy(out.Sponsors, in.Sponsors)
-	}
-	return out
-}
-
-// DeepCopy deep copies RunList.
-func (in *RunList) DeepCopy() *RunList {
-	if in == nil {
-		return nil
-	}
-	out := new(RunList)
-	in.DeepCopyInto(out)
-	return out
-}
-
-// DeepCopyObject deep copies runtime object.
-func (in *RunList) DeepCopyObject() RuntimeObject {
-	if c := in.DeepCopy(); c != nil {
-		return c
-	}
-	return nil
-}
-
-// DeepCopy copies RunSpec.
-func (in *RunSpec) DeepCopy() *RunSpec {
-	if in == nil {
-		return nil
-	}
-	out := new(RunSpec)
-	*out = *in
-	if in.Locality != nil {
-		out.Locality = in.Locality.DeepCopy()
-	}
-	if in.Runtime != nil {
-		out.Runtime = &RunRuntime{Checkpoint: in.Runtime.Checkpoint}
-	}
-	if in.Malleable != nil {
-		copy := *in.Malleable
-		if in.Malleable.DesiredTotalGPUs != nil {
-			desired := *in.Malleable.DesiredTotalGPUs
-			copy.DesiredTotalGPUs = &desired
-		}
-		out.Malleable = &copy
-	}
-	if in.Funding != nil {
-		out.Funding = in.Funding.DeepCopy()
-	}
-	if in.Spares != nil {
-		value := *in.Spares
-		out.Spares = &value
-	}
-	return out
-}
-
-// DeepCopy copies RunLocality.
-func (in *RunLocality) DeepCopy() *RunLocality {
-	if in == nil {
-		return nil
-	}
-	out := new(RunLocality)
-	*out = *in
-	if in.GroupGPUs != nil {
-		value := *in.GroupGPUs
-		out.GroupGPUs = &value
-	}
-	if in.AllowCrossGroupSpread != nil {
-		value := *in.AllowCrossGroupSpread
-		out.AllowCrossGroupSpread = &value
-	}
-	return out
-}
-
-// DeepCopy copies funding.
-func (in *RunFunding) DeepCopy() *RunFunding {
-	if in == nil {
-		return nil
-	}
-	out := new(RunFunding)
-	*out = *in
-	if in.MaxBorrowGPUs != nil {
-		value := *in.MaxBorrowGPUs
-		out.MaxBorrowGPUs = &value
-	}
-	if in.Sponsors != nil {
-		out.Sponsors = append([]string{}, in.Sponsors...)
-	}
-	return out
 }

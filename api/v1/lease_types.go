@@ -3,6 +3,8 @@ package v1
 import (
 	"fmt"
 	"reflect"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // Lease records immutable consumption facts.
@@ -12,8 +14,8 @@ import (
 // +kubebuilder:printcolumn:name="Role",type=string,JSONPath=`.spec.slice.role`
 // +kubebuilder:printcolumn:name="Start",type=string,JSONPath=`.spec.interval.start`
 type Lease struct {
-	TypeMeta   `json:",inline"`
-	ObjectMeta `json:"metadata,omitempty"`
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
 
 	Spec   LeaseSpec   `json:"spec,omitempty"`
 	Status LeaseStatus `json:"status,omitempty"`
@@ -43,23 +45,23 @@ type LeaseSlice struct {
 
 // LeaseInterval timestamps the lease.
 type LeaseInterval struct {
-	Start Time  `json:"start"`
-	End   *Time `json:"end,omitempty"`
+	Start metav1.Time  `json:"start"`
+	End   *metav1.Time `json:"end,omitempty"`
 }
 
 // LeaseStatus captures closure state.
 type LeaseStatus struct {
-	Closed        bool   `json:"closed"`
-	Ended         *Time  `json:"ended,omitempty"`
-	ClosureReason string `json:"closureReason,omitempty"`
+	Closed        bool         `json:"closed"`
+	Ended         *metav1.Time `json:"ended,omitempty"`
+	ClosureReason string       `json:"closureReason,omitempty"`
 }
 
 // LeaseList lists leases.
 // +kubebuilder:object:root=true
 type LeaseList struct {
-	TypeMeta `json:",inline"`
-	ListMeta `json:"metadata,omitempty"`
-	Items    []Lease `json:"items"`
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []Lease `json:"items"`
 }
 
 // ValidateCreate ensures lease is consistent.
@@ -104,118 +106,4 @@ func (l *Lease) validate() error {
 		return fmt.Errorf("spec.slice.role is required")
 	}
 	return nil
-}
-
-// DeepCopyInto deep copies Lease.
-func (in *Lease) DeepCopyInto(out *Lease) {
-	*out = *in
-	out.TypeMeta = in.TypeMeta
-	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
-	out.Spec = *in.Spec.DeepCopy()
-	out.Status = *in.Status.DeepCopy()
-}
-
-// DeepCopy deep copies Lease.
-func (in *Lease) DeepCopy() *Lease {
-	if in == nil {
-		return nil
-	}
-	out := new(Lease)
-	in.DeepCopyInto(out)
-	return out
-}
-
-// DeepCopyObject implements runtime.Object.
-func (in *Lease) DeepCopyObject() RuntimeObject {
-	if c := in.DeepCopy(); c != nil {
-		return c
-	}
-	return nil
-}
-
-// DeepCopyInto deep copies LeaseList.
-func (in *LeaseList) DeepCopyInto(out *LeaseList) {
-	*out = *in
-	out.TypeMeta = in.TypeMeta
-	in.ListMeta.DeepCopyInto(&out.ListMeta)
-	if in.Items != nil {
-		out.Items = make([]Lease, len(in.Items))
-		for i := range in.Items {
-			in.Items[i].DeepCopyInto(&out.Items[i])
-		}
-	}
-}
-
-// DeepCopy deep copies list.
-func (in *LeaseList) DeepCopy() *LeaseList {
-	if in == nil {
-		return nil
-	}
-	out := new(LeaseList)
-	in.DeepCopyInto(out)
-	return out
-}
-
-// DeepCopyObject implements runtime.Object.
-func (in *LeaseList) DeepCopyObject() RuntimeObject {
-	if c := in.DeepCopy(); c != nil {
-		return c
-	}
-	return nil
-}
-
-// DeepCopy copies LeaseSpec.
-func (in *LeaseSpec) DeepCopy() *LeaseSpec {
-	if in == nil {
-		return nil
-	}
-	out := new(LeaseSpec)
-	*out = *in
-	if in.CompPath != nil {
-		out.CompPath = append([]string{}, in.CompPath...)
-	}
-	out.Slice = *in.Slice.DeepCopy()
-	out.Interval = *in.Interval.DeepCopy()
-	return out
-}
-
-// DeepCopy copies LeaseSlice.
-func (in *LeaseSlice) DeepCopy() *LeaseSlice {
-	if in == nil {
-		return nil
-	}
-	out := new(LeaseSlice)
-	*out = *in
-	if in.Nodes != nil {
-		out.Nodes = append([]string{}, in.Nodes...)
-	}
-	return out
-}
-
-// DeepCopy copies interval.
-func (in *LeaseInterval) DeepCopy() *LeaseInterval {
-	if in == nil {
-		return nil
-	}
-	out := new(LeaseInterval)
-	*out = *in
-	if in.End != nil {
-		value := in.End.DeepCopy()
-		out.End = &value
-	}
-	return out
-}
-
-// DeepCopy copies status.
-func (in *LeaseStatus) DeepCopy() *LeaseStatus {
-	if in == nil {
-		return nil
-	}
-	out := new(LeaseStatus)
-	*out = *in
-	if in.Ended != nil {
-		value := in.Ended.DeepCopy()
-		out.Ended = &value
-	}
-	return out
 }

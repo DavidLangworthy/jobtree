@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	cobra "github.com/davidlangworthy/jobtree/cmd/kubectl-runs/internal/cobra"
+	"github.com/spf13/cobra"
 )
 
 // NewCompletionsCommand generates shell completions for the plugin.

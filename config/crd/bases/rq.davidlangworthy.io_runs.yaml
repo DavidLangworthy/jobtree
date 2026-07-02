@@ -1,0 +1,188 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: runs.rq.davidlangworthy.io
+spec:
+  group: rq.davidlangworthy.io
+  names:
+    kind: Run
+    listKind: RunList
+    plural: runs
+    singular: run
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.owner
+      name: Owner
+      type: string
+    - jsonPath: .spec.resources.totalGPUs
+      name: GPUs
+      type: integer
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Run captures the researcher-friendly request.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: RunSpec defines the desired Run behavior.
+            properties:
+              funding:
+                description: RunFunding captures borrowing intents.
+                properties:
+                  allowBorrow:
+                    type: boolean
+                  maxBorrowGPUs:
+                    format: int32
+                    type: integer
+                  sponsors:
+                    items:
+                      type: string
+                    type: array
+                required:
+                - allowBorrow
+                type: object
+              locality:
+                description: RunLocality captures placement preferences.
+                properties:
+                  allowCrossGroupSpread:
+                    type: boolean
+                  groupGPUs:
+                    format: int32
+                    type: integer
+                type: object
+              malleable:
+                description: RunMalleability allows elastic scaling.
+                properties:
+                  desiredTotalGPUs:
+                    format: int32
+                    type: integer
+                  maxTotalGPUs:
+                    format: int32
+                    type: integer
+                  minTotalGPUs:
+                    format: int32
+                    type: integer
+                  stepGPUs:
+                    format: int32
+                    type: integer
+                required:
+                - maxTotalGPUs
+                - minTotalGPUs
+                - stepGPUs
+                type: object
+              owner:
+                type: string
+              resources:
+                description: RunResources describes GPU requirements.
+                properties:
+                  gpuType:
+                    type: string
+                  totalGPUs:
+                    format: int32
+                    type: integer
+                required:
+                - gpuType
+                - totalGPUs
+                type: object
+              runtime:
+                description: RunRuntime covers runtime behavior hints.
+                properties:
+                  checkpoint:
+                    type: string
+                type: object
+              sparesPerGroup:
+                format: int32
+                type: integer
+            required:
+            - owner
+            - resources
+            type: object
+          status:
+            description: RunStatus reports lifecycle information.
+            properties:
+              earliestStart:
+                format: date-time
+                type: string
+              funding:
+                description: RunFundingStatus reports current and accrued funding
+                  usage.
+                properties:
+                  borrowedGPUHours:
+                    type: number
+                  borrowedGPUs:
+                    format: int32
+                    type: integer
+                  ownedGPUHours:
+                    type: number
+                  ownedGPUs:
+                    format: int32
+                    type: integer
+                  sponsors:
+                    items:
+                      description: RunFundingSponsorShare describes a sponsor's contribution.
+                      properties:
+                        gpuHours:
+                          type: number
+                        gpus:
+                          format: int32
+                          type: integer
+                        owner:
+                          type: string
+                      required:
+                      - owner
+                      type: object
+                    type: array
+                type: object
+              generation:
+                format: int64
+                type: integer
+              message:
+                type: string
+              pendingReservation:
+                type: string
+              phase:
+                type: string
+              width:
+                description: RunWidthStatus summarises elastic width bookkeeping.
+                properties:
+                  allocated:
+                    format: int32
+                    type: integer
+                  desired:
+                    format: int32
+                    type: integer
+                  max:
+                    format: int32
+                    type: integer
+                  min:
+                    format: int32
+                    type: integer
+                  pending:
+                    type: string
+                type: object
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

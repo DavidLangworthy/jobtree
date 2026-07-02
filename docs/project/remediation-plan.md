@@ -371,7 +371,7 @@ end-to-end.
 
 ### R17 — No CRD manifests exist
 
-- [ ] new: `config/crd/`
+- [x] new: `config/crd/`
 
 **Steps.**
 
@@ -398,7 +398,7 @@ met.
 
 ### R19 — Hand-mimicked meta types
 
-- [ ] `api/v1/meta.go`, `api/v1/runtime.go`
+- [x] `api/v1/meta.go`, `api/v1/runtime.go`
 
 **Steps.**
 
@@ -412,7 +412,7 @@ met.
 
 ### R20 — Hand-rolled cobra clone
 
-- [ ] `cmd/kubectl-runs/internal/cobra/`
+- [x] `cmd/kubectl-runs/internal/cobra/`
 
 **Steps.**
 

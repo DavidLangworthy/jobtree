@@ -6,9 +6,9 @@ import (
 	"time"
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
-	cobra "github.com/davidlangworthy/jobtree/cmd/kubectl-runs/internal/cobra"
 	"github.com/davidlangworthy/jobtree/controllers"
 	"github.com/davidlangworthy/jobtree/pkg/keys"
+	"github.com/spf13/cobra"
 )
 
 // NewLeasesCommand lists leases associated with a Run.

@@ -3,8 +3,8 @@ package cmd
 import (
 	"fmt"
 
-	cobra "github.com/davidlangworthy/jobtree/cmd/kubectl-runs/internal/cobra"
 	"github.com/davidlangworthy/jobtree/pkg/keys"
+	"github.com/spf13/cobra"
 )
 
 // NewShrinkCommand enables voluntary shrink for elastic runs.

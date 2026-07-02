@@ -19,6 +19,8 @@ jobs:
           git diff --exit-code
       - name: Vet
         run: go vet ./...
+      - name: Verify generated deepcopy and CRDs are up to date
+        run: make verify-generate
       - name: Test (race detector)
         run: go test -race ./...
       - name: Build binaries
