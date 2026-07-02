@@ -1,0 +1,26 @@
+name: Specs
+
+on:
+  pull_request:
+    paths:
+      - 'specs/**'
+      - 'Makefile'
+  push:
+    branches: [ main ]
+    paths:
+      - 'specs/**'
+      - 'Makefile'
+
+jobs:
+  tlc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Model-check the specs
+        run: make spec-check
+      - name: Demonstrate the historical counterexamples
+        run: make spec-counterexamples
