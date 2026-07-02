@@ -310,6 +310,10 @@ automatically when quota returns. No envelope overdraft — unfunded hours are m
 **Done when.** The quota-semantics invariants hold in the Tier 1 simulator, and status surfaces
 the derived classes without the control path ever reading them back.
 
+*Known edge (accepted 2026-07-02):* activation for a run short on both capacity and budget still
+preempts for the capacity half and then reschedules (`activateReservation`); funded victims can
+die for a run that does not start. Accepted until this rework dissolves the path.
+
 ### R15 — Family sharing vs. lending semantics are inconsistent
 
 - [ ] `pkg/cover/cover.go` (phases), `pkg/binder/binder.go` (role assignment), `pkg/budget/usage.go`, `controllers/run_controller.go` (`summarizeRunFunding`)

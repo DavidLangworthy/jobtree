@@ -379,3 +379,85 @@ func TestActivateReservationSkipsRunningRun(t *testing.T) {
 	}
 	assertInvariantNoPendingReservationForRunningRun(t, state)
 }
+
+// Ruling 2026-07-02 (PR #13 item 3): a stale Pending reservation must not
+// resurrect a Failed run — release it and require an explicit resubmit.
+func TestActivateReservationDoesNotResurrectFailedRun(t *testing.T) {
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	state := &ClusterState{
+		Nodes:   []topology.SourceNode{h100Node("node-a", 8)},
+		Budgets: []v1.Budget{h100Budget("team", "org:team", 16)},
+	}
+	failed := h100Run("victim", "org:team", 4)
+	failed.Status.Phase = RunPhaseFailed
+	failed.Status.Message = "ended by resolver"
+	state.Runs = map[string]*v1.Run{"default/victim": failed}
+	past := v1.NewTime(now.Add(-time.Hour))
+	state.Reservations = map[string]*v1.Reservation{
+		"default/stale": {
+			ObjectMeta: v1.ObjectMeta{Name: "stale", Namespace: "default"},
+			Spec: v1.ReservationSpec{
+				RunRef:        v1.RunReference{Name: "victim", Namespace: "default"},
+				EarliestStart: past,
+			},
+			Status: v1.ReservationStatus{State: "Pending"},
+		},
+	}
+
+	controller := NewRunController(state, runClock{now: now})
+	if err := controller.ActivateReservations(now); err != nil {
+		t.Fatalf("activation failed: %v", err)
+	}
+	if len(state.Leases) != 0 || len(state.Pods) != 0 {
+		t.Fatalf("stale reservation resurrected a Failed run: %d leases, %d pods", len(state.Leases), len(state.Pods))
+	}
+	if phase := state.Runs["default/victim"].Status.Phase; phase != RunPhaseFailed {
+		t.Errorf("expected run to stay Failed, got %s", phase)
+	}
+	stale := state.Reservations["default/stale"]
+	if stale.Status.State != "Released" || stale.Status.Reason != "Superseded" {
+		t.Errorf("expected stale reservation Released/Superseded, got %s/%s", stale.Status.State, stale.Status.Reason)
+	}
+	assertInvariantNoPendingReservationForRunningRun(t, state)
+}
+
+// Review finding (PR #13 item 1): when the budget-shortfall re-forecast
+// itself fails permanently (here: every envelope is gone), the reservation
+// must be marked Failed instead of retrying as Pending forever.
+func TestActivateReservationFailsTerminallyWhenReforecastFails(t *testing.T) {
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	state := &ClusterState{
+		Nodes:   []topology.SourceNode{h100Node("node-a", 8)},
+		Budgets: nil, // the budget was deleted after the reservation was made
+	}
+	state.Runs = map[string]*v1.Run{"default/blocked": h100Run("blocked", "org:team", 4)}
+	past := v1.NewTime(now.Add(-time.Hour))
+	state.Reservations = map[string]*v1.Reservation{
+		"default/blocked-res": {
+			ObjectMeta: v1.ObjectMeta{Name: "blocked-res", Namespace: "default"},
+			Spec: v1.ReservationSpec{
+				RunRef:        v1.RunReference{Name: "blocked", Namespace: "default"},
+				EarliestStart: past,
+			},
+			Status: v1.ReservationStatus{State: "Pending"},
+		},
+	}
+
+	controller := NewRunController(state, runClock{now: now})
+	err := controller.ActivateReservations(now)
+	if err == nil {
+		t.Fatalf("expected an aggregate error naming the failed re-forecast")
+	}
+	res := state.Reservations["default/blocked-res"]
+	if res.Status.State != "Failed" {
+		t.Fatalf("expected reservation marked Failed, got %s (reason %s)", res.Status.State, res.Status.Reason)
+	}
+	for _, lease := range state.Leases {
+		t.Errorf("unexpected lease %s created", lease.Name)
+	}
+
+	// The next tick must not retry the failed reservation.
+	if err := controller.ActivateReservations(now.Add(time.Minute)); err != nil {
+		t.Fatalf("failed reservation retried hot: %v", err)
+	}
+}

@@ -254,9 +254,12 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 		reservation.Status.CountdownSeconds = nil
 		return fmt.Errorf("run %s referenced by reservation %s not found", runKey, key)
 	}
-	if run.Status.Phase == RunPhaseRunning || run.Status.Phase == RunPhaseComplete {
-		// The run already bound (capacity freed before the activation tick);
-		// materializing again would double-spend the budget.
+	if run.Status.Phase == RunPhaseRunning || run.Status.Phase == RunPhaseComplete || run.Status.Phase == RunPhaseFailed {
+		// Running/Completed: the run already bound (capacity freed before
+		// the activation tick); materializing again would double-spend the
+		// budget. Failed: a resolver-killed run must be resubmitted
+		// explicitly — a stale reservation must not resurrect it (ruling
+		// 2026-07-02).
 		c.releasePendingReservations(run, now)
 		return nil
 	}
@@ -347,8 +350,14 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 			// Pure budget shortfall: preemption frees physical capacity,
 			// never budget headroom, so re-forecast and reschedule the
 			// reservation instead of running the lottery.
-			return c.planReservation(run, snapshot, &plan, nil, coverPlanErr, states, request, now)
+			return c.rescheduleReservation(key, reservation, run, snapshot, &plan, coverPlanErr, states, request, now)
 		}
+		// Known edge (ruling 2026-07-02): when capacity AND budget are both
+		// short, the lottery below still preempts for the capacity half and
+		// the post-resolution recheck then reschedules — funded victims can
+		// die for a run that does not start. Accepted until the R14
+		// opportunistic-class rework dissolves this path; see the note under
+		// R14 in remediation-plan.md.
 		leases := activeLeasePointers(c.State.Leases)
 		resInput := resolver.Input{
 			Deficit:    deficit,
@@ -391,7 +400,7 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 			if ce, ok := err.(*cover.PlanError); ok && ce.Reason != cover.FailureReasonInvalidRequest {
 				// Capacity cleared but the budget still cannot fund the run;
 				// further preemption cannot help, so reschedule.
-				return c.planReservation(run, snapshot, &plan, nil, ce, states, request, now)
+				return c.rescheduleReservation(key, reservation, run, snapshot, &plan, ce, states, request, now)
 			}
 			return err
 		}
@@ -509,6 +518,24 @@ func (c *RunController) budgetStates(now time.Time) ([]*budget.BudgetState, erro
 func ptrString(value string) *string { return &value }
 
 func ptrInt64(value int64) *int64 { return &value }
+
+// rescheduleReservation re-forecasts a budget-blocked reservation. When the
+// forecast itself fails (a permanent policy failure such as NoEnvelope or
+// ACLDenied), the reservation is marked Failed instead of silently retrying
+// as Pending forever.
+func (c *RunController) rescheduleReservation(key string, reservation *v1.Reservation, run *v1.Run, snapshot *topology.Snapshot, plan *pack.Plan, coverErr *cover.PlanError, states []*budget.BudgetState, request cover.Request, now time.Time) error {
+	if err := c.planReservation(run, snapshot, plan, nil, coverErr, states, request, now); err != nil {
+		return err
+	}
+	if cur, ok := c.State.Reservations[key]; ok && cur == reservation {
+		// planReservation replaces the run's reservations on success, so the
+		// original surviving untouched means the re-forecast failed.
+		reservation.Status.State = "Failed"
+		reservation.Status.CountdownSeconds = nil
+		return fmt.Errorf("re-forecast failed: %s", run.Status.Message)
+	}
+	return nil
+}
 
 func (c *RunController) planReservation(run *v1.Run, snapshot *topology.Snapshot, packPlan *pack.Plan, packErr *pack.PlanError, coverErr *cover.PlanError, states []*budget.BudgetState, request cover.Request, now time.Time) error {
 	if states == nil {
@@ -721,7 +748,6 @@ func filterLeasesByOwner(all []v1.Lease, owner string) []v1.Lease {
 	}
 	return leases
 }
-
 
 // leaseSeqBase returns the number of leases (open or closed) that exist for
 // the run, seeding the binder's name sequence so successive
