@@ -33,6 +33,11 @@ type Request struct {
 	Now              time.Time
 	GroupIndexOffset int
 	LeaseReason      string
+	// NameSeed starts the per-materialization sequence number. Callers pass
+	// the number of leases that already exist for the run, so names from
+	// successive materializations cannot collide even at the same clock
+	// reading (shrink-then-grow can reuse group indices).
+	NameSeed int
 }
 
 // Result contains the Kubernetes objects that should be created.
@@ -77,17 +82,16 @@ func Materialize(req Request) (Result, error) {
 	if reason == "" {
 		reason = "Start"
 	}
-	m := &materializer{run: req.Run, now: req.Now, reason: reason}
+	m := &materializer{run: req.Run, now: req.Now, reason: reason, seq: req.NameSeed}
 
 	for _, group := range req.PackPlan.Groups {
-		allocated := 0
-		for _, chunk := range group.NodePlacements {
-			allocated += chunk.GPUs
+		allocated, err := sumChunks(group.NodePlacements, group.GroupIndex)
+		if err != nil {
+			return Result{}, err
 		}
 		if allocated != group.Size {
 			return Result{}, fmt.Errorf("placement allocation mismatch for group %d", group.GroupIndex)
 		}
-		var err error
 		segments, err = m.assign(group.GroupIndex+req.GroupIndexOffset, group.NodePlacements, segments, "")
 		if err != nil {
 			return Result{}, err
@@ -101,7 +105,13 @@ func Materialize(req Request) (Result, error) {
 		if len(group.SparePlacements) == 0 {
 			return Result{}, fmt.Errorf("group %d requested spares but no placements provided", group.GroupIndex)
 		}
-		var err error
+		allocated, err := sumChunks(group.SparePlacements, group.GroupIndex)
+		if err != nil {
+			return Result{}, err
+		}
+		if allocated != group.Spares {
+			return Result{}, fmt.Errorf("spare allocation mismatch for group %d", group.GroupIndex)
+		}
 		segments, err = m.assign(group.GroupIndex+req.GroupIndexOffset, group.SparePlacements, segments, RoleSpare)
 		if err != nil {
 			return Result{}, err
@@ -113,6 +123,19 @@ func Materialize(req Request) (Result, error) {
 	}
 
 	return Result{Pods: m.pods, Leases: m.leases}, nil
+}
+
+// sumChunks totals an allocation list, rejecting non-positive chunks (a
+// negative chunk would silently cancel out against the group-size check).
+func sumChunks(allocs []pack.NodeAllocation, groupIndex int) (int, error) {
+	total := 0
+	for _, chunk := range allocs {
+		if chunk.GPUs <= 0 {
+			return 0, fmt.Errorf("non-positive placement chunk (%d GPUs on %s) for group %d", chunk.GPUs, chunk.Node, groupIndex)
+		}
+		total += chunk.GPUs
+	}
+	return total, nil
 }
 
 // materializer accumulates pods and leases and hands out the monotonic
@@ -217,10 +240,10 @@ func (m *materializer) buildLease(groupIndex int, slots []nodeSlot, seg cover.Se
 		ObjectMeta: v1.ObjectMeta{
 			Namespace: m.run.Namespace,
 			// The budget name qualifies envelope names (which repeat across
-			// budgets) and the sequence number makes names unique within a
-			// materialization; the timestamp only separates successive
-			// materializations for the same run.
-			Name: fmt.Sprintf("%s-g%02d-%s-%s-%d-%d", m.run.Name, groupIndex, seg.BudgetName, seg.EnvelopeName, m.now.Unix(), m.seq),
+			// budgets); the seeded sequence number makes names unique within
+			// and across materializations, and the nanosecond timestamp is a
+			// second line of defense should a caller reuse a seed.
+			Name: fmt.Sprintf("%s-g%02d-%s-%s-%d-%d", m.run.Name, groupIndex, seg.BudgetName, seg.EnvelopeName, m.now.UnixNano(), m.seq),
 			Labels: map[string]string{
 				LabelRunName:    m.run.Name,
 				LabelGroupIndex: fmt.Sprintf("%d", groupIndex),

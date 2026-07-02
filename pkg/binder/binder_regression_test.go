@@ -222,3 +222,99 @@ func TestMaterializeErrorsWhenCoverOverProvisioned(t *testing.T) {
 		t.Fatalf("expected an unused-cover error, got: %v", err)
 	}
 }
+
+// Review finding (PR #11): two materializations for the same run in the
+// same wall-clock instant must not collide when the caller seeds the name
+// sequence with the existing lease count (shrink-then-grow can reuse group
+// indices, so gNN does not disambiguate).
+func TestMaterializeNamesUniqueAcrossSameInstantMaterializations(t *testing.T) {
+	now := time.Unix(1767225600, 0)
+	coverPlan := cover.Plan{Segments: []cover.Segment{
+		{BudgetName: "rai", EnvelopeName: "west", Owner: "org:ai:rai", Quantity: 3},
+		{BudgetName: "mm", EnvelopeName: "west", Owner: "org:ai:mm", Quantity: 1, Borrowed: true},
+	}}
+
+	first, err := Materialize(Request{Run: reviewReproRun(), PackPlan: reviewReproPackPlan(), CoverPlan: coverPlan, Now: now})
+	if err != nil {
+		t.Fatalf("first materialize failed: %v", err)
+	}
+	second, err := Materialize(Request{
+		Run:       reviewReproRun(),
+		PackPlan:  reviewReproPackPlan(),
+		CoverPlan: coverPlan,
+		Now:       now,
+		NameSeed:  len(first.Leases),
+	})
+	if err != nil {
+		t.Fatalf("second materialize failed: %v", err)
+	}
+
+	leaseNames := map[string]struct{}{}
+	for _, lease := range first.Leases {
+		leaseNames[lease.Name] = struct{}{}
+	}
+	for _, lease := range second.Leases {
+		if _, dup := leaseNames[lease.Name]; dup {
+			t.Errorf("lease name %s collides across materializations", lease.Name)
+		}
+	}
+	podNames := map[string]struct{}{}
+	for _, pod := range first.Pods {
+		podNames[pod.Name] = struct{}{}
+	}
+	for _, pod := range second.Pods {
+		if _, dup := podNames[pod.Name]; dup {
+			t.Errorf("pod name %s collides across materializations", pod.Name)
+		}
+	}
+}
+
+// Review finding (PR #11): a spare shortfall (placements cover fewer GPUs
+// than the group requested) must error, symmetric to the active path.
+func TestMaterializeErrorsOnSpareShortfall(t *testing.T) {
+	packPlan := pack.Plan{
+		Flavor:    "H100-80GB",
+		TotalGPUs: 4,
+		Groups: []pack.GroupPlacement{{
+			GroupIndex:      0,
+			Size:            4,
+			NodePlacements:  []pack.NodeAllocation{{Node: "node-1", GPUs: 4}},
+			Spares:          4,
+			SparePlacements: []pack.NodeAllocation{{Node: "node-2", GPUs: 2}},
+		}},
+	}
+	coverPlan := cover.Plan{Segments: []cover.Segment{
+		{BudgetName: "rai", EnvelopeName: "west", Owner: "org:ai:rai", Quantity: 8},
+	}}
+
+	_, err := Materialize(Request{Run: reviewReproRun(), PackPlan: packPlan, CoverPlan: coverPlan, Now: time.Unix(1767225600, 0)})
+	if err == nil || !strings.Contains(err.Error(), "spare allocation mismatch") {
+		t.Fatalf("expected spare allocation mismatch, got: %v", err)
+	}
+}
+
+// Review finding (PR #11): a negative chunk must not cancel out against the
+// group-size check (size-4 group with chunks 6 and -2 silently materialized
+// 6 GPUs).
+func TestMaterializeErrorsOnNonPositiveChunk(t *testing.T) {
+	packPlan := pack.Plan{
+		Flavor:    "H100-80GB",
+		TotalGPUs: 4,
+		Groups: []pack.GroupPlacement{{
+			GroupIndex: 0,
+			Size:       4,
+			NodePlacements: []pack.NodeAllocation{
+				{Node: "node-1", GPUs: 6},
+				{Node: "node-2", GPUs: -2},
+			},
+		}},
+	}
+	coverPlan := cover.Plan{Segments: []cover.Segment{
+		{BudgetName: "rai", EnvelopeName: "west", Owner: "org:ai:rai", Quantity: 4},
+	}}
+
+	_, err := Materialize(Request{Run: reviewReproRun(), PackPlan: packPlan, CoverPlan: coverPlan, Now: time.Unix(1767225600, 0)})
+	if err == nil || !strings.Contains(err.Error(), "non-positive placement chunk") {
+		t.Fatalf("expected non-positive chunk rejection, got: %v", err)
+	}
+}

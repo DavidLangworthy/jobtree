@@ -188,6 +188,45 @@ binds directly, double-materializes on activation. Unreachable today only becaus
 **Done when.** Invalid manifests above are rejected with actionable messages; coverage of the
 validation paths is meaningfully complete.
 
+### R26 — HandleNodeFailure breaks on multi-lease nodes *(critical, pre-existing)*
+
+- [ ] `controllers/run_controller.go` — `HandleNodeFailure`, `findSpareLease`, `createSwapLease`, `updatePodsAfterSwap`
+
+**Problem.** The swap path assumes one lease/pod per (group, node). Any co-funded run violates
+that (funding segments split leases on one node). Confirmed by execution on main AND the PR
+stack: a 2-GPU co-funded group with 2 spare GPUs available ends up Failed with 1 GPU — the
+first lease consumes the spare, the overlap loop discards the second spare lease as
+ReclaimedBySpare, the second failed lease finds no spare and marks the run Failed, overwriting
+the successful-swap status.
+
+**Steps.**
+
+1. Rework the swap to group level: collect ALL active leases on the failed node per
+   (run, group), collect ALL spare leases for the group, and swap capacity-for-capacity.
+2. Regression test: co-funded 2-GPU group (two 1-GPU leases on one node) + 2 spare GPUs →
+   run stays Running at full width.
+3. Property test over random lease splits.
+
+**Done when.** Node failure with sufficient spares never reduces width or fails the run,
+regardless of how funding segments split leases.
+
+### R27 — Resolver double-counts dropped spares in shrink accounting
+
+- [ ] `pkg/resolver/resolver.go` — spare-drop phase vs `shrinkMalleable`
+
+**Problem.** A spare freed in phase 1 (DropSpare) still counts inside its group's `grp.GPUs`
+when phase 2 shrinks that group, so the deficit is decremented twice for the same GPUs:
+Resolve reports a cleared deficit while actually freeing fewer.
+
+**Steps.**
+
+1. Exclude marked leases from group totals (or subtract dropped-spare GPUs from
+   `grp.GPUs`/`st.Remaining` when marking).
+2. Test: malleable run, spare in the shrunk group, deficit sized to expose the gap — assert
+   real freed GPUs ≥ deficit.
+
+**Done when.** Sum of action GPUs with no double-count ≥ cleared deficit in all resolver tests.
+
 ---
 
 ## Workstream B — broken: CLI
