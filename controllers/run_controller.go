@@ -111,6 +111,23 @@ func (c *RunController) Reconcile(namespace, name string) error {
 		return nil
 	}
 
+	if open := openLeaseCountForRun(c.State.Leases, key); run.Status.Phase != RunPhaseFailed && open > 0 {
+		// Same half-applied-admission adoption as in activateReservation,
+		// reachable from any watch event (lease creates included), so the
+		// wedge heals without waiting for an activation tick. Failed runs
+		// are excluded: adoption must not resurrect them (ruling
+		// 2026-07-02).
+		run.Status.Phase = RunPhaseRunning
+		run.Status.Message = fmt.Sprintf("adopted %d open leases from an earlier admission", open)
+		c.releasePendingReservations(run, now)
+		run.Status.PendingReservation = nil
+		run.Status.EarliestStart = nil
+		run.Status.Width = summarizeRunWidth(run, c.State.Leases)
+		run.Status.Funding = summarizeRunFunding(run, c.State.Leases, now)
+		result = "adopted"
+		return nil
+	}
+
 	packPlan, err := planPlacement(run, snapshot)
 	if err != nil {
 		if planErr, ok := err.(*pack.PlanError); ok && planErr.Reason != pack.FailureReasonInvalidRequest {
@@ -261,6 +278,27 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 		// explicitly — a stale reservation must not resurrect it (ruling
 		// 2026-07-02).
 		c.releasePendingReservations(run, now)
+		return nil
+	}
+
+	if open := openLeaseCountForRun(c.State.Leases, runKey); open > 0 {
+		// Open leases for a run that never reached Running mean an earlier
+		// evaluation materialized them but its run-status write was lost
+		// (the bridge's apply is not atomic — R28). Finish that activation
+		// instead of planning again against the run's own capacity, which
+		// would report the run's own leases as a deficit forever.
+		activated := v1.NewTime(now)
+		reservation.Status.State = "Released"
+		reservation.Status.Reason = "Activated"
+		reservation.Status.ActivatedAt = &activated
+		reservation.Status.ReleasedAt = &activated
+		reservation.Status.CountdownSeconds = nil
+		run.Status.Phase = RunPhaseRunning
+		run.Status.Message = fmt.Sprintf("adopted %d open leases from an earlier activation", open)
+		run.Status.PendingReservation = nil
+		run.Status.EarliestStart = nil
+		run.Status.Width = summarizeRunWidth(run, c.State.Leases)
+		run.Status.Funding = summarizeRunFunding(run, c.State.Leases, now)
 		return nil
 	}
 
@@ -566,6 +604,14 @@ func (c *RunController) planReservation(run *v1.Run, snapshot *topology.Snapshot
 	if err != nil {
 		run.Status.Phase = RunPhasePending
 		run.Status.Message = fmt.Sprintf("reservation planning failed: %v", err)
+		return nil
+	}
+	if len(forecastResult.IntendedSlice.Nodes) == 0 && len(forecastResult.IntendedSlice.Domain) == 0 {
+		// No matching domain exists (e.g. zero nodes of the flavor). A
+		// reservation without nodes or a domain fails its own validating
+		// webhook, so park plainly until matching capacity appears.
+		run.Status.Phase = RunPhasePending
+		run.Status.Message = fmt.Sprintf("no capacity in any matching domain: %s", forecastResult.Reason)
 		return nil
 	}
 
@@ -1258,6 +1304,21 @@ func leaseContainsNode(lease *v1.Lease, node string) bool {
 		}
 	}
 	return false
+}
+
+// openLeaseCountForRun counts the run's non-closed leases.
+func openLeaseCountForRun(leases []v1.Lease, runKey string) int {
+	count := 0
+	for i := range leases {
+		lease := &leases[i]
+		if lease.Status.Closed {
+			continue
+		}
+		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) == runKey {
+			count++
+		}
+	}
+	return count
 }
 
 func findSpareLease(leases []v1.Lease, runKey, group string) (*v1.Lease, int) {

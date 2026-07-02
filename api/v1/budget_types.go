@@ -7,11 +7,15 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// Printer columns must be simple scalar JSON paths; the API server rejects
+// function expressions like length(). (Detached comment: doc-block text would
+// leak into the CRD description.)
+
 // Budget represents the allocation envelopes that constrain Runs.
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Owner",type=string,JSONPath=`.spec.owner`
-// +kubebuilder:printcolumn:name="Envelopes",type=integer,JSONPath=`length(.spec.envelopes)`
+// +kubebuilder:printcolumn:name="Updated",type=date,JSONPath=`.status.updatedAt`
 type Budget struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

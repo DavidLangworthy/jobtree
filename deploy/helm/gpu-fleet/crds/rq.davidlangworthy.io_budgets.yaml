@@ -18,9 +18,9 @@ spec:
     - jsonPath: .spec.owner
       name: Owner
       type: string
-    - jsonPath: length(.spec.envelopes)
-      name: Envelopes
-      type: integer
+    - jsonPath: .status.updatedAt
+      name: Updated
+      type: date
     name: v1
     schema:
       openAPIV3Schema:

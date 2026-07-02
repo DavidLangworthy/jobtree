@@ -1,4 +1,4 @@
-.PHONY: test fmt generate manifests verify-generate spec-check spec-counterexamples helm-lint cli-build cli-test
+.PHONY: test envtest fmt generate manifests verify-generate spec-check spec-counterexamples helm-lint cli-build cli-test
 
 # Regenerate deepcopy functions from the API types.
 generate:
@@ -9,17 +9,32 @@ generate:
 # in status (a derived cache, never read back by the control path).
 manifests:
 	go tool controller-gen crd:allowDangerousTypes=true paths=./api/v1/... output:crd:artifacts:config=config/crd/bases
+	go tool controller-gen webhook paths=./controllers/kube/... output:webhook:artifacts:config=config/webhook
 	cp config/crd/bases/*.yaml deploy/helm/gpu-fleet/crds/
 
 # CI guard: generated artifacts must be committed up to date.
 verify-generate: generate manifests
-	git diff --exit-code -- api/v1/zz_generated.deepcopy.go config/crd deploy/helm/gpu-fleet/crds
+	git diff --exit-code -- api/v1/zz_generated.deepcopy.go config/crd config/webhook deploy/helm/gpu-fleet/crds
 
 fmt:
 	gofmt -w $(shell find . -name '*.go' -not -path './vendor/*')
 
 test:
 	go test ./...
+
+# Integration tests against a real API server (envtest). The suite skips
+# itself when KUBEBUILDER_ASSETS is not set, so `go test ./...` stays
+# self-contained; this target provides the assets and forces the run.
+# The assets are resolved as a separate set -e statement: in the
+# `VAR=$$(...) cmd` prefix form the substitution's failure is discarded and
+# the suite would silently skip.
+ENVTEST_K8S_VERSION ?= 1.36.2
+SETUP_ENVTEST := go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.24.1
+
+envtest:
+	@set -e; \
+	assets="$$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)"; \
+	KUBEBUILDER_ASSETS="$$assets" go test -race -count=1 ./controllers/kube/...
 
 helm-lint:
 	helm lint deploy/helm/gpu-fleet
