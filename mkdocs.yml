@@ -60,6 +60,7 @@ nav:
   - Project:
       - Design review (2026-07): project/design-review-2026-07.md
       - Remediation plan: project/remediation-plan.md
+      - Quota semantics (decisions): project/quota-semantics.md
       - Testing & simulation plan: project/testing-and-simulation.md
       - First-class readiness: project/first-class-readiness.md
   - Website:
