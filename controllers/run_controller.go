@@ -12,6 +12,7 @@ import (
 	"github.com/davidlangworthy/jobtree/pkg/budget"
 	"github.com/davidlangworthy/jobtree/pkg/cover"
 	"github.com/davidlangworthy/jobtree/pkg/forecast"
+	"github.com/davidlangworthy/jobtree/pkg/keys"
 	"github.com/davidlangworthy/jobtree/pkg/metrics"
 	"github.com/davidlangworthy/jobtree/pkg/pack"
 	"github.com/davidlangworthy/jobtree/pkg/resolver"
@@ -58,7 +59,7 @@ func NewRunController(state *ClusterState, clock Clock) *RunController {
 
 // Reconcile admits the run identified by namespace/name when feasible.
 func (c *RunController) Reconcile(namespace, name string) error {
-	key := namespacedKey(namespace, name)
+	key := keys.NamespacedKey(namespace, name)
 	run, ok := c.State.Runs[key]
 	if !ok {
 		return fmt.Errorf("run %s/%s not found", namespace, name)
@@ -201,7 +202,7 @@ func (c *RunController) ActivateReservations(now time.Time) error {
 }
 
 func (c *RunController) activateReservation(key string, reservation *v1.Reservation, now time.Time) error {
-	runKey := namespacedKey(reservation.Spec.RunRef.Namespace, reservation.Spec.RunRef.Name)
+	runKey := keys.NamespacedKey(reservation.Spec.RunRef.Namespace, reservation.Spec.RunRef.Name)
 	run, ok := c.State.Runs[runKey]
 	if !ok {
 		return fmt.Errorf("run %s referenced by reservation %s not found", runKey, key)
@@ -365,7 +366,7 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 			continue
 		}
 		handled = true
-		runKey := namespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name)
+		runKey := keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name)
 		run := c.State.Runs[runKey]
 		groupIndex := lease.Labels[binder.LabelGroupIndex]
 		if run == nil {
@@ -504,7 +505,7 @@ func (c *RunController) planReservation(run *v1.Run, snapshot *topology.Snapshot
 		Status: status,
 	}
 
-	key := namespacedKey(run.Namespace, reservationName)
+	key := keys.NamespacedKey(run.Namespace, reservationName)
 	for existingKey, existing := range c.State.Reservations {
 		if existing.Spec.RunRef.Name == run.Name && existing.Spec.RunRef.Namespace == run.Namespace {
 			delete(c.State.Reservations, existingKey)
@@ -534,7 +535,11 @@ func (c *RunController) applyResolution(result resolver.Result, now time.Time) {
 		lease.Status.Closed = true
 		lease.Status.Ended = &ended
 		lease.Status.ClosureReason = action.Reason
-		runKey := namespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name)
+		// Counted here, not during planning: a resolver result can be
+		// discarded (e.g. the lottery errors), and only applied actions
+		// should show up in metrics.
+		metrics.IncResolverAction(string(action.Kind))
+		runKey := keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name)
 		affectedRuns[runKey] = struct{}{}
 		if action.GroupIndex != "" {
 			key := runKey + "::" + action.GroupIndex
@@ -547,7 +552,7 @@ func (c *RunController) applyResolution(result resolver.Result, now time.Time) {
 		for _, pod := range c.State.Pods {
 			runName := pod.Labels[binder.LabelRunName]
 			group := pod.Labels[binder.LabelGroupIndex]
-			key := namespacedKey(pod.Namespace, runName) + "::" + group
+			key := keys.NamespacedKey(pod.Namespace, runName) + "::" + group
 			if _, ok := closedGroups[key]; ok {
 				continue
 			}
@@ -622,7 +627,7 @@ func activeGPUsForRun(runKey string, leases []v1.Lease) int {
 		if lease.Status.Closed {
 			continue
 		}
-		key := namespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name)
+		key := keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name)
 		if key != runKey {
 			continue
 		}
@@ -652,15 +657,11 @@ func leaseSeqBase(runKey string, leases []v1.Lease) int {
 	count := 0
 	for i := range leases {
 		lease := &leases[i]
-		if namespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) == runKey {
+		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) == runKey {
 			count++
 		}
 	}
 	return count
-}
-
-func namespacedKey(namespace, name string) string {
-	return namespace + "/" + name
 }
 
 func computeUsage(leases []v1.Lease, now time.Time) map[string]int {
@@ -851,7 +852,7 @@ func (c *RunController) growRun(run *v1.Run, snapshot *topology.Snapshot, invent
 		return err
 	}
 
-	runKey := namespacedKey(run.Namespace, run.Name)
+	runKey := keys.NamespacedKey(run.Namespace, run.Name)
 	offset := maxGroupIndexForRun(runKey, c.State.Leases) + 1
 	result, err := binder.Materialize(binder.Request{
 		Run:              run.DeepCopy(),
@@ -873,7 +874,7 @@ func (c *RunController) growRun(run *v1.Run, snapshot *topology.Snapshot, invent
 }
 
 func (c *RunController) shrinkRun(run *v1.Run, target int32, now time.Time) error {
-	runKey := namespacedKey(run.Namespace, run.Name)
+	runKey := keys.NamespacedKey(run.Namespace, run.Name)
 	groups := collectElasticGroups(runKey, c.State.Leases)
 	if len(groups) == 0 {
 		return fmt.Errorf("no active groups to shrink")
@@ -936,14 +937,14 @@ func summarizeRunWidth(run *v1.Run, leases []v1.Lease) *v1.RunWidthStatus {
 	if run == nil {
 		return nil
 	}
-	runKey := namespacedKey(run.Namespace, run.Name)
+	runKey := keys.NamespacedKey(run.Namespace, run.Name)
 	allocated := int32(0)
 	for i := range leases {
 		lease := &leases[i]
 		if lease.Status.Closed {
 			continue
 		}
-		if namespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
+		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
 			continue
 		}
 		if lease.Spec.Slice.Role == binder.RoleSpare {
@@ -974,13 +975,13 @@ func summarizeRunFunding(run *v1.Run, leases []v1.Lease, now time.Time) *v1.RunF
 	if run == nil {
 		return nil
 	}
-	runKey := namespacedKey(run.Namespace, run.Name)
+	runKey := keys.NamespacedKey(run.Namespace, run.Name)
 	status := &v1.RunFundingStatus{}
 	sponsorShares := make(map[string]*v1.RunFundingSponsorShare)
 
 	for i := range leases {
 		lease := &leases[i]
-		if namespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
+		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
 			continue
 		}
 		usage := budget.ComputeLeaseUsage(lease, now)
@@ -1046,7 +1047,7 @@ func collectElasticGroups(runKey string, leases []v1.Lease) map[int]*elasticGrou
 		if lease.Status.Closed {
 			continue
 		}
-		if namespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
+		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
 			continue
 		}
 		idxStr := "0"
@@ -1082,11 +1083,11 @@ func (c *RunController) borrowedGPUsForRun(run *v1.Run, now time.Time) int32 {
 	if run == nil {
 		return 0
 	}
-	runKey := namespacedKey(run.Namespace, run.Name)
+	runKey := keys.NamespacedKey(run.Namespace, run.Name)
 	total := int32(0)
 	for i := range c.State.Leases {
 		lease := &c.State.Leases[i]
-		if namespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
+		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
 			continue
 		}
 		if lease.Spec.Slice.Role != binder.RoleBorrowed {
@@ -1124,7 +1125,7 @@ func (c *RunController) removePodsForGroups(runKey string, groups map[string]str
 	for _, pod := range c.State.Pods {
 		runLabel := pod.Labels[binder.LabelRunName]
 		group := pod.Labels[binder.LabelGroupIndex]
-		if namespacedKey(pod.Namespace, runLabel) == runKey {
+		if keys.NamespacedKey(pod.Namespace, runLabel) == runKey {
 			if _, ok := groups[group]; ok {
 				continue
 			}
@@ -1141,7 +1142,7 @@ func maxGroupIndexForRun(runKey string, leases []v1.Lease) int {
 		if lease.Status.Closed {
 			continue
 		}
-		if namespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
+		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
 			continue
 		}
 		idxStr := "0"
@@ -1179,7 +1180,7 @@ func findSpareLease(leases []v1.Lease, runKey, group string) (*v1.Lease, int) {
 		if lease.Spec.Slice.Role != binder.RoleSpare {
 			continue
 		}
-		if namespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
+		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
 			continue
 		}
 		if lease.Labels[binder.LabelGroupIndex] != group {

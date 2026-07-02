@@ -7,12 +7,13 @@ import (
 	"fmt"
 	"math/rand"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	"github.com/davidlangworthy/jobtree/pkg/binder"
-	"github.com/davidlangworthy/jobtree/pkg/metrics"
+	"github.com/davidlangworthy/jobtree/pkg/keys"
 	"github.com/davidlangworthy/jobtree/pkg/topology"
 )
 
@@ -96,7 +97,6 @@ func Resolve(in Input) (Result, error) {
 			Reason:     "DropSpare",
 		}
 		actions = append(actions, action)
-		metrics.IncResolverAction(string(ActionDropSpare))
 		cand.Marked = true
 	}
 	if deficit <= 0 {
@@ -105,10 +105,7 @@ func Resolve(in Input) (Result, error) {
 
 	// 2. Shrink malleable runs.
 	shrinkActions, shrinkFreed := shrinkMalleable(deficit, candidates)
-	for _, action := range shrinkActions {
-		actions = append(actions, action)
-		metrics.IncResolverAction(string(ActionShrink))
-	}
+	actions = append(actions, shrinkActions...)
 	deficit -= shrinkFreed
 	if deficit <= 0 {
 		return Result{Actions: actions}, nil
@@ -119,10 +116,7 @@ func Resolve(in Input) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	for _, action := range lotteryActions {
-		actions = append(actions, action)
-		metrics.IncResolverAction(string(ActionLottery))
-	}
+	actions = append(actions, lotteryActions...)
 	return Result{Actions: actions, Seed: seed}, nil
 }
 
@@ -183,7 +177,7 @@ func gatherCandidates(in Input, nodeIndex map[string]map[string]string) candidat
 		if lease == nil || lease.Status.Closed {
 			continue
 		}
-		runKey := namespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name)
+		runKey := keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name)
 		run := in.Runs[runKey]
 		if run == nil {
 			continue
@@ -283,7 +277,7 @@ func shrinkMalleable(deficit int, candidates candidateSet) ([]Action, int) {
 
 	sort.Slice(shrinkList, func(i, j int) bool {
 		if shrinkList[i].runKey == shrinkList[j].runKey {
-			return shrinkList[i].group.GroupIndex > shrinkList[j].group.GroupIndex
+			return cutBefore(shrinkList[i].group.GroupIndex, shrinkList[j].group.GroupIndex)
 		}
 		return shrinkList[i].runKey < shrinkList[j].runKey
 	})
@@ -311,6 +305,26 @@ func shrinkMalleable(deficit int, candidates candidateSet) ([]Action, int) {
 	}
 
 	return actions, freed
+}
+
+// cutBefore reports whether the group with index label a should be shrunk
+// before the group with index label b: highest numeric index first. Groups
+// with non-numeric index labels (which the binder never produces) are cut
+// after all numeric ones, ordered lexically descending as a deterministic
+// fallback.
+func cutBefore(a, b string) bool {
+	ai, aerr := strconv.Atoi(a)
+	bi, berr := strconv.Atoi(b)
+	switch {
+	case aerr == nil && berr == nil:
+		return ai > bi
+	case aerr == nil:
+		return true
+	case berr == nil:
+		return false
+	default:
+		return a > b
+	}
 }
 
 func buildActions(kind ActionKind, reason string, grp *runGroup) []Action {
@@ -460,11 +474,4 @@ func uniqueStrings(values []string) []string {
 		}
 	}
 	return out
-}
-
-func namespacedKey(namespace, name string) string {
-	if namespace == "" {
-		return name
-	}
-	return namespace + "/" + name
 }

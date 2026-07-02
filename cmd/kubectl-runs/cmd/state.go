@@ -12,6 +12,7 @@ import (
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	"github.com/davidlangworthy/jobtree/controllers"
 	"github.com/davidlangworthy/jobtree/pkg/binder"
+	"github.com/davidlangworthy/jobtree/pkg/keys"
 	"github.com/davidlangworthy/jobtree/pkg/topology"
 )
 
@@ -101,13 +102,13 @@ func (s snapshot) toState() *controllers.ClusterState {
 	for i := range s.Runs {
 		run := s.Runs[i]
 		copy := *run.DeepCopy()
-		key := namespacedKey(copy.Namespace, copy.Name)
+		key := keys.NamespacedKey(copy.Namespace, copy.Name)
 		state.Runs[key] = &copy
 	}
 	for i := range s.Reservations {
 		res := s.Reservations[i]
 		copy := *res.DeepCopy()
-		key := namespacedKey(copy.Namespace, copy.Name)
+		key := keys.NamespacedKey(copy.Namespace, copy.Name)
 		state.Reservations[key] = &copy
 	}
 	return state
@@ -147,13 +148,6 @@ func fromState(state *controllers.ClusterState) snapshot {
 }
 
 // namespacedKey mirrors the helper from the controller package without creating an import cycle.
-func namespacedKey(namespace, name string) string {
-	if namespace == "" {
-		namespace = "default"
-	}
-	return namespace + "/" + name
-}
-
 func cloneStringMap(src map[string]string) map[string]string {
 	if len(src) == 0 {
 		return nil

@@ -8,6 +8,7 @@ import (
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	cobra "github.com/davidlangworthy/jobtree/cmd/kubectl-runs/internal/cobra"
 	"github.com/davidlangworthy/jobtree/controllers"
+	"github.com/davidlangworthy/jobtree/pkg/keys"
 )
 
 // NewLeasesCommand lists leases associated with a Run.
@@ -25,7 +26,7 @@ func NewLeasesCommand(opts *RootOptions, store *StateStore, printer *Printer) *c
 			if err := ensureRunExists(state, opts.Namespace, name); err != nil {
 				return err
 			}
-			key := namespacedKey(opts.Namespace, name)
+			key := keys.NamespacedKey(opts.Namespace, name)
 			leases := filterLeases(state, opts.Namespace, name)
 			sort.Slice(leases, func(i, j int) bool {
 				return leases[i].Spec.Interval.Start.Time.Before(leases[j].Spec.Interval.Start.Time)
@@ -78,11 +79,11 @@ func NewLeasesCommand(opts *RootOptions, store *StateStore, printer *Printer) *c
 }
 
 func filterLeases(state *controllers.ClusterState, namespace, name string) []v1.Lease {
-	key := namespacedKey(namespace, name)
+	key := keys.NamespacedKey(namespace, name)
 	leases := make([]v1.Lease, 0)
 	for i := range state.Leases {
 		lease := state.Leases[i]
-		if namespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) == key {
+		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) == key {
 			leases = append(leases, *lease.DeepCopy())
 		}
 	}

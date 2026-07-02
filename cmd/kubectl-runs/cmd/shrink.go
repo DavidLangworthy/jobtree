@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	cobra "github.com/davidlangworthy/jobtree/cmd/kubectl-runs/internal/cobra"
+	"github.com/davidlangworthy/jobtree/pkg/keys"
 )
 
 // NewShrinkCommand enables voluntary shrink for elastic runs.
@@ -28,7 +29,7 @@ func NewShrinkCommand(opts *RootOptions, store *StateStore, printer *Printer) *c
 			if err := ensureMalleable(state, opts.Namespace, name); err != nil {
 				return err
 			}
-			key := namespacedKey(opts.Namespace, name)
+			key := keys.NamespacedKey(opts.Namespace, name)
 			run := state.Runs[key]
 			desired := run.Spec.Malleable.MaxTotalGPUs
 			if run.Spec.Malleable.DesiredTotalGPUs != nil {

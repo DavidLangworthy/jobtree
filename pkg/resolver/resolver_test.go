@@ -7,6 +7,7 @@ import (
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	"github.com/davidlangworthy/jobtree/pkg/binder"
+	"github.com/davidlangworthy/jobtree/pkg/keys"
 	"github.com/davidlangworthy/jobtree/pkg/topology"
 )
 
@@ -37,7 +38,7 @@ func TestResolveDropsSparesFirst(t *testing.T) {
 		}},
 		Leases: []*v1.Lease{lease},
 		Runs: map[string]*v1.Run{
-			namespacedKey(run.Namespace, run.Name): run,
+			keys.NamespacedKey(run.Namespace, run.Name): run,
 		},
 	}
 
@@ -80,7 +81,7 @@ func TestResolveShrinksBeforeLottery(t *testing.T) {
 		},
 		Leases: []*v1.Lease{leaseA, leaseB},
 		Runs: map[string]*v1.Run{
-			namespacedKey(run.Namespace, run.Name): run,
+			keys.NamespacedKey(run.Namespace, run.Name): run,
 		},
 	}
 
@@ -123,8 +124,8 @@ func TestResolveLotteryDeterministic(t *testing.T) {
 		},
 		Leases: []*v1.Lease{leaseA, leaseB},
 		Runs: map[string]*v1.Run{
-			namespacedKey(runA.Namespace, runA.Name): runA,
-			namespacedKey(runB.Namespace, runB.Name): runB,
+			keys.NamespacedKey(runA.Namespace, runA.Name): runA,
+			keys.NamespacedKey(runB.Namespace, runB.Name): runB,
 		},
 	}
 
