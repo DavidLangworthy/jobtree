@@ -8,6 +8,9 @@ step() {
   echo "==> $*"
 }
 
+step "Installing tmux (persistent sessions over ssh)"
+sudo apt-get update -qq && sudo apt-get install -y -qq tmux || echo "WARN: tmux install failed"
+
 step "Installing kind (Kubernetes-in-Docker)"
 go install sigs.k8s.io/kind@latest || echo "WARN: kind install failed"
 
