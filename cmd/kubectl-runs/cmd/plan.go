@@ -14,7 +14,7 @@ import (
 func NewPlanCommand(opts *RootOptions, store *StateStore, printer *Printer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "plan RUN",
-		Short: "Show reservation plan and forecast for a Run",
+		Short: "Show reservation plan and forecast for a Run (read-only; the state file is not modified)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -31,9 +31,6 @@ func NewPlanCommand(opts *RootOptions, store *StateStore, printer *Printer) *cob
 			key := keys.NamespacedKey(opts.Namespace, name)
 			run := state.Runs[key]
 			payload := buildPlanPayload(state, opts, run)
-			if err := store.Save(opts.StatePath, state); err != nil {
-				return err
-			}
 			return printer.Print(cmd, opts, payload)
 		},
 	}

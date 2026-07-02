@@ -18,10 +18,12 @@ go build -o kubectl-runs ./cmd/kubectl-runs
 
 ## State model
 
-The current milestone ships a local-state simulator. Commands operate on a JSON snapshot that mirrors the simplified `controllers.ClusterState` structure. Use the `--state` flag to select the file (default `cluster-state.yaml`).
+The current milestone ships a local-state simulator. Commands operate on a JSON snapshot that mirrors the simplified `controllers.ClusterState` structure. Use the `--state` flag to select the file (default `cluster-state.json`).
+
+Commands that modify state (`submit`, `shrink`, `sponsors add`, `watch`) hold an advisory lock (`<state>.lock`) for the whole load-modify-save cycle and replace the snapshot atomically, so concurrent invocations cannot lose writes. Read commands (`plan`, `explain`, `budgets usage`, `leases`) never modify the state file.
 
 ```bash
-kubectl runs --state my-cluster.yaml submit --file run-128-groups.json
+kubectl runs --state my-cluster.json submit --file run-128-groups.json
 ```
 
 > **Note:** convert existing YAML manifests to JSON (for example with `yq` or `kubectl convert`) before submitting them to the simulator. Because the local CLI uses Go's standard flag parser, provide flags before positional arguments (for example, `kubectl runs sponsors add --max 4 RUN SPONSOR`).
@@ -47,10 +49,10 @@ Use `--output json` for machine-friendly output. The default `table` renders com
 ## Example workflow
 
 ```bash
-kubectl runs --state cluster.yaml submit --file run-128-groups.json
-kubectl runs --state cluster.yaml plan train-128
-kubectl runs --state cluster.yaml watch train-128 --watch-count 3
-kubectl runs --state cluster.yaml budgets usage
+kubectl runs --state cluster.json submit --file run-128-groups.json
+kubectl runs --state cluster.json plan train-128
+kubectl runs --state cluster.json --watch-count 3 --watch-interval 1 watch train-128
+kubectl runs --state cluster.json budgets usage
 ```
 
 See [docs/examples/worked-examples.md](../examples/worked-examples.md) for full end-to-end scenarios that match the CLI output.

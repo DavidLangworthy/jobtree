@@ -70,6 +70,11 @@ func newSponsorsAddCommand(opts *RootOptions, store *StateStore, printer *Printe
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			sponsor := args[1]
+			unlock, err := store.Lock(opts.StatePath)
+			if err != nil {
+				return err
+			}
+			defer unlock()
 			state, err := store.Load(opts.StatePath)
 			if err != nil {
 				return err

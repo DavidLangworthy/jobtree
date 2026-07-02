@@ -12,7 +12,7 @@ import (
 func NewWatchCommand(opts *RootOptions, store *StateStore, printer *Printer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "watch RUN",
-		Short: "Continuously render run status and reservation forecasts",
+		Short: "Continuously render run status and reservation forecasts (reconciles and persists state each iteration)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -21,10 +21,14 @@ func NewWatchCommand(opts *RootOptions, store *StateStore, printer *Printer) *co
 				iterations = int(^uint(0) >> 1)
 			}
 			interval := waitDuration(opts.WatchInterval)
-			for i := 0; i < iterations; i++ {
-				if i > 0 {
-					time.Sleep(interval)
+			iterate := func(i int) error {
+				// Hold the lock for the whole load-modify-save cycle so a
+				// concurrent CLI invocation cannot lose this iteration's write.
+				unlock, err := store.Lock(opts.StatePath)
+				if err != nil {
+					return err
 				}
+				defer unlock()
 				state, err := store.Load(opts.StatePath)
 				if err != nil {
 					return err
@@ -41,7 +45,13 @@ func NewWatchCommand(opts *RootOptions, store *StateStore, printer *Printer) *co
 				if err := printer.Print(cmd, opts, payload); err != nil {
 					return err
 				}
-				if err := store.Save(opts.StatePath, state); err != nil {
+				return store.Save(opts.StatePath, state)
+			}
+			for i := 0; i < iterations; i++ {
+				if i > 0 {
+					time.Sleep(interval)
+				}
+				if err := iterate(i); err != nil {
 					return err
 				}
 			}

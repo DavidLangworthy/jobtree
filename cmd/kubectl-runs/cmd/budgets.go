@@ -23,7 +23,7 @@ func NewBudgetsCommand(opts *RootOptions, store *StateStore, printer *Printer) *
 func newBudgetsUsageCommand(opts *RootOptions, store *StateStore, printer *Printer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "usage",
-		Short: "Show budget usage and remaining headroom",
+		Short: "Show budget usage and remaining headroom (read-only; the state file is not modified)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			state, err := store.Load(opts.StatePath)
 			if err != nil {
@@ -66,9 +66,6 @@ func newBudgetsUsageCommand(opts *RootOptions, store *StateStore, printer *Print
 				Rows:    rows,
 				Raw:     raw,
 				Title:   "Budget Usage",
-			}
-			if err := store.Save(opts.StatePath, state); err != nil {
-				return err
 			}
 			return printer.Print(cmd, opts, payload)
 		},

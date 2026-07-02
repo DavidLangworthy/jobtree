@@ -233,7 +233,7 @@ Resolve reports a cleared deficit while actually freeing fewer.
 
 ### R11 — Every CLI error is silent *(critical, trivial fix)*
 
-- [ ] `cmd/kubectl-runs/main.go`
+- [x] `cmd/kubectl-runs/main.go`
 
 **Problem.** `main` discards the error (`os.Exit(1)` without printing) and the root command sets
 `SilenceErrors`. Confirmed: all failures exit 1 with zero output.
@@ -247,7 +247,7 @@ Resolve reports a cleared deficit while actually freeing fewer.
 
 ### R12 — Documented invocations do not parse
 
-- [ ] `cmd/kubectl-runs/internal/cobra/command.go`, `docs/cli/kubectl-runs.md`
+- [x] `cmd/kubectl-runs/internal/cobra/command.go`, `docs/cli/kubectl-runs.md`
 
 **Problem.** The stdlib-`flag`-based clone stops parsing at the first positional argument, so the
 docs' own example (`watch train-128 --watch-count 3`) fails. Confirmed by execution.
@@ -262,7 +262,7 @@ docs' own example (`watch train-128 --watch-count 3`) fails. Confirmed by execut
 
 ### R13 — State snapshot: mutation-by-read, no locking, `.yaml` that is JSON
 
-- [ ] `cmd/kubectl-runs/cmd/state.go`, `helpers.go`, read-path commands
+- [x] `cmd/kubectl-runs/cmd/state.go`, `helpers.go`, read-path commands
 
 **Steps.**
 

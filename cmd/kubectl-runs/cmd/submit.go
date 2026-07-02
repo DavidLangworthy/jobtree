@@ -47,6 +47,11 @@ func NewSubmitCommand(opts *RootOptions, store *StateStore, printer *Printer) *c
 				return err
 			}
 
+			unlock, err := store.Lock(opts.StatePath)
+			if err != nil {
+				return err
+			}
+			defer unlock()
 			state, err := store.Load(opts.StatePath)
 			if err != nil {
 				return err
