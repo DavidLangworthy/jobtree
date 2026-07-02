@@ -7,10 +7,11 @@ better — convert each to a GitHub issue titled with its ID (e.g. `R1: binder s
 link it from this page, following the convention in `first-class-readiness.md`.*
 
 **Suggested sequencing:** Workstreams A and B are ordinary bug fixes — do them now, in any order;
-R1/R2 first. Workstream C items are decisions, not code; make them before starting Workstream D,
-because the port bakes them in. Workstream D is the Kubernetes port (Phase 3 of the testing &
-simulation plan) and should not begin until A is done — porting known-broken code just moves the
-bugs. Workstream E is independent housekeeping.
+R1/R2 first. Workstream C's decisions were made on 2026-07-02 and recorded in
+`quota-semantics.md`; R14/R15 are now implementation work that should land before or with
+Workstream D, because the port bakes the semantics in. Workstream D is the Kubernetes port
+(Phase 3 of the testing & simulation plan) and should not begin until A is done — porting
+known-broken code just moves the bugs. Workstream E is independent housekeeping.
 
 ---
 
@@ -238,27 +239,37 @@ byte-identical; the format/extension mismatch is gone.
 
 ---
 
-## Workstream C — design decisions required (make before the port)
+## Workstream C — quota semantics (decided 2026-07-02; see `quota-semantics.md`)
 
 ### R14 — GPU-hour caps are dead at admission
 
-- [ ] `pkg/cover/cover.go` (`ExpectedDuration`), `controllers/run_controller.go` (all `cover.Request` sites), `api/v1/run_types.go`
+- [ ] `pkg/cover/cover.go`, `controllers/run_controller.go` (all `cover.Request` sites), `pkg/budget`, `api/v1`
 
 **Problem.** `ExpectedDuration` is only ever set in tests, so every `MaxGPUHours` check
 (envelope, aggregate, lending) is skipped in the real path. Runs also have no
 duration/completion concept, so the integral-budget half of the design exists only in status.
 
+**Decision (2026-07-02).** Metered evaluation with demote-not-kill: admission checks
+`width × period` against the remaining integral; exhaustion re-evaluates the run as
+opportunistic (derived, never stored — see Decision 3 in `quota-semantics.md`); opportunistic
+work is reclaimed only when funded work needs the capacity, by lottery, and recovers
+automatically when quota returns. No envelope overdraft — unfunded hours are metered separately.
+
 **Steps.**
 
-1. Decide: (a) add an expected/max duration field to `RunSpec` and plumb it into every cover
-   request, or (b) declare that indefinite runs bypass GPU-hour caps and document exactly that in
-   `docs/concepts/budgets.md`.
-2. If (a): define behavior at cap exhaustion mid-run (close leases? shrink? warn?) and implement
-   run completion so leases can end naturally.
-3. Scenario tests either way — including the currently-impossible case of admitting into an
-   envelope with zero GPU-hour headroom.
+1. Add the cluster accounting `period` configuration and plumb `width × period` hours into every
+   cover request (this finally exercises the GPU-hour math at admission).
+2. Implement the deterministic ranking/evaluation function from `quota-semantics.md` (shared
+   with R15): per-envelope greedy fill over concurrency + integral, stable tiebreaks.
+3. Add the unfunded bucket to budget accounting and the metrics class label; enforce the
+   no-overdraft invariant.
+4. Resolver: unfunded-first reclaim phase; funded admissions reclaim opportunistic capacity
+   before falling back to a reservation.
+5. Scenario tests: zero-hour envelope cannot fund an admission; exhaustion demotes without
+   killing; a reopened budget window re-funds; overdraft is unrepresentable.
 
-**Done when.** The documented semantics and the admission path agree, with tests.
+**Done when.** The quota-semantics invariants hold in the Tier 1 simulator, and status surfaces
+the derived classes without the control path ever reading them back.
 
 ### R15 — Family sharing vs. lending semantics are inconsistent
 
@@ -269,25 +280,36 @@ lending gate, and those leases are `Role: Active` — bypassing lending sub-caps
 accounting — yet Run status reports the same GPUs as "borrowed" because the payer differs. The
 same GPUs are borrowed in one ledger and not the other.
 
+**Decision (2026-07-02).** Proximity-ordered family sharing of excess with owner recall
+expressed as claim ranking; lending policy governs sponsors/strangers only; four derived classes
+(owned / shared / borrowed / unfunded), never stored on a CRD. Full semantics in
+`quota-semantics.md`.
+
 **Steps.**
 
-1. Decide the policy: does family sharing respect lending policies (treat family as borrowers),
-   or is it unconditional (lending ACLs govern strangers only)? Document in
-   `docs/concepts/budgets.md`.
-2. Make the three ledgers agree: lease role, budget accounting, and Run funding status must
-   classify family-funded GPUs identically (e.g. a distinct `FamilyShared` classification if
-   neither existing label fits).
-3. Conservation tests (invariant 3) across owned/family/borrowed splits.
+1. Untangle lease *role* (Active/Spare — a fact on the lease) from *funding class* (derived);
+   remove `Role: Borrowed` semantics from accounting.
+2. Align cover phases with the ranking function's proximity order; drop the lending gate for
+   family; add the `sharing: none` envelope opt-out; apply lending caps to the sponsor class
+   only.
+3. Implement recall as ranking — no demotion writes; resolver and admission consume the
+   derivation directly.
+4. Point all ledgers at the one derivation: budget usage buckets, `summarizeRunFunding`
+   four-way split, metrics class label.
+5. Tests: conservation across the four classes; owner-recall scenario (owner's admission
+   displaces a sibling to opportunistic without eviction when capacity exists elsewhere);
+   lending caps unaffected by family usage.
 
-**Done when.** One classification scheme, applied consistently in all three places, documented.
+**Done when.** One derivation function feeds lease accounting, run status, budget status, and
+resolver candidate selection; the ACL-bypass finding is replaced by passing recall tests.
 
 ---
 
 ## Workstream D — mocked: the Kubernetes layer (the port)
 
 *These items are one coordinated effort — Phase 3 of `testing-and-simulation.md`. Entry gates:
-Workstream A complete; C decided; the TLA+/P specs (reservation lifecycle, budget conservation)
-check clean.*
+Workstream A complete; C decided (done — `quota-semantics.md`); the TLA+/P specs (reservation
+lifecycle, budget conservation, and the quota evaluation semantics) check clean.*
 
 ### R16 — `cmd/manager` is a stub
 
