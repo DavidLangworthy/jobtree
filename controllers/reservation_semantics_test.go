@@ -6,6 +6,7 @@ import (
 	"time"
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
+	"github.com/davidlangworthy/jobtree/pkg/binder"
 	"github.com/davidlangworthy/jobtree/pkg/keys"
 	"github.com/davidlangworthy/jobtree/pkg/metrics"
 	"github.com/davidlangworthy/jobtree/pkg/topology"
@@ -459,5 +460,75 @@ func TestActivateReservationFailsTerminallyWhenReforecastFails(t *testing.T) {
 	// The next tick must not retry the failed reservation.
 	if err := controller.ActivateReservations(now.Add(time.Minute)); err != nil {
 		t.Fatalf("failed reservation retried hot: %v", err)
+	}
+}
+
+// Review finding (PR #14 item 1): a promoted spare must keep its funding
+// provenance — a sponsor-funded spare that swaps in must stay on the
+// sponsor's books (Owner) and keep counting against MaxBorrowGPUs (role).
+func TestSwapLeaseKeepsFundingProvenance(t *testing.T) {
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	run := h100Run("train", "org:team", 2)
+	run.Status.Phase = RunPhaseRunning
+	active := v1.Lease{
+		ObjectMeta: v1.ObjectMeta{Namespace: "default", Name: "train-active", Labels: map[string]string{
+			binder.LabelRunName:    "train",
+			binder.LabelGroupIndex: "0",
+			binder.LabelRunRole:    binder.RoleActive,
+		}},
+		Spec: v1.LeaseSpec{
+			Owner:          "org:team",
+			RunRef:         v1.RunReference{Namespace: "default", Name: "train"},
+			Slice:          v1.LeaseSlice{Nodes: []string{"node-a#0", "node-a#1"}, Role: binder.RoleActive},
+			Interval:       v1.LeaseInterval{Start: v1.NewTime(now.Add(-time.Hour))},
+			PaidByBudget:   "team",
+			PaidByEnvelope: "west",
+			Reason:         "Start",
+		},
+	}
+	spare := v1.Lease{
+		ObjectMeta: v1.ObjectMeta{Namespace: "default", Name: "train-spare", Labels: map[string]string{
+			binder.LabelRunName:    "train",
+			binder.LabelGroupIndex: "0",
+			binder.LabelRunRole:    binder.RoleSpare,
+		}},
+		Spec: v1.LeaseSpec{
+			Owner:          "org:sponsor",
+			RunRef:         v1.RunReference{Namespace: "default", Name: "train"},
+			Slice:          v1.LeaseSlice{Nodes: []string{"node-b#0", "node-b#1"}, Role: binder.RoleSpare},
+			Interval:       v1.LeaseInterval{Start: v1.NewTime(now.Add(-time.Hour))},
+			PaidByBudget:   "sponsor",
+			PaidByEnvelope: "west",
+			Reason:         "Start",
+		},
+	}
+	state := &ClusterState{
+		Nodes:  []topology.SourceNode{h100Node("node-a", 2), h100Node("node-b", 2)},
+		Runs:   map[string]*v1.Run{"default/train": run},
+		Leases: []v1.Lease{active, spare},
+	}
+
+	controller := NewRunController(state, runClock{now: now})
+	if err := controller.HandleNodeFailure("node-a", now); err != nil {
+		t.Fatalf("node failure handling failed: %v", err)
+	}
+
+	var swap *v1.Lease
+	for i := range state.Leases {
+		if state.Leases[i].Spec.Reason == "Swap" && !state.Leases[i].Status.Closed {
+			swap = &state.Leases[i]
+		}
+	}
+	if swap == nil {
+		t.Fatalf("expected a swap lease")
+	}
+	if swap.Spec.Owner != "org:sponsor" {
+		t.Errorf("swap lease lost its payer: owner %q, want org:sponsor", swap.Spec.Owner)
+	}
+	if swap.Spec.Slice.Role != binder.RoleBorrowed {
+		t.Errorf("swap lease role %q, want Borrowed so MaxBorrowGPUs keeps counting it", swap.Spec.Slice.Role)
+	}
+	if swap.Spec.PaidByBudget != "sponsor" || swap.Spec.PaidByEnvelope != "west" {
+		t.Errorf("swap lease lost funding attribution: %s/%s", swap.Spec.PaidByBudget, swap.Spec.PaidByEnvelope)
 	}
 }

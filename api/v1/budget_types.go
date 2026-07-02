@@ -153,6 +153,9 @@ func (a *AggregateCap) validate(declared map[string]struct{}) error {
 	if a.Name == "" {
 		return fmt.Errorf("name is required")
 	}
+	if a.Flavor == "" {
+		return fmt.Errorf("flavor is required")
+	}
 	if len(a.Envelopes) == 0 {
 		return fmt.Errorf("envelopes must reference at least one envelope")
 	}

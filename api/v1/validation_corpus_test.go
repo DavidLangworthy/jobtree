@@ -224,6 +224,13 @@ func TestBudgetManifestValidationCorpus(t *testing.T) {
 			wantErr: "envelopes must reference at least one envelope",
 		},
 		{
+			name: "aggregate cap missing flavor",
+			manifest: `{"spec": {"owner": "org:ai:rai",
+				"envelopes": [{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16}],
+				"aggregateCaps": [{"name": "all", "envelopes": ["west"]}]}}`,
+			wantErr: "flavor is required",
+		},
+		{
 			name: "aggregate cap missing name",
 			manifest: `{"spec": {"owner": "org:ai:rai",
 				"envelopes": [{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16}],

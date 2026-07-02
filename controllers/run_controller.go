@@ -1317,10 +1317,19 @@ func closeLease(lease *v1.Lease, reason string, now time.Time) {
 
 func createSwapLease(run *v1.Run, group string, spare *v1.Lease, now time.Time) v1.Lease {
 	nodes := append([]string{}, spare.Spec.Slice.Nodes...)
+	// The promoted lease keeps the spare's funding provenance: the payer's
+	// owner stays on the lease (so the lender's budget accounting still sees
+	// it), and capacity paid by another owner keeps the Borrowed role (so
+	// MaxBorrowGPUs keeps counting it). R15's derivation work untangles role
+	// from funding class properly.
+	role := binder.RoleActive
+	if spare.Spec.Owner != "" && spare.Spec.Owner != run.Spec.Owner {
+		role = binder.RoleBorrowed
+	}
 	labels := map[string]string{
 		binder.LabelRunName:    run.Name,
 		binder.LabelGroupIndex: group,
-		binder.LabelRunRole:    binder.RoleActive,
+		binder.LabelRunRole:    role,
 	}
 	return v1.Lease{
 		ObjectMeta: v1.ObjectMeta{
@@ -1329,14 +1338,14 @@ func createSwapLease(run *v1.Run, group string, spare *v1.Lease, now time.Time) 
 			Labels:    labels,
 		},
 		Spec: v1.LeaseSpec{
-			Owner: run.Spec.Owner,
+			Owner: spare.Spec.Owner,
 			RunRef: v1.RunReference{
 				Name:      run.Name,
 				Namespace: run.Namespace,
 			},
 			Slice: v1.LeaseSlice{
 				Nodes: nodes,
-				Role:  binder.RoleActive,
+				Role:  role,
 			},
 			Interval:       v1.LeaseInterval{Start: v1.NewTime(now)},
 			PaidByBudget:   spare.Spec.PaidByBudget,
