@@ -19,7 +19,7 @@ known-broken code just moves the bugs. Workstream E is independent housekeeping.
 
 ### R1 — Binder splits funding segments across node boundaries *(critical)*
 
-- [ ] `pkg/binder/binder.go` — `Materialize`, `buildPod`
+- [x] `pkg/binder/binder.go` — `Materialize`, `buildPod`
 
 **Problem.** When a cover segment boundary does not align with a node allocation chunk, the pod
 built for the slice takes `slots[0]`'s node and claims all the slice's GPUs on it — producing
@@ -43,7 +43,7 @@ regression case produces four correctly-attributed pod slices.
 
 ### R2 — Lease names collide *(critical)*
 
-- [ ] `pkg/binder/binder.go` — `buildLease`
+- [x] `pkg/binder/binder.go` — `buildLease`
 
 **Problem.** Names are `run-gNN-<envelopeName>-<UnixNano>`; `Now` is fixed per materialization
 and envelope names are only unique within a budget, so two segments can yield identical lease
@@ -60,7 +60,7 @@ names. Confirmed by execution. A real API server would reject the second create.
 
 ### R3 — Binder panics instead of erroring on exhausted segments
 
-- [ ] `pkg/binder/binder.go` — `Materialize` (`segments[0]` indexing)
+- [x] `pkg/binder/binder.go` — `Materialize` (`segments[0]` indexing)
 
 **Problem.** If a cover plan covers the first group exactly but more groups remain, the next
 group's loop indexes into an empty slice: panic rather than error.
