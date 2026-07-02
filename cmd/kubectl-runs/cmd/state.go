@@ -147,7 +147,6 @@ func fromState(state *controllers.ClusterState) snapshot {
 	return snap
 }
 
-// namespacedKey mirrors the helper from the controller package without creating an import cycle.
 func cloneStringMap(src map[string]string) map[string]string {
 	if len(src) == 0 {
 		return nil
