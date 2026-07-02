@@ -119,7 +119,7 @@ errors, the whole result is discarded but the metrics remain.
 
 ### R7 — Resolver preempts to fix budget shortfalls
 
-- [ ] `controllers/run_controller.go` — `activateReservation` deficit fallback
+- [x] `controllers/run_controller.go` — `activateReservation` deficit fallback
 
 **Problem.** When activation fails on *cover* (budget) rather than capacity, `computeDeficit`
 can return 0 and the code forces `deficit = totalNeeded`, running the lottery — preempting other
@@ -138,7 +138,7 @@ headroom.
 
 ### R8 — One bad reservation blocks all; activation order nondeterministic
 
-- [ ] `controllers/run_controller.go` — `ActivateReservations`
+- [x] `controllers/run_controller.go` — `ActivateReservations`
 
 **Steps.**
 
@@ -152,7 +152,7 @@ headroom.
 
 ### R9 — Reservation double-bind: no phase guard, no cleanup on direct bind *(critical once R21 lands)*
 
-- [ ] `controllers/run_controller.go` — `Reconcile` bind path, `activateReservation`
+- [x] `controllers/run_controller.go` — `Reconcile` bind path, `activateReservation`
 
 **Problem.** The direct-bind path clears neither `Status.PendingReservation` nor the stored
 Reservation, and `activateReservation` never checks the run's phase — a run that reserves, then

@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -177,6 +178,11 @@ func (c *RunController) Reconcile(namespace, name string) error {
 	c.State.Pods = append(c.State.Pods, bindResult.Pods...)
 	c.State.Leases = append(c.State.Leases, bindResult.Leases...)
 
+	// Invariant 8: no Pending reservation exists for a Running run. Without
+	// this, a run that reserves and then binds directly would materialize a
+	// second set of pods/leases when the reservation activates.
+	c.releasePendingReservations(run, now)
+
 	run.Status.Phase = RunPhaseRunning
 	run.Status.Message = fmt.Sprintf("bound %d GPUs", packPlan.TotalGPUs)
 	run.Status.Width = summarizeRunWidth(run, c.State.Leases)
@@ -185,9 +191,45 @@ func (c *RunController) Reconcile(namespace, name string) error {
 	return nil
 }
 
-// ActivateReservations attempts to start any due reservations, invoking the resolver if deficits remain.
+// releasePendingReservations marks every Pending reservation for the run as
+// superseded and clears the run's reservation pointers.
+func (c *RunController) releasePendingReservations(run *v1.Run, now time.Time) {
+	runKey := keys.NamespacedKey(run.Namespace, run.Name)
+	for _, res := range c.State.Reservations {
+		if keys.NamespacedKey(res.Spec.RunRef.Namespace, res.Spec.RunRef.Name) != runKey {
+			continue
+		}
+		if res.Status.State != "Pending" && res.Status.State != "" {
+			continue
+		}
+		released := v1.NewTime(now)
+		res.Status.State = "Released"
+		res.Status.Reason = "Superseded"
+		res.Status.ReleasedAt = &released
+		res.Status.CountdownSeconds = nil
+	}
+	run.Status.PendingReservation = nil
+	run.Status.EarliestStart = nil
+}
+
+// ActivateReservations attempts to start any due reservations in sorted key
+// order, invoking the resolver if capacity deficits remain. A reservation
+// that fails to activate is recorded on its status and does not block later
+// reservations; the collected errors are returned as an aggregate.
 func (c *RunController) ActivateReservations(now time.Time) error {
-	for key, reservation := range c.State.Reservations {
+	dueKeys := make([]string, 0, len(c.State.Reservations))
+	for key := range c.State.Reservations {
+		dueKeys = append(dueKeys, key)
+	}
+	sort.Strings(dueKeys)
+
+	var errs []error
+	for _, key := range dueKeys {
+		reservation, ok := c.State.Reservations[key]
+		if !ok {
+			// Superseded or rescheduled by an earlier activation this pass.
+			continue
+		}
 		if reservation.Status.State != "Pending" && reservation.Status.State != "" {
 			continue
 		}
@@ -195,17 +237,28 @@ func (c *RunController) ActivateReservations(now time.Time) error {
 			continue
 		}
 		if err := c.activateReservation(key, reservation, now); err != nil {
-			return err
+			reservation.Status.Reason = fmt.Sprintf("activation failed: %v", err)
+			errs = append(errs, fmt.Errorf("reservation %s: %w", key, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (c *RunController) activateReservation(key string, reservation *v1.Reservation, now time.Time) error {
 	runKey := keys.NamespacedKey(reservation.Spec.RunRef.Namespace, reservation.Spec.RunRef.Name)
 	run, ok := c.State.Runs[runKey]
 	if !ok {
+		// The run is gone, so the reservation can never activate; fail it
+		// terminally rather than retrying every tick.
+		reservation.Status.State = "Failed"
+		reservation.Status.CountdownSeconds = nil
 		return fmt.Errorf("run %s referenced by reservation %s not found", runKey, key)
+	}
+	if run.Status.Phase == RunPhaseRunning || run.Status.Phase == RunPhaseComplete {
+		// The run already bound (capacity freed before the activation tick);
+		// materializing again would double-spend the budget.
+		c.releasePendingReservations(run, now)
+		return nil
 	}
 
 	usage := computeUsage(c.State.Leases, now)
@@ -243,11 +296,15 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 		}
 	}
 
+	// Mirror the classification used when the reservation was created:
+	// every pack failure except an invalid request is a capacity-class
+	// problem, and every cover failure except an invalid request is a
+	// budget/policy-class problem.
 	plan, err := planPlacement(run, snapshot)
 	var packErr *pack.PlanError
 	if err != nil {
 		if pe, ok := err.(*pack.PlanError); ok {
-			if pe.Reason != pack.FailureReasonInsufficientCapacity {
+			if pe.Reason == pack.FailureReasonInvalidRequest {
 				return err
 			}
 			packErr = pe
@@ -262,7 +319,7 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 	var coverPlanErr *cover.PlanError
 	if err != nil {
 		if ce, ok := err.(*cover.PlanError); ok {
-			if ce.Reason != cover.FailureReasonInsufficientCapacity {
+			if ce.Reason == cover.FailureReasonInvalidRequest {
 				return err
 			}
 			coverPlanErr = ce
@@ -277,9 +334,20 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 			scope = deriveLocation(plan)
 		}
 		totalNeeded := int(run.Spec.Resources.TotalGPUs + spareTotal)
-		deficit := computeDeficit(snapshot, scope, totalNeeded)
-		if deficit <= 0 {
-			deficit = totalNeeded
+		deficit := 0
+		if packErr != nil {
+			deficit = computeDeficit(snapshot, scope, totalNeeded)
+			if deficit <= 0 {
+				// Free GPUs exist in scope yet placement still failed
+				// (fragmentation): clear the full request width.
+				deficit = totalNeeded
+			}
+		}
+		if deficit == 0 {
+			// Pure budget shortfall: preemption frees physical capacity,
+			// never budget headroom, so re-forecast and reschedule the
+			// reservation instead of running the lottery.
+			return c.planReservation(run, snapshot, &plan, nil, coverPlanErr, states, request, now)
 		}
 		leases := activeLeasePointers(c.State.Leases)
 		resInput := resolver.Input{
@@ -320,6 +388,11 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 		request.Quantity = run.Spec.Resources.TotalGPUs + spareTotal
 		coverPlan, err = inventory.Plan(request)
 		if err != nil {
+			if ce, ok := err.(*cover.PlanError); ok && ce.Reason != cover.FailureReasonInvalidRequest {
+				// Capacity cleared but the budget still cannot fund the run;
+				// further preemption cannot help, so reschedule.
+				return c.planReservation(run, snapshot, &plan, nil, ce, states, request, now)
+			}
 			return err
 		}
 	}
