@@ -21,13 +21,18 @@ type Lease struct {
 
 // LeaseSpec is immutable after creation.
 type LeaseSpec struct {
-	Owner          string        `json:"owner"`
-	RunRef         RunReference  `json:"runRef"`
-	CompPath       []string      `json:"compPath,omitempty"`
-	Slice          LeaseSlice    `json:"slice"`
-	Interval       LeaseInterval `json:"interval"`
-	PaidByEnvelope string        `json:"paidByEnvelope"`
-	Reason         string        `json:"reason"`
+	Owner    string        `json:"owner"`
+	RunRef   RunReference  `json:"runRef"`
+	CompPath []string      `json:"compPath,omitempty"`
+	Slice    LeaseSlice    `json:"slice"`
+	Interval LeaseInterval `json:"interval"`
+	// PaidByBudget scopes PaidByEnvelope: envelope names are only unique
+	// within one budget, and one owner can hold several budgets. Empty on
+	// leases written before the field existed; those fall back to
+	// owner+envelope attribution.
+	PaidByBudget   string `json:"paidByBudget,omitempty"`
+	PaidByEnvelope string `json:"paidByEnvelope"`
+	Reason         string `json:"reason"`
 }
 
 // LeaseSlice describes the bound nodes.

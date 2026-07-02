@@ -31,11 +31,7 @@ func NewShrinkCommand(opts *RootOptions, store *StateStore, printer *Printer) *c
 			}
 			key := keys.NamespacedKey(opts.Namespace, name)
 			run := state.Runs[key]
-			desired := run.Spec.Malleable.MaxTotalGPUs
-			if run.Spec.Malleable.DesiredTotalGPUs != nil {
-				desired = *run.Spec.Malleable.DesiredTotalGPUs
-			}
-			target := desired - int32(by)
+			target := run.Spec.Malleable.Desired() - int32(by)
 			clamped, err := clampDesired(run.Spec.Malleable.MinTotalGPUs, run.Spec.Malleable.MaxTotalGPUs, target)
 			if err != nil {
 				return err

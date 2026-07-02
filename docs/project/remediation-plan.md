@@ -172,7 +172,7 @@ binds directly, double-materializes on activation. Unreachable today only becaus
 
 ### R10 — Validation gaps in `api/v1`
 
-- [ ] `api/v1/budget_types.go`, `api/v1/run_types.go`
+- [x] `api/v1/budget_types.go`, `api/v1/run_types.go`
 
 **Steps.**
 

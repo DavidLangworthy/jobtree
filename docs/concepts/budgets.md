@@ -18,6 +18,17 @@ Aggregate caps (named groups of envelopes) expose the same headroom fields. Stat
 includes both per-envelope and per-aggregate headroom along with a timestamp marking
 when the snapshot was computed.
 
+## Envelope naming and scoping
+
+Envelope names are unique **within a Budget** — validation rejects duplicates in one
+Budget, but two Budgets belonging to the same owner may each declare an envelope with
+the same name. Attribution is therefore scoped by budget: every lease records both the
+budget (`spec.paidByBudget`) and the envelope (`spec.paidByEnvelope`) that funded it,
+and accounting charges the lease only to that budget's envelope. Aggregate cap
+references (`aggregateCaps[].envelopes`) resolve within their own Budget and are
+validated against its declared envelope names. Leases written before `paidByBudget`
+existed fall back to owner+envelope attribution.
+
 ## Metrics
 
 The controller records per-envelope usage snapshots—current concurrency, cumulative

@@ -102,17 +102,37 @@ type RunList struct {
 	Items    []Run `json:"items"`
 }
 
-// Default implements webhook.Defaulter.
+// AllowCrossGroupSpread returns the effective cross-group-spread setting,
+// applying the API default (true) when the field is unset. Consumers must
+// use this instead of re-implementing the default.
+func (s *RunSpec) AllowCrossGroupSpread() bool {
+	if s.Locality == nil || s.Locality.AllowCrossGroupSpread == nil {
+		return true
+	}
+	return *s.Locality.AllowCrossGroupSpread
+}
+
+// Desired returns the effective desired width, applying the API default
+// (MaxTotalGPUs) when the field is unset. Consumers must use this instead
+// of re-implementing the default.
+func (m *RunMalleability) Desired() int32 {
+	if m.DesiredTotalGPUs != nil {
+		return *m.DesiredTotalGPUs
+	}
+	return m.MaxTotalGPUs
+}
+
+// Default implements webhook.Defaulter, persisting the effective defaults.
 func (r *Run) Default() {
 	if r.Spec.Locality == nil {
 		r.Spec.Locality = &RunLocality{}
 	}
 	if r.Spec.Locality.AllowCrossGroupSpread == nil {
-		value := true
+		value := r.Spec.AllowCrossGroupSpread()
 		r.Spec.Locality.AllowCrossGroupSpread = &value
 	}
 	if r.Spec.Malleable != nil && r.Spec.Malleable.DesiredTotalGPUs == nil {
-		desired := r.Spec.Malleable.MaxTotalGPUs
+		desired := r.Spec.Malleable.Desired()
 		r.Spec.Malleable.DesiredTotalGPUs = &desired
 	}
 }

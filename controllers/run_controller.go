@@ -784,10 +784,7 @@ func computeUsage(leases []v1.Lease, now time.Time) map[string]int {
 }
 
 func planPlacement(run *v1.Run, snapshot *topology.Snapshot) (pack.Plan, error) {
-	allowSpread := true
-	if run.Spec.Locality != nil && run.Spec.Locality.AllowCrossGroupSpread != nil {
-		allowSpread = *run.Spec.Locality.AllowCrossGroupSpread
-	}
+	allowSpread := run.Spec.AllowCrossGroupSpread()
 	var groupSize *int
 	if run.Spec.Locality != nil && run.Spec.Locality.GroupGPUs != nil {
 		value := int(*run.Spec.Locality.GroupGPUs)
@@ -901,10 +898,7 @@ func (c *RunController) growRun(run *v1.Run, snapshot *topology.Snapshot, invent
 		return nil
 	}
 
-	allowSpread := true
-	if run.Spec.Locality != nil && run.Spec.Locality.AllowCrossGroupSpread != nil {
-		allowSpread = *run.Spec.Locality.AllowCrossGroupSpread
-	}
+	allowSpread := run.Spec.AllowCrossGroupSpread()
 	var groupSize *int
 	if run.Spec.Locality != nil && run.Spec.Locality.GroupGPUs != nil {
 		value := int(*run.Spec.Locality.GroupGPUs)
@@ -1056,11 +1050,7 @@ func summarizeRunWidth(run *v1.Run, leases []v1.Lease) *v1.RunWidthStatus {
 	if run.Spec.Malleable != nil {
 		status.Min = run.Spec.Malleable.MinTotalGPUs
 		status.Max = run.Spec.Malleable.MaxTotalGPUs
-		desired := run.Spec.Malleable.MaxTotalGPUs
-		if run.Spec.Malleable.DesiredTotalGPUs != nil {
-			desired = *run.Spec.Malleable.DesiredTotalGPUs
-		}
-		status.Desired = desired
+		status.Desired = run.Spec.Malleable.Desired()
 	} else {
 		total := run.Spec.Resources.TotalGPUs
 		status.Min = total
@@ -1349,6 +1339,7 @@ func createSwapLease(run *v1.Run, group string, spare *v1.Lease, now time.Time) 
 				Role:  binder.RoleActive,
 			},
 			Interval:       v1.LeaseInterval{Start: v1.NewTime(now)},
+			PaidByBudget:   spare.Spec.PaidByBudget,
 			PaidByEnvelope: spare.Spec.PaidByEnvelope,
 			Reason:         "Swap",
 		},
