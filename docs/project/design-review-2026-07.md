@@ -177,6 +177,9 @@ constraint.
 
 ## Recommendations, in order
 
+*Each finding below is tracked as a numbered work item with concrete steps in the remediation
+plan (`remediation-plan.md`).*
+
 1. **Fix the binder** — split segment slices on node-chunk boundaries (walk chunks and segments as
    two cursors), and make lease names collision-proof (include the budget name and an index; drop
    the reliance on `UnixNano`). This is the one confirmed data-corruption-class bug in the engine.

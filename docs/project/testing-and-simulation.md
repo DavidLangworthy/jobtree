@@ -87,9 +87,27 @@ clock. Build a small **discrete-event scenario runner** (`cmd/jobtree-sim` or a 
 - **Monte-Carlo mode.** A workload generator (random arrival of runs/failures/shrinks under a
   seed) runs N randomized episodes per CI job, asserting invariants after every event. This is
   FoundationDB-style deterministic simulation scaled down; it is cheap because the engine is pure.
+- **Exploration mode (model checking the implementation).** Because the engine is pure,
+  single-threaded, and clock-injected, the simulator can do better than sampling: it can
+  *enumerate*. Define tiny universes — 2 owners, 2–3 nodes, 3–5 events (submit, grow, node-fail,
+  budget-window-open, activate) — and exhaustively explore every event ordering up to a depth
+  bound, asserting the invariant library at each state. Almost every scheduler bug of this kind
+  has a minimal witness at this scale, and exhaustive-at-small-scale beats random-at-large-scale
+  for finding it; the counterexample that comes back is already minimal.
+- **Fault-point enumeration.** Take every passing trace and systematically re-run it with a
+  failure injected at each step (node death, manager crash/restart between events, partial state
+  write). This is lineage-driven fault injection: it converts Tier 4's probabilistic chaos into
+  deterministic, replayable coverage at millisecond cost.
+- **Boundary-biased generators.** Bias inputs toward fringe values: zero-headroom envelopes,
+  exact-fit capacities, windows expiring at `now`, group counts crossing 9→10, borrow limits of
+  exactly the request size. Several design-review findings are precisely fringe-value bugs (the
+  string-sorted group index breaks at 10; the binder bug needs segment sizes that misalign with
+  node chunks) — random generation finds these eventually, biased enumeration finds them
+  immediately.
 
 *Exit criterion:* every user-guide walkthrough exists as a scenario; nightly Monte-Carlo runs
-10k+ episodes with zero invariant violations.
+10k+ episodes and the exhaustive small-universe exploration (including fault-point enumeration)
+completes, both with zero invariant violations.
 
 ### Tier 2 — envtest: a real API server, no kubelet (seconds–minutes, every PR once the port lands)
 
@@ -127,6 +145,13 @@ Two complementary single-machine environments:
   reconcile latency (the admission-latency histogram already exists in `pkg/metrics`).
 - **M10 rehearsal:** two kind clusters on one machine cover the multi-cluster aggregate-caps
   stretch milestone without any new infrastructure.
+- **Backend-agnostic harness.** Drive the e2e runner through a kubeconfig and nothing else, so
+  any conformant cluster is a valid target. kind is the CI default (multi-node clusters are
+  trivial, which jobtree needs for fabric-domain packing, and startup is CI-fast); minikube works
+  unchanged for developers who already run it — its VM drivers even offer slightly higher node
+  fidelity (real kernel and systemd per node), though nothing jobtree does depends on that — and
+  k3d/k3s likewise. The same harness later points at the Tier 4 cloud clusters, so nothing is
+  written twice.
 
 *Exit criterion:* a nightly CI job stands up kind, installs the chart, replays a smoke subset of
 the scenario corpus end-to-end (submit → bind → fail node → spare swap → preempt), and tears
@@ -134,15 +159,40 @@ down; a weekly KWOK job publishes scheduling-latency numbers at 1k/5k nodes.
 
 ### Tier 4 — live systems testing on CPU-only clusters (hours–days, pre-release)
 
-Real multi-node clusters — cloud VMs or lab machines, **no GPUs** — running the operator exactly
-as production would, with the fake device plugin advertising phantom GPU resources. The device
-plugin gRPC contract is identical whether the resources are real or fake, so everything above the
-device driver is production-faithful.
+Real multi-node clusters — **no GPUs** — running the operator exactly as production would, with
+the fake device plugin advertising phantom GPU resources. The device plugin gRPC contract is
+identical whether the resources are real or fake, so everything above the device driver is
+production-faithful.
 
-- **Chaos:** kill nodes (real kubelet death, not simulated), restart the API server, partition the
-  network, kill the manager mid-reconcile. Verify: spare swaps fire, leases close exactly once,
-  no double-binds after leader failover, invariants hold on the live state (the invariant library
-  runs as a read-only audit job against the cluster).
+A managed cloud service such as **AKS** is the recommended concrete rig here (EKS/GKE are
+equivalent), because it tests things no local or self-managed environment can:
+
+- **Managed control planes behave differently.** API-server throttling and rate limits, admission
+  latency, managed etcd — controller retry/backoff bugs that never appear against kind's idle API
+  server show up here, and this is exactly the behavior class the controller-runtime port
+  introduces.
+- **Real topology labels for free.** Availability zones and multiple node pools map naturally
+  onto the region/cluster/fabric-domain scheme, so placement is exercised against labels the
+  platform maintains rather than ones a test fixture invents.
+- **Real node churn.** Spot/low-priority CPU VMs are cheap and get genuinely preempted — free
+  chaos for the spare-swap and resolver paths — and cluster-autoscaler interplay is only testable
+  here.
+- **Realistic upgrade drills.** Managed version upgrades rehearse Kubernetes version skew and CRD
+  migration the way an adopter would experience them.
+
+Clusters are ephemeral — Terraform up, run the gate, tear down — to keep cost bounded. Two AKS
+clusters (or AKS + kind) also serve the M10 multi-cluster rehearsal at higher fidelity than
+Tier 3.
+
+One caveat cuts the other way: with a managed control plane you *cannot* kill the API server or
+partition etcd deliberately. The chaos suite therefore splits: **control-plane chaos** (API-server
+restarts, etcd disruption) runs on a self-managed cluster — kind is sufficient — while **node and
+workload chaos** and soak run on AKS.
+
+- **Chaos:** kill nodes (real kubelet death, not simulated), partition the network, kill the
+  manager mid-reconcile; on the self-managed rig, restart the API server. Verify: spare swaps
+  fire, leases close exactly once, no double-binds after leader failover, invariants hold on the
+  live state (the invariant library runs as a read-only audit job against the cluster).
 - **Soak:** multi-day runs with accelerated budget windows; watch for lease/GPU-hour drift,
   memory growth, metrics cardinality.
 - **HA and lifecycle:** leader election, upgrade and rollback drills using the Helm chart, CRD
@@ -153,6 +203,29 @@ device driver is production-faithful.
 
 *Exit criterion:* a release gate checklist — chaos suite green, 72-hour soak clean, upgrade drill
 clean — attached to every tagged release.
+
+## Design-level model checking (a gate for the Kubernetes port)
+
+Tier 1's exploration mode model-checks the *implementation*, but it explores inputs to a
+sequential engine. What it cannot cover is what the Kubernetes port introduces: concurrent
+reconcilers, stale informer caches, and conflict-and-retry semantics. That is where a small
+design-level specification pays off — written and checked *before* the port, when changing the
+design is cheap.
+
+Scope it to exactly two protocols; everything else is adequately covered by the ladder:
+
+1. **Reservation lifecycle** — plan / direct-bind / activate racing each other. The double-bind
+   defect found in the design review (a Pending reservation surviving a direct bind and
+   re-materializing leases on activation) is a state-reachability result a model checker finds
+   instantly.
+2. **Budget conservation under concurrent admission** — can two racing reconciles overspend an
+   envelope given optimistic concurrency and stale reads? This validates the retry/ownership
+   design the port is about to commit to.
+
+TLA+ with TLC is the default tool; Microsoft's P framework is the alternative if executable
+state-machine specs feel more maintainable. Either way keep the spec deliberately tiny (tens of
+lines of state, not a codebase shadow) so it cannot drift far from reality, and treat "specs
+check clean" as an entry gate for Phase 3 below.
 
 ## The fidelity boundary (what no tier can test without GPUs)
 
@@ -175,11 +248,12 @@ capacities, and one end-to-end run per flavor).
 | ---- | ----------- | ------- | ------ |
 | 0 | `go test` + fuzz corpus | every PR | < 2 min |
 | 1 | scenario simulator + Monte-Carlo (small N) | every PR | < 2 min |
-| 1 | Monte-Carlo (large N, multiple seeds) | nightly | ~30 min |
+| 1 | Monte-Carlo (large N) + exhaustive exploration + fault-point enumeration | nightly | ~1 h |
 | 2 | envtest | every PR (after the controller-runtime port) | < 5 min |
 | 3 | kind e2e smoke | nightly | ~20 min |
 | 3 | KWOK scale + latency report | weekly | ~1 h |
-| 4 | CPU-cluster chaos + soak | pre-release / release branch | days |
+| — | TLA+/P spec check (reservation lifecycle, budget conservation) | on spec/design change; gate for the port | minutes |
+| 4 | AKS chaos + soak (node/workload); self-managed control-plane chaos | pre-release / release branch | days |
 
 Prerequisite housekeeping: bump CI from Go 1.22 (EOL) and add `helm lint` to the PR workflow.
 
@@ -192,17 +266,20 @@ worst bug in the design review.*
 **Phase 2 — scenario simulator (medium).** Scenario schema + runner + virtual clock + golden
 outputs; convert worked examples and user guides into scenarios; wire `ActivateReservations` and
 `HandleNodeFailure` into the simulated loop (fixing the "no driver" gap in the process); add
-Monte-Carlo mode to nightly CI.
+Monte-Carlo mode, exhaustive small-universe exploration, fault-point enumeration, and
+boundary-biased generators to nightly CI.
 
-**Phase 3 — the Kubernetes port and envtest (large, but it is the M-next work anyway).** Adopt
+**Phase 3 — the Kubernetes port and envtest (large, but it is the M-next work anyway).** Entry
+gate: the TLA+/P specs for the reservation lifecycle and budget conservation check clean. Adopt
 controller-runtime; generate real CRDs; wire webhooks; port reconcilers. envtest lands as the
 port's own test bed, reusing the Phase 2 corpus.
 
 **Phase 4 — kind/KWOK harness (medium).** Fake GPU device plugin (in-repo or fake-gpu-operator),
-kind config with labeled nodes, e2e driver reusing the scenario corpus, KWOK scale rig, nightly
-and weekly CI jobs.
+kind config with labeled nodes, kubeconfig-driven e2e driver reusing the scenario corpus (kind by
+default; minikube/k3d work unchanged), KWOK scale rig, nightly and weekly CI jobs.
 
-**Phase 5 — live systems rig (medium, mostly ops).** Terraform/scripts for a disposable CPU
-cluster, chaos suite, soak jobs, invariant audit against live state, release gate checklist.
+**Phase 5 — live systems rig (medium, mostly ops).** Terraform for disposable AKS clusters
+(spot CPU node pools, zone-derived topology labels), node/workload chaos suite plus self-managed
+control-plane chaos, soak jobs, invariant audit against live state, release gate checklist.
 
 Phases 1–2 need no architectural decisions and pay for themselves immediately; start there.
