@@ -440,6 +440,58 @@ never trigger in the shipped system.
 **Done when.** Both paths execute in the simulator's default loop and, post-port, in the manager;
 no feature exists without a driver.
 
+### R28 — Bridge apply is not atomic: partial API failures strand states the engine cannot repair *(critical, found by adversarial review of R16, 2026-07-03)*
+
+- [ ] `controllers/kube/bridge.go` — `apply()`; adoption/repair logic
+
+**Problem.** `apply()` writes leases, then pods, then reservations, then run status, aborting on
+the first error. The engine is edge-triggered — it emits creates/closures only at the moment of
+the in-memory transition and rebuilds desired state from the server on every load — so writes
+lost to a mid-apply abort are never re-emitted. Example: bind materializes leases, a pod create
+fails transiently, the run stays Pending while its own leases occupy the nodes and charge the
+budget. Reordering writes alone provably does not converge (creates-first turns the node-failure
+retry into a duplicate swap lease).
+
+Two adoption mitigations already landed with R16: a below-Running run holding open leases is
+adopted to Running instead of double-planned (both in `Reconcile` and `activateReservation`),
+and a deleted Run's leftovers are released by the kube layer. The general fix — fault-injection
+tests around every apply ordering, plus repair logic for the remaining partial states (closures
+persisted without their replacement create, pods missing for open leases) — is this item.
+
+**Steps.**
+
+1. Enumerate the abort points in `apply()` (a fault-injecting `client.Client` wrapper makes each
+   reachable in envtest) and decide per state: adopt, repair, or re-emit.
+2. Make `HandleNodeFailure` idempotent (an existing open swap lease for the group means the swap
+   already happened) so closures and creates can be safely reordered.
+3. Property: after any single injected write failure plus one retry of each reconciler, the
+   world reaches the same state as the failure-free execution.
+
+**Done when.** The fault-injection suite passes for every abort point, and no reachable partial
+state is permanent.
+
+### R29 — Helm chart cannot run the shipped manager *(critical, found by adversarial review of R16, 2026-07-03)*
+
+- [ ] `deploy/helm/gpu-fleet/templates/` — webhook serving, probes, metrics scraping
+
+**Problem.** The manager defaults `--enable-webhooks=true` and registers four admission
+webhooks, so its webhook server must serve TLS — but the chart ships no certificates, no
+webhook Service, and no {Mutating,Validating}WebhookConfigurations, so the deployed manager
+cannot admit anything (failurePolicy=Fail). The ServiceMonitor scrapes only `/metrics`, never
+`/jobtree` where the engine metrics live, so every Grafana panel stays empty. The deployment
+defines no liveness/readiness probes despite the manager serving them.
+
+**Steps.**
+
+1. Chart-managed serving certs (`genSignedCert` or optional cert-manager), webhook Service,
+   webhook configurations generated from `config/webhook/manifests.yaml` with CA injection.
+2. Scrape both metrics paths; add liveness/readiness probes on :8081.
+3. `helm template` assertion in CI that the rendered manifests contain the webhook
+   configurations and probes (extends the R22 no-wildcard check).
+
+**Done when.** `helm install` on a kind cluster yields a manager that enforces admission and
+serves collected metrics. (Fold into the R22 chart overhaul.)
+
 ---
 
 ## Workstream E — packaging, CI, docs honesty

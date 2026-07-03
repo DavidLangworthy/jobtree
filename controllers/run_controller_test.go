@@ -779,3 +779,196 @@ func TestHandleNodeFailureSwapsToSpare(t *testing.T) {
 }
 
 func int32Ptr(v int32) *int32 { return &v }
+
+// A run whose flavor has no matching nodes anywhere must park as plain
+// Pending: a reservation with neither nodes nor a domain scope would be
+// rejected by its own validating webhook once one is installed (R18),
+// permanently wedging the run behind a failing bridge apply.
+func TestRunControllerParksRunWhenNoMatchingDomain(t *testing.T) {
+	now := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
+	state := &ClusterState{
+		Budgets: []v1.Budget{{
+			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			Spec: v1.BudgetSpec{
+				Owner: "org:ai:team",
+				Envelopes: []v1.BudgetEnvelope{{
+					Name:        "west",
+					Flavor:      "H100-80GB",
+					Selector:    map[string]string{topology.LabelRegion: "us-west"},
+					Concurrency: 16,
+				}},
+			},
+		}},
+		// No nodes of the flavor at all.
+		Runs: map[string]*v1.Run{
+			"default/stranded": {
+				ObjectMeta: v1.ObjectMeta{Name: "stranded", Namespace: "default"},
+				Spec: v1.RunSpec{
+					Owner:     "org:ai:team",
+					Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 8},
+				},
+			},
+		},
+	}
+
+	controller := NewRunController(state, runClock{now: now})
+	if err := controller.Reconcile("default", "stranded"); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	if len(state.Reservations) != 0 {
+		t.Fatalf("expected no reservation for a domainless forecast, got %d", len(state.Reservations))
+	}
+	run := state.Runs["default/stranded"]
+	if run.Status.Phase != RunPhasePending {
+		t.Fatalf("expected Pending, got %s", run.Status.Phase)
+	}
+	if !strings.Contains(run.Status.Message, "no capacity in any matching domain") {
+		t.Fatalf("unexpected message: %s", run.Status.Message)
+	}
+}
+
+// A run below Running that already holds open leases is a half-applied
+// admission (the bridge's apply lost the status write — R28): reconcile
+// must finish the transition, not double-bind against the run's own leases.
+func TestReconcileAdoptsHalfAppliedAdmission(t *testing.T) {
+	now := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
+	state := &ClusterState{
+		Budgets: []v1.Budget{{
+			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			Spec: v1.BudgetSpec{
+				Owner: "org:ai:team",
+				Envelopes: []v1.BudgetEnvelope{{
+					Name:        "west",
+					Flavor:      "H100-80GB",
+					Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
+					Concurrency: 16,
+				}},
+			},
+		}},
+		Nodes: []topology.SourceNode{{
+			Name: "node-a",
+			Labels: map[string]string{
+				topology.LabelRegion:       "us-west",
+				topology.LabelCluster:      "cluster-a",
+				topology.LabelFabricDomain: "island-a",
+				topology.LabelGPUFlavor:    "H100-80GB",
+			},
+			GPUs: 4,
+		}},
+		Leases: []v1.Lease{{
+			ObjectMeta: v1.ObjectMeta{Name: "half-g00-team-west-1-0", Namespace: "default",
+				Labels: map[string]string{binder.LabelRunName: "half", binder.LabelGroupIndex: "0", binder.LabelRunRole: binder.RoleActive}},
+			Spec: v1.LeaseSpec{
+				Owner:          "org:ai:team",
+				RunRef:         v1.RunReference{Name: "half", Namespace: "default"},
+				Slice:          v1.LeaseSlice{Nodes: []string{"node-a#0", "node-a#1", "node-a#2", "node-a#3"}, Role: binder.RoleActive},
+				Interval:       v1.LeaseInterval{Start: v1.NewTime(now.Add(-time.Minute))},
+				PaidByBudget:   "team",
+				PaidByEnvelope: "west",
+				Reason:         "Start",
+			},
+		}},
+		Runs: map[string]*v1.Run{
+			"default/half": {
+				ObjectMeta: v1.ObjectMeta{Name: "half", Namespace: "default"},
+				Spec: v1.RunSpec{
+					Owner:     "org:ai:team",
+					Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
+				},
+				Status: v1.RunStatus{Phase: RunPhasePending},
+			},
+		},
+	}
+
+	controller := NewRunController(state, runClock{now: now})
+	if err := controller.Reconcile("default", "half"); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	run := state.Runs["default/half"]
+	if run.Status.Phase != RunPhaseRunning {
+		t.Fatalf("expected adoption to Running, got %s (%s)", run.Status.Phase, run.Status.Message)
+	}
+	if !strings.Contains(run.Status.Message, "adopted 1 open leases") {
+		t.Errorf("unexpected message: %s", run.Status.Message)
+	}
+	if len(state.Leases) != 1 {
+		t.Fatalf("adoption must not create leases, got %d", len(state.Leases))
+	}
+}
+
+// The activation path must adopt too: without it, every activation tick
+// re-plans against the run's own orphaned leases, reports them as a
+// deficit, and reschedules forever.
+func TestActivateReservationAdoptsHalfAppliedActivation(t *testing.T) {
+	now := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
+	earliest := v1.NewTime(now.Add(-time.Minute))
+	state := &ClusterState{
+		Nodes: []topology.SourceNode{{
+			Name: "node-a",
+			Labels: map[string]string{
+				topology.LabelRegion:       "us-west",
+				topology.LabelCluster:      "cluster-a",
+				topology.LabelFabricDomain: "island-a",
+				topology.LabelGPUFlavor:    "H100-80GB",
+			},
+			GPUs: 4,
+		}},
+		Leases: []v1.Lease{{
+			ObjectMeta: v1.ObjectMeta{Name: "half-g00-team-west-1-0", Namespace: "default",
+				Labels: map[string]string{binder.LabelRunName: "half", binder.LabelGroupIndex: "0", binder.LabelRunRole: binder.RoleActive}},
+			Spec: v1.LeaseSpec{
+				Owner:          "org:ai:team",
+				RunRef:         v1.RunReference{Name: "half", Namespace: "default"},
+				Slice:          v1.LeaseSlice{Nodes: []string{"node-a#0", "node-a#1", "node-a#2", "node-a#3"}, Role: binder.RoleActive},
+				Interval:       v1.LeaseInterval{Start: v1.NewTime(now.Add(-time.Minute))},
+				PaidByBudget:   "team",
+				PaidByEnvelope: "west",
+				Reason:         "Start",
+			},
+		}},
+		Runs: map[string]*v1.Run{
+			"default/half": {
+				ObjectMeta: v1.ObjectMeta{Name: "half", Namespace: "default"},
+				Spec: v1.RunSpec{
+					Owner:     "org:ai:team",
+					Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
+				},
+				Status: v1.RunStatus{Phase: RunPhasePending, PendingReservation: ptrString("half-res-1")},
+			},
+		},
+		Reservations: map[string]*v1.Reservation{
+			"default/half-res-1": {
+				ObjectMeta: v1.ObjectMeta{Name: "half-res-1", Namespace: "default"},
+				Spec: v1.ReservationSpec{
+					RunRef:         v1.RunReference{Name: "half", Namespace: "default"},
+					IntendedSlice:  v1.IntendedSlice{Domain: map[string]string{topology.LabelRegion: "us-west"}},
+					PayingEnvelope: "west",
+					EarliestStart:  earliest,
+				},
+				Status: v1.ReservationStatus{State: "Pending"},
+			},
+		},
+	}
+
+	controller := NewRunController(state, runClock{now: now})
+	if err := controller.ActivateReservations(now); err != nil {
+		t.Fatalf("activate failed: %v", err)
+	}
+
+	run := state.Runs["default/half"]
+	if run.Status.Phase != RunPhaseRunning {
+		t.Fatalf("expected adoption to Running, got %s (%s)", run.Status.Phase, run.Status.Message)
+	}
+	if run.Status.PendingReservation != nil {
+		t.Errorf("pendingReservation should clear on adoption")
+	}
+	res := state.Reservations["default/half-res-1"]
+	if res.Status.State != "Released" || res.Status.Reason != "Activated" {
+		t.Errorf("reservation = %s/%s, want Released/Activated", res.Status.State, res.Status.Reason)
+	}
+	if len(state.Leases) != 1 {
+		t.Fatalf("adoption must not create leases, got %d", len(state.Leases))
+	}
+}
