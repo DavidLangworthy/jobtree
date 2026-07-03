@@ -22,6 +22,15 @@ step "Warming the Go build cache"
 go build ./... || echo "WARN: initial build failed"
 go vet ./... || echo "WARN: vet failed"
 
+step "Installing the docs toolchain (mkdocs) into a venv at ~/.venvs/docs"
+if sudo apt-get install -y -qq python3-pip python3-venv 2>/dev/null \
+   && python3 -m venv "$HOME/.venvs/docs" \
+   && "$HOME/.venvs/docs/bin/pip" install -q -r docs/requirements.txt; then
+  echo "  docs build: ~/.venvs/docs/bin/mkdocs build --strict   (matches Read the Docs' fail_on_warning)"
+else
+  echo "WARN: docs toolchain install failed"
+fi
+
 step "Done. Quick reference:"
 echo "  go test ./...                      # unit tests (~20s)"
 echo "  kind create cluster                # local real cluster"
