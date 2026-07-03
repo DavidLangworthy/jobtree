@@ -1,4 +1,4 @@
-.PHONY: test fmt generate manifests verify-generate helm-lint cli-build cli-test
+.PHONY: test fmt generate manifests verify-generate spec-check spec-counterexamples helm-lint cli-build cli-test
 
 # Regenerate deepcopy functions from the API types.
 generate:
@@ -30,3 +30,21 @@ cli-build:
 
 cli-test:
 	go test ./cmd/kubectl-runs/...
+
+TLA2TOOLS := specs/.cache/tla2tools.jar
+TLC := java -XX:+UseParallelGC -cp .cache/tla2tools.jar tlc2.TLC -deadlock -workers auto
+
+$(TLA2TOOLS):
+	mkdir -p $(dir $(TLA2TOOLS))
+	curl -fsSL -o $(TLA2TOOLS) https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar
+
+# Model-check the design-level specs (the entry gate for the Kubernetes port).
+spec-check: $(TLA2TOOLS)
+	cd specs && $(TLC) -config ReservationLifecycle.cfg ReservationLifecycle.tla
+	cd specs && $(TLC) -config BudgetConservation.cfg BudgetConservation.tla
+	cd specs && $(TLC) -config QuotaEvaluation.cfg QuotaEvaluation.tla
+
+# The historical bugs, demonstrated: these configurations MUST fail.
+spec-counterexamples: $(TLA2TOOLS)
+	cd specs && ! $(TLC) -config ReservationLifecycleBug.cfg ReservationLifecycle.tla
+	cd specs && ! $(TLC) -config BudgetConservationRacy.cfg BudgetConservation.tla
