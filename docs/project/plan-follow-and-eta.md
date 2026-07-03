@@ -94,9 +94,11 @@ capacity forever. This is worth doing on its own (a finished training job should
   never exit). A run is `Completed` when all of its active (non-spare) pods have `Succeeded`.
 - **On completion**: set `RunPhaseComplete` and **close the run’s open leases** (reason `Completed`) so
   the funding derivation stops counting them — otherwise the budget and GPUs never free.
-- **Workload failure** (a pod `Failed`, not the fleet): out of scope for v1 beyond surfacing — retry/
-  backoff policy is a separate feature. v1: a pod `Failed` leaves the run as-is (operator/researcher
-  decides); only node-loss-without-spare and resolver kills produce run `Failed` today, unchanged.
+- **Workload failure** (a pod `Failed`, not the fleet): **a single pod failure does not fail the run**
+  (owner decision). v1 surfaces it and leaves the run as-is; retry/backoff is a separate future
+  feature. Only node-loss-without-spare and resolver kills produce run `Failed` today, unchanged. (So
+  completion is “all active pods `Succeeded`”; a pod `Failed` neither completes nor fails the gang in
+  v1.)
 - **Dev/CLI path**: for the snapshot simulator, completion is signaled explicitly
   (`kubectl runs complete <run>` or a snapshot phase) since there are no live pods to watch.
 
@@ -124,8 +126,11 @@ runs joined by follow edges (`train` follows `data-prep`; `eval` follows `train`
 starts only after its upstreams finish. This is the researcher-facing realization of “job forests.”
 
 ### Surface
-- `Run.spec.follow: []string` — run names in the **same namespace** this run waits on. **All** must
-  complete (AND semantics, matching “after the followed job **or jobs** completes”).
+- `Run.spec.follow` — the common case is just a list of upstream run names in the **same namespace**;
+  **all** must complete (AND semantics, matching “after the followed job **or jobs** completes”). To
+  keep the policy out of the way of the 90% case it is a small struct:
+  `follow: { after: [names…], onUpstreamFailure?: wait | fail, upstreamFailureGrace?: duration }`
+  (the CLI’s `--follow <name>` fills `after`; policy fields default). 
 - New phase **`Waiting`** — blocked on dependencies, distinct from `Pending` (admitted, no capacity),
   with a message listing the outstanding upstreams. A distinct phase is a clearer researcher signal
   than overloading `Pending`.
@@ -135,13 +140,13 @@ starts only after its upstreams finish. This is the researcher-facing realizatio
   capacity — cheap for operators (no zombie reservations).
 - When **all** followed runs reach `Completed`, the run proceeds to normal admission
   (`Pending → Running`, with reservations/funding exactly as today).
-- **Upstream failure**: a followed run reaching terminal `Failed` will never complete (no
-  resurrection — the 2026-07-02 ruling). Two humane options, and this is a real UX decision (§5):
-  `fail` the follower with reason `upstream <X> failed` (honest, no silent wait, but forces
-  resubmitting every downstream stage — a completed data-prep, a failed train, and an eval that never
-  started); or `wait` (keep the follower `Waiting` with that reason so the researcher fixes and
-  resubmits just the failed stage). Recommend a per-run `onUpstreamFailure: fail | wait` with a chosen
-  default; see §5.
+- **Upstream failure** (owner decision — *wait a bit, overridable*): a followed run reaching terminal
+  `Failed` will never complete (no resurrection). The follower stays `Waiting` with reason
+  `upstream <X> failed` for a **grace period** so the researcher can fix and resubmit just the failed
+  stage; if it is not resolved within the grace, the follower `Failed`s with a clear reason (no silent
+  zombie). Controlled by `spec.follow` policy fields with sensible defaults, both overridable:
+  `onUpstreamFailure: wait | fail` (default `wait`) and `upstreamFailureGrace` (default e.g. 30m).
+  A followed run *deleted* during the grace is treated the same as failed (`upstream <X> deleted`).
 - **Deleted upstream**: a followed run *deleted* before it completes (not Completed/Failed) would
   otherwise strand the follower in `Waiting` forever. The Run→Run watch must therefore also fire on
   upstream **delete** and re-evaluate dependents (fail with `upstream <X> deleted`, or, under a `wait`
@@ -246,17 +251,15 @@ job:
 - **Speculative pre-reservation timed to an ETA.** Complex and error-prone. **Back off:** start on
   completion via the normal path; ETA informs display only.
 
-**Open decisions for the owner:**
+**Decisions (settled by the owner, 2026-07-03):**
 
-- (a) **ETA reporting mechanism** — annotation-mirror recommended (no per-job RBAC).
-- (b) **Completion signal** — pod `Succeeded` aggregate recommended; and whether a *workload*-pod
-  `Failed` should fail the run or be left to a future retry policy.
-- (c) **Upstream-failure default** (`onUpstreamFailure: fail | wait`) — genuine UX trade-off: `fail`
-  is honest but forces resubmitting the whole downstream chain; `wait` lets a researcher fix just the
-  failed stage but risks a run sitting `Waiting` until they act. Leaning `wait` for researcher
-  friendliness *iff* the deleted/stale-upstream handling keeps it from becoming a silent zombie —
-  your call.
-- (d) **`follow` same-namespace only in v1** — recommended yes.
+- (a) **ETA reporting mechanism** — annotation-mirror (no per-job RBAC).
+- (b) **Completion signal** — pod `Succeeded` aggregate; **a single pod `Failed` does not fail the
+  run** (surfaced, left to a future retry policy).
+- (c) **Upstream failure** — `onUpstreamFailure` defaults to **`wait`** (a bounded grace so the
+  researcher can fix and resubmit just the failed stage), **overridable** (policy + `upstreamFailure
+  Grace`); on grace expiry the follower `Failed`s so it never becomes a silent zombie.
+- (d) **`follow` same-namespace only in v1** — yes.
 
 **A note on scope honesty:** grounding this plan in the code turned up that “completion” (B0) does not
 exist yet — a good example of not cheating on requirements. The researcher-facing promise (“run these
