@@ -215,6 +215,56 @@ func TestManagerBindsRunEndToEnd(t *testing.T) {
 	})
 }
 
+// TestRunCompletesWhenPodsSucceed (B0): once a bound run's workload pods reach
+// Succeeded, the pod watch re-triggers the run, which finalizes to Completed,
+// closes its leases, and frees the budget headroom.
+func TestRunCompletesWhenPodsSucceed(t *testing.T) {
+	requireEnv(t)
+	resetWorld(t)
+
+	createH100Node(t, "node-a", 4)
+	createBudget(t, "team", "org:team", 8)
+	run := &v1.Run{
+		ObjectMeta: metav1.ObjectMeta{Name: "finish", Namespace: "default"},
+		Spec: v1.RunSpec{
+			Owner:     "org:team",
+			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
+		},
+	}
+	if err := kubeClient.Create(suiteCtx, run); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	waitForRunPhase(t, "finish", "Running")
+	pods := waitForRunPods(t, "finish", 1)
+
+	// No kubelet in envtest, so drive the workload pod to Succeeded by hand;
+	// the Succeeded-only pod watch should re-trigger the run.
+	for i := range pods {
+		pods[i].Status.Phase = corev1.PodSucceeded
+		if err := kubeClient.Status().Update(suiteCtx, &pods[i]); err != nil {
+			t.Fatalf("mark pod succeeded: %v", err)
+		}
+	}
+
+	waitForRunPhase(t, "finish", "Completed")
+
+	eventually(t, 15*time.Second, func() error {
+		for _, l := range listRunLeases(t, "finish") {
+			if !l.Status.Closed || l.Status.ClosureReason != "Completed" {
+				return fmt.Errorf("lease %s closed=%v reason=%q, want closed/Completed", l.Name, l.Status.Closed, l.Status.ClosureReason)
+			}
+		}
+		var budget v1.Budget
+		if err := kubeClient.Get(suiteCtx, types.NamespacedName{Namespace: "default", Name: "team"}, &budget); err != nil {
+			return err
+		}
+		if len(budget.Status.Headroom) != 1 || budget.Status.Headroom[0].Concurrency != 8 {
+			return fmt.Errorf("headroom = %+v, want full 8 after completion", budget.Status.Headroom)
+		}
+		return nil
+	})
+}
+
 // TestReservationActivatesWhenCapacityArrives: a run the cluster cannot
 // place parks as Pending behind a Reservation; once capacity exists and the
 // clock passes EarliestStart, the reservation reconciler activates it and

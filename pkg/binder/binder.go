@@ -48,13 +48,22 @@ type Result struct {
 	Leases []v1.Lease
 }
 
+// PodPhaseSucceeded is the workload-pod phase that signals a slice finished.
+// It mirrors corev1.PodSucceeded as a plain string so the engine and the
+// binder need no Kubernetes API dependency.
+const PodPhaseSucceeded = "Succeeded"
+
 // PodManifest captures the minimal data needed to create a pod-like workload.
+// Phase is populated only for pods loaded from the cluster (empty for pods the
+// binder is about to create); the run controller reads it to detect gang
+// completion.
 type PodManifest struct {
 	Namespace string
 	Name      string
 	NodeName  string
 	GPUs      int
 	Labels    map[string]string
+	Phase     string
 }
 
 // Materialize constructs pods and leases for the provided request. Node

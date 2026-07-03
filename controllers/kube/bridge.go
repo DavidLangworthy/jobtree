@@ -168,6 +168,7 @@ func (b *Bridge) load(ctx context.Context) (*worldSnapshot, error) {
 			NodeName:  pod.Spec.NodeName,
 			GPUs:      gpus,
 			Labels:    pod.Labels,
+			Phase:     string(pod.Status.Phase),
 		})
 		snap.pods[keys.NamespacedKey(pod.Namespace, pod.Name)] = pod
 	}
