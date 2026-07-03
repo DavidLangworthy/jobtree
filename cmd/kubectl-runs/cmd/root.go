@@ -58,6 +58,7 @@ func NewRootCommand() *cobra.Command {
 	root.AddCommand(NewSponsorsCommand(opts, store, printer))
 	root.AddCommand(NewShrinkCommand(opts, store, printer))
 	root.AddCommand(NewCompleteCommand(opts, store, printer))
+	root.AddCommand(NewEtaCommand(opts, store, printer))
 	root.AddCommand(NewLeasesCommand(opts, store, printer))
 	root.AddCommand(NewCompletionsCommand(opts, printer))
 

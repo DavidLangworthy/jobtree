@@ -163,12 +163,13 @@ func (b *Bridge) load(ctx context.Context) (*worldSnapshot, error) {
 			}
 		}
 		state.Pods = append(state.Pods, binder.PodManifest{
-			Namespace: pod.Namespace,
-			Name:      pod.Name,
-			NodeName:  pod.Spec.NodeName,
-			GPUs:      gpus,
-			Labels:    pod.Labels,
-			Phase:     string(pod.Status.Phase),
+			Namespace:   pod.Namespace,
+			Name:        pod.Name,
+			NodeName:    pod.Spec.NodeName,
+			GPUs:        gpus,
+			Labels:      pod.Labels,
+			Annotations: pod.Annotations,
+			Phase:       string(pod.Status.Phase),
 		})
 		snap.pods[keys.NamespacedKey(pod.Namespace, pod.Name)] = pod
 	}

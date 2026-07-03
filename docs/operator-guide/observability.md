@@ -29,6 +29,15 @@ A curated dashboard (`deploy/grafana/dashboards/observability.json`) highlights:
 
 When deploying via Helm the dashboard is automatically packaged into a ConfigMap labelled `grafana_dashboard=1`.
 
+## Estimated completion (ETA)
+
+A run may carry an optional `status.eta` (estimated completion time). It is **observability only** —
+nothing in scheduling reads it and there is no penalty for omitting it. A workload reports its own
+estimate by setting the pod annotation `rq.davidlangworthy.io/eta` to an RFC3339 timestamp; the run
+controller mirrors the latest such annotation across the gang into `status.eta` (`source: job`). For
+demos, `kubectl runs eta <run> <RFC3339>` sets it directly (`source: controller`). `kubectl runs
+explain` shows it, and dashboards can read the field when present.
+
 ## Alerting
 
 PrometheusRule definitions in `deploy/prometheus/rules.yaml` ship two early-warning alerts:

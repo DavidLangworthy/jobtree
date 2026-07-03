@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"time"
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	"github.com/davidlangworthy/jobtree/controllers"
@@ -50,6 +51,9 @@ func buildExplainPayload(state *controllers.ClusterState, run *v1.Run) Payload {
 		if run.Status.Width.Pending != "" {
 			rows = append(rows, []string{"PendingWidth", run.Status.Width.Pending})
 		}
+	}
+	if run.Status.ETA != nil {
+		rows = append(rows, []string{"ETA", fmt.Sprintf("%s (%s)", run.Status.ETA.EstimatedCompletion.Time.UTC().Format(time.RFC3339), run.Status.ETA.Source)})
 	}
 	if run.Status.Funding != nil {
 		rows = append(rows, []string{"OwnedGPUs", fmt.Sprintf("%d", run.Status.Funding.OwnedGPUs)})
