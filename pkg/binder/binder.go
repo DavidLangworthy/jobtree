@@ -15,14 +15,16 @@ const (
 	LabelRunName = "rq.davidlangworthy.io/run"
 	// LabelGroupIndex marks the logical group index.
 	LabelGroupIndex = "rq.davidlangworthy.io/group-index"
-	// LabelRunRole marks whether a pod is active, borrowed, or spare.
+	// LabelRunRole marks whether a pod is active or a spare.
 	LabelRunRole = "rq.davidlangworthy.io/role"
 )
 
+// Lease roles are facts about the slice (R15): Active work versus held
+// Spares. Funding class (owned/shared/borrowed/unfunded) is never a role —
+// it is derived by pkg/funding from the payer recorded on the lease.
 const (
-	RoleActive   = "Active"
-	RoleBorrowed = "Borrowed"
-	RoleSpare    = "Spare"
+	RoleActive = "Active"
+	RoleSpare  = "Spare"
 )
 
 // Request gathers the context required to materialize pods and leases for a Run.
@@ -171,9 +173,6 @@ func (m *materializer) assign(groupIndex int, allocs []pack.NodeAllocation, segm
 			role := fixedRole
 			if role == "" {
 				role = RoleActive
-				if seg.segment.Borrowed {
-					role = RoleBorrowed
-				}
 			}
 
 			m.pods = append(m.pods, m.buildPod(groupIndex, slots, role))

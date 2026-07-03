@@ -39,15 +39,28 @@ type AutoRenewSchedule struct {
 	NotifyBefore metav1.Duration `json:"notifyBefore"`
 }
 
+// Envelope sharing modes: family sharing of excess needs no lending policy
+// (quota-semantics.md Decision 2); "none" opts the envelope out of family
+// excess entirely. Sharing never affects the owner's own use or the lending
+// policy for sponsors.
+const (
+	SharingFamily = "family"
+	SharingNone   = "none"
+)
+
 // BudgetEnvelope defines a location/time scoped limit.
 type BudgetEnvelope struct {
-	Name          string               `json:"name"`
-	Flavor        string               `json:"flavor"`
-	Selector      map[string]string    `json:"selector"`
-	Concurrency   int32                `json:"concurrency"`
-	MaxGPUHours   *int64               `json:"maxGPUHours,omitempty"`
-	Start         *metav1.Time         `json:"start,omitempty"`
-	End           *metav1.Time         `json:"end,omitempty"`
+	Name        string            `json:"name"`
+	Flavor      string            `json:"flavor"`
+	Selector    map[string]string `json:"selector"`
+	Concurrency int32             `json:"concurrency"`
+	MaxGPUHours *int64            `json:"maxGPUHours,omitempty"`
+	Start       *metav1.Time      `json:"start,omitempty"`
+	End         *metav1.Time      `json:"end,omitempty"`
+	// Sharing controls family access to this envelope's excess: "" or
+	// "family" allows it, "none" opts out.
+	// +kubebuilder:validation:Enum="";family;none
+	Sharing       string               `json:"sharing,omitempty"`
 	PreActivation *PreActivationPolicy `json:"preActivation,omitempty"`
 	Lending       *LendingPolicy       `json:"lending,omitempty"`
 }
@@ -80,7 +93,22 @@ type BudgetStatus struct {
 	ObservedGeneration int64               `json:"observedGeneration,omitempty"`
 	Headroom           []EnvelopeHeadroom  `json:"headroom,omitempty"`
 	AggregateHeadroom  []AggregateHeadroom `json:"aggregateHeadroom,omitempty"`
+	Usage              []EnvelopeUsage     `json:"usage,omitempty"`
 	UpdatedAt          *metav1.Time        `json:"updatedAt,omitempty"`
+}
+
+// EnvelopeUsage reports an envelope's width split by derived funding class
+// (R14/R15) plus the spare-role width, and its consumed integral. Unfunded
+// width names this envelope as payer but is never charged against its caps.
+type EnvelopeUsage struct {
+	Name             string  `json:"name"`
+	Flavor           string  `json:"flavor"`
+	OwnedGPUs        int32   `json:"ownedGPUs,omitempty"`
+	SharedGPUs       int32   `json:"sharedGPUs,omitempty"`
+	BorrowedGPUs     int32   `json:"borrowedGPUs,omitempty"`
+	UnfundedGPUs     int32   `json:"unfundedGPUs,omitempty"`
+	SpareGPUs        int32   `json:"spareGPUs,omitempty"`
+	ConsumedGPUHours float64 `json:"consumedGPUHours,omitempty"`
 }
 
 // EnvelopeHeadroom reports remaining capacity for an envelope.
@@ -197,6 +225,9 @@ func (e *BudgetEnvelope) Validate() error {
 	}
 	if e.Concurrency <= 0 {
 		return fmt.Errorf("concurrency must be positive")
+	}
+	if e.Sharing != "" && e.Sharing != SharingFamily && e.Sharing != SharingNone {
+		return fmt.Errorf("sharing must be %q or %q when set", SharingFamily, SharingNone)
 	}
 	if e.Start != nil && e.End != nil {
 		if !e.End.Time.After(e.Start.Time) {

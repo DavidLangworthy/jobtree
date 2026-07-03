@@ -53,9 +53,17 @@ func buildExplainPayload(state *controllers.ClusterState, run *v1.Run) Payload {
 	}
 	if run.Status.Funding != nil {
 		rows = append(rows, []string{"OwnedGPUs", fmt.Sprintf("%d", run.Status.Funding.OwnedGPUs)})
-		rows = append(rows, []string{"BorrowedGPUs", fmt.Sprintf("%d", run.Status.Funding.BorrowedGPUs)})
-		for _, sponsor := range run.Status.Funding.Sponsors {
-			rows = append(rows, []string{"Sponsor", fmt.Sprintf("%s (%d GPUs)", sponsor.Owner, sponsor.GPUs)})
+		if run.Status.Funding.SharedGPUs > 0 {
+			rows = append(rows, []string{"SharedGPUs", fmt.Sprintf("%d", run.Status.Funding.SharedGPUs)})
+		}
+		if run.Status.Funding.BorrowedGPUs > 0 {
+			rows = append(rows, []string{"BorrowedGPUs", fmt.Sprintf("%d", run.Status.Funding.BorrowedGPUs)})
+		}
+		if run.Status.Funding.UnfundedGPUs > 0 {
+			rows = append(rows, []string{"UnfundedGPUs", fmt.Sprintf("%d", run.Status.Funding.UnfundedGPUs)})
+		}
+		for _, lender := range run.Status.Funding.Lenders {
+			rows = append(rows, []string{"Lender", fmt.Sprintf("%s (%d GPUs)", lender.Owner, lender.GPUs)})
 		}
 	}
 	if run.Status.PendingReservation != nil {

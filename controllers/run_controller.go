@@ -10,9 +10,9 @@ import (
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	"github.com/davidlangworthy/jobtree/pkg/binder"
-	"github.com/davidlangworthy/jobtree/pkg/budget"
 	"github.com/davidlangworthy/jobtree/pkg/cover"
 	"github.com/davidlangworthy/jobtree/pkg/forecast"
+	"github.com/davidlangworthy/jobtree/pkg/funding"
 	"github.com/davidlangworthy/jobtree/pkg/keys"
 	"github.com/davidlangworthy/jobtree/pkg/metrics"
 	"github.com/davidlangworthy/jobtree/pkg/pack"
@@ -42,6 +42,10 @@ type ClusterState struct {
 type RunController struct {
 	State *ClusterState
 	Clock Clock
+	// Period is the cluster accounting horizon (R14): admission lookahead
+	// and the evaluation cadence both measure width × Period. Zero means
+	// funding.DefaultPeriod.
+	Period time.Duration
 }
 
 // NewRunController constructs a controller with the given state store.
@@ -56,6 +60,20 @@ func NewRunController(state *ClusterState, clock Clock) *RunController {
 		state.Reservations = make(map[string]*v1.Reservation)
 	}
 	return &RunController{State: state, Clock: clock}
+}
+
+// evaluate derives the funding classification from the current facts. This
+// is the one derivation (quota-semantics.md Decision 3): cover, the
+// resolver, run status, and budget status all consume it — nothing reads a
+// classification back from status.
+func (c *RunController) evaluate(now time.Time) *funding.Evaluation {
+	return funding.Evaluate(funding.Input{
+		Budgets: c.State.Budgets,
+		Leases:  c.State.Leases,
+		Runs:    c.State.Runs,
+		Now:     now,
+		Period:  c.Period,
+	})
 }
 
 // Reconcile admits the run identified by namespace/name when feasible.
@@ -87,17 +105,11 @@ func (c *RunController) Reconcile(namespace, name string) error {
 		return nil
 	}
 
-	states, err := c.budgetStates(now)
-	if err != nil {
-		return err
-	}
-	inventory, err := c.coverInventoryFromStates(states)
-	if err != nil {
-		return err
-	}
+	ev := c.evaluate(now)
+	inventory := cover.NewInventory(ev)
 
 	run.Status.Width = summarizeRunWidth(run, c.State.Leases)
-	run.Status.Funding = summarizeRunFunding(run, c.State.Leases, now)
+	run.Status.Funding = summarizeRunFunding(run, ev)
 
 	if run.Status.Phase == RunPhaseRunning {
 		if run.Spec.Malleable != nil {
@@ -106,7 +118,7 @@ func (c *RunController) Reconcile(namespace, name string) error {
 				return err
 			}
 			run.Status.Width = summarizeRunWidth(run, c.State.Leases)
-			run.Status.Funding = summarizeRunFunding(run, c.State.Leases, now)
+			run.Status.Funding = summarizeRunFunding(run, c.evaluate(now))
 		}
 		return nil
 	}
@@ -123,89 +135,207 @@ func (c *RunController) Reconcile(namespace, name string) error {
 		run.Status.PendingReservation = nil
 		run.Status.EarliestStart = nil
 		run.Status.Width = summarizeRunWidth(run, c.State.Leases)
-		run.Status.Funding = summarizeRunFunding(run, c.State.Leases, now)
+		run.Status.Funding = summarizeRunFunding(run, ev)
 		result = "adopted"
 		return nil
 	}
 
-	packPlan, err := planPlacement(run, snapshot)
-	if err != nil {
-		if planErr, ok := err.(*pack.PlanError); ok && planErr.Reason != pack.FailureReasonInvalidRequest {
-			request := cover.Request{Owner: run.Spec.Owner, Flavor: run.Spec.Resources.GPUType, Quantity: run.Spec.Resources.TotalGPUs, Now: now, AllowBorrow: run.Spec.Funding != nil && run.Spec.Funding.AllowBorrow}
+	reclaimed := false
+	for {
+		packPlan, err := planPlacement(run, snapshot)
+		if err != nil {
+			planErr, ok := err.(*pack.PlanError)
+			if !ok || planErr.Reason == pack.FailureReasonInvalidRequest {
+				run.Status.Phase = RunPhasePending
+				run.Status.Message = err.Error()
+				result = "waiting"
+				return nil
+			}
+			// R14: a funded admission reclaims opportunistic capacity
+			// before falling back to a reservation. One attempt per pass;
+			// fragmentation (deficit 0 with free GPUs) still reserves.
+			if !reclaimed && c.reclaimForAdmission(run, ev, inventory, snapshot, now) {
+				reclaimed = true
+				usage = computeUsage(c.State.Leases, now)
+				snapshot, err = topology.BuildSnapshotForFlavor(c.State.Nodes, usage, run.Spec.Resources.GPUType)
+				if err != nil {
+					result = "error"
+					return err
+				}
+				ev = c.evaluate(now)
+				inventory = cover.NewInventory(ev)
+				continue
+			}
+			request := cover.Request{Owner: run.Spec.Owner, Flavor: run.Spec.Resources.GPUType, Quantity: run.Spec.Resources.TotalGPUs, Now: now, Admitted: run.CreationTimestamp.Time, RunKey: key, AllowBorrow: run.Spec.Funding != nil && run.Spec.Funding.AllowBorrow}
 			if run.Spec.Funding != nil {
 				request.Sponsors = append(request.Sponsors, run.Spec.Funding.Sponsors...)
 			}
-			if err := c.planReservation(run, snapshot, nil, planErr, nil, states, request, now); err != nil {
+			if err := c.planReservation(run, snapshot, nil, planErr, nil, ev, request, now); err != nil {
 				result = "error"
 				return err
 			}
 			result = "reserved"
 			return nil
 		}
-		run.Status.Phase = RunPhasePending
-		run.Status.Message = err.Error()
-		result = "waiting"
+
+		location := deriveLocation(packPlan)
+		spareTotal := expectedSpareTotal(run, &packPlan)
+		quantity := run.Spec.Resources.TotalGPUs + spareTotal
+		request := cover.Request{
+			Owner:       run.Spec.Owner,
+			Flavor:      run.Spec.Resources.GPUType,
+			Quantity:    quantity,
+			Location:    location,
+			Now:         now,
+			Admitted:    run.CreationTimestamp.Time,
+			AllowBorrow: run.Spec.Funding != nil && run.Spec.Funding.AllowBorrow,
+		}
+		if run.Spec.Funding != nil {
+			request.Sponsors = append(request.Sponsors, run.Spec.Funding.Sponsors...)
+			if run.Spec.Funding.MaxBorrowGPUs != nil {
+				remaining := *run.Spec.Funding.MaxBorrowGPUs - borrowedGPUsForRun(ev, run)
+				if remaining < 0 {
+					remaining = 0
+				}
+				request.MaxBorrowGPUs = &remaining
+			}
+		}
+
+		coverPlan, err := inventory.Plan(request)
+		if err != nil {
+			if planErr, ok := err.(*cover.PlanError); ok && planErr.Reason != cover.FailureReasonInvalidRequest {
+				if err := c.planReservation(run, snapshot, &packPlan, nil, planErr, ev, request, now); err != nil {
+					result = "error"
+					return err
+				}
+				result = "reserved"
+				return nil
+			}
+			run.Status.Phase = RunPhasePending
+			run.Status.Message = err.Error()
+			result = "waiting"
+			return nil
+		}
+
+		bindResult, err := binder.Materialize(binder.Request{Run: run.DeepCopy(), CoverPlan: coverPlan, PackPlan: packPlan, Now: now, NameSeed: leaseSeqBase(key, c.State.Leases)})
+		if err != nil {
+			result = "error"
+			return err
+		}
+
+		c.State.Pods = append(c.State.Pods, bindResult.Pods...)
+		c.State.Leases = append(c.State.Leases, bindResult.Leases...)
+
+		// Invariant 8: no Pending reservation exists for a Running run.
+		// Without this, a run that reserves and then binds directly would
+		// materialize a second set of pods/leases when the reservation
+		// activates.
+		c.releasePendingReservations(run, now)
+
+		run.Status.Phase = RunPhaseRunning
+		run.Status.Message = fmt.Sprintf("bound %d GPUs", packPlan.TotalGPUs)
+		run.Status.Width = summarizeRunWidth(run, c.State.Leases)
+		run.Status.Funding = summarizeRunFunding(run, c.evaluate(now))
+		result = "bound"
 		return nil
 	}
+}
 
-	location := deriveLocation(packPlan)
-	spareTotal := expectedSpareTotal(run, &packPlan)
-	quantity := run.Spec.Resources.TotalGPUs + spareTotal
+// reclaimForAdmission clears an admission's physical deficit from unfunded
+// work only: it fires only when the run's demand is fundable (the request
+// must not itself be born opportunistic) and never touches funded leases —
+// funded-work preemption stays reservation-activation-only (R7). The
+// unfunded pool is judged with the prospective claim ranked in, so family
+// work this admission recalls is reclaimable too. It reports whether
+// anything was reclaimed.
+func (c *RunController) reclaimForAdmission(run *v1.Run, ev *funding.Evaluation, inventory *cover.Inventory, snapshot *topology.Snapshot, now time.Time) bool {
+	totalNeeded := int(run.Spec.Resources.TotalGPUs + expectedSpareTotal(run, nil))
+	deficit := computeDeficit(snapshot, nil, totalNeeded)
+	if deficit <= 0 {
+		return false
+	}
 	request := cover.Request{
 		Owner:       run.Spec.Owner,
 		Flavor:      run.Spec.Resources.GPUType,
-		Quantity:    quantity,
-		Location:    location,
+		Quantity:    run.Spec.Resources.TotalGPUs + expectedSpareTotal(run, nil),
 		Now:         now,
+		Admitted:    run.CreationTimestamp.Time,
+		RunKey:      keys.NamespacedKey(run.Namespace, run.Name),
 		AllowBorrow: run.Spec.Funding != nil && run.Spec.Funding.AllowBorrow,
 	}
 	if run.Spec.Funding != nil {
 		request.Sponsors = append(request.Sponsors, run.Spec.Funding.Sponsors...)
 		if run.Spec.Funding.MaxBorrowGPUs != nil {
-			remaining := *run.Spec.Funding.MaxBorrowGPUs - c.borrowedGPUsForRun(run, now)
+			remaining := *run.Spec.Funding.MaxBorrowGPUs - borrowedGPUsForRun(ev, run)
 			if remaining < 0 {
 				remaining = 0
 			}
 			request.MaxBorrowGPUs = &remaining
 		}
 	}
-
-	coverPlan, err := inventory.Plan(request)
+	plan, err := inventory.Plan(request)
 	if err != nil {
-		if planErr, ok := err.(*cover.PlanError); ok && planErr.Reason != cover.FailureReasonInvalidRequest {
-			if err := c.planReservation(run, snapshot, &packPlan, nil, planErr, states, request, now); err != nil {
-				result = "error"
-				return err
-			}
-			result = "reserved"
-			return nil
+		return false
+	}
+	resolution, err := resolver.Resolve(resolver.Input{
+		Deficit:      deficit,
+		Flavor:       run.Spec.Resources.GPUType,
+		SeedSource:   keys.NamespacedKey(run.Namespace, run.Name),
+		Now:          now,
+		Nodes:        c.State.Nodes,
+		Leases:       activeLeasePointers(c.State.Leases),
+		Runs:         c.State.Runs,
+		Evaluation:   c.hypotheticalEvaluation(run, plan, now),
+		OnlyUnfunded: true,
+	})
+	if err != nil || len(resolution.Actions) == 0 {
+		return false
+	}
+	c.applyResolution(resolution, now)
+	return true
+}
+
+// hypotheticalEvaluation ranks a prospective claim into the derivation by
+// evaluating the current facts plus synthetic open leases paying the plan's
+// envelopes. This is the ranking function's "a new claim may displace the
+// lowest-ranked funded claim — that is recall" made operational: family
+// claims the prospective claim outranks evaluate unfunded here and join the
+// first-cut reclaim pool. The synthetic leases exist only inside this
+// evaluation; nothing is written to state.
+func (c *RunController) hypotheticalEvaluation(run *v1.Run, plan cover.Plan, now time.Time) *funding.Evaluation {
+	leases := make([]v1.Lease, 0, len(c.State.Leases)+len(plan.Segments))
+	leases = append(leases, c.State.Leases...)
+	for i, seg := range plan.Segments {
+		if seg.Quantity <= 0 {
+			continue
 		}
-		run.Status.Phase = RunPhasePending
-		run.Status.Message = err.Error()
-		result = "waiting"
-		return nil
+		nodes := make([]string, int(seg.Quantity))
+		for j := range nodes {
+			nodes[j] = fmt.Sprintf("hypothetical#%d", j)
+		}
+		leases = append(leases, v1.Lease{
+			ObjectMeta: v1.ObjectMeta{
+				Namespace: run.Namespace,
+				Name:      fmt.Sprintf("%s-hypothetical-%d", run.Name, i),
+			},
+			Spec: v1.LeaseSpec{
+				Owner:          seg.Owner,
+				RunRef:         v1.RunReference{Name: run.Name, Namespace: run.Namespace},
+				Slice:          v1.LeaseSlice{Nodes: nodes, Role: binder.RoleActive},
+				Interval:       v1.LeaseInterval{Start: v1.NewTime(now)},
+				PaidByBudget:   seg.BudgetName,
+				PaidByEnvelope: seg.EnvelopeName,
+				Reason:         "Hypothetical",
+			},
+		})
 	}
-
-	bindResult, err := binder.Materialize(binder.Request{Run: run.DeepCopy(), CoverPlan: coverPlan, PackPlan: packPlan, Now: now, NameSeed: leaseSeqBase(key, c.State.Leases)})
-	if err != nil {
-		result = "error"
-		return err
-	}
-
-	c.State.Pods = append(c.State.Pods, bindResult.Pods...)
-	c.State.Leases = append(c.State.Leases, bindResult.Leases...)
-
-	// Invariant 8: no Pending reservation exists for a Running run. Without
-	// this, a run that reserves and then binds directly would materialize a
-	// second set of pods/leases when the reservation activates.
-	c.releasePendingReservations(run, now)
-
-	run.Status.Phase = RunPhaseRunning
-	run.Status.Message = fmt.Sprintf("bound %d GPUs", packPlan.TotalGPUs)
-	run.Status.Width = summarizeRunWidth(run, c.State.Leases)
-	run.Status.Funding = summarizeRunFunding(run, c.State.Leases, now)
-	result = "bound"
-	return nil
+	return funding.Evaluate(funding.Input{
+		Budgets: c.State.Budgets,
+		Leases:  leases,
+		Runs:    c.State.Runs,
+		Now:     now,
+		Period:  c.Period,
+	})
 }
 
 // releasePendingReservations marks every Pending reservation for the run as
@@ -298,7 +428,7 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 		run.Status.PendingReservation = nil
 		run.Status.EarliestStart = nil
 		run.Status.Width = summarizeRunWidth(run, c.State.Leases)
-		run.Status.Funding = summarizeRunFunding(run, c.State.Leases, now)
+		run.Status.Funding = summarizeRunFunding(run, c.evaluate(now))
 		return nil
 	}
 
@@ -308,14 +438,8 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 		return err
 	}
 
-	states, err := c.budgetStates(now)
-	if err != nil {
-		return err
-	}
-	inventory, err := c.coverInventoryFromStates(states)
-	if err != nil {
-		return err
-	}
+	ev := c.evaluate(now)
+	inventory := cover.NewInventory(ev)
 
 	location := reservation.Spec.IntendedSlice.Domain
 	request := cover.Request{
@@ -324,12 +448,14 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 		Quantity:    run.Spec.Resources.TotalGPUs,
 		Location:    location,
 		Now:         now,
+		Admitted:    run.CreationTimestamp.Time,
+		RunKey:      keys.NamespacedKey(run.Namespace, run.Name),
 		AllowBorrow: run.Spec.Funding != nil && run.Spec.Funding.AllowBorrow,
 	}
 	if run.Spec.Funding != nil {
 		request.Sponsors = append(request.Sponsors, run.Spec.Funding.Sponsors...)
 		if run.Spec.Funding.MaxBorrowGPUs != nil {
-			remaining := *run.Spec.Funding.MaxBorrowGPUs - c.borrowedGPUsForRun(run, now)
+			remaining := *run.Spec.Funding.MaxBorrowGPUs - borrowedGPUsForRun(ev, run)
 			if remaining < 0 {
 				remaining = 0
 			}
@@ -384,63 +510,83 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 				deficit = totalNeeded
 			}
 		}
-		if deficit == 0 {
-			// Pure budget shortfall: preemption frees physical capacity,
-			// never budget headroom, so re-forecast and reschedule the
-			// reservation instead of running the lottery.
-			return c.rescheduleReservation(key, reservation, run, snapshot, &plan, coverPlanErr, states, request, now)
-		}
-		// Known edge (ruling 2026-07-02): when capacity AND budget are both
-		// short, the lottery below still preempts for the capacity half and
-		// the post-resolution recheck then reschedules — funded victims can
-		// die for a run that does not start. Accepted until the R14
-		// opportunistic-class rework dissolves this path; see the note under
-		// R14 in remediation-plan.md.
-		leases := activeLeasePointers(c.State.Leases)
-		resInput := resolver.Input{
-			Deficit:    deficit,
-			Flavor:     run.Spec.Resources.GPUType,
-			Scope:      scope,
-			SeedSource: reservation.Name,
-			Now:        now,
-			Nodes:      c.State.Nodes,
-			Leases:     leases,
-			Runs:       c.State.Runs,
-		}
-		resolution, err := resolver.Resolve(resInput)
-		if err != nil {
-			return err
-		}
-		c.applyResolution(resolution, now)
-
-		// rebuild snapshot and states after resolution
-		usage = computeUsage(c.State.Leases, now)
-		snapshot, err = topology.BuildSnapshotForFlavor(c.State.Nodes, usage, run.Spec.Resources.GPUType)
-		if err != nil {
-			return err
-		}
-		plan, err = planPlacement(run, snapshot)
-		if err != nil {
-			return err
-		}
-		states, err = c.budgetStates(now)
-		if err != nil {
-			return err
-		}
-		inventory, err = c.coverInventoryFromStates(states)
-		if err != nil {
-			return err
-		}
-		spareTotal = expectedSpareTotal(run, &plan)
-		request.Quantity = run.Spec.Resources.TotalGPUs + spareTotal
-		coverPlan, err = inventory.Plan(request)
-		if err != nil {
-			if ce, ok := err.(*cover.PlanError); ok && ce.Reason != cover.FailureReasonInvalidRequest {
-				// Capacity cleared but the budget still cannot fund the run;
-				// further preemption cannot help, so reschedule.
-				return c.rescheduleReservation(key, reservation, run, snapshot, &plan, ce, states, request, now)
+		if deficit > 0 {
+			if coverPlanErr != nil {
+				// Physical deficit AND unfundable demand: sharpened R7 —
+				// reclaim (unfunded first cut included) is justified only by
+				// funded demand, and the lottery over funded runs only by a
+				// funded claim's capacity need. The promise-made admission
+				// waits for space to free instead of cutting anyone.
+				reservation.Status.Reason = "waiting for capacity: demand is currently unfunded and reclaims nothing"
+				return nil
 			}
-			return err
+			// Capacity shortfall for fundable demand: the resolver reclaims
+			// in the consolidated order — unfunded first, then spares,
+			// shrink, and the lottery. The prospective claim is ranked into
+			// the evaluation so family work it recalls is in the unfunded
+			// pool, not the funded lottery. Preemption stays capacity-only
+			// (R7): the budget half of a shortfall is handled below by
+			// opportunistic admission, never by cutting funded work.
+			leases := activeLeasePointers(c.State.Leases)
+			resInput := resolver.Input{
+				Deficit:    deficit,
+				Flavor:     run.Spec.Resources.GPUType,
+				Scope:      scope,
+				SeedSource: reservation.Name,
+				Now:        now,
+				Nodes:      c.State.Nodes,
+				Leases:     leases,
+				Runs:       c.State.Runs,
+				Evaluation: c.hypotheticalEvaluation(run, coverPlan, now),
+			}
+			resolution, err := resolver.Resolve(resInput)
+			if err != nil {
+				return err
+			}
+			c.applyResolution(resolution, now)
+
+			// rebuild the world after resolution
+			usage = computeUsage(c.State.Leases, now)
+			snapshot, err = topology.BuildSnapshotForFlavor(c.State.Nodes, usage, run.Spec.Resources.GPUType)
+			if err != nil {
+				return err
+			}
+			plan, err = planPlacement(run, snapshot)
+			if err != nil {
+				return err
+			}
+			ev = c.evaluate(now)
+			inventory = cover.NewInventory(ev)
+			spareTotal = expectedSpareTotal(run, &plan)
+			request.Quantity = run.Spec.Resources.TotalGPUs + spareTotal
+			coverPlan, err = inventory.Plan(request)
+			if err != nil {
+				if ce, ok := err.(*cover.PlanError); ok && ce.Reason != cover.FailureReasonInvalidRequest {
+					plan, ok := c.opportunisticCoverPlan(run, reservation, ev, request.Quantity)
+					if !ok {
+						return c.failReservationNoEnvelope(reservation, runKey)
+					}
+					coverPlan = plan
+				} else {
+					return err
+				}
+			}
+		} else {
+			// Pure budget shortfall at activation: the reservation is a
+			// promise already made, so the run starts anyway and the
+			// evaluation classes it — usually unfunded, re-funded by
+			// arithmetic when quota returns (R14 demote-not-kill; this
+			// dissolves the 2026-07-02 known edge where funded victims
+			// could die for a run that never started).
+			plan, ok := c.opportunisticCoverPlan(run, reservation, ev, request.Quantity)
+			if !ok {
+				// No envelope at all to attribute the work to and nothing to
+				// re-fund from when quota returns (the budget was removed
+				// after the reservation was made): unlike an exhausted-but-
+				// present envelope, this is terminal (PR #13 finding).
+				return c.failReservationNoEnvelope(reservation, runKey)
+			}
+			coverPlan = plan
 		}
 	}
 
@@ -463,9 +609,55 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 	run.Status.Message = fmt.Sprintf("reservation %s activated", reservation.Name)
 	run.Status.PendingReservation = nil
 	run.Status.EarliestStart = nil
-	run.Status.Funding = summarizeRunFunding(run, c.State.Leases, now)
+	run.Status.Funding = summarizeRunFunding(run, c.evaluate(now))
 
 	return nil
+}
+
+// opportunisticCoverPlan funds an activation the budget cannot cover: the
+// whole demand is attributed to the reservation's intended envelope as a
+// recorded fact, and the evaluation decides what that fact is worth —
+// typically Unfunded now, re-funded by arithmetic when quota returns. The
+// envelope is resolved among the owner's budgets. It returns ok=false when
+// no such envelope exists (the budget was removed): there is nothing to
+// attribute the work to and nothing to re-fund from, so the caller must not
+// admit — the reservation fails terminally instead.
+func (c *RunController) opportunisticCoverPlan(run *v1.Run, reservation *v1.Reservation, ev *funding.Evaluation, quantity int32) (cover.Plan, bool) {
+	segment := cover.Segment{Owner: run.Spec.Owner, Quantity: quantity}
+	found := false
+	for _, acct := range ev.Envelopes() {
+		if acct.Owner != run.Spec.Owner {
+			continue
+		}
+		// Prefer the reservation's intended envelope; fall back to any
+		// envelope the owner still has of the run's flavor so an exhausted
+		// (but present) budget coasts rather than failing.
+		if acct.Key.Envelope == reservation.Spec.PayingEnvelope {
+			segment.BudgetName = acct.Key.Budget
+			segment.EnvelopeName = acct.Key.Envelope
+			found = true
+			break
+		}
+		if !found && acct.Spec.Flavor == run.Spec.Resources.GPUType {
+			segment.BudgetName = acct.Key.Budget
+			segment.EnvelopeName = acct.Key.Envelope
+			found = true
+		}
+	}
+	if !found {
+		return cover.Plan{}, false
+	}
+	return cover.Plan{Segments: []cover.Segment{segment}}, true
+}
+
+// failReservationNoEnvelope marks a reservation terminally failed because
+// the run's owner has no envelope of the run's flavor: opportunistic
+// admission needs a real payer to attribute unfunded hours to and to
+// re-fund from, so with none the promise cannot be kept.
+func (c *RunController) failReservationNoEnvelope(reservation *v1.Reservation, runKey string) error {
+	reservation.Status.State = "Failed"
+	reservation.Status.CountdownSeconds = nil
+	return fmt.Errorf("run %s has no envelope to fund reservation %s (budget removed)", runKey, reservation.Name)
 }
 
 // HandleNodeFailure performs a spare swap when a node fails.
@@ -529,59 +721,13 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 	return nil
 }
 
-func (c *RunController) coverInventory(now time.Time) (*cover.Inventory, error) {
-	states, err := c.budgetStates(now)
-	if err != nil {
-		return nil, err
-	}
-	return cover.NewInventory(states), nil
-}
-
-func (c *RunController) coverInventoryFromStates(states []*budget.BudgetState) (*cover.Inventory, error) {
-	return cover.NewInventory(states), nil
-}
-
-func (c *RunController) budgetStates(now time.Time) ([]*budget.BudgetState, error) {
-	states := make([]*budget.BudgetState, 0, len(c.State.Budgets))
-	for i := range c.State.Budgets {
-		budgetObj := c.State.Budgets[i]
-		filtered := filterLeasesByOwner(c.State.Leases, budgetObj.Spec.Owner)
-		copy := budgetObj
-		st := budget.BuildBudgetState(&copy, filtered, now)
-		states = append(states, st)
-	}
-	return states, nil
-}
-
 func ptrString(value string) *string { return &value }
 
 func ptrInt64(value int64) *int64 { return &value }
 
-// rescheduleReservation re-forecasts a budget-blocked reservation. When the
-// forecast itself fails (a permanent policy failure such as NoEnvelope or
-// ACLDenied), the reservation is marked Failed instead of silently retrying
-// as Pending forever.
-func (c *RunController) rescheduleReservation(key string, reservation *v1.Reservation, run *v1.Run, snapshot *topology.Snapshot, plan *pack.Plan, coverErr *cover.PlanError, states []*budget.BudgetState, request cover.Request, now time.Time) error {
-	if err := c.planReservation(run, snapshot, plan, nil, coverErr, states, request, now); err != nil {
-		return err
-	}
-	if cur, ok := c.State.Reservations[key]; ok && cur == reservation {
-		// planReservation replaces the run's reservations on success, so the
-		// original surviving untouched means the re-forecast failed.
-		reservation.Status.State = "Failed"
-		reservation.Status.CountdownSeconds = nil
-		return fmt.Errorf("re-forecast failed: %s", run.Status.Message)
-	}
-	return nil
-}
-
-func (c *RunController) planReservation(run *v1.Run, snapshot *topology.Snapshot, packPlan *pack.Plan, packErr *pack.PlanError, coverErr *cover.PlanError, states []*budget.BudgetState, request cover.Request, now time.Time) error {
-	if states == nil {
-		computed, err := c.budgetStates(now)
-		if err != nil {
-			return err
-		}
-		states = computed
+func (c *RunController) planReservation(run *v1.Run, snapshot *topology.Snapshot, packPlan *pack.Plan, packErr *pack.PlanError, coverErr *cover.PlanError, ev *funding.Evaluation, request cover.Request, now time.Time) error {
+	if ev == nil {
+		ev = c.evaluate(now)
 	}
 
 	var planPtr *pack.Plan
@@ -599,7 +745,7 @@ func (c *RunController) planReservation(run *v1.Run, snapshot *topology.Snapshot
 		PackErr:      packErr,
 		CoverErr:     coverErr,
 		CoverRequest: request,
-		BudgetStates: states,
+		Evaluation:   ev,
 	})
 	if err != nil {
 		run.Status.Phase = RunPhasePending
@@ -672,6 +818,11 @@ func (c *RunController) applyResolution(result resolver.Result, now time.Time) {
 	}
 	closedGroups := map[string]struct{}{}
 	affectedRuns := map[string]struct{}{}
+	// Runs hit only by the unfunded-first phase were healthy work bumped
+	// for funded demand: they requeue instead of failing terminally, and
+	// re-admit when quota or capacity returns (demote-not-kill, R14). Any
+	// funded cut on the same run keeps the terminal ruling.
+	reclaimedOnly := map[string]bool{}
 	for _, action := range result.Actions {
 		lease := action.Lease
 		if lease == nil || lease.Status.Closed {
@@ -686,6 +837,12 @@ func (c *RunController) applyResolution(result resolver.Result, now time.Time) {
 		// should show up in metrics.
 		metrics.IncResolverAction(string(action.Kind))
 		runKey := keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name)
+		if _, seen := affectedRuns[runKey]; !seen {
+			reclaimedOnly[runKey] = true
+		}
+		if action.Kind != resolver.ActionReclaimUnfunded {
+			reclaimedOnly[runKey] = false
+		}
 		affectedRuns[runKey] = struct{}{}
 		if action.GroupIndex != "" {
 			key := runKey + "::" + action.GroupIndex
@@ -713,12 +870,18 @@ func (c *RunController) applyResolution(result resolver.Result, now time.Time) {
 			continue
 		}
 		active := activeGPUsForRun(runKey, c.State.Leases)
-		if active == 0 {
-			run.Status.Phase = RunPhaseFailed
-			run.Status.Message = "ended by resolver"
-		} else {
+		switch {
+		case active > 0:
 			run.Status.Phase = RunPhaseRunning
 			run.Status.Message = "shrunk by resolver"
+		case reclaimedOnly[runKey]:
+			run.Status.Phase = RunPhasePending
+			run.Status.Message = "reclaimed by funded demand; will re-admit when quota allows"
+			run.Status.PendingReservation = nil
+			run.Status.EarliestStart = nil
+		default:
+			run.Status.Phase = RunPhaseFailed
+			run.Status.Message = "ended by resolver"
 		}
 		run.Status.Width = summarizeRunWidth(run, c.State.Leases)
 	}
@@ -783,16 +946,6 @@ func activeGPUsForRun(runKey string, leases []v1.Lease) int {
 		total += len(lease.Spec.Slice.Nodes)
 	}
 	return total
-}
-
-func filterLeasesByOwner(all []v1.Lease, owner string) []v1.Lease {
-	var leases []v1.Lease
-	for _, lease := range all {
-		if lease.Spec.Owner == owner {
-			leases = append(leases, lease)
-		}
-	}
-	return leases
 }
 
 // leaseSeqBase returns the number of leases (open or closed) that exist for
@@ -920,7 +1073,7 @@ func (c *RunController) reconcileElasticRun(run *v1.Run, snapshot *topology.Snap
 	}
 
 	if desired < allocated {
-		if err := c.shrinkRun(run, desired, now); err != nil {
+		if err := c.shrinkRun(run, desired, c.evaluate(now), now); err != nil {
 			if run.Status.Width == nil {
 				run.Status.Width = width
 			}
@@ -973,12 +1126,14 @@ func (c *RunController) growRun(run *v1.Run, snapshot *topology.Snapshot, invent
 		Quantity:    int32(quantity),
 		Location:    deriveLocation(plan),
 		Now:         now,
+		Admitted:    run.CreationTimestamp.Time,
+		RunKey:      keys.NamespacedKey(run.Namespace, run.Name),
 		AllowBorrow: run.Spec.Funding != nil && run.Spec.Funding.AllowBorrow,
 	}
 	if run.Spec.Funding != nil {
 		request.Sponsors = append(request.Sponsors, run.Spec.Funding.Sponsors...)
 		if run.Spec.Funding.MaxBorrowGPUs != nil {
-			remaining := *run.Spec.Funding.MaxBorrowGPUs - c.borrowedGPUsForRun(run, now)
+			remaining := *run.Spec.Funding.MaxBorrowGPUs - borrowedGPUsForRun(c.evaluate(now), run)
 			if remaining < 0 {
 				remaining = 0
 			}
@@ -1008,13 +1163,13 @@ func (c *RunController) growRun(run *v1.Run, snapshot *topology.Snapshot, invent
 
 	c.State.Pods = append(c.State.Pods, result.Pods...)
 	c.State.Leases = append(c.State.Leases, result.Leases...)
-	run.Status.Funding = summarizeRunFunding(run, c.State.Leases, now)
+	run.Status.Funding = summarizeRunFunding(run, c.evaluate(now))
 	return nil
 }
 
-func (c *RunController) shrinkRun(run *v1.Run, target int32, now time.Time) error {
+func (c *RunController) shrinkRun(run *v1.Run, target int32, ev *funding.Evaluation, now time.Time) error {
 	runKey := keys.NamespacedKey(run.Namespace, run.Name)
-	groups := collectElasticGroups(runKey, c.State.Leases)
+	groups := collectElasticGroups(runKey, c.State.Leases, ev)
 	if len(groups) == 0 {
 		return fmt.Errorf("no active groups to shrink")
 	}
@@ -1037,10 +1192,10 @@ func (c *RunController) shrinkRun(run *v1.Run, target int32, now time.Time) erro
 	}
 
 	sort.Slice(ordered, func(i, j int) bool {
-		if ordered[i].BorrowedGPUs == ordered[j].BorrowedGPUs {
+		if ordered[i].NonOwnedGPUs == ordered[j].NonOwnedGPUs {
 			return ordered[i].Index > ordered[j].Index
 		}
-		return ordered[i].BorrowedGPUs > ordered[j].BorrowedGPUs
+		return ordered[i].NonOwnedGPUs > ordered[j].NonOwnedGPUs
 	})
 
 	freed := int32(0)
@@ -1106,76 +1261,66 @@ func summarizeRunWidth(run *v1.Run, leases []v1.Lease) *v1.RunWidthStatus {
 	return status
 }
 
-func summarizeRunFunding(run *v1.Run, leases []v1.Lease, now time.Time) *v1.RunFundingStatus {
-	if run == nil {
+// summarizeRunFunding surfaces the derived four-class breakdown for humans
+// and dashboards. Status is a cache, never an authority: nothing in the
+// control path reads it back (quota-semantics.md Decision 3).
+func summarizeRunFunding(run *v1.Run, ev *funding.Evaluation) *v1.RunFundingStatus {
+	if run == nil || ev == nil {
 		return nil
 	}
-	runKey := keys.NamespacedKey(run.Namespace, run.Name)
-	status := &v1.RunFundingStatus{}
-	sponsorShares := make(map[string]*v1.RunFundingSponsorShare)
-
-	for i := range leases {
-		lease := &leases[i]
-		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
-			continue
-		}
-		usage := budget.ComputeLeaseUsage(lease, now)
-		payer := lease.Spec.Owner
-		if payer == "" {
-			payer = run.Spec.Owner
-		}
-		active := leaseActive(lease, now)
-		gpuSlots := int32(len(lease.Spec.Slice.Nodes))
-		if lease.Spec.Slice.Role == binder.RoleSpare {
-			gpuSlots = 0
-		}
-		if payer == run.Spec.Owner {
-			if active {
-				status.OwnedGPUs += gpuSlots
-			}
-			status.OwnedGPUHours += usage.GPUHours
-			continue
-		}
-		if active {
-			status.BorrowedGPUs += gpuSlots
-		}
-		status.BorrowedGPUHours += usage.GPUHours
-		share, ok := sponsorShares[payer]
-		if !ok {
-			share = &v1.RunFundingSponsorShare{Owner: payer}
-			sponsorShares[payer] = share
-		}
-		if active {
-			share.GPUs += int32(len(lease.Spec.Slice.Nodes))
-		}
-		share.GPUHours += usage.GPUHours
+	acct := ev.Run(keys.NamespacedKey(run.Namespace, run.Name))
+	if acct == nil {
+		return nil
 	}
-
-	if len(sponsorShares) > 0 {
-		status.Sponsors = make([]v1.RunFundingSponsorShare, 0, len(sponsorShares))
-		for _, share := range sponsorShares {
-			status.Sponsors = append(status.Sponsors, *share)
+	status := &v1.RunFundingStatus{
+		OwnedGPUs:        acct.GPUs[funding.ClassOwned],
+		OwnedGPUHours:    acct.GPUHours[funding.ClassOwned],
+		SharedGPUs:       acct.GPUs[funding.ClassShared],
+		SharedGPUHours:   acct.GPUHours[funding.ClassShared],
+		BorrowedGPUs:     acct.GPUs[funding.ClassBorrowed],
+		BorrowedGPUHours: acct.GPUHours[funding.ClassBorrowed],
+		UnfundedGPUs:     acct.GPUs[funding.ClassUnfunded],
+		UnfundedGPUHours: acct.GPUHours[funding.ClassUnfunded],
+	}
+	if len(acct.Lenders) > 0 || len(acct.LenderHours) > 0 {
+		owners := make(map[string]struct{}, len(acct.Lenders))
+		for owner := range acct.Lenders {
+			owners[owner] = struct{}{}
 		}
-		sort.Slice(status.Sponsors, func(i, j int) bool {
-			return status.Sponsors[i].Owner < status.Sponsors[j].Owner
+		for owner := range acct.LenderHours {
+			owners[owner] = struct{}{}
+		}
+		for owner := range owners {
+			status.Lenders = append(status.Lenders, v1.RunFundingLenderShare{
+				Owner:    owner,
+				GPUs:     acct.Lenders[owner],
+				GPUHours: acct.LenderHours[owner],
+			})
+		}
+		sort.Slice(status.Lenders, func(i, j int) bool {
+			return status.Lenders[i].Owner < status.Lenders[j].Owner
 		})
 	}
 
-	if status.OwnedGPUs == 0 && status.BorrowedGPUs == 0 && status.OwnedGPUHours == 0 && status.BorrowedGPUHours == 0 && len(status.Sponsors) == 0 {
+	if status.OwnedGPUs == 0 && status.SharedGPUs == 0 && status.BorrowedGPUs == 0 && status.UnfundedGPUs == 0 &&
+		status.OwnedGPUHours == 0 && status.SharedGPUHours == 0 && status.BorrowedGPUHours == 0 && status.UnfundedGPUHours == 0 {
 		return nil
 	}
 	return status
 }
 
 type elasticGroup struct {
-	Index        int
-	Active       []*v1.Lease
-	Spares       []*v1.Lease
-	ActiveGPUs   int
-	BorrowedGPUs int
+	Index      int
+	Active     []*v1.Lease
+	Spares     []*v1.Lease
+	ActiveGPUs int
+	// NonOwnedGPUs counts active width whose derived class is not Owned:
+	// shrink returns other people's capacity (shared, borrowed, unfunded)
+	// before the run's own.
+	NonOwnedGPUs int
 }
 
-func collectElasticGroups(runKey string, leases []v1.Lease) map[int]*elasticGroup {
+func collectElasticGroups(runKey string, leases []v1.Lease, ev *funding.Evaluation) map[int]*elasticGroup {
 	groups := make(map[int]*elasticGroup)
 	for i := range leases {
 		lease := &leases[i]
@@ -1207,33 +1352,27 @@ func collectElasticGroups(runKey string, leases []v1.Lease) map[int]*elasticGrou
 		grp.Active = append(grp.Active, lease)
 		slots := len(lease.Spec.Slice.Nodes)
 		grp.ActiveGPUs += slots
-		if lease.Spec.Slice.Role == binder.RoleBorrowed {
-			grp.BorrowedGPUs += slots
+		if ev != nil {
+			if class, ok := ev.Class(lease); ok && class != funding.ClassOwned {
+				grp.NonOwnedGPUs += slots
+			}
 		}
 	}
 	return groups
 }
 
-func (c *RunController) borrowedGPUsForRun(run *v1.Run, now time.Time) int32 {
-	if run == nil {
+// borrowedGPUsForRun counts the run's active sponsor-funded (Borrowed
+// class) width — the quantity spec.funding.maxBorrowGPUs caps. Family
+// shared capacity is not borrowing and does not count (R15).
+func borrowedGPUsForRun(ev *funding.Evaluation, run *v1.Run) int32 {
+	if run == nil || ev == nil {
 		return 0
 	}
-	runKey := keys.NamespacedKey(run.Namespace, run.Name)
-	total := int32(0)
-	for i := range c.State.Leases {
-		lease := &c.State.Leases[i]
-		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
-			continue
-		}
-		if lease.Spec.Slice.Role != binder.RoleBorrowed {
-			continue
-		}
-		if !leaseActive(lease, now) {
-			continue
-		}
-		total += int32(len(lease.Spec.Slice.Nodes))
+	acct := ev.Run(keys.NamespacedKey(run.Namespace, run.Name))
+	if acct == nil {
+		return 0
 	}
-	return total
+	return acct.GPUs[funding.ClassBorrowed]
 }
 
 func leaseActive(lease *v1.Lease, now time.Time) bool {
@@ -1378,15 +1517,11 @@ func closeLease(lease *v1.Lease, reason string, now time.Time) {
 
 func createSwapLease(run *v1.Run, group string, spare *v1.Lease, now time.Time) v1.Lease {
 	nodes := append([]string{}, spare.Spec.Slice.Nodes...)
-	// The promoted lease keeps the spare's funding provenance: the payer's
-	// owner stays on the lease (so the lender's budget accounting still sees
-	// it), and capacity paid by another owner keeps the Borrowed role (so
-	// MaxBorrowGPUs keeps counting it). R15's derivation work untangles role
-	// from funding class properly.
+	// The promoted lease keeps the spare's funding provenance (payer owner,
+	// budget, envelope): the derivation classifies it from those facts, so
+	// sponsor-paid capacity keeps counting against MaxBorrowGPUs and the
+	// lender's caps without any role stamping (R15).
 	role := binder.RoleActive
-	if spare.Spec.Owner != "" && spare.Spec.Owner != run.Spec.Owner {
-		role = binder.RoleBorrowed
-	}
 	labels := map[string]string{
 		binder.LabelRunName:    run.Name,
 		binder.LabelGroupIndex: group,

@@ -134,6 +134,15 @@ spec:
                       additionalProperties:
                         type: string
                       type: object
+                    sharing:
+                      description: |-
+                        Sharing controls family access to this envelope's excess: "" or
+                        "family" allows it, "none" opts out.
+                      enum:
+                      - ""
+                      - family
+                      - none
+                      type: string
                     start:
                       format: date-time
                       type: string
@@ -204,6 +213,39 @@ spec:
               updatedAt:
                 format: date-time
                 type: string
+              usage:
+                items:
+                  description: |-
+                    EnvelopeUsage reports an envelope's width split by derived funding class
+                    (R14/R15) plus the spare-role width, and its consumed integral. Unfunded
+                    width names this envelope as payer but is never charged against its caps.
+                  properties:
+                    borrowedGPUs:
+                      format: int32
+                      type: integer
+                    consumedGPUHours:
+                      type: number
+                    flavor:
+                      type: string
+                    name:
+                      type: string
+                    ownedGPUs:
+                      format: int32
+                      type: integer
+                    sharedGPUs:
+                      format: int32
+                      type: integer
+                    spareGPUs:
+                      format: int32
+                      type: integer
+                    unfundedGPUs:
+                      format: int32
+                      type: integer
+                  required:
+                  - flavor
+                  - name
+                  type: object
+                type: array
             type: object
         type: object
     served: true

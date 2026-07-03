@@ -20,6 +20,7 @@ import (
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	"github.com/davidlangworthy/jobtree/controllers"
 	"github.com/davidlangworthy/jobtree/pkg/binder"
+	"github.com/davidlangworthy/jobtree/pkg/funding"
 	"github.com/davidlangworthy/jobtree/pkg/keys"
 )
 
@@ -39,8 +40,13 @@ type RunReconciler struct {
 // announces that their blocker went away, so they poll.
 const pendingRunResync = time.Minute
 
+// runningRunResync re-derives funding for Running runs: classification is a
+// function of the clock (integrals accrue and exhaust, windows open and
+// close), so status drifts stale with no watch event to announce it.
+const runningRunResync = 5 * time.Minute
+
 func (r *RunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	var parked bool
+	var parked, running bool
 	err := r.Bridge.WithWorld(ctx, func(state *controllers.ClusterState, now time.Time) error {
 		key := keys.NamespacedKey(req.Namespace, req.Name)
 		run, ok := state.Runs[key]
@@ -53,12 +59,17 @@ func (r *RunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			return nil
 		}
 		rc := controllers.NewRunController(state, staticClock{now})
+		rc.Period = r.Bridge.Period
 		err := rc.Reconcile(req.Namespace, req.Name)
 		parked = run.Status.Phase == controllers.RunPhasePending && run.Status.PendingReservation == nil
+		running = run.Status.Phase == controllers.RunPhaseRunning
 		return err
 	})
 	if err == nil && parked {
 		return ctrl.Result{RequeueAfter: pendingRunResync}, nil
+	}
+	if err == nil && running {
+		return ctrl.Result{RequeueAfter: runningRunResync}, nil
 	}
 	return ctrl.Result{}, err
 }
@@ -99,16 +110,38 @@ func cleanupDeletedRun(state *controllers.ClusterState, runKey, namespace, name 
 
 // SetupWithManager registers the reconciler. Lease events re-trigger their
 // owning run so closures (shrink, preemption, completion) refresh status.
-// The generation gate on runs matters with a live clock: reconciles rewrite
-// the float GPU-hour status fields, and without the gate each status write
-// would re-trigger the reconciler in a self-sustaining loop.
+// Budget spec changes re-trigger every run: quota is the input to the
+// funding derivation, so any envelope edit can reclassify any run. The
+// generation gates matter with a live clock: reconciles rewrite the float
+// GPU-hour status fields (runs) and updatedAt (budgets), and without them
+// each status write would re-trigger the reconciler in a self-sustaining
+// loop.
 func (r *RunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("run").
 		For(&v1.Run{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(&v1.Lease{}, handler.EnqueueRequestsFromMapFunc(leaseToRun)).
+		Watches(&v1.Budget{}, handler.EnqueueRequestsFromMapFunc(r.budgetToRuns),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		WithOptions(serialWorker).
 		Complete(r)
+}
+
+// budgetToRuns fans a budget change out to every run: family sharing and
+// lending mean there is no per-run scoping of a quota edit.
+func (r *RunReconciler) budgetToRuns(ctx context.Context, _ client.Object) []reconcile.Request {
+	var runList v1.RunList
+	if err := r.Bridge.APIReader.List(ctx, &runList); err != nil {
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(runList.Items))
+	for i := range runList.Items {
+		run := &runList.Items[i]
+		requests = append(requests, reconcile.Request{
+			NamespacedName: types.NamespacedName{Namespace: run.Namespace, Name: run.Name},
+		})
+	}
+	return requests
 }
 
 func leaseToRun(ctx context.Context, obj client.Object) []reconcile.Request {
@@ -146,7 +179,15 @@ func (r *ReservationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			return nil
 		}
 		rc := controllers.NewRunController(state, staticClock{now})
-		return rc.ActivateReservations(now)
+		rc.Period = r.Bridge.Period
+		err := rc.ActivateReservations(now)
+		if res.Status.State == "Pending" || res.Status.State == "" {
+			// A due reservation can park at activation (an unfunded promise
+			// waiting for physical capacity reclaims nothing — R7). No watch
+			// event announces freed GPUs, so it polls.
+			requeueAfter = pendingRunResync
+		}
+		return err
 	})
 	return ctrl.Result{RequeueAfter: requeueAfter}, err
 }
@@ -178,6 +219,7 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 	err := r.Bridge.WithWorld(ctx, func(state *controllers.ClusterState, now time.Time) error {
 		rc := controllers.NewRunController(state, staticClock{now})
+		rc.Period = r.Bridge.Period
 		if err := rc.HandleNodeFailure(req.Name, now); err != nil {
 			// Nothing was running there: the failure needs no response.
 			if strings.Contains(err.Error(), "no active lease found") {
@@ -226,11 +268,13 @@ func (r *NodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// BudgetReconciler refreshes budget status headroom from live leases.
+// BudgetReconciler refreshes budget status from the funding derivation.
 type BudgetReconciler struct {
 	Client    client.Client
 	APIReader client.Reader
 	Clock     controllers.Clock
+	// Period is the accounting horizon for the funding derivation.
+	Period time.Duration
 	// ResyncPeriod re-reconciles budgets so GPU-hour accrual stays fresh.
 	ResyncPeriod time.Duration
 }
@@ -240,12 +284,34 @@ func (r *BudgetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if err := r.APIReader.Get(ctx, req.NamespacedName, &budget); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	// The evaluation is global: family sharing and lending mean other
+	// budgets' leases and runs decide what this budget's envelopes fund.
+	var budgetList v1.BudgetList
+	if err := r.APIReader.List(ctx, &budgetList); err != nil {
+		return ctrl.Result{}, err
+	}
 	var leaseList v1.LeaseList
 	if err := r.APIReader.List(ctx, &leaseList); err != nil {
 		return ctrl.Result{}, err
 	}
+	var runList v1.RunList
+	if err := r.APIReader.List(ctx, &runList); err != nil {
+		return ctrl.Result{}, err
+	}
+	runs := make(map[string]*v1.Run, len(runList.Items))
+	for i := range runList.Items {
+		run := &runList.Items[i]
+		runs[keys.NamespacedKey(run.Namespace, run.Name)] = run
+	}
+	ev := funding.Evaluate(funding.Input{
+		Budgets: budgetList.Items,
+		Leases:  leaseList.Items,
+		Runs:    runs,
+		Now:     r.Clock.Now(),
+		Period:  r.Period,
+	})
 	bc := controllers.NewBudgetController(r.Clock, controllers.NewBudgetMetrics())
-	status := bc.ReconcileBudget(&budget, leaseList.Items)
+	status := bc.ReconcileBudget(&budget, ev)
 	budget.Status = status
 	if err := r.Client.Status().Update(ctx, &budget); err != nil {
 		return ctrl.Result{}, err

@@ -282,7 +282,7 @@ byte-identical; the format/extension mismatch is gone.
 
 ### R14 — GPU-hour caps are dead at admission
 
-- [ ] `pkg/cover/cover.go`, `controllers/run_controller.go` (all `cover.Request` sites), `pkg/budget`, `api/v1`
+- [x] `pkg/funding/` (new: the one derivation), `pkg/cover/cover.go`, `controllers/run_controller.go` (all `cover.Request` sites), `controllers/budget_controller.go`, `pkg/metrics`, `api/v1` (`pkg/budget` deleted — superseded by `pkg/funding`)
 
 **Problem.** `ExpectedDuration` is only ever set in tests, so every `MaxGPUHours` check
 (envelope, aggregate, lending) is skipped in the real path. Runs also have no
@@ -307,16 +307,28 @@ automatically when quota returns. No envelope overdraft — unfunded hours are m
 5. Scenario tests: zero-hour envelope cannot fund an admission; exhaustion demotes without
    killing; a reopened budget window re-funds; overdraft is unrepresentable.
 
-**Done when.** The quota-semantics invariants hold in the Tier 1 simulator, and status surfaces
-the derived classes without the control path ever reading them back.
+**Done when.** The quota-semantics invariants hold and status surfaces the derived classes without
+the control path ever reading them back.
 
-*Known edge (accepted 2026-07-02):* activation for a run short on both capacity and budget still
-preempts for the capacity half and then reschedules (`activateReservation`); funded victims can
-die for a run that does not start. Accepted until this rework dissolves the path.
+*Done-when renegotiated (2026-07-03):* the "Tier 1 simulator" this clause referenced was never
+built (no `cmd/jobtree-sim`, `test/scenarios`, or `pkg/invariant` exists). The invariants are
+instead pinned by `pkg/funding`'s property suite (no-overdraft, conservation, owner-independence,
+removal-monotonicity, determinism over ~550 random worlds) and the deterministic engine scenarios
+in `controllers/quota_semantics_test.go` (zero-hour envelope funds nothing; exhaustion demotes
+without killing; reopened window re-funds; owner recall reclaims a family borrower as Pending;
+lending caps unaffected by family usage; status surfaces agree). If a first-class simulator is
+still wanted, that is a follow-up (see R26–R28 tracking).
+
+*Known edge dissolved (2026-07-03):* activation for a run short on both capacity and budget no
+longer preempts-then-reschedules. Budget shortfall now admits opportunistically (the promise-made
+run starts unfunded and re-funds by arithmetic — R7 sharpened); reclaim ranks the prospective
+claim in so it only cuts unfunded work, never a funded run that may not start. A run whose owner
+budget was *entirely removed* fails terminally instead (no envelope to attribute to or re-fund
+from).
 
 ### R15 — Family sharing vs. lending semantics are inconsistent
 
-- [ ] `pkg/cover/cover.go` (phases), `pkg/binder/binder.go` (role assignment), `pkg/budget/usage.go`, `controllers/run_controller.go` (`summarizeRunFunding`)
+- [x] `pkg/funding/` (ranking + classification), `pkg/cover/cover.go` (phases), `pkg/binder/binder.go` (role assignment: `RoleBorrowed` removed), `controllers/run_controller.go` (`summarizeRunFunding`)
 
 **Problem.** Family members (siblings/parents/cousins) consume each other's envelopes with no
 lending gate, and those leases are `Role: Active` — bypassing lending sub-caps in budget

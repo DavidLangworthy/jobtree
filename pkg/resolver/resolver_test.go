@@ -151,6 +151,55 @@ func TestResolveLotteryDeterministic(t *testing.T) {
 	}
 }
 
+// When one owner has several candidate runs, the lottery gathers their
+// tokens by Go map iteration (randomized per range), so an unsorted token
+// slice would let the same seed pick a different victim between calls. The
+// sort makes the draw reproducible — the "attested lottery" / "audit by
+// replay" guarantee. A single Resolve pair can miss it (map order happens to
+// match), so repeat enough times to make a regression overwhelmingly likely.
+func TestResolveLotteryDeterministicWithinOwner(t *testing.T) {
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	runA1 := buildRun("owner-a", "default", "run-a1", "H100")
+	runA2 := buildRun("owner-a", "default", "run-a2", "H100")
+	leaseA1 := buildLease(runA1, "0", "Active", []string{"node-a#0", "node-a#1", "node-a#2", "node-a#3"}, now)
+	leaseA2 := buildLease(runA2, "0", "Active", []string{"node-b#0", "node-b#1", "node-b#2", "node-b#3"}, now)
+
+	input := Input{
+		Deficit:    4, // only one of the two same-owner groups is cut
+		Flavor:     "H100",
+		Scope:      map[string]string{},
+		SeedSource: "reservation-9",
+		Now:        now,
+		Nodes: []topology.SourceNode{
+			sourceNode("node-a", "us-west", "cluster-a", "island-a", "H100", 4),
+			sourceNode("node-b", "us-west", "cluster-a", "island-a", "H100", 4),
+		},
+		Leases: []*v1.Lease{leaseA1, leaseA2},
+		Runs: map[string]*v1.Run{
+			keys.NamespacedKey(runA1.Namespace, runA1.Name): runA1,
+			keys.NamespacedKey(runA2.Namespace, runA2.Name): runA2,
+		},
+	}
+
+	first, err := Resolve(input)
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+	if len(first.Actions) == 0 {
+		t.Fatalf("expected a lottery victim")
+	}
+	want := first.Actions[0].Lease.ObjectMeta.Name
+	for i := 0; i < 40; i++ {
+		got, err := Resolve(input)
+		if err != nil {
+			t.Fatalf("resolve %d failed: %v", i, err)
+		}
+		if got.Actions[0].Lease.ObjectMeta.Name != want {
+			t.Fatalf("non-deterministic victim: first picked %s, iteration %d picked %s", want, i, got.Actions[0].Lease.ObjectMeta.Name)
+		}
+	}
+}
+
 func buildRun(owner, namespace, name, flavor string) *v1.Run {
 	run := &v1.Run{
 		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: namespace},

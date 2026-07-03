@@ -6,6 +6,7 @@ import (
 	"flag"
 	"net/http"
 	"os"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -17,6 +18,7 @@ import (
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	"github.com/davidlangworthy/jobtree/controllers"
 	"github.com/davidlangworthy/jobtree/controllers/kube"
+	"github.com/davidlangworthy/jobtree/pkg/funding"
 	"github.com/davidlangworthy/jobtree/pkg/metrics"
 )
 
@@ -36,11 +38,14 @@ func main() {
 	var probeAddr string
 	var enableLeaderElection bool
 	var enableWebhooks bool
+	var accountingPeriod time.Duration
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "Address for metrics exposure")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Address for health probes")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election for controller manager")
 	flag.BoolVar(&enableWebhooks, "enable-webhooks", true, "Serve the admission webhooks")
+	flag.DurationVar(&accountingPeriod, "accounting-period", funding.DefaultPeriod,
+		"Accounting horizon for quota evaluation: admission requires width×period of remaining GPU-hours")
 	opts := zap.Options{}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -70,6 +75,7 @@ func main() {
 		Client:    mgr.GetClient(),
 		APIReader: mgr.GetAPIReader(),
 		Clock:     controllers.RealClock{},
+		Period:    accountingPeriod,
 	}
 
 	if err := (&kube.RunReconciler{Bridge: bridge}).SetupWithManager(mgr); err != nil {
@@ -88,6 +94,7 @@ func main() {
 		Client:    mgr.GetClient(),
 		APIReader: mgr.GetAPIReader(),
 		Clock:     controllers.RealClock{},
+		Period:    accountingPeriod,
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "unable to create controller", "controller", "budget")
 		os.Exit(1)

@@ -7,8 +7,8 @@ import (
 	"time"
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
-	"github.com/davidlangworthy/jobtree/pkg/budget"
 	"github.com/davidlangworthy/jobtree/pkg/cover"
+	"github.com/davidlangworthy/jobtree/pkg/funding"
 	"github.com/davidlangworthy/jobtree/pkg/pack"
 	"github.com/davidlangworthy/jobtree/pkg/topology"
 )
@@ -31,7 +31,7 @@ type Input struct {
 	PackErr      *pack.PlanError
 	CoverErr     *cover.PlanError
 	CoverRequest cover.Request
-	BudgetStates []*budget.BudgetState
+	Evaluation   *funding.Evaluation
 }
 
 // Result contains the reservation plan emitted by the forecaster.
@@ -127,7 +127,7 @@ func deriveSlice(in Input, scope map[string]string) v1.IntendedSlice {
 	return slice
 }
 
-func conservativeEarliest(in Input, env *budget.EnvelopeState, scope map[string]string) time.Time {
+func conservativeEarliest(in Input, env *funding.EnvelopeAccount, scope map[string]string) time.Time {
 	candidate := in.Now.Add(DefaultActivationLead)
 	if env.Spec.Start != nil && in.Now.Before(env.Spec.Start.Time) {
 		if env.Spec.PreActivation != nil && !env.Spec.PreActivation.AllowReservations {
@@ -190,48 +190,65 @@ func estimateDeficit(in Input) int {
 	return total
 }
 
+// computeHeadroom asks the funding evaluation how much width the run's owner
+// could still get funded on their own envelopes, ranked at the run's
+// admission time. Family and sponsor capacity is deliberately excluded: the
+// cover planner already failed to fill from those tiers, so counting them
+// here would understate the deficit.
 func computeHeadroom(in Input) int {
-	if len(in.BudgetStates) == 0 {
+	if in.Evaluation == nil {
 		return 0
 	}
+	admitted := in.CoverRequest.Admitted
+	if admitted.IsZero() {
+		admitted = in.Now
+	}
+	admission := in.Evaluation.NewAdmission(in.Run.Spec.Owner, admitted, in.CoverRequest.RunKey)
 	remaining := 0
-	for _, st := range in.BudgetStates {
-		if st == nil || st.Budget == nil {
+	for _, acct := range in.Evaluation.Envelopes() {
+		if acct.Owner != in.Run.Spec.Owner {
 			continue
 		}
-		if st.Budget.Spec.Owner != in.Run.Spec.Owner {
+		if acct.Spec.Flavor != in.Run.Spec.Resources.GPUType {
 			continue
 		}
-		for _, env := range st.Envelopes {
-			if env.Spec.Flavor != in.Run.Spec.Resources.GPUType {
-				continue
-			}
-			headroom := budget.EnvelopeHeadroom(env, budget.Usage{})
-			if headroom.Concurrency > 0 {
-				remaining += int(headroom.Concurrency)
-			}
+		if !windowAllowsAdmission(acct.Spec, in.Now) {
+			continue
+		}
+		if width := admission.Available(acct.Key, false); width > 0 {
+			admission.Take(acct.Key, width)
+			remaining += int(width)
 		}
 	}
 	return remaining
 }
 
-func selectEnvelope(in Input, scope map[string]string) (*budget.EnvelopeState, error) {
-	candidates := []*budget.EnvelopeState{}
-	for _, st := range in.BudgetStates {
-		if st == nil || st.Budget == nil {
-			continue
-		}
-		if st.Budget.Spec.Owner != in.Run.Spec.Owner {
-			continue
-		}
-		for _, env := range st.Envelopes {
-			if env.Spec.Flavor != in.Run.Spec.Resources.GPUType {
+// windowAllowsAdmission mirrors the cover planner's admission gate: closed
+// windows admit nothing, unopened windows only via preActivation.
+func windowAllowsAdmission(env v1.BudgetEnvelope, now time.Time) bool {
+	if env.Start != nil && now.Before(env.Start.Time) {
+		return env.PreActivation != nil && env.PreActivation.AllowAdmission
+	}
+	if env.End != nil && !now.Before(env.End.Time) {
+		return false
+	}
+	return true
+}
+
+func selectEnvelope(in Input, scope map[string]string) (*funding.EnvelopeAccount, error) {
+	candidates := []*funding.EnvelopeAccount{}
+	if in.Evaluation != nil {
+		for _, acct := range in.Evaluation.Envelopes() {
+			if acct.Owner != in.Run.Spec.Owner {
 				continue
 			}
-			if len(scope) > 0 && !matchesScope(env.Spec.Selector, scope) {
+			if acct.Spec.Flavor != in.Run.Spec.Resources.GPUType {
 				continue
 			}
-			candidates = append(candidates, env)
+			if len(scope) > 0 && !matchesScope(acct.Spec.Selector, scope) {
+				continue
+			}
+			candidates = append(candidates, acct)
 		}
 	}
 	if len(candidates) == 0 {
@@ -271,8 +288,11 @@ func cloneMap(in map[string]string) map[string]string {
 	return out
 }
 
+// defaultRemedies lists the consolidated reclaim order (quota-semantics.md):
+// unfunded capacity first, then spares, then shrink, then lottery.
 func defaultRemedies() []string {
 	return []string{
+		"Reclaim unfunded capacity in scope",
 		"Drop spares in scope",
 		"Shrink elastic runs by step size",
 		"Run fair lottery if deficit remains",
@@ -286,7 +306,7 @@ func confidenceLabel(in Input) string {
 	return "conservative"
 }
 
-func buildReason(in Input, env *budget.EnvelopeState, deficit int) string {
+func buildReason(in Input, env *funding.EnvelopeAccount, deficit int) string {
 	if in.CoverErr != nil {
 		switch in.CoverErr.Reason {
 		case cover.FailureReasonNoMatchingEnvelope:

@@ -124,22 +124,22 @@ spec:
                 format: date-time
                 type: string
               funding:
-                description: RunFundingStatus reports current and accrued funding
-                  usage.
+                description: |-
+                  RunFundingStatus reports the derived funding classification (R14/R15):
+                  current width and accrued GPU-hours per class. Classes are computed by the
+                  funding derivation from budgets, leases, and the clock — they are status
+                  only and never feed back into evaluation.
                 properties:
                   borrowedGPUHours:
                     type: number
                   borrowedGPUs:
                     format: int32
                     type: integer
-                  ownedGPUHours:
-                    type: number
-                  ownedGPUs:
-                    format: int32
-                    type: integer
-                  sponsors:
+                  lenders:
                     items:
-                      description: RunFundingSponsorShare describes a sponsor's contribution.
+                      description: |-
+                        RunFundingLenderShare attributes shared or borrowed capacity to the owner
+                        whose envelope funds it (family lender or sponsor).
                       properties:
                         gpuHours:
                           type: number
@@ -152,6 +152,21 @@ spec:
                       - owner
                       type: object
                     type: array
+                  ownedGPUHours:
+                    type: number
+                  ownedGPUs:
+                    format: int32
+                    type: integer
+                  sharedGPUHours:
+                    type: number
+                  sharedGPUs:
+                    format: int32
+                    type: integer
+                  unfundedGPUHours:
+                    type: number
+                  unfundedGPUs:
+                    format: int32
+                    type: integer
                 type: object
               generation:
                 format: int64

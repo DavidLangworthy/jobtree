@@ -14,7 +14,7 @@ func TestMetricsRecording(t *testing.T) {
 	ObserveAdmission("H100", "bound", 150*time.Millisecond)
 	SetReservationBacklog("H100", 3600)
 	IncResolverAction("Lottery")
-	RecordBudgetUsage("org", "bud", "env", "H100", 32, 8, 4)
+	RecordBudgetUsage("org", "bud", "env", "H100", BudgetUsage{Owned: 32, Shared: 5, Borrowed: 8, Unfunded: 3, Spare: 4})
 	SetSpareUsage("H100", 6)
 
 	snap := Snapshot()
@@ -43,7 +43,7 @@ func TestMetricsRecording(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected budget usage entry")
 	}
-	if usage.Owned != 32 || usage.Borrowed != 8 || usage.Spare != 4 {
+	if usage.Owned != 32 || usage.Shared != 5 || usage.Borrowed != 8 || usage.Unfunded != 3 || usage.Spare != 4 {
 		t.Fatalf("unexpected budget usage: %#v", usage)
 	}
 
@@ -57,7 +57,8 @@ func TestWritePrometheus(t *testing.T) {
 	ObserveAdmission("H100", "bound", 100*time.Millisecond)
 	SetReservationBacklog("H100", 120)
 	IncResolverAction("Shrink")
-	RecordBudgetUsage("org", "bud", "env", "H100", 10, 2, 1)
+	// All five derived classes are exposed per envelope (R14/R15).
+	RecordBudgetUsage("org", "bud", "env", "H100", BudgetUsage{Owned: 10, Shared: 6, Borrowed: 2, Unfunded: 5, Spare: 1})
 	SetSpareUsage("H100", 3)
 
 	var buf bytes.Buffer
@@ -69,6 +70,10 @@ func TestWritePrometheus(t *testing.T) {
 		"jobtree_reservations_backlog_seconds{flavor=\"H100\"} 120",
 		"jobtree_resolver_actions_total{kind=\"Shrink\"} 1",
 		"jobtree_budgets_concurrency_gpus{budget=\"bud\",class=\"owned\",envelope=\"env\",flavor=\"H100\",owner=\"org\"} 10",
+		"jobtree_budgets_concurrency_gpus{budget=\"bud\",class=\"shared\",envelope=\"env\",flavor=\"H100\",owner=\"org\"} 6",
+		"jobtree_budgets_concurrency_gpus{budget=\"bud\",class=\"borrowed\",envelope=\"env\",flavor=\"H100\",owner=\"org\"} 2",
+		"jobtree_budgets_concurrency_gpus{budget=\"bud\",class=\"unfunded\",envelope=\"env\",flavor=\"H100\",owner=\"org\"} 5",
+		"jobtree_budgets_concurrency_gpus{budget=\"bud\",class=\"spare\",envelope=\"env\",flavor=\"H100\",owner=\"org\"} 1",
 		"jobtree_spares_concurrency_gpus{flavor=\"H100\"} 3",
 	} {
 		if !strings.Contains(output, needle) {

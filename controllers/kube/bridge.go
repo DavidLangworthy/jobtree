@@ -46,6 +46,9 @@ type Bridge struct {
 	Client    client.Client
 	APIReader client.Reader
 	Clock     controllers.Clock
+	// Period is the accounting horizon for the funding derivation's
+	// admission lookahead (<= 0 uses funding.DefaultPeriod).
+	Period time.Duration
 
 	mu sync.Mutex
 }

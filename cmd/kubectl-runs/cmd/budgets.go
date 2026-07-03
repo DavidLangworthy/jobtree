@@ -6,7 +6,7 @@ import (
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	"github.com/davidlangworthy/jobtree/controllers"
-	budgetpkg "github.com/davidlangworthy/jobtree/pkg/budget"
+	"github.com/davidlangworthy/jobtree/pkg/funding"
 	"github.com/spf13/cobra"
 )
 
@@ -23,7 +23,7 @@ func NewBudgetsCommand(opts *RootOptions, store *StateStore, printer *Printer) *
 func newBudgetsUsageCommand(opts *RootOptions, store *StateStore, printer *Printer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "usage",
-		Short: "Show budget usage and remaining headroom (read-only; the state file is not modified)",
+		Short: "Show budget usage by funding class and remaining headroom (read-only; the state file is not modified)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			state, err := store.Load(opts.StatePath)
 			if err != nil {
@@ -35,34 +35,46 @@ func newBudgetsUsageCommand(opts *RootOptions, store *StateStore, printer *Print
 			rows := [][]string{}
 			raw := make([]map[string]interface{}, 0)
 			now := time.Now().UTC()
+			// One evaluation for the whole state: classification is global
+			// (family sharing and lending cross budget boundaries).
+			ev := funding.Evaluate(funding.Input{
+				Budgets: state.Budgets,
+				Leases:  state.Leases,
+				Runs:    state.Runs,
+				Now:     now,
+			})
 			for i := range state.Budgets {
 				budgetObj := state.Budgets[i]
 				copy := budgetObj
 				controller := controllers.NewBudgetController(controllers.RealClock{}, controllers.NewBudgetMetrics())
-				status := controller.ReconcileBudget(&copy, state.Leases)
-				usageState := budgetpkg.BuildBudgetState(&copy, state.Leases, now)
-				for _, env := range usageState.Envelopes {
-					head := findHeadroom(status.Headroom, env.Spec.Name)
+				status := controller.ReconcileBudget(&copy, ev)
+				for _, usage := range status.Usage {
+					head := findHeadroom(status.Headroom, usage.Name)
 					rows = append(rows, []string{
 						budgetObj.ObjectMeta.Name,
-						env.Spec.Name,
-						env.Spec.Flavor,
-						fmt.Sprintf("%d", env.Usage.Concurrency),
-						fmt.Sprintf("%d", env.Usage.BorrowedConcurrency),
+						usage.Name,
+						usage.Flavor,
+						fmt.Sprintf("%d", usage.OwnedGPUs),
+						fmt.Sprintf("%d", usage.SharedGPUs),
+						fmt.Sprintf("%d", usage.BorrowedGPUs),
+						fmt.Sprintf("%d", usage.UnfundedGPUs),
 						fmt.Sprintf("%d", head.Concurrency),
 					})
 					raw = append(raw, map[string]interface{}{
-						"budget":      budgetObj.ObjectMeta.Name,
-						"envelope":    env.Spec.Name,
-						"flavor":      env.Spec.Flavor,
-						"concurrency": env.Usage.Concurrency,
-						"borrowed":    env.Usage.BorrowedConcurrency,
-						"headroom":    head.Concurrency,
+						"budget":   budgetObj.ObjectMeta.Name,
+						"envelope": usage.Name,
+						"flavor":   usage.Flavor,
+						"owned":    usage.OwnedGPUs,
+						"shared":   usage.SharedGPUs,
+						"borrowed": usage.BorrowedGPUs,
+						"unfunded": usage.UnfundedGPUs,
+						"spare":    usage.SpareGPUs,
+						"headroom": head.Concurrency,
 					})
 				}
 			}
 			payload := Payload{
-				Headers: []string{"Budget", "Envelope", "Flavor", "InUse", "Borrowed", "Headroom"},
+				Headers: []string{"Budget", "Envelope", "Flavor", "Owned", "Shared", "Borrowed", "Unfunded", "Headroom"},
 				Rows:    rows,
 				Raw:     raw,
 				Title:   "Budget Usage",
