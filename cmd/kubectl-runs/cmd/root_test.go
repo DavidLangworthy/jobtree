@@ -9,6 +9,7 @@ import (
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	"github.com/davidlangworthy/jobtree/controllers"
+	"github.com/davidlangworthy/jobtree/pkg/keys"
 	"github.com/davidlangworthy/jobtree/pkg/topology"
 )
 
@@ -118,7 +119,7 @@ func TestSponsorsAndShrink(t *testing.T) {
 		},
 	}
 	state := &controllers.ClusterState{
-		Runs:         map[string]*v1.Run{namespacedKey("default", "elastic"): run},
+		Runs:         map[string]*v1.Run{keys.NamespacedKey("default", "elastic"): run},
 		Reservations: map[string]*v1.Reservation{},
 		Budgets: []v1.Budget{
 			{

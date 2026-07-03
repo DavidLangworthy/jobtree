@@ -8,6 +8,7 @@ import (
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	cobra "github.com/davidlangworthy/jobtree/cmd/kubectl-runs/internal/cobra"
+	"github.com/davidlangworthy/jobtree/pkg/keys"
 )
 
 // NewSubmitCommand wires the submit subcommand.
@@ -49,7 +50,7 @@ func NewSubmitCommand(opts *RootOptions, store *StateStore, printer *Printer) *c
 			if err != nil {
 				return err
 			}
-			key := namespacedKey(run.Namespace, run.Name)
+			key := keys.NamespacedKey(run.Namespace, run.Name)
 			copy := run
 			state.Runs[key] = &copy
 			if err := reconcileRun(state, run.Namespace, run.Name); err != nil {

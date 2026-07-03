@@ -75,7 +75,7 @@ group's loop indexes into an empty slice: panic rather than error.
 
 ### R4 — Group indices sorted as strings break at 10
 
-- [ ] `pkg/resolver/resolver.go` — `shrinkMalleable` sort
+- [x] `pkg/resolver/resolver.go` — `shrinkMalleable` sort
 
 **Problem.** Descending *string* sort on group index cuts group "9" before "10", contradicting
 the documented highest-index-first shrink order once a run has ≥10 groups.
@@ -90,7 +90,7 @@ the documented highest-index-first shrink order once a run has ≥10 groups.
 
 ### R5 — Three disagreeing `namespacedKey` implementations
 
-- [ ] `controllers/run_controller.go`, `pkg/resolver/resolver.go`, `cmd/kubectl-runs/cmd/state.go`
+- [x] `controllers/run_controller.go`, `pkg/resolver/resolver.go`, `cmd/kubectl-runs/cmd/state.go`
 
 **Problem.** Empty namespace yields `"/name"`, `"name"`, or `"default/name"` depending on the
 package. An empty-namespace `RunRef` makes the resolver's run lookup miss, silently exempting
@@ -105,7 +105,7 @@ those leases from preemption.
 
 ### R6 — Resolver metrics count actions that never happen
 
-- [ ] `pkg/resolver/resolver.go` (`IncResolverAction` during planning), `controllers/run_controller.go` (`applyResolution`)
+- [x] `pkg/resolver/resolver.go` (`IncResolverAction` during planning), `controllers/run_controller.go` (`applyResolution`)
 
 **Problem.** Spare-drop and shrink metrics increment while *planning*; if the subsequent lottery
 errors, the whole result is discarded but the metrics remain.

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	cobra "github.com/davidlangworthy/jobtree/cmd/kubectl-runs/internal/cobra"
+	"github.com/davidlangworthy/jobtree/pkg/keys"
 )
 
 // NewWatchCommand streams run status repeatedly.
@@ -34,7 +35,7 @@ func NewWatchCommand(opts *RootOptions, store *StateStore, printer *Printer) *co
 				if err := reconcileRun(state, opts.Namespace, name); err != nil {
 					return err
 				}
-				key := namespacedKey(opts.Namespace, name)
+				key := keys.NamespacedKey(opts.Namespace, name)
 				payload := buildPlanPayload(state, opts, state.Runs[key])
 				payload.Title = fmt.Sprintf("[%s] iteration %d", time.Now().Format(time.RFC3339), i+1)
 				if err := printer.Print(cmd, opts, payload); err != nil {

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/davidlangworthy/jobtree/controllers"
+	"github.com/davidlangworthy/jobtree/pkg/keys"
 )
 
 func reconcileRun(state *controllers.ClusterState, namespace, name string) error {
@@ -34,7 +35,7 @@ func waitDuration(interval int) time.Duration {
 }
 
 func ensureRunExists(state *controllers.ClusterState, namespace, name string) error {
-	key := namespacedKey(namespace, name)
+	key := keys.NamespacedKey(namespace, name)
 	if _, ok := state.Runs[key]; !ok {
 		return fmt.Errorf("run %s not found", key)
 	}
@@ -83,7 +84,7 @@ func clampDesired(min, max, value int32) (int32, error) {
 var errNoMalleability = errors.New("run is not malleable")
 
 func ensureMalleable(state *controllers.ClusterState, namespace, name string) error {
-	key := namespacedKey(namespace, name)
+	key := keys.NamespacedKey(namespace, name)
 	obj := state.Runs[key]
 	if obj == nil || obj.Spec.Malleable == nil {
 		return errNoMalleability

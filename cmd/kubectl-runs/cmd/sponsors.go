@@ -7,6 +7,7 @@ import (
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	cobra "github.com/davidlangworthy/jobtree/cmd/kubectl-runs/internal/cobra"
+	"github.com/davidlangworthy/jobtree/pkg/keys"
 )
 
 // NewSponsorsCommand manages sponsor configuration for a Run.
@@ -34,7 +35,7 @@ func newSponsorsListCommand(opts *RootOptions, store *StateStore, printer *Print
 			if err := ensureRunExists(state, opts.Namespace, name); err != nil {
 				return err
 			}
-			key := namespacedKey(opts.Namespace, name)
+			key := keys.NamespacedKey(opts.Namespace, name)
 			run := state.Runs[key]
 			var sponsors []string
 			if run.Spec.Funding != nil {
@@ -76,7 +77,7 @@ func newSponsorsAddCommand(opts *RootOptions, store *StateStore, printer *Printe
 			if err := ensureRunExists(state, opts.Namespace, name); err != nil {
 				return err
 			}
-			key := namespacedKey(opts.Namespace, name)
+			key := keys.NamespacedKey(opts.Namespace, name)
 			run := state.Runs[key]
 			if run.Spec.Funding == nil {
 				run.Spec.Funding = &v1.RunFunding{AllowBorrow: true}
