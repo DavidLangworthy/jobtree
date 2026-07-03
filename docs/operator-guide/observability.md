@@ -11,7 +11,7 @@ The controller manager exposes Prometheus metrics on the configured metrics port
 | `jobtree_runs_admission_latency_seconds` | Histogram of run admission attempts labelled by outcome (`bound`, `reserved`, `waiting`, `error`). |
 | `jobtree_reservations_backlog_seconds` | Gauge tracking forecasted backlog per GPU flavor. |
 | `jobtree_resolver_actions_total` | Counter of resolver actions segmented by `kind` (`DropSpare`, `Shrink`, `Lottery`). |
-| `jobtree_budgets_concurrency_gpus` | Gauge for owned, borrowed, and spare concurrency per envelope. |
+| `jobtree_budgets_concurrency_gpus` | Gauge for concurrency per envelope by derived funding class (`owned`, `shared`, `borrowed`, `unfunded`) plus the `spare` role, on the `class` label. |
 | `jobtree_spares_concurrency_gpus` | Aggregate spare usage per flavor. |
 
 ### Scraping

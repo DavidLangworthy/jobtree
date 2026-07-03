@@ -79,10 +79,13 @@ func openLeaseCount(state *ClusterState) int {
 	return count
 }
 
-// R7: a reservation blocked only by budget headroom (physical capacity is
-// plentiful) must not trigger any preemption at activation — it re-forecasts
-// and reschedules instead.
-func TestActivateReservationBudgetOnlyShortfallDoesNotPreempt(t *testing.T) {
+// R7 (sharpened by quota-semantics.md): a reservation blocked only by budget
+// headroom (physical capacity is plentiful) must not trigger any preemption
+// at activation. Budget shortfall now manifests as opportunistic
+// classification, not a lottery over funded runs: the promise-made run
+// starts opportunistically (unfunded) on the free capacity and is re-funded
+// by arithmetic when quota returns. No funded work is cut.
+func TestActivateReservationBudgetOnlyShortfallAdmitsOpportunistically(t *testing.T) {
 	metrics.Reset()
 	t.Cleanup(metrics.Reset)
 
@@ -131,9 +134,8 @@ func TestActivateReservationBudgetOnlyShortfallDoesNotPreempt(t *testing.T) {
 		t.Fatalf("activation returned error: %v", err)
 	}
 
-	if got := openLeaseCount(state); got != leasesBefore {
-		t.Errorf("expected no leases closed or created, had %d open, now %d", leasesBefore, got)
-	}
+	// No funded work was cut (R7 upheld): nothing closed, no resolver
+	// actions. New leases DID appear — blocked started opportunistically.
 	for _, lease := range state.Leases {
 		if lease.Status.Closed {
 			t.Errorf("lease %s was closed (%s): budget shortfall must not preempt", lease.Name, lease.Status.ClosureReason)
@@ -142,18 +144,24 @@ func TestActivateReservationBudgetOnlyShortfallDoesNotPreempt(t *testing.T) {
 	if actions := metrics.Snapshot().ResolverActions; len(actions) != 0 {
 		t.Errorf("expected no resolver actions, got %v", actions)
 	}
-	if phase := state.Runs["default/blocked"].Status.Phase; phase != RunPhasePending {
-		t.Errorf("expected blocked to stay pending, got %s", phase)
+	if got := openLeaseCount(state); got != leasesBefore+1 {
+		t.Errorf("expected blocked to bind one opportunistic lease, had %d open, now %d", leasesBefore, got)
 	}
-	// The reservation was rescheduled: a Pending reservation still exists.
-	pending := 0
+	blocked := state.Runs["default/blocked"]
+	if blocked.Status.Phase != RunPhaseRunning {
+		t.Errorf("expected blocked to start opportunistically (Running), got %s", blocked.Status.Phase)
+	}
+	// Its width is unfunded: org:team's envelope is exhausted, so the run
+	// coasts until quota returns.
+	if blocked.Status.Funding == nil || blocked.Status.Funding.UnfundedGPUs != 4 || blocked.Status.Funding.OwnedGPUs != 0 {
+		t.Errorf("expected blocked classed 4 unfunded / 0 owned, got %+v", blocked.Status.Funding)
+	}
+	// The reservation activated, not rescheduled: no Pending reservation for
+	// a now-Running run (invariant 8).
 	for _, res := range state.Reservations {
 		if res.Status.State == "Pending" {
-			pending++
+			t.Errorf("expected reservation activated, found still-Pending %s", res.Name)
 		}
-	}
-	if pending != 1 {
-		t.Errorf("expected one rescheduled pending reservation, got %d", pending)
 	}
 	assertInvariantNoPendingReservationForRunningRun(t, state)
 }
@@ -465,7 +473,9 @@ func TestActivateReservationFailsTerminallyWhenReforecastFails(t *testing.T) {
 
 // Review finding (PR #14 item 1): a promoted spare must keep its funding
 // provenance — a sponsor-funded spare that swaps in must stay on the
-// sponsor's books (Owner) and keep counting against MaxBorrowGPUs (role).
+// sponsor's books. Since R15 the class is derived from the payer facts
+// (Owner + PaidBy*), so the swap lease carries those forward; the role is
+// just Active (roles are Active|Spare only).
 func TestSwapLeaseKeepsFundingProvenance(t *testing.T) {
 	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	run := h100Run("train", "org:team", 2)
@@ -525,8 +535,11 @@ func TestSwapLeaseKeepsFundingProvenance(t *testing.T) {
 	if swap.Spec.Owner != "org:sponsor" {
 		t.Errorf("swap lease lost its payer: owner %q, want org:sponsor", swap.Spec.Owner)
 	}
-	if swap.Spec.Slice.Role != binder.RoleBorrowed {
-		t.Errorf("swap lease role %q, want Borrowed so MaxBorrowGPUs keeps counting it", swap.Spec.Slice.Role)
+	// The payer facts are the provenance now: the derivation reads them to
+	// keep classing this width against the sponsor (borrowed), so
+	// MaxBorrowGPUs still counts it. The role is Active.
+	if swap.Spec.Slice.Role != binder.RoleActive {
+		t.Errorf("swap lease role %q, want Active (class is derived from the payer, not the role)", swap.Spec.Slice.Role)
 	}
 	if swap.Spec.PaidByBudget != "sponsor" || swap.Spec.PaidByEnvelope != "west" {
 		t.Errorf("swap lease lost funding attribution: %s/%s", swap.Spec.PaidByBudget, swap.Spec.PaidByEnvelope)

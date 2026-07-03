@@ -21,6 +21,11 @@ import (
 //	invariant 2 (conservation): lease GPUs sum to the pack plan total and
 //	per-envelope lease totals equal the cover segment quantities;
 //	invariant 4 (name uniqueness): pod and lease names are unique.
+//
+// Plus the R15 role invariant: roles are lease facts, Active|Spare only.
+// Every non-spare slice is RoleActive regardless of Segment.Borrowed —
+// funding class (owned/shared/borrowed/unfunded) is derived downstream by
+// pkg/funding from the payer fields, never encoded as a role (Decision 3).
 
 // byteFeed doles out fuzz bytes as bounded integers; once the input is
 // exhausted every draw returns the lower bound, keeping generation total.
@@ -149,7 +154,10 @@ func genScenario(f *byteFeed) (fuzzScenario, bool) {
 			EnvelopeName: fuzzEnvelopes[f.intn(len(fuzzEnvelopes))-1],
 			Owner:        which.owner,
 			Quantity:     int32(qty),
-			Borrowed:     f.bool(),
+			// Borrowed varies freely: it marks sponsor segments for the
+			// downstream funding derivation and must never influence the
+			// role the binder assigns (assertRoles checks this).
+			Borrowed: f.bool(),
 		})
 		remaining -= qty
 	}

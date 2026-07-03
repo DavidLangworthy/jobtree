@@ -5,6 +5,8 @@ import (
 	"time"
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
+	"github.com/davidlangworthy/jobtree/pkg/funding"
+	"github.com/davidlangworthy/jobtree/pkg/keys"
 )
 
 type fakeClock struct{ now time.Time }
@@ -35,24 +37,30 @@ func TestReconcileBudgetComputesHeadroomAndMetrics(t *testing.T) {
 		},
 	}
 
+	// Both leases are backed by owner runs so they class owned; the closed
+	// one accrued its funded hours before it ended (3*2h + 2*1h = 8), and
+	// only the still-open one counts against concurrency at now.
+	runs := map[string]*v1.Run{
+		keys.NamespacedKey(keys.DefaultNamespace, "run-active"): ownerRun("run-active", "org:a"),
+		keys.NamespacedKey(keys.DefaultNamespace, "run-closed"): ownerRun("run-closed", "org:a"),
+	}
 	leases := []v1.Lease{{
 		Spec: v1.LeaseSpec{
 			Owner:          "org:a",
+			RunRef:         v1.RunReference{Name: "run-active", Namespace: keys.DefaultNamespace},
+			PaidByBudget:   "budget-a",
 			PaidByEnvelope: "env-a",
-			Slice:          v1.LeaseSlice{Nodes: []string{"n1", "n2", "n3"}},
-			Interval: v1.LeaseInterval{
-				Start: start,
-			},
+			Slice:          v1.LeaseSlice{Nodes: []string{"n1", "n2", "n3"}, Role: "Active"},
+			Interval:       v1.LeaseInterval{Start: start},
 		},
 	}, {
 		Spec: v1.LeaseSpec{
 			Owner:          "org:a",
+			RunRef:         v1.RunReference{Name: "run-closed", Namespace: keys.DefaultNamespace},
+			PaidByBudget:   "budget-a",
 			PaidByEnvelope: "env-a",
-			Slice:          v1.LeaseSlice{Nodes: []string{"n4", "n5"}},
-			Interval: v1.LeaseInterval{
-				Start: start,
-				End:   &v1.Time{Time: now.Add(-time.Hour)},
-			},
+			Slice:          v1.LeaseSlice{Nodes: []string{"n4", "n5"}, Role: "Active"},
+			Interval:       v1.LeaseInterval{Start: start, End: &v1.Time{Time: now.Add(-time.Hour)}},
 		},
 		Status: v1.LeaseStatus{Closed: true, Ended: &v1.Time{Time: now.Add(-time.Hour)}},
 	}}
@@ -60,7 +68,8 @@ func TestReconcileBudgetComputesHeadroomAndMetrics(t *testing.T) {
 	metrics := NewBudgetMetrics()
 	controller := NewBudgetController(fakeClock{now: now}, metrics)
 
-	status := controller.ReconcileBudget(budgetObj, leases)
+	ev := funding.Evaluate(funding.Input{Budgets: []v1.Budget{*budgetObj}, Leases: leases, Runs: runs, Now: now})
+	status := controller.ReconcileBudget(budgetObj, ev)
 	if len(status.Headroom) != 1 {
 		t.Fatalf("expected 1 headroom entry, got %d", len(status.Headroom))
 	}
@@ -79,18 +88,33 @@ func TestReconcileBudgetComputesHeadroomAndMetrics(t *testing.T) {
 		t.Fatalf("expected aggregate concurrency headroom 5, got %v", agg.Concurrency)
 	}
 
+	// The status usage block reports the derived classes: 3 owned, no
+	// sharing/borrowing/unfunded.
+	if len(status.Usage) != 1 || status.Usage[0].OwnedGPUs != 3 {
+		t.Fatalf("expected 3 owned in usage block, got %+v", status.Usage)
+	}
+
 	key := metricKey{Owner: "org:a", Budget: "budget-a", Envelope: "env-a", Flavor: "H100"}
 	metricsSnapshot := metrics.Snapshot()
 	usage, ok := metricsSnapshot[key]
 	if !ok {
 		t.Fatalf("expected metrics entry for %v", key)
 	}
-	if usage.Concurrency != 3 {
-		t.Fatalf("expected concurrency metric 3, got %f", usage.Concurrency)
+	if usage.Owned != 3 {
+		t.Fatalf("expected owned metric 3, got %f", usage.Owned)
 	}
 	expectedHours := float64(3*2 + 2*1)
-	if mathAbs(usage.GPUHours-expectedHours) > 1e-6 {
-		t.Fatalf("expected gpu hours metric %.f, got %f", expectedHours, usage.GPUHours)
+	if mathAbs(usage.ConsumedGPUHours-expectedHours) > 1e-6 {
+		t.Fatalf("expected consumed gpu hours metric %.f, got %f", expectedHours, usage.ConsumedGPUHours)
+	}
+}
+
+// ownerRun is a minimal run used to back occupancy leases so they class
+// owned instead of orphan-unfunded.
+func ownerRun(name, owner string) *v1.Run {
+	return &v1.Run{
+		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: keys.DefaultNamespace},
+		Spec:       v1.RunSpec{Owner: owner, Resources: v1.RunResources{GPUType: "H100"}},
 	}
 }
 

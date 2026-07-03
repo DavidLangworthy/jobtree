@@ -55,14 +55,24 @@ func TestMaterializeSplitsCoverAcrossAllocations(t *testing.T) {
 	if res.Leases[0].Spec.PaidByEnvelope != "core" {
 		t.Fatalf("expected first lease paid by core, got %s", res.Leases[0].Spec.PaidByEnvelope)
 	}
-	if res.Leases[1].Spec.Slice.Role != "Borrowed" {
-		t.Fatalf("expected borrowed lease role, got %s", res.Leases[1].Spec.Slice.Role)
+	// Segment.Borrowed no longer maps to a role: roles are lease facts
+	// (Active|Spare) and funding class is derived downstream by pkg/funding
+	// from the payer fields (Decision 3). The sponsor-funded slice is
+	// RoleActive like any other working slice.
+	if res.Leases[1].Spec.Slice.Role != RoleActive {
+		t.Fatalf("expected sponsor-funded lease role Active, got %s", res.Leases[1].Spec.Slice.Role)
+	}
+	// The payer fields are the facts funding.Evaluate classifies from, so
+	// the sponsor segment's budget/envelope must land on the lease intact.
+	if res.Leases[1].Spec.PaidByBudget != "mm" || res.Leases[1].Spec.PaidByEnvelope != "vision" {
+		t.Fatalf("expected sponsor lease paid by mm/vision, got %s/%s",
+			res.Leases[1].Spec.PaidByBudget, res.Leases[1].Spec.PaidByEnvelope)
 	}
 	if res.Leases[0].Spec.Owner != "org:ai:rai" {
 		t.Fatalf("expected first lease owned by org:ai:rai, got %s", res.Leases[0].Spec.Owner)
 	}
 	if res.Leases[1].Spec.Owner != "org:ai:mm" {
-		t.Fatalf("expected borrowed lease owned by sponsor, got %s", res.Leases[1].Spec.Owner)
+		t.Fatalf("expected sponsor-funded lease owned by sponsor, got %s", res.Leases[1].Spec.Owner)
 	}
 	if len(res.Leases[0].Spec.Slice.Nodes) != 4 {
 		t.Fatalf("expected 4 gpu slots in first lease, got %d", len(res.Leases[0].Spec.Slice.Nodes))

@@ -133,6 +133,23 @@ var Budgets = []Case{
 		}`,
 	},
 	{
+		Name: "valid budget with sharing family and none (R15)",
+		Manifest: `{
+			"metadata": {"name": "rai"},
+			"spec": {"owner": "org:ai:rai", "envelopes": [
+				{"name": "shared", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16, "sharing": "family"},
+				{"name": "sealed", "flavor": "H100-80GB", "selector": {"region": "us-east"}, "concurrency": 8, "sharing": "none"}
+			]}
+		}`,
+	},
+	{
+		Name: "envelope invalid sharing mode",
+		Manifest: `{"spec": {"owner": "org:ai:rai", "envelopes": [
+			{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16, "sharing": "everyone"}
+		]}}`,
+		WantErr: `sharing must be "family" or "none" when set`,
+	},
+	{
 		Name:     "missing owner",
 		Manifest: `{"spec": {"envelopes": [{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16}]}}`,
 		WantErr:  "spec.owner is required",

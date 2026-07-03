@@ -88,14 +88,16 @@ func IncResolverAction(kind string) {
 	mu.Unlock()
 }
 
-// RecordBudgetUsage emits usage gauges for owned and borrowed concurrency.
-func RecordBudgetUsage(owner, budgetName, envelope, flavor string, owned, borrowed, spare float64) {
+// RecordBudgetUsage emits per-envelope usage gauges split by derived
+// funding class (R14/R15): owned, shared (family), borrowed (sponsor),
+// unfunded (opportunistic), plus the spare-role width.
+func RecordBudgetUsage(owner, budgetName, envelope, flavor string, usage BudgetUsage) {
 	if owner == "" || budgetName == "" || envelope == "" || flavor == "" {
 		return
 	}
 	key := BudgetKey{Owner: owner, Budget: budgetName, Envelope: envelope, Flavor: flavor}
 	mu.Lock()
-	budgetData[key] = BudgetUsage{Owned: owned, Borrowed: borrowed, Spare: spare}
+	budgetData[key] = usage
 	mu.Unlock()
 }
 
@@ -117,10 +119,13 @@ type BudgetKey struct {
 	Flavor   string
 }
 
-// BudgetUsage exposes owned, borrowed, and spare concurrency values.
+// BudgetUsage exposes an envelope's concurrency split by derived funding
+// class, plus the spare-role width (spares span classes).
 type BudgetUsage struct {
 	Owned    float64
+	Shared   float64
 	Borrowed float64
+	Unfunded float64
 	Spare    float64
 }
 
@@ -254,7 +259,7 @@ func WritePrometheus(w io.Writer) {
 		writeSample(buf, "jobtree_resolver_actions_total", map[string]string{"kind": kind}, formatFloat(value))
 	}
 
-	writeHeader(buf, "jobtree_budgets_concurrency_gpus", "Current concurrency split into owned/borrowed/spare per envelope.", "gauge")
+	writeHeader(buf, "jobtree_budgets_concurrency_gpus", "Current concurrency split into owned/shared/borrowed/unfunded classes plus spare role per envelope.", "gauge")
 	budgetKeys := make([]BudgetKey, 0, len(snap.BudgetUsage))
 	for key := range snap.BudgetUsage {
 		budgetKeys = append(budgetKeys, key)
@@ -281,7 +286,9 @@ func WritePrometheus(w io.Writer) {
 			"flavor":   key.Flavor,
 		}
 		writeSample(buf, "jobtree_budgets_concurrency_gpus", mergeLabels(baseLabels, map[string]string{"class": "owned"}), formatFloat(usage.Owned))
+		writeSample(buf, "jobtree_budgets_concurrency_gpus", mergeLabels(baseLabels, map[string]string{"class": "shared"}), formatFloat(usage.Shared))
 		writeSample(buf, "jobtree_budgets_concurrency_gpus", mergeLabels(baseLabels, map[string]string{"class": "borrowed"}), formatFloat(usage.Borrowed))
+		writeSample(buf, "jobtree_budgets_concurrency_gpus", mergeLabels(baseLabels, map[string]string{"class": "unfunded"}), formatFloat(usage.Unfunded))
 		writeSample(buf, "jobtree_budgets_concurrency_gpus", mergeLabels(baseLabels, map[string]string{"class": "spare"}), formatFloat(usage.Spare))
 	}
 

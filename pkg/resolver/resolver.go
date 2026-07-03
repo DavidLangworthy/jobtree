@@ -13,6 +13,7 @@ import (
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	"github.com/davidlangworthy/jobtree/pkg/binder"
+	"github.com/davidlangworthy/jobtree/pkg/funding"
 	"github.com/davidlangworthy/jobtree/pkg/keys"
 	"github.com/davidlangworthy/jobtree/pkg/topology"
 )
@@ -21,6 +22,10 @@ import (
 type ActionKind string
 
 const (
+	// ActionReclaimUnfunded indicates an opportunistic (unfunded) lease
+	// bundle was reclaimed — always the first cut, by lottery within the
+	// class (quota-semantics.md Decision 1).
+	ActionReclaimUnfunded ActionKind = "ReclaimUnfunded"
 	// ActionDropSpare indicates a spare lease was reclaimed.
 	ActionDropSpare ActionKind = "DropSpare"
 	// ActionShrink indicates a malleable group was shrunk deterministically.
@@ -39,6 +44,14 @@ type Input struct {
 	Nodes      []topology.SourceNode
 	Leases     []*v1.Lease
 	Runs       map[string]*v1.Run
+	// Evaluation supplies the derived funding classes; when set, entirely
+	// unfunded groups are reclaimed before any structural cut touches
+	// funded work.
+	Evaluation *funding.Evaluation
+	// OnlyUnfunded stops after the unfunded phase: the admission path
+	// reclaims opportunistic capacity but never cuts funded work
+	// (preemption of funded work is reservation-activation-only, R7).
+	OnlyUnfunded bool
 }
 
 // Action describes a lease that should be ended.
@@ -74,6 +87,17 @@ func Resolve(in Input) (Result, error) {
 	deficit := in.Deficit
 
 	var actions []Action
+
+	// 0. Reclaim unfunded work — the consolidated order is
+	// unfunded → spares → shrink → lottery.
+	if in.Evaluation != nil {
+		reclaimed, freed := reclaimUnfunded(deficit, in, candidates)
+		actions = append(actions, reclaimed...)
+		deficit -= freed
+	}
+	if in.OnlyUnfunded || deficit <= 0 {
+		return Result{Actions: actions}, nil
+	}
 
 	// 1. Drop spares.
 	for _, cand := range candidates.Leases {
@@ -253,6 +277,98 @@ func leaseGroupIndex(lease *v1.Lease) string {
 	return "0"
 }
 
+// reclaimUnfunded ends groups whose every non-spare lease evaluates
+// Unfunded, selected by the attested lottery within the class. It frees
+// what it can and leaves any remaining deficit to the later phases; running
+// dry here is not an error.
+func reclaimUnfunded(deficit int, in Input, candidates candidateSet) ([]Action, int) {
+	if deficit <= 0 {
+		return nil, 0
+	}
+	seed := computeSeed(in.SeedSource, in.Now)
+	rng := rand.New(rand.NewSource(seedValue(seed)))
+
+	tokensByOwner := make(map[string][]lotteryToken)
+	var owners []string
+	for runKey, st := range candidates.Runs {
+		for _, grp := range candidates.Groups[runKey] {
+			if grp.Marked || !groupEntirelyUnfunded(grp, in.Evaluation) {
+				continue
+			}
+			owner := st.Run.Spec.Owner
+			tokensByOwner[owner] = append(tokensByOwner[owner], lotteryToken{runKey: runKey, group: grp})
+			owners = append(owners, owner)
+		}
+	}
+	owners = uniqueStrings(owners)
+	sort.Strings(owners)
+	sortTokensByOwner(tokensByOwner)
+
+	var actions []Action
+	freed := 0
+	for deficit > 0 && len(owners) > 0 {
+		ownerIdx := rng.Intn(len(owners))
+		owner := owners[ownerIdx]
+		tokens := tokensByOwner[owner]
+		if len(tokens) == 0 {
+			owners = append(owners[:ownerIdx], owners[ownerIdx+1:]...)
+			continue
+		}
+		tokenIdx := rng.Intn(len(tokens))
+		tok := tokens[tokenIdx]
+		tokensByOwner[owner] = removeToken(tokens, tokenIdx)
+		if len(tokensByOwner[owner]) == 0 {
+			owners = append(owners[:ownerIdx], owners[ownerIdx+1:]...)
+		}
+		if tok.group.Marked {
+			continue
+		}
+		actions = append(actions, buildActions(ActionReclaimUnfunded, fmt.Sprintf("ReclaimUnfunded(%s)", seed), tok.group)...)
+		tok.group.Marked = true
+		if st := candidates.Runs[tok.runKey]; st != nil {
+			st.Remaining -= tok.group.GPUs
+		}
+		freed += tok.group.GPUs
+		deficit -= tok.group.GPUs
+	}
+	return actions, freed
+}
+
+// sortTokensByOwner imposes a stable order on each owner's lottery tokens
+// (by run key, then numeric group index) so the seeded draw is reproducible:
+// the tokens are gathered by Go map iteration, whose order varies per
+// process, and an unsorted slice would let the same seed pick a different
+// victim between replays — breaking the "attested lottery" and "audit by
+// replay" guarantees (quota-semantics.md). Mirrors shrinkMalleable's sort.
+func sortTokensByOwner(tokensByOwner map[string][]lotteryToken) {
+	for _, tokens := range tokensByOwner {
+		sort.Slice(tokens, func(i, j int) bool {
+			if tokens[i].runKey != tokens[j].runKey {
+				return tokens[i].runKey < tokens[j].runKey
+			}
+			return groupIndexLess(tokens[i].group.GroupIndex, tokens[j].group.GroupIndex)
+		})
+	}
+}
+
+// groupEntirelyUnfunded reports whether every non-spare lease in the group
+// evaluates Unfunded. Mixed groups (a malleable run's partially funded
+// boundary) are left to the shrink phase, which cuts whole groups too.
+func groupEntirelyUnfunded(grp *runGroup, ev *funding.Evaluation) bool {
+	sawActive := false
+	for _, cand := range grp.Leases {
+		if cand.Lease.Spec.Slice.Role == binder.RoleSpare {
+			continue
+		}
+		sawActive = true
+		class, ok := ev.Class(cand.Lease)
+		if !ok || class != funding.ClassUnfunded {
+			return false
+		}
+	}
+	return sawActive
+}
+
 func shrinkMalleable(deficit int, candidates candidateSet) ([]Action, int) {
 	if deficit <= 0 {
 		return nil, 0
@@ -327,6 +443,24 @@ func cutBefore(a, b string) bool {
 	}
 }
 
+// groupIndexLess is a deterministic ascending total order on group index
+// labels (numeric where possible, lexical fallback) used to make the lottery
+// token order reproducible. Direction is irrelevant — only stability is.
+func groupIndexLess(a, b string) bool {
+	ai, aerr := strconv.Atoi(a)
+	bi, berr := strconv.Atoi(b)
+	switch {
+	case aerr == nil && berr == nil:
+		return ai < bi
+	case aerr == nil:
+		return true
+	case berr == nil:
+		return false
+	default:
+		return a < b
+	}
+}
+
 func buildActions(kind ActionKind, reason string, grp *runGroup) []Action {
 	actions := make([]Action, 0, len(grp.Leases))
 	for _, lease := range grp.Leases {
@@ -383,6 +517,7 @@ func runLottery(deficit int, in Input, candidates candidateSet) ([]Action, strin
 
 	owners = uniqueStrings(owners)
 	sort.Strings(owners)
+	sortTokensByOwner(tokensByOwner)
 
 	var actions []Action
 	for deficit > 0 {

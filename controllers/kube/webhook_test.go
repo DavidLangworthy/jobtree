@@ -20,14 +20,15 @@ import (
 // (schema, mutating webhook, validating webhook) without persisting, so the
 // reconcilers never react to corpus objects.
 
-// schemaRejectedCases names the corpus cases whose invalid field is
-// structurally absent from the manifest (a nil map serializes as null), so
-// the generated OpenAPI schema rejects them with the API server's own
-// "Required value" wording before the webhook can phrase the rule. Listing
-// them explicitly keeps the exception from silently absorbing new cases: a
+// schemaRejectedCases names the corpus cases the generated OpenAPI schema
+// rejects before the webhook can phrase the rule: either a structurally
+// absent required field (a nil map serializes as null → "Required value")
+// or a value outside a kubebuilder enum ("Unsupported value"). Listing them
+// explicitly keeps the exception from silently absorbing new cases: a
 // webhook regression on any case not named here still fails the test.
 var schemaRejectedCases = map[string]bool{
-	"envelope missing selector": true,
+	"envelope missing selector":     true,
+	"envelope invalid sharing mode": true,
 }
 
 func TestWebhookRunCorpus(t *testing.T) {
@@ -76,8 +77,11 @@ func checkAdmission(t *testing.T, err error, wantErr string, schemaRejected bool
 		t.Fatalf("expected the API server to reject the manifest with %q, but it was accepted", wantErr)
 	}
 	if schemaRejected {
-		if !apierrors.IsInvalid(err) || !strings.Contains(err.Error(), "Required value") {
-			t.Fatalf("expected a schema-level Required value rejection, got: %v", err)
+		// The schema layer rejects either a missing required field
+		// ("Required value") or an out-of-enum value ("Unsupported value"),
+		// both before the webhook runs.
+		if !apierrors.IsInvalid(err) || (!strings.Contains(err.Error(), "Required value") && !strings.Contains(err.Error(), "Unsupported value")) {
+			t.Fatalf("expected a schema-level rejection (Required/Unsupported value), got: %v", err)
 		}
 		return
 	}

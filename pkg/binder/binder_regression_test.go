@@ -38,10 +38,15 @@ func reviewReproPackPlan() pack.Plan {
 	}
 }
 
+// expectedSlice identifies a slice by placement, role, and payer. The payer
+// budget stands in for the old role-based borrowed check: funding class is
+// derived downstream by pkg/funding from PaidByBudget/PaidByEnvelope
+// (Decision 3), so segment identity must survive on the lease's payer fields.
 type expectedSlice struct {
-	node string
-	gpus int
-	role string
+	node   string
+	gpus   int
+	role   string
+	paidBy string
 }
 
 func assertSlices(t *testing.T, res Result, expected []expectedSlice) {
@@ -61,6 +66,12 @@ func assertSlices(t *testing.T, res Result, expected []expectedSlice) {
 		lease := res.Leases[i]
 		if len(lease.Spec.Slice.Nodes) != want.gpus {
 			t.Errorf("slice %d: lease %s has %d slots, expected %d", i, lease.Name, len(lease.Spec.Slice.Nodes), want.gpus)
+		}
+		if lease.Spec.Slice.Role != want.role {
+			t.Errorf("slice %d: lease %s has role %s, expected %s", i, lease.Name, lease.Spec.Slice.Role, want.role)
+		}
+		if want.paidBy != "" && lease.Spec.PaidByBudget != want.paidBy {
+			t.Errorf("slice %d: lease %s paid by budget %s, expected %s", i, lease.Name, lease.Spec.PaidByBudget, want.paidBy)
 		}
 		for _, slot := range lease.Spec.Slice.Nodes {
 			if !strings.HasPrefix(slot, want.node+"#") {
@@ -85,6 +96,9 @@ func assertSlices(t *testing.T, res Result, expected []expectedSlice) {
 }
 
 func TestMaterializeSegmentBoundaryInsideNodeChunk(t *testing.T) {
+	// The sponsor segment keeps Borrowed: true — the binder must ignore it
+	// for roles (RoleBorrowed is gone; class is derived by pkg/funding) but
+	// still split the slice at the segment boundary and record the payer.
 	coverPlan := cover.Plan{Segments: []cover.Segment{
 		{BudgetName: "rai", EnvelopeName: "west", Owner: "org:ai:rai", Quantity: 3},
 		{BudgetName: "mm", EnvelopeName: "west", Owner: "org:ai:mm", Quantity: 1, Borrowed: true},
@@ -95,9 +109,9 @@ func TestMaterializeSegmentBoundaryInsideNodeChunk(t *testing.T) {
 		t.Fatalf("materialize failed: %v", err)
 	}
 	assertSlices(t, res, []expectedSlice{
-		{node: "node-1", gpus: 2, role: RoleActive},
-		{node: "node-2", gpus: 1, role: RoleActive},
-		{node: "node-2", gpus: 1, role: RoleBorrowed},
+		{node: "node-1", gpus: 2, role: RoleActive, paidBy: "rai"},
+		{node: "node-2", gpus: 1, role: RoleActive, paidBy: "rai"},
+		{node: "node-2", gpus: 1, role: RoleActive, paidBy: "mm"},
 	})
 }
 
@@ -112,9 +126,9 @@ func TestMaterializeSegmentBoundaryInsideNodeChunkReversed(t *testing.T) {
 		t.Fatalf("materialize failed: %v", err)
 	}
 	assertSlices(t, res, []expectedSlice{
-		{node: "node-1", gpus: 1, role: RoleBorrowed},
-		{node: "node-1", gpus: 1, role: RoleActive},
-		{node: "node-2", gpus: 2, role: RoleActive},
+		{node: "node-1", gpus: 1, role: RoleActive, paidBy: "mm"},
+		{node: "node-1", gpus: 1, role: RoleActive, paidBy: "rai"},
+		{node: "node-2", gpus: 2, role: RoleActive, paidBy: "rai"},
 	})
 }
 

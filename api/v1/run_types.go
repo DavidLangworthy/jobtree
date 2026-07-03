@@ -82,17 +82,25 @@ type RunWidthStatus struct {
 	Pending   string `json:"pending,omitempty"`
 }
 
-// RunFundingStatus reports current and accrued funding usage.
+// RunFundingStatus reports the derived funding classification (R14/R15):
+// current width and accrued GPU-hours per class. Classes are computed by the
+// funding derivation from budgets, leases, and the clock — they are status
+// only and never feed back into evaluation.
 type RunFundingStatus struct {
-	OwnedGPUs        int32                    `json:"ownedGPUs,omitempty"`
-	OwnedGPUHours    float64                  `json:"ownedGPUHours,omitempty"`
-	BorrowedGPUs     int32                    `json:"borrowedGPUs,omitempty"`
-	BorrowedGPUHours float64                  `json:"borrowedGPUHours,omitempty"`
-	Sponsors         []RunFundingSponsorShare `json:"sponsors,omitempty"`
+	OwnedGPUs        int32                   `json:"ownedGPUs,omitempty"`
+	OwnedGPUHours    float64                 `json:"ownedGPUHours,omitempty"`
+	SharedGPUs       int32                   `json:"sharedGPUs,omitempty"`
+	SharedGPUHours   float64                 `json:"sharedGPUHours,omitempty"`
+	BorrowedGPUs     int32                   `json:"borrowedGPUs,omitempty"`
+	BorrowedGPUHours float64                 `json:"borrowedGPUHours,omitempty"`
+	UnfundedGPUs     int32                   `json:"unfundedGPUs,omitempty"`
+	UnfundedGPUHours float64                 `json:"unfundedGPUHours,omitempty"`
+	Lenders          []RunFundingLenderShare `json:"lenders,omitempty"`
 }
 
-// RunFundingSponsorShare describes a sponsor's contribution.
-type RunFundingSponsorShare struct {
+// RunFundingLenderShare attributes shared or borrowed capacity to the owner
+// whose envelope funds it (family lender or sponsor).
+type RunFundingLenderShare struct {
 	Owner    string  `json:"owner"`
 	GPUs     int32   `json:"gpus,omitempty"`
 	GPUHours float64 `json:"gpuHours,omitempty"`

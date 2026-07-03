@@ -165,18 +165,21 @@ func TestRunControllerCoFundedRunUpdatesFundingStatus(t *testing.T) {
 	if run.Status.Funding.OwnedGPUs != 96 {
 		t.Fatalf("expected 96 owned GPUs, got %d", run.Status.Funding.OwnedGPUs)
 	}
+	// vision is not family to rai, so its capacity is reached only under the
+	// lending contract and classes borrowed (not shared).
 	if run.Status.Funding.BorrowedGPUs != 32 {
 		t.Fatalf("expected 32 borrowed GPUs, got %d", run.Status.Funding.BorrowedGPUs)
 	}
-	if len(run.Status.Funding.Sponsors) != 1 {
-		t.Fatalf("expected single sponsor entry, got %d", len(run.Status.Funding.Sponsors))
+	// The sponsor is attributed as a lender.
+	if len(run.Status.Funding.Lenders) != 1 {
+		t.Fatalf("expected single lender entry, got %d", len(run.Status.Funding.Lenders))
 	}
-	share := run.Status.Funding.Sponsors[0]
+	share := run.Status.Funding.Lenders[0]
 	if share.Owner != "org:ai:mm:vision" {
-		t.Fatalf("expected sponsor owner org:ai:mm:vision, got %s", share.Owner)
+		t.Fatalf("expected lender owner org:ai:mm:vision, got %s", share.Owner)
 	}
 	if share.GPUs != 32 {
-		t.Fatalf("expected sponsor GPUs 32, got %d", share.GPUs)
+		t.Fatalf("expected lender GPUs 32, got %d", share.GPUs)
 	}
 }
 
@@ -718,12 +721,15 @@ func TestHandleNodeFailureSwapsToSpare(t *testing.T) {
 		t.Fatalf("expected spare lease to be created")
 	}
 
+	// Filler work squatting on the spare's node: role is Active (roles are
+	// Active|Spare only now); its unfunded nature would be derived, but all
+	// that matters here is that a swap reclaims it.
 	fillerLease := v1.Lease{
 		ObjectMeta: v1.ObjectMeta{Name: "filler"},
 		Spec: v1.LeaseSpec{
 			Owner:          "org:ai:other",
 			RunRef:         v1.RunReference{Name: "filler", Namespace: "default"},
-			Slice:          v1.LeaseSlice{Nodes: append([]string{}, spareLease.Spec.Slice.Nodes...), Role: binder.RoleBorrowed},
+			Slice:          v1.LeaseSlice{Nodes: append([]string{}, spareLease.Spec.Slice.Nodes...), Role: binder.RoleActive},
 			Interval:       v1.LeaseInterval{Start: v1.NewTime(now)},
 			PaidByEnvelope: "west",
 			Reason:         "Start",
@@ -738,7 +744,7 @@ func TestHandleNodeFailureSwapsToSpare(t *testing.T) {
 		Labels: map[string]string{
 			binder.LabelRunName:    "filler",
 			binder.LabelGroupIndex: "0",
-			binder.LabelRunRole:    binder.RoleBorrowed,
+			binder.LabelRunRole:    binder.RoleActive,
 		},
 	})
 
