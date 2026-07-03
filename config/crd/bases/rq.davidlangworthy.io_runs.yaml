@@ -46,6 +46,30 @@ spec:
           spec:
             description: RunSpec defines the desired Run behavior.
             properties:
+              follow:
+                description: |-
+                  RunFollow makes a run wait for other runs in the same namespace to complete
+                  before it is admitted — a "job forest" of runs joined by follow edges. All
+                  runs in After must reach Completed. If one fails (or is deleted),
+                  onUpstreamFailure decides: "wait" (default) keeps this run Waiting for a
+                  grace period so the researcher can fix and resubmit the failed stage, then
+                  fails it; "fail" fails this run immediately.
+                properties:
+                  after:
+                    items:
+                      type: string
+                    type: array
+                  onUpstreamFailure:
+                    enum:
+                    - ""
+                    - wait
+                    - fail
+                    type: string
+                  upstreamFailureGrace:
+                    type: string
+                required:
+                - after
+                type: object
               funding:
                 description: RunFunding captures borrowing intents.
                 properties:
@@ -121,6 +145,12 @@ spec:
             description: RunStatus reports lifecycle information.
             properties:
               earliestStart:
+                format: date-time
+                type: string
+              followDeadline:
+                description: |-
+                  FollowDeadline is set while the run waits on a failed upstream under the
+                  "wait" policy: if the upstream is not resolved by then, the run fails.
                 format: date-time
                 type: string
               funding:

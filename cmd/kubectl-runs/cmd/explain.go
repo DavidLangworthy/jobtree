@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	"github.com/davidlangworthy/jobtree/controllers"
@@ -42,6 +43,9 @@ func buildExplainPayload(state *controllers.ClusterState, run *v1.Run) Payload {
 		{"Run", key},
 		{"Phase", run.Status.Phase},
 		{"Message", run.Status.Message},
+	}
+	if run.Spec.Follow != nil && len(run.Spec.Follow.After) > 0 {
+		rows = append(rows, []string{"Follows", strings.Join(run.Spec.Follow.After, ", ")})
 	}
 	if run.Status.Width != nil {
 		rows = append(rows,

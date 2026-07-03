@@ -265,6 +265,55 @@ func TestRunCompletesWhenPodsSucceed(t *testing.T) {
 	})
 }
 
+// TestFollowGatesUntilUpstreamCompletes (B): a run that follows another stays
+// Waiting until its upstream completes, at which point the Run→Run watch
+// re-triggers it and it admits.
+func TestFollowGatesUntilUpstreamCompletes(t *testing.T) {
+	requireEnv(t)
+	resetWorld(t)
+
+	createH100Node(t, "node-a", 8)
+	createBudget(t, "team", "org:team", 16)
+
+	prep := &v1.Run{
+		ObjectMeta: metav1.ObjectMeta{Name: "prep", Namespace: "default"},
+		Spec:       v1.RunSpec{Owner: "org:team", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4}},
+	}
+	if err := kubeClient.Create(suiteCtx, prep); err != nil {
+		t.Fatalf("create prep: %v", err)
+	}
+	waitForRunPhase(t, "prep", "Running")
+
+	train := &v1.Run{
+		ObjectMeta: metav1.ObjectMeta{Name: "train", Namespace: "default"},
+		Spec: v1.RunSpec{
+			Owner:     "org:team",
+			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
+			Follow:    &v1.RunFollow{After: []string{"prep"}},
+		},
+	}
+	if err := kubeClient.Create(suiteCtx, train); err != nil {
+		t.Fatalf("create train: %v", err)
+	}
+	waiting := waitForRunPhase(t, "train", "Waiting")
+	if !strings.Contains(waiting.Status.Message, "prep") {
+		t.Errorf("waiting message should name prep, got %q", waiting.Status.Message)
+	}
+
+	// Complete the upstream by driving its pods to Succeeded.
+	pods := waitForRunPods(t, "prep", 1)
+	for i := range pods {
+		pods[i].Status.Phase = corev1.PodSucceeded
+		if err := kubeClient.Status().Update(suiteCtx, &pods[i]); err != nil {
+			t.Fatalf("mark prep pod succeeded: %v", err)
+		}
+	}
+	waitForRunPhase(t, "prep", "Completed")
+
+	// The Run→Run watch should re-trigger train, which now admits.
+	waitForRunPhase(t, "train", "Running")
+}
+
 // TestReservationActivatesWhenCapacityArrives: a run the cluster cannot
 // place parks as Pending behind a Reservation; once capacity exists and the
 // clock passes EarliestStart, the reservation reconciler activates it and

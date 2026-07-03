@@ -28,6 +28,26 @@ type RunSpec struct {
 	Malleable *RunMalleability `json:"malleable,omitempty"`
 	Funding   *RunFunding      `json:"funding,omitempty"`
 	Spares    *int32           `json:"sparesPerGroup,omitempty"`
+	Follow    *RunFollow       `json:"follow,omitempty"`
+}
+
+// Upstream-failure policies for a followed run.
+const (
+	OnUpstreamFailureWait = "wait"
+	OnUpstreamFailureFail = "fail"
+)
+
+// RunFollow makes a run wait for other runs in the same namespace to complete
+// before it is admitted — a "job forest" of runs joined by follow edges. All
+// runs in After must reach Completed. If one fails (or is deleted),
+// onUpstreamFailure decides: "wait" (default) keeps this run Waiting for a
+// grace period so the researcher can fix and resubmit the failed stage, then
+// fails it; "fail" fails this run immediately.
+type RunFollow struct {
+	After []string `json:"after"`
+	// +kubebuilder:validation:Enum="";wait;fail
+	OnUpstreamFailure    string           `json:"onUpstreamFailure,omitempty"`
+	UpstreamFailureGrace *metav1.Duration `json:"upstreamFailureGrace,omitempty"`
 }
 
 // RunResources describes GPU requirements.
@@ -71,6 +91,9 @@ type RunStatus struct {
 	EarliestStart      *metav1.Time      `json:"earliestStart,omitempty"`
 	Width              *RunWidthStatus   `json:"width,omitempty"`
 	Funding            *RunFundingStatus `json:"funding,omitempty"`
+	// FollowDeadline is set while the run waits on a failed upstream under the
+	// "wait" policy: if the upstream is not resolved by then, the run fails.
+	FollowDeadline *metav1.Time `json:"followDeadline,omitempty"`
 }
 
 // RunWidthStatus summarises elastic width bookkeeping.
@@ -215,6 +238,42 @@ func (r *Run) validate() error {
 		if *r.Spec.Spares < 0 {
 			return fmt.Errorf("sparesPerGroup must be >= 0 when set")
 		}
+	}
+	if r.Spec.Follow != nil {
+		if err := r.Spec.Follow.Validate(r.Name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Validate checks the follow section's field-level rules. Existence of the
+// referenced runs and cycle detection are cross-object judgments enforced at
+// admission by the controller (the webhook has no cluster view).
+func (f *RunFollow) Validate(selfName string) error {
+	if len(f.After) == 0 {
+		return fmt.Errorf("follow.after must list at least one run when follow is set")
+	}
+	seen := make(map[string]struct{}, len(f.After))
+	for _, name := range f.After {
+		if name == "" {
+			return fmt.Errorf("follow.after entries must be non-empty")
+		}
+		if selfName != "" && name == selfName {
+			return fmt.Errorf("a run cannot follow itself (%q)", name)
+		}
+		if _, dup := seen[name]; dup {
+			return fmt.Errorf("follow.after lists %q more than once", name)
+		}
+		seen[name] = struct{}{}
+	}
+	switch f.OnUpstreamFailure {
+	case "", OnUpstreamFailureWait, OnUpstreamFailureFail:
+	default:
+		return fmt.Errorf("follow.onUpstreamFailure must be %q or %q when set", OnUpstreamFailureWait, OnUpstreamFailureFail)
+	}
+	if f.UpstreamFailureGrace != nil && f.UpstreamFailureGrace.Duration < 0 {
+		return fmt.Errorf("follow.upstreamFailureGrace must be non-negative")
 	}
 	return nil
 }

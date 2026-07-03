@@ -1,6 +1,11 @@
 package v1
 
-import "testing"
+import (
+	"testing"
+	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
 
 func TestRunValidation(t *testing.T) {
 	run := &Run{}
@@ -50,6 +55,45 @@ func TestRunValidation(t *testing.T) {
 	run.Spec.Malleable.DesiredTotalGPUs = &desired
 	if err := run.ValidateCreate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunFollowValidation(t *testing.T) {
+	base := func() *Run {
+		return &Run{
+			ObjectMeta: ObjectMeta{Name: "train"},
+			Spec: RunSpec{
+				Owner:     "org:test",
+				Resources: RunResources{GPUType: "H100", TotalGPUs: 8},
+			},
+		}
+	}
+
+	negGrace := metav1.Duration{Duration: -time.Hour}
+	cases := []struct {
+		name    string
+		follow  *RunFollow
+		wantErr bool
+	}{
+		{"valid single", &RunFollow{After: []string{"data-prep"}}, false},
+		{"valid multi + policy", &RunFollow{After: []string{"a", "b"}, OnUpstreamFailure: "fail"}, false},
+		{"empty after", &RunFollow{After: []string{}}, true},
+		{"empty name", &RunFollow{After: []string{""}}, true},
+		{"self follow", &RunFollow{After: []string{"train"}}, true},
+		{"duplicate", &RunFollow{After: []string{"a", "a"}}, true},
+		{"bad policy", &RunFollow{After: []string{"a"}, OnUpstreamFailure: "nuke"}, true},
+		{"negative grace", &RunFollow{After: []string{"a"}, UpstreamFailureGrace: &negGrace}, true},
+	}
+	for _, tc := range cases {
+		run := base()
+		run.Spec.Follow = tc.follow
+		err := run.ValidateCreate()
+		if tc.wantErr && err == nil {
+			t.Errorf("%s: expected an error, got nil", tc.name)
+		}
+		if !tc.wantErr && err != nil {
+			t.Errorf("%s: unexpected error: %v", tc.name, err)
+		}
 	}
 }
 

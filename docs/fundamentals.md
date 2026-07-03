@@ -33,12 +33,13 @@ $$
 ### Runs (surface → lowered)
 
 $$
-\langle o,\; f,\; \text{totalGPUs}=G,\; \text{groupGPUs}=g?,\; \text{allowCrossGroupSpread}=\text{true},\; \text{malleable}=\{\text{min},\text{max},\text{step},\text{desired}?\}?,\; \text{spares}=s?,\; \text{funding}=\langle\text{allowBorrow},\text{maxBorrowGPUs}?,\text{sponsors}\rangle?,\; \text{checkpoint}=\Delta? \rangle
+\langle o,\; f,\; \text{totalGPUs}=G,\; \text{groupGPUs}=g?,\; \text{allowCrossGroupSpread}=\text{true},\; \text{malleable}=\{\text{min},\text{max},\text{step},\text{desired}?\}?,\; \text{spares}=s?,\; \text{funding}=\langle\text{allowBorrow},\text{maxBorrowGPUs}?,\text{sponsors}\rangle?,\; \text{follow}=\langle\text{after},\text{onUpstreamFailure},\text{grace}\rangle?,\; \text{checkpoint}=\Delta? \rangle
 $$
 
 - **Lowering**: if \(g\) is present the run becomes \(m = \lceil G/g \rceil\) placement groups of \(g\) GPUs (write this \(\text{SHARD}(m)\)); if \(g\) is absent it is a soft grouping hint. A **malleable** run carries an elastic width in \([\text{min},\text{max}]\) stepped by \(\text{step}\) toward \(\text{desired}\) (default \(\text{max}\)); write this \(\text{INCR}\).
 - **funding** carries the run’s borrowing intent: `allowBorrow` and a `sponsors` list gate the sponsor path in §4; family sharing needs none of this.
-- `SHARD`/`INCR` are descriptive names for grouping and elasticity, not a combinator engine; general DAG composition across components (`AND`/`SEQ`) and `checkpoint`-driven restart are **not yet built** (§10).
+- **follow** joins runs into a workflow (a "job forest"): the run is not admitted until every run in `after` (same namespace) reaches `Completed`. This is a minimal dependency edge, not a combinator engine — `AND` is the conjunction over `after`, and there is no `SEQ`/`SHARD` composition language (§10).
+- `SHARD`/`INCR` are descriptive names for grouping and elasticity, not a combinator engine; general DAG composition across components and `checkpoint`-driven restart are **not yet built** (§10).
 
 ### Reservations
 
@@ -126,6 +127,18 @@ Packer decisions are topology-aware but quiet by default.
 
 We write \(\Sigma \longrightarrow \Sigma'\) for a transition; in the implementation each transition is an in-place CRD update rather than an appended event. Rules are deterministic except for a published lottery seed under contention.
 
+### Follow gate (before admission)
+
+A run with `follow` dependencies is held in **Waiting** — outside admission entirely, so it never covers, packs, or reserves — until every upstream completes. This rule runs before Cover/Pack.
+
+$$
+\frac{\forall R' \in \text{after}(J):\; \text{phase}(R') = \text{Completed}}{\Sigma \longrightarrow \Sigma \;[\,J \mapsto \text{eligible}\,]} \quad \text{(Follow-Ready)}
+\qquad
+\frac{\exists R' \in \text{after}(J):\; \text{phase}(R') \notin \{\text{Completed},\text{Failed}\}}{\Sigma \longrightarrow \Sigma \;[\,J \mapsto \text{Waiting}\,]} \quad \text{(Follow-Wait)}
+$$
+
+If an upstream **fails** (or is deleted), `onUpstreamFailure` decides: `wait` (default) keeps \(J\) Waiting for a grace window — so a researcher can fix and resubmit just that stage — then fails \(J\); `fail` fails \(J\) at once. A follow cycle (or a permanently missing upstream past grace) fails \(J\) honestly rather than deadlocking it. Only **Follow-Ready** lets a run reach the admission rules below.
+
 ### Admission
 
 $$
@@ -205,7 +218,7 @@ Run: owner RAI, totalGPUs=128, groupGPUs=64, allowCrossGroupSpread=true. Supply:
 
 Some vocabulary above names concepts the surface accepts but the controllers do not yet act on. They are kept in the calculus as intent, not as implemented behavior:
 
-- **General DAG composition** (`AND`/`SEQ` across multi-component runs) and a lease `compPath` provenance field — today a run lowers directly to groups; the `compPath` field exists but is unpopulated.
+- **General DAG composition** (`SEQ`/`SHARD` combinators across multi-component runs) and a lease `compPath` provenance field — today a run lowers directly to groups; the `compPath` field exists but is unpopulated. The common ordering case this was meant to serve is now delivered by `follow` (§2, §6): runs joined by dependency edges, conjunction over `after`. A full combinator language remains out of scope.
 - **Checkpoint-driven restart / abort-and-requeue** — `Run.spec.runtime.checkpoint` is accepted but unused; a node failure without in-domain spare coverage is currently a terminal `Failed`, not a checkpoint requeue. This is the one gap with clear product value.
 - **AutoRenew rotation** of open-ended envelopes — a declared schedule with no behavior yet; window-reopen re-funding already falls out of the evaluation arithmetic without it.
 
