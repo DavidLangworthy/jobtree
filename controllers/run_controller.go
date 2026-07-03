@@ -784,10 +784,7 @@ func computeUsage(leases []v1.Lease, now time.Time) map[string]int {
 }
 
 func planPlacement(run *v1.Run, snapshot *topology.Snapshot) (pack.Plan, error) {
-	allowSpread := true
-	if run.Spec.Locality != nil && run.Spec.Locality.AllowCrossGroupSpread != nil {
-		allowSpread = *run.Spec.Locality.AllowCrossGroupSpread
-	}
+	allowSpread := run.Spec.AllowCrossGroupSpread()
 	var groupSize *int
 	if run.Spec.Locality != nil && run.Spec.Locality.GroupGPUs != nil {
 		value := int(*run.Spec.Locality.GroupGPUs)
@@ -901,10 +898,7 @@ func (c *RunController) growRun(run *v1.Run, snapshot *topology.Snapshot, invent
 		return nil
 	}
 
-	allowSpread := true
-	if run.Spec.Locality != nil && run.Spec.Locality.AllowCrossGroupSpread != nil {
-		allowSpread = *run.Spec.Locality.AllowCrossGroupSpread
-	}
+	allowSpread := run.Spec.AllowCrossGroupSpread()
 	var groupSize *int
 	if run.Spec.Locality != nil && run.Spec.Locality.GroupGPUs != nil {
 		value := int(*run.Spec.Locality.GroupGPUs)
@@ -1056,11 +1050,7 @@ func summarizeRunWidth(run *v1.Run, leases []v1.Lease) *v1.RunWidthStatus {
 	if run.Spec.Malleable != nil {
 		status.Min = run.Spec.Malleable.MinTotalGPUs
 		status.Max = run.Spec.Malleable.MaxTotalGPUs
-		desired := run.Spec.Malleable.MaxTotalGPUs
-		if run.Spec.Malleable.DesiredTotalGPUs != nil {
-			desired = *run.Spec.Malleable.DesiredTotalGPUs
-		}
-		status.Desired = desired
+		status.Desired = run.Spec.Malleable.Desired()
 	} else {
 		total := run.Spec.Resources.TotalGPUs
 		status.Min = total
@@ -1327,10 +1317,19 @@ func closeLease(lease *v1.Lease, reason string, now time.Time) {
 
 func createSwapLease(run *v1.Run, group string, spare *v1.Lease, now time.Time) v1.Lease {
 	nodes := append([]string{}, spare.Spec.Slice.Nodes...)
+	// The promoted lease keeps the spare's funding provenance: the payer's
+	// owner stays on the lease (so the lender's budget accounting still sees
+	// it), and capacity paid by another owner keeps the Borrowed role (so
+	// MaxBorrowGPUs keeps counting it). R15's derivation work untangles role
+	// from funding class properly.
+	role := binder.RoleActive
+	if spare.Spec.Owner != "" && spare.Spec.Owner != run.Spec.Owner {
+		role = binder.RoleBorrowed
+	}
 	labels := map[string]string{
 		binder.LabelRunName:    run.Name,
 		binder.LabelGroupIndex: group,
-		binder.LabelRunRole:    binder.RoleActive,
+		binder.LabelRunRole:    role,
 	}
 	return v1.Lease{
 		ObjectMeta: v1.ObjectMeta{
@@ -1339,16 +1338,17 @@ func createSwapLease(run *v1.Run, group string, spare *v1.Lease, now time.Time) 
 			Labels:    labels,
 		},
 		Spec: v1.LeaseSpec{
-			Owner: run.Spec.Owner,
+			Owner: spare.Spec.Owner,
 			RunRef: v1.RunReference{
 				Name:      run.Name,
 				Namespace: run.Namespace,
 			},
 			Slice: v1.LeaseSlice{
 				Nodes: nodes,
-				Role:  binder.RoleActive,
+				Role:  role,
 			},
 			Interval:       v1.LeaseInterval{Start: v1.NewTime(now)},
+			PaidByBudget:   spare.Spec.PaidByBudget,
 			PaidByEnvelope: spare.Spec.PaidByEnvelope,
 			Reason:         "Swap",
 		},

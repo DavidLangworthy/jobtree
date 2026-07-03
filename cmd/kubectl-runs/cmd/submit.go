@@ -42,6 +42,7 @@ func NewSubmitCommand(opts *RootOptions, store *StateStore, printer *Printer) *c
 			if run.Name == "" {
 				return fmt.Errorf("metadata.name is required")
 			}
+			run.Default()
 			if err := run.ValidateCreate(); err != nil {
 				return err
 			}

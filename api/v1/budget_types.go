@@ -123,10 +123,57 @@ func (b *Budget) validate() error {
 	if len(b.Spec.Envelopes) == 0 {
 		return fmt.Errorf("spec.envelopes must not be empty")
 	}
+	envelopeNames := make(map[string]struct{}, len(b.Spec.Envelopes))
 	for i := range b.Spec.Envelopes {
 		if err := b.Spec.Envelopes[i].Validate(); err != nil {
 			return fmt.Errorf("envelope[%d]: %w", i, err)
 		}
+		name := b.Spec.Envelopes[i].Name
+		if _, dup := envelopeNames[name]; dup {
+			return fmt.Errorf("envelope[%d]: duplicate envelope name %q", i, name)
+		}
+		envelopeNames[name] = struct{}{}
+	}
+	capNames := make(map[string]struct{}, len(b.Spec.AggregateCaps))
+	for i := range b.Spec.AggregateCaps {
+		cap := &b.Spec.AggregateCaps[i]
+		if err := cap.validate(envelopeNames); err != nil {
+			return fmt.Errorf("aggregateCap[%d]: %w", i, err)
+		}
+		if _, dup := capNames[cap.Name]; dup {
+			return fmt.Errorf("aggregateCap[%d]: duplicate aggregate cap name %q", i, cap.Name)
+		}
+		capNames[cap.Name] = struct{}{}
+	}
+	return nil
+}
+
+// validate checks the cap against the budget's declared envelope names.
+func (a *AggregateCap) validate(declared map[string]struct{}) error {
+	if a.Name == "" {
+		return fmt.Errorf("name is required")
+	}
+	if a.Flavor == "" {
+		return fmt.Errorf("flavor is required")
+	}
+	if len(a.Envelopes) == 0 {
+		return fmt.Errorf("envelopes must reference at least one envelope")
+	}
+	seen := make(map[string]struct{}, len(a.Envelopes))
+	for _, ref := range a.Envelopes {
+		if _, ok := declared[ref]; !ok {
+			return fmt.Errorf("references unknown envelope %q", ref)
+		}
+		if _, dup := seen[ref]; dup {
+			return fmt.Errorf("references envelope %q more than once", ref)
+		}
+		seen[ref] = struct{}{}
+	}
+	if a.MaxConcurrency != nil && *a.MaxConcurrency <= 0 {
+		return fmt.Errorf("maxConcurrency must be positive when set")
+	}
+	if a.MaxGPUHours != nil && *a.MaxGPUHours < 0 {
+		return fmt.Errorf("maxGPUHours must be non-negative")
 	}
 	return nil
 }

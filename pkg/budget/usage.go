@@ -62,6 +62,13 @@ func BuildBudgetState(budget *v1.Budget, leases []v1.Lease, now time.Time) *Budg
 		if lease.Spec.Owner != budget.Spec.Owner {
 			continue
 		}
+		// Envelope names are only unique within a budget: without the budget
+		// scope, a same-named envelope in another budget of the same owner
+		// would double-count this lease. Leases written before PaidByBudget
+		// existed fall back to owner+envelope attribution.
+		if lease.Spec.PaidByBudget != "" && lease.Spec.PaidByBudget != budget.ObjectMeta.Name {
+			continue
+		}
 		envState, ok := envelopes[lease.Spec.PaidByEnvelope]
 		if !ok {
 			continue
