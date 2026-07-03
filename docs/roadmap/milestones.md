@@ -44,11 +44,11 @@ The project is organized into progressive milestones. Each entry outlines scope,
   - **Artifacts delivered:** `pkg/resolver`, resolver integration in `controllers/run_controller.go`, enhanced lease status fields, updated worked examples, and documentation in `docs/architecture/oversubscription.md`.
   - **Design doc:** [docs/roadmap/design/M5-oversubscription-resolver.md](design/M5-oversubscription-resolver.md)
 
-- [x] **M6 — Failure handling & hot spares**
+- [x] **M6 — Failure handling & hot spares** *(partial — see gap)*
   - **Scope:** Support per-group spares, opportunistic filler workloads, and deterministic spare swaps on node failure.
-  - **Definition of done:** Runs configured with spares survive node failures without losing world-size; opportunistic tenants are reclaimed cleanly.
-  - **Validation:** e2e failure injection tests; unit tests around spare accounting.
-  - **Artifacts expected:** Spare-handling logic in `controllers/run_controller.go` and `pkg/policy`, documentation in `docs/user-guide/spares-and-fill.md`.
+  - **Definition of done:** Runs configured with spares survive node failures without losing world-size; opportunistic tenants are reclaimed cleanly. *Met:* the node reconciler drives `HandleNodeFailure` on node watch events (unit + envtest coverage).
+  - **Validation:** Unit tests around spare accounting and controller/envtest swap coverage. **Gap:** the end-to-end fault-injection suite this milestone originally claimed does not exist — the Bridge apply is not atomic and partial API failures can strand states (tracked as **R28** in `docs/project/remediation-plan.md`).
+  - **Artifacts delivered:** Spare-handling logic in `controllers/run_controller.go` and the node watch in `controllers/kube/reconcilers.go`. There is no `pkg/policy` package — the spare/opportunistic logic lives in the run controller; the earlier reference was aspirational. Docs in `docs/user-guide/spares-and-fill.md`.
   - **Design doc:** [docs/roadmap/design/M6-failure-and-spares.md](design/M6-failure-and-spares.md)
 
 - [x] **M7 — Elastic runs (INCR) & voluntary shrink**
@@ -68,8 +68,8 @@ The project is organized into progressive milestones. Each entry outlines scope,
 - [x] **M9 — Observability, CLI polish, packaging**
   - **Scope:** Deliver Prometheus metrics, Grafana dashboards, a user-friendly `kubectl runs` plugin, and production-ready Helm/Kustomize bundles.
   - **Definition of done:** Metrics exported via `pkg/metrics`, dashboards packaged with Helm, CLI covers submit/plan/watch/explain/budgets/sponsors/shrink/leases/completions, and Helm/Kustomize templates deploy the stack.
-  - **Validation:** CLI golden tests under `cmd/kubectl-runs/cmd/root_test.go`; `go test ./...` executes metrics assertions; Helm chart validated with `helm template` in CI (Makefile target `helm-lint`).
-  - **Artifacts delivered:** `pkg/metrics`, CLI under `cmd/kubectl-runs`, Helm chart in `deploy/helm/gpu-fleet`, Kustomize overlays in `deploy/kustomize/`, Grafana dashboards in `deploy/grafana/`, Prometheus rules in `deploy/prometheus/`, krew manifest in `plugins/krew/`, docs in `docs/architecture/metrics.md`, `docs/cli/kubectl-runs.md`, and `docs/operator-guide/observability.md`.
+  - **Validation:** CLI golden tests under `cmd/kubectl-runs/cmd/root_test.go`; `go test ./...` executes metrics assertions; the Helm chart is linted **and** rendered with `helm template` in CI, which asserts scoped RBAC (no wildcards), the webhook serving configuration, and health probes (R22/R29). The release workflow cross-builds the CLI and produces an installable krew manifest with per-archive checksums (R23).
+  - **Artifacts delivered:** `pkg/metrics`, CLI under `cmd/kubectl-runs`, Helm chart in `deploy/helm/gpu-fleet` (now provisions webhook certs/Service/configurations and probes so the deployed manager admits objects), Kustomize overlays in `deploy/kustomize/`, Grafana dashboards in `deploy/grafana/`, Prometheus rules in `deploy/prometheus/`, krew manifest in `plugins/krew/`, docs in `docs/architecture/metrics.md`, `docs/cli/kubectl-runs.md`, and `docs/operator-guide/observability.md`. *Packaging gaps (wildcard RBAC, unbuildable krew manifest, chart that could not serve webhooks) closed by R22/R23/R29.*
   - **Design doc:** [docs/roadmap/design/M9-observability-cli-packaging.md](design/M9-observability-cli-packaging.md)
 
 - [ ] **M10 — Multi-cluster aggregate caps (stretch)**

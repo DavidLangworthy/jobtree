@@ -4,6 +4,11 @@ controller:
   resources: {}
   serviceAccount: jobtree-controller
   metricsPort: 8080
+  # healthPort serves the manager's liveness/readiness probes (:8081 by
+  # default in cmd/manager). webhookPort is controller-runtime's serving
+  # port (9443); the webhook Service targets it.
+  healthPort: 8081
+  webhookPort: 9443
   extraArgs: []
 
 notifier:
@@ -18,8 +23,22 @@ monitoring:
   serviceMonitorNamespace: ""
 
 webhook:
-  enableTLS: true
+  # enabled must match the manager's --enable-webhooks (default true). When
+  # true the chart provisions serving certs, a webhook Service, and the
+  # Mutating/Validating webhook configurations with CA injection so the
+  # deployed manager can actually admit objects (failurePolicy=Fail).
+  enabled: true
   certSecretName: jobtree-webhook-cert
+  # certValidityDays bounds the chart-generated self-signed serving cert.
+  # helm regenerates it on each upgrade; for long-lived clusters supply a
+  # cert-manager-issued secret of the same name and set generateCert=false.
+  generateCert: true
+  certValidityDays: 3650
+  # caBundle is required only when generateCert=false: the base64-encoded CA
+  # that signed your externally supplied serving cert. It is injected into the
+  # webhook configurations so the apiserver trusts the manager's TLS. When
+  # generateCert=true the chart derives this from its own generated CA.
+  caBundle: ""
 
 rbac:
   create: true

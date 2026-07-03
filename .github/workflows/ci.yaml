@@ -31,3 +31,49 @@ jobs:
           go build ./cmd/kubectl-runs
       - name: Helm lint
         run: helm lint deploy/helm/gpu-fleet
+
+      - name: Helm template assertions
+        run: |
+          set -euo pipefail
+          rendered="$(helm template ci deploy/helm/gpu-fleet --namespace jobtree-system)"
+
+          # R22: no wildcard RBAC rules ship — catch both the inline array
+          # form (apiGroups: ["*"]) and the YAML list form (- "*").
+          if grep -qE '(apiGroups|resources|verbs):[[:space:]]*\[[^]]*"\*"' <<<"$rendered" \
+             || grep -qE "^[[:space:]]*-[[:space:]]*['\"]?\*['\"]?[[:space:]]*$" <<<"$rendered"; then
+            echo "::error::chart grants wildcard RBAC"; exit 1
+          fi
+
+          # R29: the chart must provision webhook serving so the deployed
+          # manager can admit objects, and the probes it serves.
+          for needle in \
+            "kind: MutatingWebhookConfiguration" \
+            "kind: ValidatingWebhookConfiguration" \
+            "caBundle:" \
+            "path: /healthz" \
+            "path: /readyz" \
+            "path: /jobtree"; do
+            if ! grep -qF "$needle" <<<"$rendered"; then
+              echo "::error::rendered chart missing: $needle"; exit 1
+            fi
+          done
+
+      - name: Validate krew manifest structure
+        run: |
+          set -euo pipefail
+          m=plugins/krew/runs.yaml
+          # Each platform must be present as an os/arch PAIR (R23). Pair each
+          # arch with the os that precedes it in the same stanza (os always
+          # comes first), so a missing or duplicated combo can't be masked by
+          # the strings appearing elsewhere. awk-based to avoid a PyYAML
+          # dependency on the runner.
+          pairs="$(awk '/^[[:space:]]*os:/{os=$2} /^[[:space:]]*arch:/{print os"/"$2}' "$m" | sort)"
+          want=$'linux/amd64\nlinux/arm64\ndarwin/amd64\ndarwin/arm64'
+          if [ "$pairs" != "$(sort <<<"$want")" ]; then
+            echo "::error::krew platforms mismatch; got:"; echo "$pairs"; exit 1
+          fi
+          test "$(grep -c 'bin: kubectl-runs' "$m")" -eq 4 \
+            || { echo "::error::krew manifest must list 4 platforms with bin: kubectl-runs"; exit 1; }
+          test "$(grep -c '\.tar\.gz' "$m")" -ge 4 \
+            || { echo "::error::krew manifest platforms must point at tar.gz archives"; exit 1; }
+          echo "krew manifest OK"

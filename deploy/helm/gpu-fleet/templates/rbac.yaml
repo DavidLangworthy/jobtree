@@ -5,14 +5,33 @@ metadata:
   name: {{ .Values.controller.serviceAccount }}
   labels: {{- include "gpu-fleet.labels" . | nindent 4 }}
 ---
+# Scoped to exactly what the manager uses (R22): the jobtree CRDs plus their
+# status, read on nodes (node-failure watch), pods (the binder creates and
+# reclaims them), events, and coordination leases for leader election. No
+# wildcard rules — the CI helm-template check asserts this.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: {{ include "gpu-fleet.controllerName" . }}
 rules:
-  - apiGroups: ["*"]
-    resources: ["*"]
-    verbs: ["*"]
+  - apiGroups: ["rq.davidlangworthy.io"]
+    resources: ["budgets", "runs", "reservations", "leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["rq.davidlangworthy.io"]
+    resources: ["budgets/status", "runs/status", "reservations/status", "leases/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

@@ -25,6 +25,14 @@ spec:
     matchLabels:
       app.kubernetes.io/name: {{ include "gpu-fleet.controllerName" . }}
   endpoints:
+    # controller-runtime serves its own metrics on /metrics; the engine's
+    # hand-rolled exposition (admission latency, resolver actions, budget
+    # usage) rides the same port under /jobtree. Scrape both or the engine
+    # panels stay empty (R29).
     - port: metrics
+      path: /metrics
+      interval: {{ .Values.monitoring.scrapeInterval }}
+    - port: metrics
+      path: /jobtree
       interval: {{ .Values.monitoring.scrapeInterval }}
 {{- end }}
