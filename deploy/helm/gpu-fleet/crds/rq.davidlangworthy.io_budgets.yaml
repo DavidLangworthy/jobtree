@@ -1,0 +1,212 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: budgets.rq.davidlangworthy.io
+spec:
+  group: rq.davidlangworthy.io
+  names:
+    kind: Budget
+    listKind: BudgetList
+    plural: budgets
+    singular: budget
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.owner
+      name: Owner
+      type: string
+    - jsonPath: length(.spec.envelopes)
+      name: Envelopes
+      type: integer
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Budget represents the allocation envelopes that constrain Runs.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: BudgetSpec describes available resource envelopes for a particular
+              owner.
+            properties:
+              aggregateCaps:
+                items:
+                  description: AggregateCap bounds the sum across envelopes.
+                  properties:
+                    envelopes:
+                      items:
+                        type: string
+                      type: array
+                    flavor:
+                      type: string
+                    maxConcurrency:
+                      format: int32
+                      type: integer
+                    maxGPUHours:
+                      format: int64
+                      type: integer
+                    name:
+                      type: string
+                  required:
+                  - envelopes
+                  - flavor
+                  - name
+                  type: object
+                type: array
+              autoRenew:
+                description: AutoRenewSchedule defines reporting rotation for open-ended
+                  envelopes.
+                properties:
+                  notifyBefore:
+                    type: string
+                  period:
+                    type: string
+                required:
+                - notifyBefore
+                - period
+                type: object
+              envelopes:
+                items:
+                  description: BudgetEnvelope defines a location/time scoped limit.
+                  properties:
+                    concurrency:
+                      format: int32
+                      type: integer
+                    end:
+                      format: date-time
+                      type: string
+                    flavor:
+                      type: string
+                    lending:
+                      description: LendingPolicy specifies optional lending configuration.
+                      properties:
+                        allow:
+                          type: boolean
+                        maxConcurrency:
+                          format: int32
+                          type: integer
+                        maxGPUHours:
+                          format: int64
+                          type: integer
+                        to:
+                          items:
+                            type: string
+                          type: array
+                      required:
+                      - allow
+                      type: object
+                    maxGPUHours:
+                      format: int64
+                      type: integer
+                    name:
+                      type: string
+                    preActivation:
+                      description: PreActivationPolicy controls reservation/admission
+                        before start.
+                      properties:
+                        allowAdmission:
+                          type: boolean
+                        allowReservations:
+                          type: boolean
+                      required:
+                      - allowAdmission
+                      - allowReservations
+                      type: object
+                    selector:
+                      additionalProperties:
+                        type: string
+                      type: object
+                    start:
+                      format: date-time
+                      type: string
+                  required:
+                  - concurrency
+                  - flavor
+                  - name
+                  - selector
+                  type: object
+                type: array
+              owner:
+                type: string
+              parents:
+                items:
+                  type: string
+                type: array
+            required:
+            - envelopes
+            - owner
+            type: object
+          status:
+            description: BudgetStatus surfaces derived accounting data.
+            properties:
+              aggregateHeadroom:
+                items:
+                  description: AggregateHeadroom reports remaining capacity for an
+                    aggregate cap.
+                  properties:
+                    concurrency:
+                      format: int32
+                      type: integer
+                    flavor:
+                      type: string
+                    gpuHours:
+                      format: int64
+                      type: integer
+                    name:
+                      type: string
+                  required:
+                  - flavor
+                  - name
+                  type: object
+                type: array
+              headroom:
+                items:
+                  description: EnvelopeHeadroom reports remaining capacity for an
+                    envelope.
+                  properties:
+                    concurrency:
+                      format: int32
+                      type: integer
+                    flavor:
+                      type: string
+                    gpuHours:
+                      format: int64
+                      type: integer
+                    name:
+                      type: string
+                  required:
+                  - concurrency
+                  - flavor
+                  - name
+                  type: object
+                type: array
+              observedGeneration:
+                format: int64
+                type: integer
+              updatedAt:
+                format: date-time
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

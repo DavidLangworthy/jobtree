@@ -6,7 +6,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	cobra "github.com/davidlangworthy/jobtree/cmd/kubectl-runs/internal/cobra"
+	"github.com/spf13/cobra"
 )
 
 // Printer renders output in table or json formats.

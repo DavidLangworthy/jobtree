@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	cobra "github.com/davidlangworthy/jobtree/cmd/kubectl-runs/internal/cobra"
 	"github.com/davidlangworthy/jobtree/pkg/keys"
+	"github.com/spf13/cobra"
 )
 
 // NewWatchCommand streams run status repeatedly.

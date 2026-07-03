@@ -26,7 +26,7 @@ Commands that modify state (`submit`, `shrink`, `sponsors add`, `watch`) hold an
 kubectl runs --state my-cluster.json submit --file run-128-groups.json
 ```
 
-> **Note:** convert existing YAML manifests to JSON (for example with `yq` or `kubectl convert`) before submitting them to the simulator. Because the local CLI uses Go's standard flag parser, provide flags before positional arguments (for example, `kubectl runs sponsors add --max 4 RUN SPONSOR`).
+> **Note:** convert existing YAML manifests to JSON (for example with `yq` or `kubectl convert`) before submitting them to the simulator. Flags may appear before or after positional arguments.
 
 ## Commands
 
@@ -51,7 +51,7 @@ Use `--output json` for machine-friendly output. The default `table` renders com
 ```bash
 kubectl runs --state cluster.json submit --file run-128-groups.json
 kubectl runs --state cluster.json plan train-128
-kubectl runs --state cluster.json --watch-count 3 --watch-interval 1 watch train-128
+kubectl runs --state cluster.json watch train-128 --watch-count 3 --watch-interval 1
 kubectl runs --state cluster.json budgets usage
 ```
 

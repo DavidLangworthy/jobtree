@@ -6,8 +6,8 @@ import (
 	"strconv"
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
-	cobra "github.com/davidlangworthy/jobtree/cmd/kubectl-runs/internal/cobra"
 	"github.com/davidlangworthy/jobtree/pkg/keys"
+	"github.com/spf13/cobra"
 )
 
 // NewSponsorsCommand manages sponsor configuration for a Run.

@@ -1,0 +1,129 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: leases.rq.davidlangworthy.io
+spec:
+  group: rq.davidlangworthy.io
+  names:
+    kind: Lease
+    listKind: LeaseList
+    plural: leases
+    singular: lease
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.runRef.name
+      name: Run
+      type: string
+    - jsonPath: .spec.slice.role
+      name: Role
+      type: string
+    - jsonPath: .spec.interval.start
+      name: Start
+      type: string
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Lease records immutable consumption facts.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: LeaseSpec is immutable after creation.
+            properties:
+              compPath:
+                items:
+                  type: string
+                type: array
+              interval:
+                description: LeaseInterval timestamps the lease.
+                properties:
+                  end:
+                    format: date-time
+                    type: string
+                  start:
+                    format: date-time
+                    type: string
+                required:
+                - start
+                type: object
+              owner:
+                type: string
+              paidByBudget:
+                description: |-
+                  PaidByBudget scopes PaidByEnvelope: envelope names are only unique
+                  within one budget, and one owner can hold several budgets. Empty on
+                  leases written before the field existed; those fall back to
+                  owner+envelope attribution.
+                type: string
+              paidByEnvelope:
+                type: string
+              reason:
+                type: string
+              runRef:
+                description: RunReference links to the Run.
+                properties:
+                  name:
+                    type: string
+                  namespace:
+                    type: string
+                required:
+                - name
+                type: object
+              slice:
+                description: LeaseSlice describes the bound nodes.
+                properties:
+                  nodes:
+                    items:
+                      type: string
+                    type: array
+                  role:
+                    type: string
+                required:
+                - nodes
+                - role
+                type: object
+            required:
+            - interval
+            - owner
+            - paidByEnvelope
+            - reason
+            - runRef
+            - slice
+            type: object
+          status:
+            description: LeaseStatus captures closure state.
+            properties:
+              closed:
+                type: boolean
+              closureReason:
+                type: string
+              ended:
+                format: date-time
+                type: string
+            required:
+            - closed
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

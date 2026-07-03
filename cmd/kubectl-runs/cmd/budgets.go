@@ -5,9 +5,9 @@ import (
 	"time"
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
-	cobra "github.com/davidlangworthy/jobtree/cmd/kubectl-runs/internal/cobra"
 	"github.com/davidlangworthy/jobtree/controllers"
 	budgetpkg "github.com/davidlangworthy/jobtree/pkg/budget"
+	"github.com/spf13/cobra"
 )
 
 // NewBudgetsCommand groups budget-related subcommands.
