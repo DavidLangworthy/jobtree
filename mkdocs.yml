@@ -27,13 +27,13 @@ markdown_extensions:
       generic: true
 plugins:
   - search
+# Internal design and tracking docs live in the repo but are not published to
+# the public site.
+exclude_docs: |
+  project/
+  website/
 nav:
   - Home: index.md
-  - Welcome:
-      - What is Jobtree?: concepts/overview.md
-      - Directory tree: architecture/directory-tree.md
-      - Roadmap: roadmap/milestones.md
-      - Maintainers: MAINTAINERS.md
   - Researchers:
       - Researcher guide: user-guide/researcher-guide.md
       - Reservations & forecasts: user-guide/reservations.md
@@ -48,6 +48,7 @@ nav:
       - From SLURM: migrations/slurm.md
       - From Kueue: migrations/kueue.md
   - Concepts:
+      - Overview: concepts/overview.md
       - Budgets: concepts/budgets.md
       - Runs: concepts/runs.md
       - Leases: concepts/leases.md
@@ -57,14 +58,8 @@ nav:
   - Examples:
       - Worked examples: examples/worked-examples.md
   - Fundamentals: fundamentals.md
-  - Project:
-      - Design review (2026-07): project/design-review-2026-07.md
-      - Remediation plan: project/remediation-plan.md
-      - Quota semantics (decisions): project/quota-semantics.md
-      - Testing & simulation plan: project/testing-and-simulation.md
-      - First-class readiness: project/first-class-readiness.md
-  - Website:
-      - Read the Docs plan: website/readthedocs.md
+  - Roadmap: roadmap/milestones.md
+  - Maintainers: MAINTAINERS.md
 extra_javascript:
   - https://polyfill.io/v3/polyfill.min.js?features=es6
   - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
