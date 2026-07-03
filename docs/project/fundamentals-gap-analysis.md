@@ -1,5 +1,12 @@
 # fundamentals.md ↔ implementation gap analysis
 
+> **Status: applied (2026-07-03).** The recommendations below were folded into `docs/fundamentals.md`
+> in this same change per the project owner's decisions: D1 kept as "ranking, not priority" (no
+> human-set knob), D2 kept the event-ledger as theory alongside the imperative CRD implementation,
+> the stale claims were corrected, the missing R14/R15 model was added, and the aspirational/unbuilt
+> constructs are now recorded in a "Not yet built" section (§10). This document is retained as the
+> reconciliation record and the file-cited rationale for those edits.
+
 *Analysis only — this document recommends changes; it does not make them. Basis: `main` after the
 full remediation chain (R1–R29) merged, including R14/R15 quota semantics. Goal: move **both** the
 doc and the code forward and end up with the best of each. Not everything belongs in fundamentals;
