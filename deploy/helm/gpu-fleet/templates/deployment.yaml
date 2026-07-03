@@ -22,13 +22,45 @@ spec:
           image: {{ .Values.controller.image }}
           args:
             - "--metrics-bind-address=:{{ .Values.controller.metricsPort }}"
+            - "--health-probe-bind-address=:{{ .Values.controller.healthPort }}"
+            - "--enable-webhooks={{ .Values.webhook.enabled }}"
             {{- range $arg := .Values.controller.extraArgs }}
             - {{ $arg | quote }}
             {{- end }}
           ports:
             - containerPort: {{ .Values.controller.metricsPort }}
               name: metrics
+            - containerPort: {{ .Values.controller.healthPort }}
+              name: health
+            {{- if .Values.webhook.enabled }}
+            - containerPort: {{ .Values.controller.webhookPort }}
+              name: webhook
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          {{- if .Values.webhook.enabled }}
+          volumeMounts:
+            - name: webhook-certs
+              mountPath: /tmp/k8s-webhook-server/serving-certs
+              readOnly: true
+          {{- end }}
           resources: {{- toYaml .Values.controller.resources | nindent 12 }}
+      {{- if .Values.webhook.enabled }}
+      volumes:
+        - name: webhook-certs
+          secret:
+            secretName: {{ .Values.webhook.certSecretName }}
+      {{- end }}
       nodeSelector: {{- toYaml .Values.nodeSelector | nindent 8 }}
       tolerations: {{- toYaml .Values.tolerations | nindent 8 }}
       affinity: {{- toYaml .Values.affinity | nindent 8 }}

@@ -5,24 +5,95 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   package:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
-      - name: Build kubectl plugin
-        run: go build -o dist/kubectl-runs ./cmd/kubectl-runs
-      - name: Lint Helm chart
+          go-version: '1.26.x'
+
+      - name: Build cross-platform kubectl-runs archives
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME}"
+          mkdir -p dist
+          # The krew manifest below points at exactly these archives; keep the
+          # platform list and naming in sync (R23).
+          for platform in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os="${platform%/*}"; arch="${platform#*/}"
+            out="dist/kubectl-runs_${VERSION}_${os}_${arch}"
+            mkdir -p "$out"
+            GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 \
+              go build -o "$out/kubectl-runs" ./cmd/kubectl-runs
+            cp LICENSE "$out/" 2>/dev/null || true
+            tar -czf "${out}.tar.gz" -C "$out" .
+            rm -rf "$out"
+          done
+          ( cd dist && sha256sum kubectl-runs_*.tar.gz > checksums.txt )
+
+      - name: Generate krew manifest with release checksums
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME}"
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${VERSION}"
+          sha() { awk -v f="$1" '$2==f {print $1}' dist/checksums.txt; }
+          {
+            echo "apiVersion: krew.googlecontainertools.github.com/v1alpha2"
+            echo "kind: Plugin"
+            echo "metadata:"
+            echo "  name: runs"
+            echo "spec:"
+            echo "  version: ${VERSION}"
+            echo "  shortDescription: \"Interact with Jobtree Run, Reservation, and Lease CRDs\""
+            echo "  homepage: https://github.com/davidlangworthy/jobtree"
+            echo "  platforms:"
+            for platform in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+              os="${platform%/*}"; arch="${platform#*/}"
+              file="kubectl-runs_${VERSION}_${os}_${arch}.tar.gz"
+              echo "    - selector:"
+              echo "        matchLabels:"
+              echo "          os: ${os}"
+              echo "          arch: ${arch}"
+              echo "      uri: ${base}/${file}"
+              echo "      sha256: $(sha "$file")"
+              echo "      files:"
+              echo "        - from: kubectl-runs"
+              echo "          to: ."
+              echo "      bin: kubectl-runs"
+            done
+            echo "  description: |"
+            echo "    The runs plugin submits, plans, watches, and explains GPU research"
+            echo "    runs managed by Jobtree against Run, Reservation, and Lease CRDs."
+          } > dist/runs.yaml
+
+      - name: Validate krew manifest
+        run: |
+          set -euo pipefail
+          curl -fsSLO "https://github.com/kubernetes-sigs/krew/releases/latest/download/krew-linux_amd64.tar.gz"
+          tar -xzf krew-linux_amd64.tar.gz
+          ./krew-linux_amd64 install --manifest=dist/runs.yaml --archive=dist/kubectl-runs_${GITHUB_REF_NAME}_linux_amd64.tar.gz
+
+      - name: Lint and package Helm chart
         run: |
           helm lint deploy/helm/gpu-fleet
-      - name: Package Helm chart
-        run: |
           helm package deploy/helm/gpu-fleet --destination dist
-      - name: Upload artifacts
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/kubectl-runs_*.tar.gz
+            dist/checksums.txt
+            dist/runs.yaml
+            dist/*.tgz
+
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: release-artifacts

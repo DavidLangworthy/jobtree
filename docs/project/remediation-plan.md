@@ -472,7 +472,7 @@ state is permanent.
 
 ### R29 — Helm chart cannot run the shipped manager *(critical, found by adversarial review of R16, 2026-07-03)*
 
-- [ ] `deploy/helm/gpu-fleet/templates/` — webhook serving, probes, metrics scraping
+- [x] `deploy/helm/gpu-fleet/templates/` — webhook serving, probes, metrics scraping
 
 **Problem.** The manager defaults `--enable-webhooks=true` and registers four admission
 webhooks, so its webhook server must serve TLS — but the chart ships no certificates, no
@@ -498,7 +498,7 @@ serves collected metrics. (Fold into the R22 chart overhaul.)
 
 ### R22 — Helm RBAC is wildcard cluster-admin
 
-- [ ] `deploy/helm/gpu-fleet/templates/rbac.yaml`
+- [x] `deploy/helm/gpu-fleet/templates/rbac.yaml`
 
 **Steps.** Scope the ClusterRole to the jobtree CRDs plus read on nodes and CRUD on pods/events;
 add `helm lint`/template assertions that no wildcard rules ship.
@@ -507,7 +507,7 @@ add `helm lint`/template assertions that no wildcard rules ship.
 
 ### R23 — Krew manifest is unbuildable
 
-- [ ] `plugins/krew/runs.yaml`, `.github/workflows/release.yaml`
+- [x] `plugins/krew/runs.yaml`, `.github/workflows/release.yaml`
 
 **Steps.** Point the manifest at the artifact the release workflow actually produces (an archive
 of `dist/kubectl-runs`), add darwin/arm64 + linux/arm64 platforms, and validate with
@@ -517,7 +517,7 @@ of `dist/kubectl-runs`), add darwin/arm64 + linux/arm64 platforms, and validate 
 
 ### R24 — CI toolchain and coverage
 
-- [ ] `.github/workflows/ci.yaml`
+- [x] `.github/workflows/ci.yaml`
 
 **Steps.** Bump from Go 1.22 (EOL; its test binaries abort on current macOS) to a supported
 version; add `-race` to the test step; add `helm lint` (M9 claims CI validates the chart; it does
@@ -527,7 +527,7 @@ not); add `go vet`.
 
 ### R25 — Roadmap checkboxes overstate what exists
 
-- [ ] `README.md`, `docs/roadmap/milestones.md`
+- [x] `README.md`, `docs/roadmap/milestones.md`
 
 **Steps.** Re-badge M0 (no CRDs/webhooks exist), M6 (no e2e failure injection, no `pkg/policy`),
 and M9 (Helm not validated in CI) as partially complete with a one-line note of the gap, linking

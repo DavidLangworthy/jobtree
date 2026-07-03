@@ -34,10 +34,10 @@ The full roadmap lives in [`docs/roadmap/milestones.md`](docs/roadmap/milestones
 - [x] **M3 – Binder & Leases (runs that can start immediately)**
 - [x] **M4 – Reservations & forecasting**
 - [x] **M5 – Oversubscription resolver**
-- [x] **M6 – Failure handling & hot spares**
+- [x] **M6 – Failure handling & hot spares** — spare swaps run on node-failure events; the end-to-end fault-injection suite is still pending ([R28](docs/project/remediation-plan.md))
 - [x] **M7 – Elastic runs (INCR) & voluntary shrink**
 - [x] **M8 – Co-funded runs (borrowing)**
-- [x] **M9 – Observability, CLI polish, packaging**
+- [x] **M9 – Observability, CLI polish, packaging** — the Helm chart provisions webhook serving and scoped RBAC, and CI renders and asserts it
 - [ ] **M10 – Multi-cluster aggregate caps (stretch)**
 
 ## Repository layout (planned)
