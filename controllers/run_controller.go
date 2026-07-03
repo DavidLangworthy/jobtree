@@ -167,7 +167,7 @@ func (c *RunController) Reconcile(namespace, name string) error {
 		return nil
 	}
 
-	bindResult, err := binder.Materialize(binder.Request{Run: run.DeepCopy(), CoverPlan: coverPlan, PackPlan: packPlan, Now: now})
+	bindResult, err := binder.Materialize(binder.Request{Run: run.DeepCopy(), CoverPlan: coverPlan, PackPlan: packPlan, Now: now, NameSeed: leaseSeqBase(key, c.State.Leases)})
 	if err != nil {
 		result = "error"
 		return err
@@ -323,7 +323,7 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 		}
 	}
 
-	result, err := binder.Materialize(binder.Request{Run: run.DeepCopy(), CoverPlan: coverPlan, PackPlan: plan, Now: now})
+	result, err := binder.Materialize(binder.Request{Run: run.DeepCopy(), CoverPlan: coverPlan, PackPlan: plan, Now: now, NameSeed: leaseSeqBase(runKey, c.State.Leases)})
 	if err != nil {
 		return err
 	}
@@ -644,6 +644,21 @@ func filterLeasesByOwner(all []v1.Lease, owner string) []v1.Lease {
 	return leases
 }
 
+
+// leaseSeqBase returns the number of leases (open or closed) that exist for
+// the run, seeding the binder's name sequence so successive
+// materializations cannot collide.
+func leaseSeqBase(runKey string, leases []v1.Lease) int {
+	count := 0
+	for i := range leases {
+		lease := &leases[i]
+		if namespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) == runKey {
+			count++
+		}
+	}
+	return count
+}
+
 func namespacedKey(namespace, name string) string {
 	return namespace + "/" + name
 }
@@ -836,7 +851,8 @@ func (c *RunController) growRun(run *v1.Run, snapshot *topology.Snapshot, invent
 		return err
 	}
 
-	offset := maxGroupIndexForRun(namespacedKey(run.Namespace, run.Name), c.State.Leases) + 1
+	runKey := namespacedKey(run.Namespace, run.Name)
+	offset := maxGroupIndexForRun(runKey, c.State.Leases) + 1
 	result, err := binder.Materialize(binder.Request{
 		Run:              run.DeepCopy(),
 		CoverPlan:        coverPlan,
@@ -844,6 +860,7 @@ func (c *RunController) growRun(run *v1.Run, snapshot *topology.Snapshot, invent
 		Now:              now,
 		GroupIndexOffset: offset,
 		LeaseReason:      "Grow",
+		NameSeed:         leaseSeqBase(runKey, c.State.Leases),
 	})
 	if err != nil {
 		return err
