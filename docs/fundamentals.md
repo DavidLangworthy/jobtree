@@ -1,125 +1,297 @@
 # Fundamentals: RQΛ calculus
 
-This page describes the quota- and topology-aware calculus that Jobtree’s controllers implement. It is intentionally operational and event-sourced so that every scheduling decision is auditable from the ledger. The calculus matches the CRDs and controller semantics in this repository: budgets/envelopes fund work, runs compile to job DAGs with optional elasticity and spares, reservations plan future slices, and leases record immutable consumption facts.
+This page describes the quota- and topology-aware calculus that Jobtree's
+controllers implement. The model is operational: Budgets, Runs,
+Reservations, and Leases are the durable facts; status fields are derived
+caches for humans, dashboards, and metrics.
+
+The current implementation follows this calculus with the known gaps called
+out at the end of this page and tracked in
+[`docs/project/remediation-plan.md`](project/remediation-plan.md).
 
 ## 0. Informal one-liner
-RQΛ is a small operational calculus for quota-aware, topology-aware, auditable execution on GPU fleets. It defines validity for budgets/runs/reservations/leases, covers funding first then packing, binds immediately or plans reservations, resolves oversubscription by structural cuts then a lottery, and records all changes as immutable events in a ledger.
+
+RQΛ is a small operational calculus for auditable GPU scheduling. It evaluates
+quota from immutable lease facts, packs work onto topology-aware slices, binds
+now or records a reservation, and resolves contention by reclaiming unfunded
+work before touching funded work.
 
 ## 1. Entities and notation
-- **Time**: continuous wall time \(t \in \mathbb{R}\); intervals \(W = [\text{start}, \text{end})\) with duration \(|W|\) hours.
-- **Owners (teams)**: \(o \in O\) with an optional parent DAG \(O \rightharpoonup O^*\) for family sharing.
-- **Nodes**: \(n \in N\) with labels \(\text{labels}(n)\) (cluster, region, fast-fabric domain) and per-node GPU counts per flavor \(f \in F\).
-- **Selectors**: predicates \(\sigma\) over nodes (true iff a node matches \(\sigma\)).
-- **Runs**: user-facing specs compiled into internal job DAGs; groups stay within a fast-fabric domain, but runs may span domains unless a component demands a single domain.
+
+- **Time**: continuous wall time \(t \in \mathbb{R}\). Budget windows are
+  intervals \(W = [\text{start}, \text{end})\). The accounting horizon
+  \(P\) defaults to 24 hours and is configurable by the manager.
+- **Owners**: teams \(o \in O\), with an optional parent DAG for family
+  sharing.
+- **Nodes**: \(n \in N\), with labels such as region, cluster, and
+  fast-fabric domain, and GPU capacity per flavor \(f \in F\).
+- **Selectors**: predicates \(\sigma\) over node labels.
+- **Runs**: user-facing work requests that compile into one or more placement
+  groups. A group stays within one fast-fabric domain; a run may span domains
+  unless its locality requires otherwise.
 
 ## 2. Syntax (data)
+
 ### Budget envelopes
+
 \[
-e ::= \langle \text{id}, \; \text{owner}=o, \; \text{flavor}=f, \; \text{selector}=\sigma, \; \text{window}=W, \\
-\phantom{e ::=}\; \text{concurrency}=C, \; \text{maxGPUHours}=B?\,(B \le C\cdot|W|), \; \text{lending}=\langle\text{allow}, \text{toACL}, \text{lendC}?, \text{lendB}?\rangle? \rangle
+e ::= \langle \text{id}, \text{owner}=o, \text{flavor}=f,
+\text{selector}=\sigma, \text{window}=W?,
+\text{concurrency}=C, \text{maxGPUHours}=B?,
+\text{sharing}\in\{\text{family},\text{none}\},
+\text{preActivation}?, \text{lending}? \rangle
 \]
 
-- Budgets \(B(o)\) are finite sets of envelopes; parents encode family sharing; the parent DAG is acyclic.
-- **Aggregate caps** optionally bound a collection of envelopes: \(A = \langle f, E \subseteq \{e\}, \text{maxC}, \text{maxB}? \rangle\).
+- Budgets \(B(o)\) are finite sets of envelopes. Envelope names are unique
+  within one Budget; leases therefore record both `paidByBudget` and
+  `paidByEnvelope`.
+- Parent edges on Budgets define the family graph. Family sharing needs no
+  lending policy, but an envelope can opt out with `sharing: none`.
+- Lending policy applies only to sponsors/non-family borrowers and may set
+  ACL, concurrency, and GPU-hour caps.
+- Aggregate caps optionally bound a set of envelopes inside one Budget:
+  \(A = \langle f, E, \text{maxC}?, \text{maxB}? \rangle\).
 
-### Runs (surface → compiled)
-- **Surface (researcher)**: \(\langle o, f, \text{totalGPUs}=G, \text{groupGPUs}=g?, \text{allowCrossGroupSpread}=\text{bool}=\text{true}, \text{malleable}=\{\text{minTotalGPUs}, \text{maxTotalGPUs}, \text{stepGPUs}\}?, \text{spares}=s?, \text{checkpoint}=\Delta? \rangle\).
-- **Compiled job DAG (controller)**: \(D = \langle k, f, \text{perRank}, \text{Group}(g)?, \text{fault}=\{\text{spares}=s, \text{replace}=\text{SameDomain}|\text{Restart}\}, \text{time}=\{\text{checkpoint}=\Delta?\}\rangle\) and combinators \(\text{SHARD}, \text{INCR}, \text{AND}, \text{SEQ}\).
-- **Default compilation**: if \(g\) is present, emit \(\text{SHARD}(m, D\{k=g\})\) with \(m = \lceil G/g \rceil\). If \(g\) is absent, treat it as a soft grouping hint.
+### Runs
+
+A Run surface spec is:
+
+\[
+\langle o, f, \text{totalGPUs}=G, \text{groupGPUs}=g?,
+\text{allowCrossGroupSpread}, \text{malleable}?,
+\text{spares}=s?, \text{funding}? \rangle
+\]
+
+Malleability supplies `minTotalGPUs`, `maxTotalGPUs`, `stepGPUs`, and an
+optional `desiredTotalGPUs`. Funding supplies `allowBorrow`,
+`maxBorrowGPUs`, and sponsor owner names.
 
 ### Reservations
-\[\langle \text{runRef}=R, \text{intendedSlice}=\text{Slice}, \text{payingEnvelope}=e, \text{earliestStart}=t_0 \rangle\]
 
-### Leases (immutable facts)
 \[
-\ell ::= \langle \text{runRef}=R, \text{compPath}=\pi, \text{nodes}=S \subseteq N, \text{role}=\text{Active}|\text{Spare}|\text{Borrowed}, \text{paidBy}=e, \text{interval}=[t_s, t_e), \text{reason} \rangle
+\langle \text{runRef}=R, \text{intendedSlice}, \text{payingEnvelope},
+\text{earliestStart}=t_0 \rangle
 \]
 
-Reasons include \(\text{Start}\), \(\text{End}\), \(\text{Swap}\), \(\text{Shrink}\), \(\text{RandomPreempt}(\rho)\), \(\text{ReclaimedBySpare}\), and \(\text{Fail}\).
+The reservation records an intended slice and an envelope name. At activation
+the current Budget set resolves that name to a concrete payer or fails if no
+usable envelope remains.
 
-### Ledger state
-The global state \(\Sigma\) is a finite sequence of immutable events (budget updates, reservation creation/activation, lease starts/ends, failures). “Live” cluster state is a pure function of \(\Sigma\).
+### Leases
 
-## 3. Well-formedness (typing judgments)
-- **Envelopes**: \(B? \le C\cdot|W|\); selector total; flavor valid.
-- **Aggregate caps**: \(\text{maxB}? \le \text{maxC} \cdot \sum_{e\in E}|W_e|\) (loose upper bound).
-- **Budgets**: all envelopes well formed; parent DAG acyclic.
-- **Runs**: \(m \ge 1\) for shards; \(\text{min} \ge 0\), \(\text{max} \ge \text{min}\), \(\text{step} \ge 1\) for malleable; \(\text{spares} \ge 0\).
-- **Reservations**: selector(e) matches intendedSlice; \(W_e\) covers \(\text{earliestStart}\).
-- **Leases**: selector matches nodes; pointwise and integral bounds hold for \(e\) (using \(C\) and \(B\)); exclusivity invariant—at most one active lease per node at any \(t\).
+\[
+\ell ::= \langle \text{runRef}=R, \text{nodes}=S,
+\text{role}\in\{\text{Active},\text{Spare}\},
+\text{paidByBudget}, \text{paidByEnvelope},
+\text{interval}=[t_s,t_e), \text{reason} \rangle
+\]
 
-## 4. Cover (who pays)
-Cover resolves funding before placement. It prefers close family and location matches, then considers sponsors; there are no numeric priorities.
+Lease role is only a slice fact: active work or held spare. Funding class is
+not stored on the Lease. It is derived from budgets, leases, runs, and the
+clock as one of:
 
-1. Candidate order (location-first): owner’s envelopes in location, then siblings via parent’s unused capacity, then parent, then repeat for other locations, then sponsors (lending.allow with ACL match).
-2. Feasibility per envelope \(e\):
-   - Window: \(t \in W_e\) (or earliestStart \(\in W_e\) for reservations).
-   - Pointwise: \(\text{active}(e,t) + \Delta k \le C_e\).
-   - Integral: \(\text{usedGPUHours}(e) + \Delta k \cdot \mathbb{E}[\text{duration}] \le B_e\) where \(B_e = \text{maxGPUHours}(e)\) if set, else \(C_e \cdot |W_e|\).
-   - Aggregate caps remain feasible.
-3. Output: a partitioning \(\varphi\) of the demand; each lease is paid by exactly one envelope. Borrowed and owned leases are indistinguishable once funded.
+- **Owned**: funded by the run owner's own envelope.
+- **Shared**: funded by family excess.
+- **Borrowed**: funded by a sponsor through lending policy.
+- **Unfunded**: backed by no current quota; hours are metered separately and
+  do not charge envelope caps.
 
-## 5. Pack (where to run)
-Packer decisions are topology-aware but quiet by default.
-- Fill one fast-fabric domain at a time with whole-node groups; each group of \(g\) GPUs stays local to a domain.
-- Runs may span domains unless a component declares a hard single-domain constraint.
-- Minimize inter-domain cut as a soft objective.
-- If no full fixed bundle fits now, return \(\text{None}\) so the planner can create a reservation. Malleable \(\text{INCR}\) components may admit partial placements.
+Reasons include `Start`, `Grow`, `Shrink`, `Swap`, `NodeFailure`,
+`ReclaimedBySpare`, `ReclaimUnfunded(seed)`, and `RandomPreempt(seed)`.
 
-## 6. Operational semantics (small-step, event-sourced)
-We write \(\Sigma \longrightarrow \Sigma'\) to mean “append events to the ledger.” Rules are deterministic except for a published lottery seed in oversubscription.
+## 3. Well-formedness
+
+- **Envelopes**: name, flavor, selector, and positive concurrency are
+  required. If both start and end are set, end must be after start and
+  `maxGPUHours <= concurrency * windowHours`.
+- **Aggregate caps**: each referenced envelope must exist in the Budget; cap
+  names are unique; cap limits are non-negative or positive as appropriate.
+- **Budgets**: envelope names are unique within the Budget.
+- **Runs**: GPU demand and malleability fields are positive and internally
+  consistent; `maxBorrowGPUs` is positive when set.
+- **Reservations**: point at a Run and a non-empty intended slice or domain.
+- **Leases**: specs are immutable consumption facts. The controller uses open
+  leases to derive node usage; at most one active lease should occupy a GPU
+  slot at a time.
+
+## 4. Funding Evaluation
+
+Funding is a pure function:
+
+\[
+\text{Eval}(B, L, R, t, P) \rightarrow
+\{\text{class}(\ell), \text{envelope usage}, \text{run usage}\}
+\]
+
+It is implemented in `pkg/funding`. No control path reads funding class back
+from status.
+
+Evaluation groups live leases into claims by `(paidByBudget, paidByEnvelope,
+runRef)`. For each envelope:
+
+1. Sponsor claims that satisfy lending policy are contractual carve-outs,
+   bounded by the lending caps.
+2. Owner/family claims fill by rank: envelope owner first, then children,
+   siblings, and cousins; ties use admission time and run key.
+3. Claims that do not fit are Unfunded. Fixed-width claims are all-or-nothing;
+   malleable claims can be partly funded lease-by-lease, lowest group first.
+
+Only Owned, Shared, and Borrowed width and GPU-hours charge envelope and
+aggregate caps. Unfunded work continues to run while physical capacity exists,
+accumulates unfunded GPU-hours, and may re-fund automatically when quota
+returns.
+
+## 5. Cover (who may pay for new work)
+
+Cover is the admission-side view of the same evaluation. It asks how much
+width a prospective claim could receive if ranked into the current facts.
+
+The search order is:
+
+1. the run owner's envelopes,
+2. parent envelopes,
+3. sibling envelopes,
+4. cousin envelopes,
+5. sponsor envelopes, only when `funding.allowBorrow` is true.
+
+Each family tier tries same-location envelopes before cross-location
+envelopes. Sponsor use must satisfy lending policy and `maxBorrowGPUs`.
+
+Admission lookahead checks `width * P` against remaining GPU-hours, so normal
+admission does not create work that is born Unfunded. A reservation activation
+is different: if the system already promised the run and physical capacity is
+available, it can start against a real envelope as Unfunded and later re-fund
+by arithmetic.
+
+## 6. Pack (where to run)
+
+Packing is topology-aware:
+
+- Groups are kept within one fast-fabric domain.
+- Runs may span domains unless locality forbids it.
+- Spares are placed per group when requested.
+- If a fixed request cannot pack now, the controller plans a reservation.
+- Malleable runs grow in `stepGPUs` increments when Pack and Cover both allow.
+
+## 7. Operational Semantics
+
+We write \(\Sigma \longrightarrow \Sigma'\) for a controller step over the
+durable facts. The Kubernetes implementation materializes these steps as CRD
+spec/status updates and Pods.
 
 ### Admission
+
+If Pack finds a slice and Cover funds it, bind immediately:
+
 \[
-\frac{\text{Cover}(o, J, t) = \varphi \quad \text{Pack}(S, J) = \text{slice}}{\Sigma \longrightarrow \Sigma \cup \{\text{Start}(\text{Leases}(J, \text{slice}, \varphi))\}}\;\text{[Bind-Now]}
-\]
-\[
-\frac{\text{Cover}(o, J, t_0) = \varphi \quad \text{Pack}(S, J) = \text{None} \quad \text{choose intendedSlice},\; \text{earliestStart} \ge t_0}{\Sigma \longrightarrow \Sigma \cup \{\text{Create}(\text{Reservation}\langle J, \text{intendedSlice}, \text{payer} \in \varphi, \text{earliestStart}\rangle)\}}\;\text{[Plan-Later]}
+\frac{\text{Pack}(R,t)=S \quad \text{Cover}(R,S,t)=\varphi}
+{\Sigma \longrightarrow \Sigma \cup \{\text{Start}(\text{Leases}(R,S,\varphi))\}}
 \]
 
-### Reservation activation (at \(t = \text{earliestStart}\))
-- If \(\text{deficit}(\text{scope}, t) = 0\), append Activate(Res) then Start(Leases); mark the reservation released.
-- Otherwise, apply **structural cuts** deterministically: drop spares in scope; shrink \(\text{INCR}\) components by \(\text{stepGPUs}\) down to \(\text{minTotalGPUs}\). If deficit remains, run the lottery:
-  - Build conflict set \(C\) = leases in scope whose removal restores feasibility.
-  - Seed \(\rho = H(\text{scope}, \text{Res.id}, t)\) (published).
-  - Repeat until deficit ≤ 0: pick an owner uniformly from owners(\(C\)); pick one token from that owner (an AND bundle counts as one); append \(\text{End}(\ell, \text{RandomPreempt}(\rho))\); reduce deficit.
-  - Bind the reservation slice and mark released.
+If Pack fails for capacity, a fundable admission first reclaims Unfunded work
+only, then retries. If it still cannot pack, the controller creates a
+Reservation. If Cover fails, the run parks or reserves rather than starting
+opportunistically.
+
+### Reservation activation
+
+At or after `earliestStart`:
+
+- If the referenced Run is already Running, Completed, or Failed, release the
+  pending Reservation without materializing anything.
+- If physical capacity is available and Cover succeeds, start leases and mark
+  the Reservation Released.
+- If physical capacity is available but Cover fails, start against the
+  intended owner envelope as Unfunded when such an envelope still exists.
+- If capacity is short but the demand is not currently fundable, wait; cutting
+  other work cannot create quota.
+- If capacity is short and the demand is fundable, resolve the capacity
+  deficit in the order below, then bind.
+
+### Resolver
+
+The consolidated reclaim order is:
+
+1. reclaim entirely Unfunded groups by seeded lottery within the class,
+2. drop spares,
+3. shrink malleable runs down to `minTotalGPUs`,
+4. use the general seeded lottery over remaining groups.
+
+The direct admission path stops after step 1; funded-work preemption is
+reservation-activation-only.
+
+### Elasticity
+
+- **Grow**: when desired width exceeds allocated width, grow by at most one
+  step if Pack and Cover allow.
+- **Shrink**: close whole groups down to the desired width, preferring groups
+  with non-owned derived funding before owned groups, then higher group
+  indices.
 
 ### Failure and spares
-- **Swap-from-spare**: if node \(n\) fails inside a bundle that has a spare in the same domain, end the failed lease (reason=Fail), reclaim any filler, and start the spare as active (reason=Swap or ReclaimedBySpare).
-- **Abort-and-requeue**: if no spare exists in-domain, end affected leases and optionally create a reservation to restart at the next checkpoint.
 
-### Elasticity (INCR)
-- **Grow**: when Pack yields additional groups and Cover is feasible, start new leases up to \(\text{maxTotalGPUs}\) in \(\text{stepGPUs}\) increments.
-- **Shrink**: append \(\text{End}(\ell, \text{Shrink})\) events down to \(\text{minTotalGPUs}\).
+On a node failure, the controller closes affected active leases. If a spare
+lease for the same run and group exists, it closes that spare with `Swap`,
+reclaims overlapping filler leases with `ReclaimedBySpare`, and opens a new
+active lease on the spare nodes while preserving the payer fields. If no spare
+exists, the run fails.
 
-### Opportunistic fill on spares
-If a spare lease exists for owner \(o\) on nodes \(S\) and another run \(R'\) can use \(k \le |S|\) GPUs, end the spare on \(S_{\text{part}}\) and start a lease for \(R'\) (paid by its envelope). Reclaim via the same spare-swap rule on failure.
+## 8. Properties
 
-## 7. Properties (informal theorems)
-- **Safety / exclusivity**: no two active leases overlap a node; selectors + exclusivity invariants enforce this.
-- **Budget compliance**: for every envelope \(e\) and time \(t\), pointwise concurrency and integral GPU-hour bounds hold (admission checks + ledger accumulation).
-- **Reservation soundness**: backfill plus activation (cuts + lottery) make the reserved slice available at or after \(\text{earliestStart}\).
-- **Family-first borrowing**: Cover order prefers siblings/parent in the same location before sponsors; all borrowing obeys envelope caps \((C, B)\) and aggregate caps.
-- **No priorities**: survival decisions depend only on feasibility, structural cuts, and the attested uniform lottery seed—no numeric priorities influence outcomes.
-- **Auditability**: \(\Sigma\) is append-only; active state is a pure function of events with explicit reasons, enabling reproducible postmortems and proofs over traces.
+- **Derived funding**: class is recomputed from facts; status is never an
+  authority.
+- **No funded overdraft**: funded width and funded GPU-hours do not exceed
+  envelope, aggregate, or lending caps. Unfunded consumption is visible but
+  not charged against caps.
+- **Owner recall**: an owner's claim on its own envelope does not depend on
+  family borrowers. Lower-ranked family claims can re-evaluate as Unfunded.
+- **Stable ties**: equal-tier claims use admission time and run key, so
+  survivors do not reshuffle between evaluations.
+- **Reservation safety**: a run's pending Reservation is released when the run
+  binds directly or is already terminal, preventing double materialization.
+- **Auditability**: leases and closure reasons are enough to replay funding
+  class and usage for a past instant, modulo the Budget specs being replayed.
 
-## 8. Worked example (derivation)
-Run: owner RAI, totalGPUs=96, groupGPUs=64, allowCrossGroupSpread=true. Supply: Domain A has 72 free GPUs, Domain B has 48 free GPUs. Budget: envelope `west-h100` for RAI with concurrency headroom ≥ 96 now.
+## 9. Worked Example
 
-1. **Compile**: \(J = \text{SHARD}(2, D\{k=64\})\).
-2. **Cover**: \(\varphi\) pays all 96 from `west-h100` (location match; headroom passes pointwise/integral tests).
-3. **Pack** attempts cohesive groups: \(\text{group}_1=64\) on A; \(\text{group}_2=64\) cannot fit on B (only 48 free) and may not split. Result: \(\text{Pack} = \text{None}\).
-4. **Plan-Later**: create a reservation targeting A plus future headroom on B at \(t_0 + \Delta\).
-5. **Activation**: if deficit on B is 16 at activation, structural cuts shrink only INCR components (not present here). Remaining deficit triggers lottery within scope; released leases free 16 GPUs on B; binder then places \(\text{group}_1=64\) on A and \(\text{group}_2=64\) on B. Cohesion is preserved because each group is single-domain.
-6. **Growth variant**: if the run were \(\text{INCR}(\text{min}=64, \text{max}=128, \text{step}=16)\), at \(t_0\) the binder would start 64 on A, later grow to 96 across A→B as capacity appears, and potentially to 128 while honoring the same cover + pack rules.
+Run `train`: owner `org:rai`, `totalGPUs=96`, `groupGPUs=64`. Domain A has 72
+free H100s; Domain B has 48. `org:rai` has a matching envelope with enough
+concurrency and at least `96 * P` remaining GPU-hours.
 
-## 9. Mapping to CRDs and controller behavior
-- **Budget ↔ envelopes**: selector, concurrency window, optional maxGPUHours, lending ACLs, aggregate caps.
-- **Run ↔ surface spec**: totalGPUs, groupGPUs, allowCrossGroupSpread, malleable bounds, spares, checkpoint hints.
-- **Reservation ↔ CRD**: runRef, intendedSlice, payingEnvelope, earliestStart (spec immutable; status evolves from Create → Activate → Released).
-- **Lease ↔ CRD/event**: runRef, nodes, role, paidByEnvelope, interval.start, reason (immutable once recorded; closed with End events).
-- **Conflict resolution**: structural cuts and the published lottery seed match the controller’s deterministic preemption path; there are no numeric priorities.
-- **Auditability**: dashboards and CLI derive live state from the ledger \(\Sigma\), mirroring the calculus view.
+1. Pack can place one 64-GPU group on A but cannot place the second group on
+   B, so direct bind cannot complete.
+2. Cover can fund the run, so the controller creates a Reservation targeting
+   the intended domain.
+3. At activation, if B is still short by 16 GPUs, the resolver first reclaims
+   Unfunded work in scope, then spares, then malleable groups, then the
+   general lottery if needed.
+4. Once the slice is available, binder starts Active leases for the two
+   groups. Funding status is derived from those leases at the current clock.
+5. If the envelope later exhausts its GPU-hour cap, the run keeps running as
+   Unfunded. If a new budget window opens, the same leases can evaluate as
+   Owned again without rewriting them.
 
-The calculus above is deliberately small: one funding function (Cover), one placement function (Pack), immutable ledger events, and a deterministic pathway for contention. It is sufficient to analyze work-conservation, borrowing fairness, and reservation soundness, while matching the implementation and CRD vocabulary.
+## 10. Mapping to CRDs and Controllers
+
+- **Budget**: envelopes, parent graph, sharing mode, lending policy,
+  aggregate caps, and derived usage/headroom status.
+- **Run**: requested width, locality, malleability, spares, sponsor hints, and
+  derived width/funding status.
+- **Reservation**: future slice promise with lifecycle status.
+- **Lease**: immutable consumption fact with Active/Spare role and payer
+  fields; closure is recorded in status.
+- **Manager**: serializes engine access through the Kubernetes bridge, uses
+  fresh API reads, drives Runs, Reservations, Budgets, and node failures, and
+  serves validation/defaulting webhooks.
+
+## 11. Known Implementation Gaps
+
+The calculus above is the implementation target, but these known gaps remain
+tracked in the remediation plan:
+
+- **R26**: node-failure swap is still per-lease and can fail multi-lease
+  groups produced by funding-segment splits.
+- **R27**: resolver accounting can double-count spares that are dropped before
+  shrinking the same group.
+- **R28**: Kubernetes bridge apply is not atomic; some partial API failures
+  still need repair/fault-injection coverage.
