@@ -19,6 +19,11 @@ func NewShrinkCommand(opts *RootOptions, store *StateStore, printer *Printer) *c
 				return fmt.Errorf("--by must be > 0")
 			}
 			name := args[0]
+			unlock, err := store.Lock(opts.StatePath)
+			if err != nil {
+				return err
+			}
+			defer unlock()
 			state, err := store.Load(opts.StatePath)
 			if err != nil {
 				return err

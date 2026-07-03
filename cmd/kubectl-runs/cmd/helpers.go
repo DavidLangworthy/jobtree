@@ -3,6 +3,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/davidlangworthy/jobtree/controllers"
@@ -16,7 +17,15 @@ func reconcileRun(state *controllers.ClusterState, namespace, name string) error
 
 func reconcileAll(state *controllers.ClusterState) error {
 	controller := controllers.NewRunController(state, controllers.RealClock{})
-	for _, run := range state.Runs {
+	// Sorted iteration keeps admission order — and therefore who wins the
+	// GPUs when runs compete — deterministic across invocations.
+	runKeys := make([]string, 0, len(state.Runs))
+	for key := range state.Runs {
+		runKeys = append(runKeys, key)
+	}
+	sort.Strings(runKeys)
+	for _, key := range runKeys {
+		run := state.Runs[key]
 		if run == nil {
 			continue
 		}

@@ -42,7 +42,8 @@ func (s *StateStore) Load(path string) (*controllers.ClusterState, error) {
 	return snap.toState(), nil
 }
 
-// Save persists the cluster state to the configured path.
+// Save persists the cluster state to the configured path via a temp file
+// and atomic rename, so readers never observe a partially written snapshot.
 func (s *StateStore) Save(path string, state *controllers.ClusterState) error {
 	if path == "" {
 		return errors.New("state path must be provided")
@@ -55,13 +56,39 @@ func (s *StateStore) Save(path string, state *controllers.ClusterState) error {
 	if err != nil {
 		return fmt.Errorf("encode state: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
 		return fmt.Errorf("ensure state directory: %w", err)
 	}
-	if err := os.WriteFile(path, payload, 0o644); err != nil {
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp state: %w", err)
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(payload); err != nil {
+		tmp.Close()
 		return fmt.Errorf("write state: %w", err)
 	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close state: %w", err)
+	}
+	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+		return fmt.Errorf("chmod state: %w", err)
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return fmt.Errorf("replace state: %w", err)
+	}
 	return nil
+}
+
+// Lock takes an exclusive advisory lock guarding a load-modify-save cycle.
+// The lock file lives beside the state file, so concurrent CLI invocations
+// serialize instead of losing writes. The returned function releases it.
+func (s *StateStore) Lock(path string) (func(), error) {
+	if path == "" {
+		return nil, errors.New("state path must be provided")
+	}
+	return lockFile(path + ".lock")
 }
 
 // snapshot is the serialisable representation of ClusterState.

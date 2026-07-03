@@ -21,7 +21,7 @@ func NewRootCommand() *cobra.Command {
 		Short: "kubectl plugin for interacting with jobtree runs",
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			if opts.StatePath == "" {
-				opts.StatePath = "cluster-state.yaml"
+				opts.StatePath = "cluster-state.json"
 			}
 			if opts.Output == "" {
 				opts.Output = "table"
@@ -41,7 +41,7 @@ func NewRootCommand() *cobra.Command {
 		SilenceErrors: true,
 	}
 
-	root.PersistentFlags().StringVar(&opts.StatePath, "state", "cluster-state.yaml", "Path to the local cluster state snapshot")
+	root.PersistentFlags().StringVar(&opts.StatePath, "state", "cluster-state.json", "Path to the local cluster state snapshot")
 	root.PersistentFlags().StringVar(&opts.Namespace, "namespace", "default", "Namespace to use for Run operations")
 	root.PersistentFlags().StringVar(&opts.Output, "output", "table", "Output format: table|json")
 	root.PersistentFlags().IntVar(&opts.WatchInterval, "watch-interval", 2, "Watch refresh interval in seconds")

@@ -13,7 +13,7 @@ import (
 func NewExplainCommand(opts *RootOptions, store *StateStore, printer *Printer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "explain RUN",
-		Short: "Explain current scheduling state for a Run",
+		Short: "Explain current scheduling state for a Run (read-only; the state file is not modified)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -30,9 +30,6 @@ func NewExplainCommand(opts *RootOptions, store *StateStore, printer *Printer) *
 			key := keys.NamespacedKey(opts.Namespace, name)
 			run := state.Runs[key]
 			payload := buildExplainPayload(state, run)
-			if err := store.Save(opts.StatePath, state); err != nil {
-				return err
-			}
 			return printer.Print(cmd, opts, payload)
 		},
 	}
