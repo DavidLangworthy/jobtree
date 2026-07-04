@@ -8,6 +8,22 @@ killProbability exist on zero CRD types; no event emission anywhere. -->
 
 *Definitive honest inventory of claimed-but-unwired capabilities. Verified against source at commit-level, branch `docs/ml-workload-plan` (with `follow`/`eta` commits verified via `git show`). Every finding grounded in file:line.*
 
+> **Status update (feat/workload-trunk, PLUGIN-2 cutover):** the load-bearing
+> "fake trunk" is cut out. `buildPod` now renders a **real** workload container
+> (role `Template` or a real terminating default) with a real `nvidia.com/gpu`
+> request and **no pre-pinned nodeName**; the scheduler plugin schedules it and
+> mints the Lease. **#1 (real job execution)** and **#2 (real workload pods /
+> PodTemplate)** are RESOLVED, and the whole downstream cascade that hung off
+> them is no longer inert: **#5 (completion on pod `Succeeded`)** and **#14
+> (grow/shrink real capacity)** now fire on real pods. Proven end-to-end on a
+> live cluster — a real container runs to exit 0 and the Run reaches `Completed`
+> with the plugin as sole committer — by `hack/e2e/fullstack-smoke.sh` and
+> `hack/e2e/plugin-smoke.sh` (no hand-injected pod phase or lease). #4/#17 (CLI
+> simulator) were already addressed by Track CLI; the `--local` path is honestly
+> gated and now models the plugin offline. Remaining LOW items (#3 rank/world-
+> size checkpoint wiring, #20 workload ETA SDK, #22 AutoRenew, #23 seed logging)
+> are separate tracks (CASCADE/ROLES), not the product-premise fakes.
+
 ## 1. Executive Summary
 
 **jobtree is a scheduling *simulator* wearing a product costume — and the costume is elaborate.** The entire quota/funding/reservation/lease/lottery *decision engine* is real, tested, and genuinely sophisticated: it correctly computes who pays, who gets preempted, how much capacity is short, and in what order to reclaim. But everything that would make those decisions *touch a real cluster and run a real training job is a mannequin*. The workload-execution layer is the load-bearing fake: `RunSpec` has no container/image/command/resources field anywhere (`api/v1/run_types.go:23-31`), and every pod jobtree creates runs `registry.k8s.io/pause:3.10` with zero GPU requests (`controllers/kube/bridge.go:35,291-294`). Because no pod ever runs a real workload, an entire cascade of downstream features is *structurally inert*: completion detection, `follow` dependencies, workload-reported ETA, node-failure "model-state" preservation, and checkpoint-restart can never fire in production even though their controller code is correctly written — the precondition (a pod reaching `Succeeded`, a workload writing an annotation, a training process holding state) can never occur. On top of that sits a second, independent layer of fakes: the `kubectl runs` CLI is a local-JSON simulator with zero cluster connectivity marketed as a live `kubectl` plugin, and several forecast/observability fields (`conflictSet`, `killProbability`, computed `remedies`, elasticity metrics, a "forecast controller") are documented but do not exist in the API or code at all. The fakes are **not contained** — they sit directly under the product's headline promise ("run GPU gangs"). What *is* contained is the honesty gap: the project's own internal docs (`docs/fundamentals.md`, `docs/project/fundamentals-gap-analysis.md`) already confess most of these gaps, while the user-facing guides and migration docs continue to market them as working.
