@@ -29,6 +29,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // repoRoot returns the absolute path to the repository root, derived from
@@ -55,6 +56,13 @@ func repoRoot() (string, error) {
 func skipDir(rel string) bool {
 	switch {
 	case rel == ".git", rel == "vendor":
+		return true
+	case rel == ".claude" || strings.HasPrefix(rel, ".claude/"):
+		// Nested git worktrees (e.g. parallel-agent scratch under
+		// .claude/worktrees/) are separate checkouts of this same repo. Walking
+		// into them double-counts every file — and would flag their in-progress
+		// copies (mid-wired fields, un-annotated fixtures) as fakes — so the
+		// scan must stay within the current checkout.
 		return true
 	case rel == "hack/antifake":
 		// The checker's own package: it necessarily mentions the field/
