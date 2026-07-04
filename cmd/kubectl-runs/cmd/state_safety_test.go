@@ -61,10 +61,10 @@ func TestReadCommandsLeaveStateFileUntouched(t *testing.T) {
 	}
 
 	commands := [][]string{
-		{"--state", statePath, "plan", "train"},
-		{"--state", statePath, "explain", "train"},
-		{"--state", statePath, "budgets", "usage"},
-		{"--state", statePath, "leases", "train"},
+		{"--local", "--state", statePath, "plan", "train"},
+		{"--local", "--state", statePath, "explain", "train"},
+		{"--local", "--state", statePath, "budgets", "usage"},
+		{"--local", "--state", statePath, "leases", "train"},
 	}
 	for _, args := range commands {
 		root := NewRootCommand()

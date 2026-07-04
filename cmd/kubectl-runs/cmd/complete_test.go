@@ -45,7 +45,7 @@ func TestCompleteCommandFinishesRunAndClosesLeases(t *testing.T) {
 	root := NewRootCommand()
 	root.SetOut(&bytes.Buffer{})
 	root.SetErr(&bytes.Buffer{})
-	root.SetArgs([]string{"--state", statePath, "--namespace", "default", "--output", "table", "complete", "job"})
+	root.SetArgs([]string{"--local", "--state", statePath, "--namespace", "default", "--output", "table", "complete", "job"})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("complete: %v", err)
 	}

@@ -31,7 +31,7 @@ func TestEtaCommandSetsControllerSourcedStatus(t *testing.T) {
 	root := NewRootCommand()
 	root.SetOut(&bytes.Buffer{})
 	root.SetErr(&bytes.Buffer{})
-	root.SetArgs([]string{"--state", statePath, "--namespace", "default", "eta", "job", "2026-07-04T00:00:00Z"})
+	root.SetArgs([]string{"--local", "--state", statePath, "--namespace", "default", "eta", "job", "2026-07-04T00:00:00Z"})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("eta: %v", err)
 	}
