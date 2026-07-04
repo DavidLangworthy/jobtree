@@ -1,0 +1,8 @@
+.git
+docs
+specs
+deploy/kustomize
+plugins
+*.md
+bin
+dist

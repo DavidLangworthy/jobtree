@@ -1,0 +1,60 @@
+name: e2e
+
+# The kind e2e harness (Track F — TESTINFRA-1/2/7,
+# docs/project/make-it-real-plan.md): real API server, real manager, real
+# webhooks, real kubelet. This is a *named*, required-on-main job — not a
+# best-effort/allow-failure one — because the whole point of Track F is that
+# faking passage must be structurally hard. As of this workflow landing,
+# three test/e2e cases are *expected* skips (blocked on Track B/JOBSET; see
+# test/e2e/completion_test.go and follow_test.go) — that is the honest,
+# documented state, not a gap in this workflow.
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  kind-e2e:
+    name: kind e2e (real cluster)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+
+      - name: Install kind
+        run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          source hack/e2e/versions.env
+          KIND_VERSION="v0.32.0"
+          curl -fsSLo /usr/local/bin/kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          chmod +x /usr/local/bin/kind
+          kind version
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: 'v3.16.4'
+
+      - name: kind-up (cluster + jobtree CRDs)
+        run: make kind-up
+
+      - name: Build and load the manager image into kind
+        run: make e2e-image
+
+      - name: Install the real chart (deploy/helm/gpu-fleet + e2e values overlay)
+        run: hack/e2e/install.sh
+
+      - name: Run test/e2e (build tag e2e)
+        env:
+          JOBTREE_E2E_NAMESPACE: jobtree-system
+        run: go test ./test/e2e/... -tags=e2e -v -count=1
+
+      - name: Dump cluster diagnostics
+        if: failure()
+        run: hack/e2e/diagnostics.sh
+
+      - name: kind-down
+        if: always()
+        run: make kind-down

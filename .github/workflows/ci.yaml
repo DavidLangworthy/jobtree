@@ -21,6 +21,8 @@ jobs:
         run: go vet ./...
       - name: Verify generated deepcopy and CRDs are up to date
         run: make verify-generate
+      - name: Anti-fake lint (Track F — no hand-injected terminal Pod phase, no unread CRD fields)
+        run: make antifake
       - name: Test (race detector)
         run: go test -race ./...
       - name: Integration tests (envtest)
