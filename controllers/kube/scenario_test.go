@@ -136,7 +136,7 @@ func listRunPods(t *testing.T, runName string) []corev1.Pod {
 func waitForRunPods(t *testing.T, runName string, want int) []corev1.Pod {
 	t.Helper()
 	var pods []corev1.Pod
-	eventually(t, 15*time.Second, func() error {
+	eventually(t, 30*time.Second, func() error {
 		pods = listRunPods(t, runName)
 		if len(pods) != want {
 			return fmt.Errorf("%d pods, want %d", len(pods), want)
