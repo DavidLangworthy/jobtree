@@ -16,6 +16,9 @@
     "cpus": 4,
     "memory": "8gb"
   },
+  "containerEnv": {
+    "CLAUDE_CODE_EFFORT_LEVEL": "max"
+  },
   "postCreateCommand": "bash .devcontainer/post-create.sh",
   "customizations": {
     "vscode": {
