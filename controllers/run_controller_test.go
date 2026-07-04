@@ -621,6 +621,10 @@ func TestActivateReservationRunsResolver(t *testing.T) {
 	if err := controller.ActivateReservations(activationTime); err != nil {
 		t.Fatalf("activate reservations failed: %v", err)
 	}
+	// run-c's funded activation frees capacity and emits intent pods (Pending);
+	// the scheduler plugin mints its leases — stood in for by seedRunning — to
+	// reach Running.
+	seedRunning(t, state, "default/run-c", activationTime)
 
 	runA := state.Runs["default/run-a"]
 	runB := state.Runs["default/run-b"]
@@ -1149,6 +1153,9 @@ func TestReservationBacklogMetricLifecycle(t *testing.T) {
 	if err := controller.ActivateReservations(activationTime); err != nil {
 		t.Fatalf("activate reservations: %v", err)
 	}
+	// Funded activation emits intent pods (Pending); the plugin mints — stood in
+	// for by seedRunning — to reach Running.
+	seedRunning(t, state, "default/train-backlog", activationTime)
 	if run.Status.Phase != RunPhaseRunning {
 		t.Fatalf("expected run to activate to Running, got %s (%s)", run.Status.Phase, run.Status.Message)
 	}

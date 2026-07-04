@@ -203,6 +203,9 @@ func TestActivateReservationCapacityDeficitStillResolves(t *testing.T) {
 	if err := controller.ActivateReservations(activation); err != nil {
 		t.Fatalf("activation returned error: %v", err)
 	}
+	// Funded activation preempts the victim then emits the waiter's intent pods
+	// (Pending); the plugin mints — stood in for by seedRunning — to reach Running.
+	seedRunning(t, state, "default/waiter", activation)
 
 	if phase := state.Runs["default/waiter"].Status.Phase; phase != RunPhaseRunning {
 		t.Fatalf("expected waiter running after preemption, got %s", phase)
@@ -254,6 +257,9 @@ func TestActivateReservationsIsolatesFailures(t *testing.T) {
 	if !strings.Contains(err.Error(), "aaa-orphan") {
 		t.Errorf("expected error to identify the failing reservation, got: %v", err)
 	}
+	// The runnable reservation activates (funded) despite the orphan's failure,
+	// emitting intent pods; the plugin mints — stood in for by seedRunning.
+	seedRunning(t, state, "default/runnable", now)
 
 	if phase := state.Runs["default/runnable"].Status.Phase; phase != RunPhaseRunning {
 		t.Errorf("expected runnable to activate despite earlier failure, got %s", phase)

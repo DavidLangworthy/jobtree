@@ -583,6 +583,13 @@ func TestReservationActivatesWhenCapacityArrives(t *testing.T) {
 		if current.Status.Phase == "Running" {
 			return nil
 		}
+		// Funded activation emits the run's intent pods and clears the pending
+		// reservation; once those pods are out, the scheduler plugin mints their
+		// leases (stood in for by seedPluginLeases) and the run reaches Running.
+		if len(listRunPods(t, "train8")) > 0 {
+			seedPluginLeases(t, "train8")
+			return nil
+		}
 		if current.Status.PendingReservation == nil {
 			return fmt.Errorf("run is %s with no pending reservation", current.Status.Phase)
 		}
@@ -635,11 +642,12 @@ func TestReservationActivatesWhenCapacityArrives(t *testing.T) {
 		return nil
 	})
 
-	// Reservation activation still mints the leases (it is not part of the
-	// pod-emission cutover), so placement is recorded in the leases; the
-	// workload pods are emitted UNSCHEDULED for the jobtree plugin to bind
-	// (proven live by hack/e2e/plugin-smoke.sh). Assert the activated leases
-	// span both nodes and the pods carry no nodeName.
+	// Funded reservation activation now EMITS unscheduled intent pods (like
+	// initial admission) instead of minting — the scheduler plugin mints, stood
+	// in for by seedPluginLeases above (2 chunk-leases spanning both nodes;
+	// proven live end-to-end by hack/e2e/fullstack-smoke.sh). Assert the seeded
+	// leases span both nodes and the run's 8 intent pods (1 GPU each for the
+	// 8-GPU run) carry no nodeName.
 	leases := waitForRunLeases(t, "train8", 2)
 	nodesUsed := map[string]bool{}
 	for _, lease := range leases {
@@ -650,7 +658,7 @@ func TestReservationActivatesWhenCapacityArrives(t *testing.T) {
 	if !nodesUsed["node-a"] || !nodesUsed["node-b"] {
 		t.Errorf("activated leases cover %v, want both node-a and node-b", nodesUsed)
 	}
-	pods := waitForRunPods(t, "train8", 2)
+	pods := waitForRunPods(t, "train8", 8)
 	for _, pod := range pods {
 		if pod.Spec.NodeName != "" {
 			t.Errorf("pod %s bound to %q; workload pods must be unscheduled for the plugin", pod.Name, pod.Spec.NodeName)
