@@ -53,13 +53,32 @@ later (ROLES).
 
 ### 3. Node-failure swap — `createSwapLease` / `updatePodsAfterSwap` (run_controller.go:1072, 1978)
 On node failure the controller closes the failed leases and mints a `Swap` lease
-onto a held spare, preserving the original funding **provenance**
-(`TestSwapLeaseKeepsFundingProvenance`). Cutover: close the failed leases
-(**stays** — reclaim/eviction is controller-owned), then **re-emit the affected
-group's pods** with `lease-reason` = Swap and the original payer stamped as
-provenance annotations; the plugin re-binds onto the spare and mints preserving
-that payer. Requires a plugin change: PreBind reads the provenance annotations
-instead of re-deriving the payer, so a swap keeps the original envelope.
+onto a held spare, preserving the funding **provenance** — and note
+`createSwapLease` keeps the **spare's** payer (owner/budget/envelope), not the
+failed lease's, since the spare was the held, already-funded capacity
+(`TestSwapLeaseKeepsFundingProvenance`). Cutover: close the failed + overlapping
++ spare leases (**stays** — reclaim/eviction is controller-owned), then **re-emit
+the affected group's pod** as a swap cohort; the plugin re-binds onto the spare
+and mints the `Swap` lease. This is the most intricate of the three — three real
+wrinkles the design must handle:
+1. **Provenance carried on the pod, not re-derived.** The swap pod is stamped
+   with the spare's payer (owner/budget/envelope) via annotations; the plugin's
+   PreBind mints with THAT payer instead of running cover, so sponsor-paid
+   capacity keeps counting against the lender's caps.
+2. **Hard node targeting.** A swap must land on the *specific* spare node (the
+   held capacity), not "any fitting node" — so a swap pod needs a REQUIRED
+   nodeAffinity/nodeSelector (buildPod's normal soft advisory affinity is not
+   enough). Filter must enforce it (or rely on required nodeAffinity + the
+   default plugins).
+3. **Permit does not re-fund a swap.** The swap re-places already-funded work
+   onto capacity the reclaim just freed/held, so its Permit ALLOWS without the
+   funding gate (like the opportunistic-activation case) — the pod carries a
+   swap marker so the plugin skips cover and mints from the stamped provenance.
+
+Because the swap must place on a specific node with carried provenance and no
+re-funding, it is closest in shape to the opportunistic escape hatch (§1) and
+should be implemented and live-proven (swap-smoke.sh) as its own careful
+increment, after CASCADE-2.
 
 ## Sequencing
 1. **CASCADE-1** reservation activation (funded → emit; opportunistic → keep,
