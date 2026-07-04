@@ -4,5 +4,7 @@ Metrics are exposed on the service {{ include "gpu-fleet.controllerName" . }} po
 
 If monitoring.enabled=true, a ServiceMonitor has been created for Prometheus Operator.
 
-Use the kubectl plugin installed via krew to interact with runs:
-  kubectl runs --state <state-file> plan <run-name>
+Use the kubectl plugin installed via krew to interact with runs. By default it talks to this
+live cluster via your kubeconfig (no --state file needed — that flag only applies to its
+offline --local/--dry-run simulator mode):
+  kubectl runs --namespace <your-namespace> plan <run-name>

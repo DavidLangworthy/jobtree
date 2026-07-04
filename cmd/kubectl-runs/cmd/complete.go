@@ -8,17 +8,20 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// NewCompleteCommand marks a Run's workload as finished (dev/snapshot path).
-// Against a live cluster the controller completes a run when its workload pods
-// reach Succeeded; the JSON snapshot has no live pods, so this marks the run's
-// active pods Succeeded and reconciles, exercising the same completion path
-// (leases close, GPUs and budget free).
+// NewCompleteCommand marks a Run's workload as finished. This only makes
+// sense against the local simulator: against a live cluster a Run completes
+// automatically when its real workload pods reach Succeeded (see
+// docs/user-guide/researcher-guide.md §7); the CLI must not fabricate that
+// outcome by writing to a live Run's status.
 func NewCompleteCommand(opts *RootOptions, store *StateStore, printer *Printer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "complete RUN",
-		Short: "Mark a Run's workload as finished, closing its leases (dev/snapshot)",
+		Short: "Mark a Run's workload as finished, closing its leases (--local only)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if !opts.UseLocal() {
+				return fmt.Errorf("complete requires --local: against a live cluster a Run completes automatically once its workload pods succeed, the CLI does not drive that transition")
+			}
 			name := args[0]
 			unlock, err := store.Lock(opts.StatePath)
 			if err != nil {

@@ -28,15 +28,26 @@ func newSponsorsListCommand(opts *RootOptions, store *StateStore, printer *Print
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
-			state, err := store.Load(opts.StatePath)
-			if err != nil {
-				return err
+			var run *v1.Run
+			if opts.UseLocal() {
+				state, err := store.Load(opts.StatePath)
+				if err != nil {
+					return err
+				}
+				if err := ensureRunExists(state, opts.Namespace, name); err != nil {
+					return err
+				}
+				run = state.Runs[keys.NamespacedKey(opts.Namespace, name)]
+			} else {
+				c, err := opts.LiveClient()
+				if err != nil {
+					return err
+				}
+				run, err = liveGetRun(cmd.Context(), c, opts.Namespace, name)
+				if err != nil {
+					return err
+				}
 			}
-			if err := ensureRunExists(state, opts.Namespace, name); err != nil {
-				return err
-			}
-			key := keys.NamespacedKey(opts.Namespace, name)
-			run := state.Runs[key]
 			var sponsors []string
 			if run.Spec.Funding != nil {
 				sponsors = copySlice(run.Spec.Funding.Sponsors)
@@ -70,52 +81,83 @@ func newSponsorsAddCommand(opts *RootOptions, store *StateStore, printer *Printe
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			sponsor := args[1]
-			unlock, err := store.Lock(opts.StatePath)
-			if err != nil {
-				return err
+			if opts.UseLocal() {
+				return sponsorsAddLocal(cmd, opts, store, printer, name, sponsor, maxBorrow)
 			}
-			defer unlock()
-			state, err := store.Load(opts.StatePath)
-			if err != nil {
-				return err
-			}
-			if err := ensureRunExists(state, opts.Namespace, name); err != nil {
-				return err
-			}
-			key := keys.NamespacedKey(opts.Namespace, name)
-			run := state.Runs[key]
-			if run.Spec.Funding == nil {
-				run.Spec.Funding = &v1.RunFunding{AllowBorrow: true}
-			}
-			if !run.Spec.Funding.AllowBorrow {
-				return fmt.Errorf("run does not allow borrowing; edit spec to enable it")
-			}
-			run.Spec.Funding.Sponsors = uniqueAppend(run.Spec.Funding.Sponsors, sponsor)
-			if maxBorrow > 0 {
-				value := int32(maxBorrow)
-				run.Spec.Funding.MaxBorrowGPUs = &value
-			}
-			if err := reconcileRun(state, opts.Namespace, name); err != nil {
-				return err
-			}
-			if err := store.Save(opts.StatePath, state); err != nil {
-				return err
-			}
-			rows := [][]string{{"added", sponsor}}
-			if run.Spec.Funding.MaxBorrowGPUs != nil {
-				rows = append(rows, []string{"maxBorrow", strconv.Itoa(int(*run.Spec.Funding.MaxBorrowGPUs))})
-			}
-			payload := Payload{
-				Headers: []string{"Key", "Value"},
-				Rows:    rows,
-				Raw: map[string]interface{}{
-					"funding": run.Spec.Funding,
-				},
-				Title: "Updated Sponsors",
-			}
-			return printer.Print(cmd, opts, payload)
+			return sponsorsAddLive(cmd, opts, printer, name, sponsor, maxBorrow)
 		},
 	}
 	cmd.Flags().IntVar(&maxBorrow, "max", 0, "Optional max borrowed GPUs override")
 	return cmd
+}
+
+func applySponsor(run *v1.Run, sponsor string, maxBorrow int) error {
+	if run.Spec.Funding == nil {
+		run.Spec.Funding = &v1.RunFunding{AllowBorrow: true}
+	}
+	if !run.Spec.Funding.AllowBorrow {
+		return fmt.Errorf("run does not allow borrowing; edit spec to enable it")
+	}
+	run.Spec.Funding.Sponsors = uniqueAppend(run.Spec.Funding.Sponsors, sponsor)
+	if maxBorrow > 0 {
+		value := int32(maxBorrow)
+		run.Spec.Funding.MaxBorrowGPUs = &value
+	}
+	return nil
+}
+
+func sponsorsAddLocal(cmd *cobra.Command, opts *RootOptions, store *StateStore, printer *Printer, name, sponsor string, maxBorrow int) error {
+	unlock, err := store.Lock(opts.StatePath)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	state, err := store.Load(opts.StatePath)
+	if err != nil {
+		return err
+	}
+	if err := ensureRunExists(state, opts.Namespace, name); err != nil {
+		return err
+	}
+	key := keys.NamespacedKey(opts.Namespace, name)
+	run := state.Runs[key]
+	if err := applySponsor(run, sponsor, maxBorrow); err != nil {
+		return err
+	}
+	if err := reconcileRun(state, opts.Namespace, name); err != nil {
+		return err
+	}
+	if err := store.Save(opts.StatePath, state); err != nil {
+		return err
+	}
+	return printer.Print(cmd, opts, sponsorAddPayload(run, sponsor, "Updated Sponsors"))
+}
+
+func sponsorsAddLive(cmd *cobra.Command, opts *RootOptions, printer *Printer, name, sponsor string, maxBorrow int) error {
+	c, err := opts.LiveClient()
+	if err != nil {
+		return err
+	}
+	run, err := liveMutateRun(cmd.Context(), c, opts.Namespace, name, func(run *v1.Run) error {
+		return applySponsor(run, sponsor, maxBorrow)
+	})
+	if err != nil {
+		return err
+	}
+	return printer.Print(cmd, opts, sponsorAddPayload(run, sponsor, "Updated Sponsors (manager applies it on its next reconcile)"))
+}
+
+func sponsorAddPayload(run *v1.Run, sponsor, title string) Payload {
+	rows := [][]string{{"added", sponsor}}
+	if run.Spec.Funding.MaxBorrowGPUs != nil {
+		rows = append(rows, []string{"maxBorrow", strconv.Itoa(int(*run.Spec.Funding.MaxBorrowGPUs))})
+	}
+	return Payload{
+		Headers: []string{"Key", "Value"},
+		Rows:    rows,
+		Raw: map[string]interface{}{
+			"funding": run.Spec.Funding,
+		},
+		Title: title,
+	}
 }

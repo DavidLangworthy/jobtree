@@ -10,15 +10,20 @@ import (
 )
 
 // NewEtaCommand sets a Run's estimated completion time directly (source
-// "controller"). Against a live cluster the workload reports its ETA via a pod
-// annotation the controller mirrors; this is the CLI/demo convenience. ETA is
+// "controller"). This is a --local-only development/demo convenience: against
+// a live cluster the workload reports its ETA via a pod annotation the
+// controller mirrors (see docs/user-guide/researcher-guide.md), so the CLI
+// must not write a fabricated ETA onto a live Run's status. ETA is
 // observability only — it never affects scheduling.
 func NewEtaCommand(opts *RootOptions, store *StateStore, printer *Printer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "eta RUN TIME",
-		Short: "Set a Run's estimated completion time (RFC3339); observability only",
+		Short: "Set a Run's estimated completion time (RFC3339); observability only (--local only)",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if !opts.UseLocal() {
+				return fmt.Errorf("eta requires --local: against a live cluster the ETA is written by the workload reporting to the controller, not by this CLI")
+			}
 			name := args[0]
 			eta, err := time.Parse(time.RFC3339, args[1])
 			if err != nil {

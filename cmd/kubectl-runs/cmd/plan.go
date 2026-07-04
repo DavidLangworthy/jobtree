@@ -14,27 +14,57 @@ import (
 func NewPlanCommand(opts *RootOptions, store *StateStore, printer *Printer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "plan RUN",
-		Short: "Show reservation plan and forecast for a Run (read-only; the state file is not modified)",
+		Short: "Show reservation plan and forecast for a Run (read-only)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
-			state, err := store.Load(opts.StatePath)
-			if err != nil {
-				return err
+			if opts.UseLocal() {
+				return planLocal(cmd, opts, store, printer, name)
 			}
-			if err := ensureRunExists(state, opts.Namespace, name); err != nil {
-				return err
-			}
-			if err := reconcileRun(state, opts.Namespace, name); err != nil {
-				return err
-			}
-			key := keys.NamespacedKey(opts.Namespace, name)
-			run := state.Runs[key]
-			payload := buildPlanPayload(state, opts, run)
-			return printer.Print(cmd, opts, payload)
+			return planLive(cmd, opts, printer, name)
 		},
 	}
 	return cmd
+}
+
+func planLocal(cmd *cobra.Command, opts *RootOptions, store *StateStore, printer *Printer, name string) error {
+	state, err := store.Load(opts.StatePath)
+	if err != nil {
+		return err
+	}
+	if err := ensureRunExists(state, opts.Namespace, name); err != nil {
+		return err
+	}
+	if err := reconcileRun(state, opts.Namespace, name); err != nil {
+		return err
+	}
+	key := keys.NamespacedKey(opts.Namespace, name)
+	run := state.Runs[key]
+	payload := buildPlanPayload(state, opts, run)
+	return printer.Print(cmd, opts, payload)
+}
+
+func planLive(cmd *cobra.Command, opts *RootOptions, printer *Printer, name string) error {
+	c, err := opts.LiveClient()
+	if err != nil {
+		return err
+	}
+	ctx := cmd.Context()
+	run, err := liveGetRun(ctx, c, opts.Namespace, name)
+	if err != nil {
+		return err
+	}
+	var reservationName string
+	if run.Status.PendingReservation != nil {
+		reservationName = *run.Status.PendingReservation
+	}
+	reservation, err := liveGetReservation(ctx, c, opts.Namespace, reservationName)
+	if err != nil {
+		return err
+	}
+	state := reservationLookupState(opts.Namespace, reservation)
+	payload := buildPlanPayload(state, opts, run)
+	return printer.Print(cmd, opts, payload)
 }
 
 func buildPlanPayload(state *controllers.ClusterState, opts *RootOptions, run *v1.Run) Payload {
@@ -51,10 +81,10 @@ func buildPlanPayload(state *controllers.ClusterState, opts *RootOptions, run *v
 		if run.Status.EarliestStart != nil {
 			rows = append(rows, []string{"EarliestStart", run.Status.EarliestStart.Format(time.RFC3339)})
 		}
-		if reservation != nil && reservation.Status.Forecast.DeficitGPUs > 0 {
+		if reservation != nil && reservation.Status.Forecast != nil && reservation.Status.Forecast.DeficitGPUs > 0 {
 			rows = append(rows, []string{"Deficit", fmt.Sprintf("%d GPUs", reservation.Status.Forecast.DeficitGPUs)})
 		}
-		if reservation != nil && reservation.Status.Forecast.Confidence != "" {
+		if reservation != nil && reservation.Status.Forecast != nil && reservation.Status.Forecast.Confidence != "" {
 			rows = append(rows, []string{"Confidence", reservation.Status.Forecast.Confidence})
 		}
 	}
