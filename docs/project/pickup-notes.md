@@ -32,22 +32,43 @@ Green locally at merge time: `go test -race ./...`, `make antifake`,
 - `hack/e2e/grow-smoke.sh` — malleable run grows 2→4, plugin funds the delta cohort.
 - `hack/e2e/swap-smoke.sh` — node-failure swap onto a held spare, provenance preserved.
 
-## CI status to verify Monday morning
+## CI status — #40 worked, and it surfaced the NEXT failure (Monday item #1)
 
-The #40 fix unblocks the `kind e2e` job, which had **never run to completion in
-CI** before. So downstream steps (`kind-up`, image build, chart install,
-`test/e2e`) are running in CI for the first time. **Check the latest `e2e`
-workflow run on `main`:**
+The post-merge `e2e` run on `main` (`cb5d938`) confirmed the #40 fix: the job now
+gets **past the previously-broken Install-kind step for the first time ever**.
+Steps that had never run in CI now pass:
 
-- If green: the whole e2e rail is finally live — nothing to do.
-- If Install-kind now passes but a *later* step fails: that is newly-visible real
-  signal (not a regression), previously masked by the broken install step. Fix
-  it as its own small PR. `test/e2e` has 3 documented expected skips (blocked on
-  JOBSET — see `test/e2e/completion_test.go`, `follow_test.go`); those are fine.
+- ✅ Install kind · ✅ kind-up · ✅ Build and load the **manager** image into kind
 
-_(This section's result was being watched at hand-off; if the run had finished it
-would be recorded here — otherwise `gh run list --workflow=e2e.yaml --branch=main
---limit=1` shows it.)_
+It then fails at the next step — **newly-visible real signal, not a regression**:
+
+- ❌ **Install the real chart** — `helm ... Error: context deadline exceeded`,
+  because the **scheduler** pod is stuck `ErrImagePull` on
+  `jobtree-scheduler:e2e-local`. That image is never built/loaded into kind.
+- ⏭️ `test/e2e` skipped (chart install failed first).
+
+**Root cause + fix (small, well-scoped):** the CI workflow's "Build and load the
+manager image" step runs `make e2e-image`, which builds + `kind load`s only
+`$E2E_IMAGE` (the manager). It does **not** build/load `$E2E_SCHEDULER_IMAGE`
+(`jobtree-scheduler:e2e-local`, built from `Dockerfile.scheduler`) — even though
+`hack/e2e/run-e2e.sh:42-47` does exactly that. Fix: add the scheduler build +
+`kind load` to the `e2e-image` Makefile target, mirroring `run-e2e.sh`:
+
+```make
+e2e-image:
+	@set -a; . hack/e2e/versions.env; set +a; \
+	echo "Building $$E2E_IMAGE"; \
+	docker build -t "$$E2E_IMAGE" .; \
+	echo "Building $$E2E_SCHEDULER_IMAGE"; \
+	docker build -f Dockerfile.scheduler -t "$$E2E_SCHEDULER_IMAGE" .; \
+	kind load docker-image "$$E2E_IMAGE" --name "$$KIND_CLUSTER_NAME"; \
+	kind load docker-image "$$E2E_SCHEDULER_IMAGE" --name "$$KIND_CLUSTER_NAME"
+```
+
+Expect this to advance the job to `test/e2e`, which then runs in CI for the first
+time — it may reveal a further never-run failure (fix as its own small PR). Note
+`test/e2e` has 3 documented expected skips (blocked on JOBSET — see
+`test/e2e/completion_test.go`, `follow_test.go`); those are fine.
 
 ## Where to pick up next (ranked by value)
 
