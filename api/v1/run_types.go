@@ -71,6 +71,18 @@ type RunStatus struct {
 	EarliestStart      *metav1.Time      `json:"earliestStart,omitempty"`
 	Width              *RunWidthStatus   `json:"width,omitempty"`
 	Funding            *RunFundingStatus `json:"funding,omitempty"`
+	ETA                *RunETA           `json:"eta,omitempty"`
+}
+
+// RunETA is an optional, best-effort estimate of when the run will finish. It
+// is observability only — nothing in scheduling reads it and there is no
+// penalty for omitting it. The workload reports it (a pod annotation the
+// controller mirrors, source "job"); the CLI can set it directly (source
+// "controller").
+type RunETA struct {
+	EstimatedCompletion metav1.Time `json:"estimatedCompletion"`
+	ReportedAt          metav1.Time `json:"reportedAt,omitempty"`
+	Source              string      `json:"source,omitempty"`
 }
 
 // RunWidthStatus summarises elastic width bookkeeping.
