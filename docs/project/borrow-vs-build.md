@@ -159,6 +159,62 @@ If any of 1–3 prove too lossy, the fallback is a **narrow Option A for the pod
 still be a scheduler plugin) — i.e., keep the scheduler decision, drop the JobSet borrow. That's why
 decision #1 (scheduler plugin) is independent of and safe ahead of the JobSet question.
 
+## 6.1 Validation outcome (2026-07-04, citation-backed) — C confirmed
+
+A research pass validated §6 against current (2025–2026) Kubernetes. **Verdict: Option C is
+feasible-with-specific-caveats; no showstopper forces the Option-A fallback.** Owner decision: **do C;
+if JobSet lacks something we need, fork it and add it there rather than invent from scratch.** Details:
+
+- **The big new fact this doc predated: native in-tree Workload-Aware Scheduling.** kube-scheduler is
+  growing first-class gang scheduling (`Workload`/`PodGroup`, `.spec.schedulingGroup`,
+  `gang.minCount`) **and** workload-aware preemption (KEP-4671/5547/5710; alpha in k8s 1.35, advancing
+  in 1.36), explicitly to unify the coscheduling/Kueue/Volcano split. This **strengthens** C — the
+  ecosystem is standardizing on "scheduler treats a workload as one gang," exactly our model. Build our
+  own funding-aware **Permit** gate now; compose with WAS later. (Q1 de-risked.)
+- **Q1 gang gating: FEASIBLE (high).** Framework `Permit` (Approve/Deny/**Wait**) + walking the waiting-
+  pods list to `Allow`/`Reject` a whole set atomically is exactly this; coscheduling does it per
+  `PodGroup` via Permit. Correction: **Kueue does NOT use Permit** — it gates by keeping the Job
+  `.spec.suspend=true` and leaves placement to kube-scheduler; **our design is the coscheduling/WAS
+  Permit path, not Kueue's.**
+- **Q2 elastic width: FEASIBLE with a real constraint.** JobSet v0.12.0 (2026-05) shipped elastic
+  pod-level scaling (mutable child-Job `parallelism`, KEP-463). **So model a role's width as one Indexed
+  Job with `parallelism = width` (replicas=1)** — then `malleable` maps to live `parallelism`, and a
+  single pod failure is replaced pod-granularly by the Job controller. Scaling `replicatedJobs[].replicas`
+  (the *count* of Jobs) stays immutable (JobSet non-goal). For persistent **serving/sampler** roles that
+  must resize+roll live, **LWS** (has an HPA `scale` subresource) is the better per-role primitive —
+  draw the training-Job vs serving-LWS line per role.
+- **Q3 spare-swap: FEASIBLE** — "scheduling re-decides" is not a loss because **we are the scheduler**;
+  the replacement pod carries role/index labels, so Filter/Score steers it onto the pre-held spare,
+  provided we persist the held slot across churn (our reconciler already owns that). JobSet v0.12 also
+  added single-Job `RestartJob` (no longer only whole-JobSet recreate). `podReplacementPolicy` GA'd 1.34.
+- **Q4 per-pod leases: FEASIBLE (clean)** — write the Lease CR at PreBind/Bind/PostBind; reconcile via
+  ownerRefs; non-atomic so make idempotent. Least risky of the six.
+- **Q5 reclaim = preemption: mechanism fits, ONE semantic gap.** Custom PostFilter can do
+  "unfunded-first/owner-recall" victim ordering. BUT **"demote-not-kill" is NOT scheduler preemption**
+  (preemption *deletes* victims; there is no "keep running, reprice the lease"), and **replay-determinism
+  lives in our `pkg/resolver` + lease ledger, not the framework.** So the pattern is: **jobtree's
+  resolver decides (deterministic, logged) → a controller evicts (or PostFilter evicts) → the Permit gate
+  re-gates freed capacity.** Demotion stays a jobtree controller action. (This is the doc's own preferred
+  path — now the confirmed one.)
+- **Q6 DRA: target it, keep the fallback.** Core **DRA is GA and default-on in k8s 1.34** (structured
+  parameters let a custom scheduler reason about ResourceClaims/Slices natively, incl. multi-node
+  NVLink/GB200 topology). But the NVIDIA DRA driver is still ~v0.x and the classic `nvidia.com/gpu`
+  device plugin dominates the installed base — so build the resource model around DRA, keep a
+  `nvidia.com/gpu` fallback until target clusters are ≥1.34 with the DRA driver.
+- **External validation of the whole thesis:** **Kubeflow Trainer v2 (`TrainJob`) is built on JobSet**
+  (KEP-2170) — the ML ecosystem is standardizing on JobSet as the workload substrate, so lowering to
+  JobSet buys ecosystem alignment, not just a borrowed controller. And **Volcano `vcjob` bundles its own
+  scheduler**, which collides with "we are the scheduler" — a poorer fit than JobSet-as-body.
+- **Honest caveat on the moat:** Kueue now has **Topology-Aware Scheduling** (beta, default-on v0.14)
+  and **ProvisioningRequest**; the "stronger than TAS" gap is closing. But Option B is still correctly
+  rejected: Kueue admits at the Workload level and cedes pod placement to kube-scheduler, so it
+  *structurally* cannot do our pod-granular topology packing + per-pod leases. C and B aren't exclusive —
+  jobtree could still let Kueue own queue/quota while our plugin owns placement, if ever attractive.
+
+**Net: proceed with C on the sequencing in §8. The only thing that pushes to narrow-Option-A is if
+parallelism-as-width (Q2) or held-slot persistence (Q3) proves too lossy in the spike — neither looks
+blocking.**
+
 ## 7. Impact on the near-term plan
 
 This supersedes parts of `plan-workload-podspec.md`:
