@@ -1485,28 +1485,46 @@ func expectedSpareTotal(run *v1.Run, plan *pack.Plan) int32 {
 // tops up the pods that do not yet exist.
 func (c *RunController) emitIntentPods(run *v1.Run, packPlan pack.Plan) int {
 	gpusPerPod, width := intentPodShape(run)
-	if gpusPerPod <= 0 || width <= 0 {
+	return c.emitCohortPods(run, flattenPackNodes(packPlan), gpusPerPod, width, "0", "Start")
+}
+
+// emitCohortPods tops up one cohort of a run to `count` uniform, unscheduled
+// Active intent pods (gpusPerPod each) for the scheduler plugin to place and
+// fund. Cohort "0" is the base gang; each elastic-grow step uses "1","2",… so
+// the plugin gangs and funds that delta separately from the base. Idempotent per
+// cohort; returns how many pods it created this pass.
+func (c *RunController) emitCohortPods(run *v1.Run, advisory []string, gpusPerPod, count int, cohort, reason string) int {
+	if gpusPerPod <= 0 || count <= 0 {
 		return 0
 	}
 	existing := 0
 	for i := range c.State.Pods {
 		p := &c.State.Pods[i]
-		if p.Namespace == run.Namespace && p.Labels[binder.LabelRunName] == run.Name && p.Labels[binder.LabelRunRole] == binder.RoleActive {
+		if p.Namespace == run.Namespace && p.Labels[binder.LabelRunName] == run.Name &&
+			p.Labels[binder.LabelRunRole] == binder.RoleActive && podCohort(p) == cohort {
 			existing++
 		}
 	}
-	advisory := flattenPackNodes(packPlan)
-	widthStr := strconv.Itoa(width)
+	countStr := strconv.Itoa(count)
 	created := 0
-	for i := existing; i < width; i++ {
+	for i := existing; i < count; i++ {
 		node := ""
 		if len(advisory) > 0 {
 			node = advisory[i%len(advisory)]
 		}
 		created++
+		name := fmt.Sprintf("%s-active-%d", run.Name, i)
+		annotations := map[string]string{
+			binder.AnnotationExpectedWidth: countStr,
+			binder.AnnotationLeaseReason:   reason,
+		}
+		if cohort != "0" {
+			name = fmt.Sprintf("%s-c%s-active-%d", run.Name, cohort, i)
+			annotations[binder.AnnotationCohort] = cohort
+		}
 		c.State.Pods = append(c.State.Pods, binder.PodManifest{
 			Namespace: run.Namespace,
-			Name:      fmt.Sprintf("%s-active-%d", run.Name, i),
+			Name:      name,
 			NodeName:  node, // advisory only; the bridge turns this into soft affinity
 			GPUs:      gpusPerPod,
 			Labels: map[string]string{
@@ -1514,13 +1532,32 @@ func (c *RunController) emitIntentPods(run *v1.Run, packPlan pack.Plan) int {
 				binder.LabelRunRole:    binder.RoleActive,
 				binder.LabelGroupIndex: "0",
 			},
-			Annotations: map[string]string{
-				binder.AnnotationExpectedWidth: widthStr,
-				binder.AnnotationLeaseReason:   "Start",
-			},
+			Annotations: annotations,
 		})
 	}
 	return created
+}
+
+// podCohort returns a pod manifest's cohort ("0" for the base gang).
+func podCohort(p *binder.PodManifest) string {
+	if c := p.Annotations[binder.AnnotationCohort]; c != "" {
+		return c
+	}
+	return "0"
+}
+
+// nextCohortForRun is the next elastic-grow cohort number for a run (base is 0).
+func nextCohortForRun(pods []binder.PodManifest, run *v1.Run) int {
+	maxC := 0
+	for i := range pods {
+		p := &pods[i]
+		if p.Namespace == run.Namespace && p.Labels[binder.LabelRunName] == run.Name {
+			if n, err := strconv.Atoi(podCohort(p)); err == nil && n > maxC {
+				maxC = n
+			}
+		}
+	}
+	return maxC + 1
 }
 
 // intentPodShape returns the uniform (gpusPerPod, width) an intent gang emits.
@@ -1558,6 +1595,10 @@ func (c *RunController) reconcileElasticRun(run *v1.Run, snapshot *topology.Snap
 	if run.Status.Width != nil {
 		run.Status.Width.Pending = ""
 	}
+	// The elastic-width gauge reflects the CURRENT allocated width every pass.
+	// A grow now mints asynchronously (the plugin funds the grow cohort), so the
+	// gauge advances when those leases land, not the instant grow is requested.
+	metrics.SetElasticWidth(keys.NamespacedKey(run.Namespace, run.Name), float64(allocated))
 
 	if desired > allocated {
 		growBy := desired - allocated
@@ -1568,7 +1609,7 @@ func (c *RunController) reconcileElasticRun(run *v1.Run, snapshot *topology.Snap
 		if growBy <= 0 {
 			return nil
 		}
-		if err := c.growRun(run, snapshot, inventory, now, int(growBy)); err != nil {
+		if err := c.growRun(run, snapshot, now, int(growBy)); err != nil {
 			if run.Status.Width == nil {
 				run.Status.Width = width
 			}
@@ -1609,78 +1650,39 @@ func (c *RunController) reconcileElasticRun(run *v1.Run, snapshot *topology.Snap
 	return nil
 }
 
-func (c *RunController) growRun(run *v1.Run, snapshot *topology.Snapshot, inventory *cover.Inventory, now time.Time, add int) error {
+func (c *RunController) growRun(run *v1.Run, snapshot *topology.Snapshot, now time.Time, add int) error {
 	if add <= 0 {
 		return nil
 	}
+	gpusPerPod, _ := intentPodShape(run)
+	if gpusPerPod <= 0 || add%gpusPerPod != 0 {
+		return fmt.Errorf("grow delta %d is not a multiple of gpusPerPod %d", add, gpusPerPod)
+	}
 
-	allowSpread := run.Spec.AllowCrossGroupSpread()
 	var groupSize *int
 	if run.Spec.Locality != nil && run.Spec.Locality.GroupGPUs != nil {
 		value := int(*run.Spec.Locality.GroupGPUs)
 		groupSize = &value
 	}
-	spares := 0
-	if run.Spec.Spares != nil && *run.Spec.Spares > 0 {
-		spares = int(*run.Spec.Spares)
-	}
-
+	// Pack only the delta (no new spares — spares are established at the base)
+	// for the advisory placement hint and to confirm the delta can fit now.
 	plan, err := pack.Planner(snapshot, pack.Request{
 		Flavor:                run.Spec.Resources.GPUType,
 		TotalGPUs:             add,
 		GroupGPUs:             groupSize,
-		AllowCrossGroupSpread: allowSpread,
-		SparesPerGroup:        spares,
+		AllowCrossGroupSpread: run.Spec.AllowCrossGroupSpread(),
+		SparesPerGroup:        0,
 	})
 	if err != nil {
 		return err
 	}
 
-	quantity := add + plan.TotalSpares
-	request := cover.Request{
-		Owner:       run.Spec.Owner,
-		Flavor:      run.Spec.Resources.GPUType,
-		Quantity:    int32(quantity),
-		Location:    deriveLocation(plan),
-		Now:         now,
-		Admitted:    run.CreationTimestamp.Time,
-		RunKey:      keys.NamespacedKey(run.Namespace, run.Name),
-		AllowBorrow: run.Spec.Funding != nil && run.Spec.Funding.AllowBorrow,
-	}
-	if run.Spec.Funding != nil {
-		request.Sponsors = append(request.Sponsors, run.Spec.Funding.Sponsors...)
-		if run.Spec.Funding.MaxBorrowGPUs != nil {
-			remaining := *run.Spec.Funding.MaxBorrowGPUs - borrowedGPUsForRun(c.evaluate(now), run)
-			if remaining < 0 {
-				remaining = 0
-			}
-			request.MaxBorrowGPUs = &remaining
-		}
-	}
-
-	coverPlan, err := inventory.Plan(request)
-	if err != nil {
-		return err
-	}
-
-	runKey := keys.NamespacedKey(run.Namespace, run.Name)
-	offset := maxGroupIndexForRun(runKey, c.State.Leases) + 1
-	result, err := binder.Materialize(binder.Request{
-		Run:              run.DeepCopy(),
-		CoverPlan:        coverPlan,
-		PackPlan:         plan,
-		Now:              now,
-		GroupIndexOffset: offset,
-		LeaseReason:      "Grow",
-		NameSeed:         leaseSeqBase(runKey, c.State.Leases),
-	})
-	if err != nil {
-		return err
-	}
-
-	c.State.Pods = append(c.State.Pods, result.Pods...)
-	c.State.Leases = append(c.State.Leases, result.Leases...)
-	run.Status.Funding = summarizeRunFunding(run, c.evaluate(now))
+	// Emit the delta as a NEW cohort of unscheduled intent pods. The scheduler
+	// plugin gangs and funds that cohort's delta incrementally against the live
+	// ledger (which already holds the base leases) and mints "Grow" leases; the
+	// run's width grows from those leases. The controller mints nothing.
+	cohort := strconv.Itoa(nextCohortForRun(c.State.Pods, run))
+	c.emitCohortPods(run, flattenPackNodes(plan), gpusPerPod, add/gpusPerPod, cohort, "Grow")
 	return nil
 }
 
@@ -1924,33 +1926,6 @@ func (c *RunController) removePodsForGroups(runKey string, groups map[string]str
 		pods = append(pods, pod)
 	}
 	c.State.Pods = pods
-}
-
-func maxGroupIndexForRun(runKey string, leases []v1.Lease) int {
-	maxIdx := -1
-	for i := range leases {
-		lease := &leases[i]
-		if lease.Status.Closed {
-			continue
-		}
-		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
-			continue
-		}
-		idxStr := "0"
-		if lease.Labels != nil {
-			if val, ok := lease.Labels[binder.LabelGroupIndex]; ok {
-				idxStr = val
-			}
-		}
-		idx, err := strconv.Atoi(idxStr)
-		if err != nil {
-			continue
-		}
-		if idx > maxIdx {
-			maxIdx = idx
-		}
-	}
-	return maxIdx
 }
 
 func leaseContainsNode(lease *v1.Lease, node string) bool {

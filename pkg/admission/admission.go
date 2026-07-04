@@ -14,9 +14,9 @@
 // the single-committer design (docs/project/borrow-vs-build.md §9), that logic
 // moves here; the controller keeps only lifecycle, forecast, and reclaim. The
 // small helpers below (computeUsage, planPlacement, deriveLocation,
-// expectedSpareTotal, leaseSeqBase, borrowedGPUsForRun) are moved copies of the
-// controller's private helpers; the controller's admission-only copies are
-// deleted in the P2b cutover.
+// leaseSeqBase, borrowedGPUsForRun) are moved copies of the controller's private
+// helpers; the controller's admission-only copies are deleted in the P2b
+// cutover.
 package admission
 
 import (
@@ -46,6 +46,12 @@ type Input struct {
 	// Reason is the LeaseReason stamped on minted leases (Start/Grow/Swap/...).
 	// Empty defaults to "Start" (binder.Materialize's default).
 	Reason string
+	// Quantity, when > 0, funds exactly this many GPUs against the live ledger
+	// (no spares added) instead of the run's full Resources.TotalGPUs+spares.
+	// The plugin passes it for an elastic-grow cohort so the DELTA is funded
+	// incrementally on top of the base leases already in the ledger, rather than
+	// re-funding the whole run.
+	Quantity int32
 }
 
 // Result is an admittable gang's committed plan: the topology placement, the
@@ -80,7 +86,17 @@ func Feasible(in Input) (pack.Plan, cover.Plan, *funding.Evaluation, error) {
 		return pack.Plan{}, cover.Plan{}, nil, err
 	}
 
-	packPlan, err := planPlacement(run, snapshot)
+	// A grow cohort funds an explicit DELTA (no new spares) against the ledger
+	// that already holds the base leases; the base gang funds the full run plus
+	// its spares.
+	totalGPUs := int(run.Spec.Resources.TotalGPUs)
+	spares := runSpares(run)
+	if in.Quantity > 0 {
+		totalGPUs = int(in.Quantity)
+		spares = 0
+	}
+
+	packPlan, err := planPlacement(run, snapshot, totalGPUs, spares)
 	if err != nil {
 		return pack.Plan{}, cover.Plan{}, nil, err
 	}
@@ -97,7 +113,7 @@ func Feasible(in Input) (pack.Plan, cover.Plan, *funding.Evaluation, error) {
 	request := cover.Request{
 		Owner:       run.Spec.Owner,
 		Flavor:      run.Spec.Resources.GPUType,
-		Quantity:    run.Spec.Resources.TotalGPUs + expectedSpareTotal(run, &packPlan),
+		Quantity:    int32(totalGPUs) + int32(packPlan.TotalSpares),
 		Location:    deriveLocation(packPlan),
 		Now:         in.Now,
 		Admitted:    run.CreationTimestamp.Time,
@@ -209,23 +225,27 @@ func PodLease(run *v1.Run, seg cover.Segment, node string, gpusPerPod int, name 
 
 // --- helpers moved from controllers/run_controller.go (admission-only) ---
 
-func planPlacement(run *v1.Run, snapshot *topology.Snapshot) (pack.Plan, error) {
+func planPlacement(run *v1.Run, snapshot *topology.Snapshot, totalGPUs, spares int) (pack.Plan, error) {
 	var groupSize *int
 	if run.Spec.Locality != nil && run.Spec.Locality.GroupGPUs != nil {
 		value := int(*run.Spec.Locality.GroupGPUs)
 		groupSize = &value
 	}
-	spares := 0
-	if run.Spec.Spares != nil {
-		spares = int(*run.Spec.Spares)
-	}
 	return pack.Planner(snapshot, pack.Request{
 		Flavor:                run.Spec.Resources.GPUType,
-		TotalGPUs:             int(run.Spec.Resources.TotalGPUs),
+		TotalGPUs:             totalGPUs,
 		GroupGPUs:             groupSize,
 		AllowCrossGroupSpread: run.Spec.AllowCrossGroupSpread(),
 		SparesPerGroup:        spares,
 	})
+}
+
+// runSpares is the run's declared per-group spare count (0 if none).
+func runSpares(run *v1.Run) int {
+	if run.Spec.Spares != nil && *run.Spec.Spares > 0 {
+		return int(*run.Spec.Spares)
+	}
+	return 0
 }
 
 func deriveLocation(plan pack.Plan) map[string]string {
@@ -238,23 +258,6 @@ func deriveLocation(plan pack.Plan) map[string]string {
 		topology.LabelCluster:      first.Cluster,
 		topology.LabelFabricDomain: first.Fabric,
 	}
-}
-
-func expectedSpareTotal(run *v1.Run, plan *pack.Plan) int32 {
-	if plan != nil {
-		return int32(plan.TotalSpares)
-	}
-	if run.Spec.Spares == nil || *run.Spec.Spares <= 0 {
-		return 0
-	}
-	spares := *run.Spec.Spares
-	groups := int32(1)
-	if run.Spec.Locality != nil && run.Spec.Locality.GroupGPUs != nil && *run.Spec.Locality.GroupGPUs > 0 {
-		groupSize := *run.Spec.Locality.GroupGPUs
-		total := run.Spec.Resources.TotalGPUs
-		groups = (total + groupSize - 1) / groupSize
-	}
-	return spares * groups
 }
 
 func computeUsage(leases []v1.Lease, now time.Time) map[string]int {

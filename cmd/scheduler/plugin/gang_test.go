@@ -136,6 +136,61 @@ func TestGangDecideUnfundableNoBudget(t *testing.T) {
 	}
 }
 
+// A grow cohort is a distinct gang from the base and funds its DELTA against the
+// live ledger (which already holds the base lease), so growing a run does not
+// re-gate the whole run.
+func TestGangKeyCohort(t *testing.T) {
+	base := gangPod()
+	grow := gangPod()
+	grow.Name = "train-c1-pod-0"
+	grow.Annotations[binder.AnnotationCohort] = "1"
+
+	if gangKey(base) == gangKey(grow) {
+		t.Errorf("base and grow cohort must have distinct gang keys, both %q", gangKey(base))
+	}
+	if isGrowCohort(base) {
+		t.Errorf("base pod (no cohort) must not be a grow cohort")
+	}
+	if !isGrowCohort(grow) {
+		t.Errorf("cohort=1 pod must be a grow cohort")
+	}
+	// cohort "0" is explicitly the base.
+	base0 := gangPod()
+	base0.Annotations[binder.AnnotationCohort] = "0"
+	if gangKey(base0) != gangKey(base) || isGrowCohort(base0) {
+		t.Errorf("cohort 0 must be treated as the base gang")
+	}
+}
+
+// decide funds a grow cohort's delta incrementally: with the base run's lease
+// already on an 8-GPU node, a +4 grow cohort funds against the remaining 4.
+func TestGangDecideGrowCohortFundsDelta(t *testing.T) {
+	baseLease := &v1.Lease{
+		ObjectMeta: v1.ObjectMeta{Name: "train-base-lease", Namespace: "default"},
+		Spec: v1.LeaseSpec{
+			Owner:          "org:ai:team",
+			RunRef:         v1.RunReference{Name: "train", Namespace: "default"},
+			Slice:          v1.LeaseSlice{Nodes: []string{"node-a#0", "node-a#1", "node-a#2", "node-a#3"}, Role: binder.RoleActive},
+			PaidByBudget:   "team",
+			PaidByEnvelope: "west",
+			Reason:         "Start",
+		},
+	}
+	m := newManager(t, trainRun(), teamBudget(8), gpuNode("node-a", 8), baseLease)
+
+	grow := gangPod()
+	grow.Name = "train-c1-pod-0"
+	grow.Annotations[binder.AnnotationCohort] = "1"
+
+	fundable, reason := m.decide(context.Background(), grow)
+	if !fundable {
+		t.Fatalf("expected the +4 grow cohort to fund against the free 4 GPUs, got: %s", reason)
+	}
+	if _, _, ok := m.claimPayer(grow); !ok {
+		t.Errorf("grow cohort should hand out a payer")
+	}
+}
+
 // forget clears an undecided/unclaimed gang so a retry re-derives; it must not
 // drop a gang that has already handed out a payer (its lease is being minted).
 func TestGangForget(t *testing.T) {

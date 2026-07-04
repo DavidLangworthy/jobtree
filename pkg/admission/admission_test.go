@@ -200,6 +200,95 @@ func TestPerPodPayerAttributesOwnedBeforeBorrowed(t *testing.T) {
 	}
 }
 
+// Incremental delta funding (elastic grow): with the base leases already in the
+// ledger, Feasible(Quantity=delta) funds ONLY the delta on top — not the whole
+// run again — so a grow cohort is funded incrementally.
+func TestFeasibleQuantityFundsDeltaOnly(t *testing.T) {
+	now := time.Date(2024, 2, 2, 10, 0, 0, 0, time.UTC)
+	build := func() Input {
+		in := Input{
+			Now: now,
+			Budgets: []v1.Budget{{
+				ObjectMeta: v1.ObjectMeta{Name: "team"},
+				Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
+					Name: "west", Flavor: "H100-80GB", Selector: sel(), Concurrency: 128,
+				}}},
+			}},
+			Run: &v1.Run{
+				ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"},
+				Spec: v1.RunSpec{Owner: "org:ai:rai", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 96},
+					Locality: &v1.RunLocality{GroupGPUs: i32(32)}},
+			},
+		}
+		for k := 0; k < 4; k++ {
+			in.Nodes = append(in.Nodes, node(fmt.Sprintf("node-%d", k), 32))
+		}
+		in.Runs = map[string]*v1.Run{"default/train": in.Run}
+		return in
+	}
+
+	// Base: fund the full run (96) and mint its leases into the ledger.
+	base := build()
+	baseRes, err := Plan(base)
+	if err != nil {
+		t.Fatalf("base admission: %v", err)
+	}
+	if totalGPUs(baseRes.Leases) != 96 {
+		t.Fatalf("base leases = %d GPUs, want 96", totalGPUs(baseRes.Leases))
+	}
+
+	// Grow: with the 96 base leases in the ledger, fund a +32 delta only.
+	grow := build()
+	grow.Leases = baseRes.Leases
+	grow.Quantity = 32
+	grow.Reason = "Grow"
+	growRes, err := Plan(grow)
+	if err != nil {
+		t.Fatalf("grow admission (delta funding): %v", err)
+	}
+	if got := totalGPUs(growRes.Leases); got != 32 {
+		t.Errorf("grow leases = %d GPUs, want exactly the 32 delta (not the full run)", got)
+	}
+	for _, l := range growRes.Leases {
+		if l.Spec.Reason != "Grow" {
+			t.Errorf("grow lease reason = %q, want Grow", l.Spec.Reason)
+		}
+	}
+}
+
+// A grow that exceeds the budget's remaining headroom is not fundable: the
+// envelope has room for the base but not the delta.
+func TestFeasibleQuantityDeltaRespectsBudget(t *testing.T) {
+	now := time.Date(2024, 2, 2, 10, 0, 0, 0, time.UTC)
+	in := Input{
+		Now: now,
+		Budgets: []v1.Budget{{
+			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
+				Name: "west", Flavor: "H100-80GB", Selector: sel(), Concurrency: 96, // exactly the base
+			}}},
+		}},
+		Run: &v1.Run{
+			ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"},
+			Spec: v1.RunSpec{Owner: "org:ai:rai", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 96},
+				Locality: &v1.RunLocality{GroupGPUs: i32(32)}},
+		},
+	}
+	for k := 0; k < 4; k++ {
+		in.Nodes = append(in.Nodes, node(fmt.Sprintf("node-%d", k), 32))
+	}
+	in.Runs = map[string]*v1.Run{"default/train": in.Run}
+	baseRes, err := Plan(in)
+	if err != nil {
+		t.Fatalf("base admission: %v", err)
+	}
+	in.Leases = baseRes.Leases
+	in.Quantity = 32 // budget of 96 is fully consumed by the base
+	if _, _, _, err := Feasible(in); err == nil {
+		t.Fatalf("expected the +32 grow to be unfundable (budget of 96 exhausted by the base)")
+	}
+}
+
 // capacity-missing: budget has headroom but the cluster is too small; pack fails
 // → Plan errors, the caller's signal to reserve.
 func TestPlanCapacityMissingErrors(t *testing.T) {
