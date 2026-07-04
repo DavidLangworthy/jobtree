@@ -3,99 +3,49 @@
   "runs": [
     {
       "key": "default/run",
-      "phase": "Running",
-      "message": "group 0 swapped to spare after node node-a failure",
+      "phase": "Pending",
+      "message": "scheduling 4 GPUs (awaiting the jobtree scheduler)",
       "width": {
         "Min": 4,
         "Max": 4,
         "Desired": 4,
-        "Allocated": 4
-      },
-      "funding": {
-        "OwnedGPUs": 4,
-        "SharedGPUs": 0,
-        "BorrowedGPUs": 0,
-        "UnfundedGPUs": 0
+        "Allocated": 0
       }
     }
   ],
-  "leases": [
-    {
-      "owner": "org:ai:other",
-      "run": "default/filler",
-      "paidByEnvelope": "west",
-      "gpus": 2,
-      "role": "Active",
-      "nodes": [
-        "node-b#0",
-        "node-b#1"
-      ],
-      "reason": "Start",
-      "closed": true,
-      "closureReason": "ReclaimedBySpare"
-    },
-    {
-      "owner": "org:ai:team",
-      "run": "default/run",
-      "paidByBudget": "team",
-      "paidByEnvelope": "west",
-      "gpus": 4,
-      "role": "Active",
-      "nodes": [
-        "node-a#0",
-        "node-a#1",
-        "node-a#2",
-        "node-a#3"
-      ],
-      "reason": "Start",
-      "closed": true,
-      "closureReason": "NodeFailure"
-    },
-    {
-      "owner": "org:ai:team",
-      "run": "default/run",
-      "paidByBudget": "team",
-      "paidByEnvelope": "west",
-      "gpus": 2,
-      "role": "Active",
-      "nodes": [
-        "node-b#0",
-        "node-b#1"
-      ],
-      "reason": "Swap"
-    },
-    {
-      "owner": "org:ai:team",
-      "run": "default/run",
-      "paidByBudget": "team",
-      "paidByEnvelope": "west",
-      "gpus": 2,
-      "role": "Spare",
-      "nodes": [
-        "node-b#0",
-        "node-b#1"
-      ],
-      "reason": "Start",
-      "closed": true,
-      "closureReason": "Swap"
-    }
-  ],
+  "leases": null,
   "pods": [
     {
-      "key": "default/filler",
-      "run": "filler",
-      "role": "Active",
-      "group": "0",
-      "gpus": 2,
-      "nodeName": "node-b"
-    },
-    {
-      "key": "default/run-g0-swap-node-b",
+      "key": "default/run-active-0",
       "run": "run",
       "role": "Active",
       "group": "0",
-      "gpus": 2,
-      "nodeName": "node-b"
+      "gpus": 1,
+      "nodeName": "node-a"
+    },
+    {
+      "key": "default/run-active-1",
+      "run": "run",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-a"
+    },
+    {
+      "key": "default/run-active-2",
+      "run": "run",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-a"
+    },
+    {
+      "key": "default/run-active-3",
+      "run": "run",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-a"
     }
   ]
 }

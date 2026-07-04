@@ -3,46 +3,48 @@
   "runs": [
     {
       "key": "default/train-8",
-      "phase": "Running",
-      "message": "bound 4 GPUs",
+      "phase": "Pending",
+      "message": "scheduling 4 GPUs (awaiting the jobtree scheduler)",
       "width": {
         "Min": 4,
         "Max": 4,
         "Desired": 4,
-        "Allocated": 4
-      },
-      "funding": {
-        "OwnedGPUs": 4,
-        "SharedGPUs": 0,
-        "BorrowedGPUs": 0,
-        "UnfundedGPUs": 0
+        "Allocated": 0
       }
     }
   ],
-  "leases": [
-    {
-      "owner": "org:ai:rai",
-      "run": "default/train-8",
-      "paidByBudget": "rai",
-      "paidByEnvelope": "west-h100",
-      "gpus": 4,
-      "role": "Active",
-      "nodes": [
-        "node-a#0",
-        "node-a#1",
-        "node-a#2",
-        "node-a#3"
-      ],
-      "reason": "Start"
-    }
-  ],
+  "leases": null,
   "pods": [
     {
-      "key": "default/train-8-g00-active-node-a-0",
+      "key": "default/train-8-active-0",
       "run": "train-8",
       "role": "Active",
       "group": "0",
-      "gpus": 4,
+      "gpus": 1,
+      "nodeName": "node-a"
+    },
+    {
+      "key": "default/train-8-active-1",
+      "run": "train-8",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-a"
+    },
+    {
+      "key": "default/train-8-active-2",
+      "run": "train-8",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-a"
+    },
+    {
+      "key": "default/train-8-active-3",
+      "run": "train-8",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
       "nodeName": "node-a"
     }
   ]
