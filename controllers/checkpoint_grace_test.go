@@ -53,9 +53,10 @@ func TestHandleNodeFailureWithoutSpareRespectsCheckpoint(t *testing.T) {
 	t.Run("no checkpoint fails immediately", func(t *testing.T) {
 		state, _ := checkpointFixtureState(0)
 		controller := NewRunController(state, runClock{now: now})
-		if err := controller.Reconcile("default", "run"); err != nil {
-			t.Fatalf("reconcile: %v", err)
-		}
+		// SETUP: the scheduler plugin binds now, so stand in for it and put an
+		// active lease on node-a (Reconcile no longer binds on the admission
+		// path). HandleNodeFailure needs that active lease to act on.
+		seedRunning(t, state, "default/run", now)
 		if err := controller.HandleNodeFailure("node-a", now); err != nil {
 			t.Fatalf("handle node failure: %v", err)
 		}
@@ -71,9 +72,9 @@ func TestHandleNodeFailureWithoutSpareRespectsCheckpoint(t *testing.T) {
 	t.Run("checkpoint grants a grace window", func(t *testing.T) {
 		state, _ := checkpointFixtureState(10 * time.Minute)
 		controller := NewRunController(state, runClock{now: now})
-		if err := controller.Reconcile("default", "run"); err != nil {
-			t.Fatalf("reconcile: %v", err)
-		}
+		// SETUP: stand in for the scheduler plugin's bind so there is an active
+		// lease on node-a for HandleNodeFailure to act on.
+		seedRunning(t, state, "default/run", now)
 		if err := controller.HandleNodeFailure("node-a", now); err != nil {
 			t.Fatalf("handle node failure: %v", err)
 		}
@@ -90,7 +91,10 @@ func TestHandleNodeFailureWithoutSpareRespectsCheckpoint(t *testing.T) {
 		}
 
 		// A second node appears before the deadline: the next reconcile
-		// re-admits the run and clears the deadline.
+		// re-admits the run. Under the single-committer cutover "re-admit"
+		// means emit unscheduled intent pods and stay Pending until the plugin
+		// schedules + mints — the controller no longer flips it Running in one
+		// Reconcile on the admission path.
 		state.Nodes = append(state.Nodes, topology.SourceNode{
 			Name: "node-b", GPUs: 4,
 			Labels: map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a", topology.LabelGPUFlavor: "H100-80GB"},
@@ -100,20 +104,20 @@ func TestHandleNodeFailureWithoutSpareRespectsCheckpoint(t *testing.T) {
 		if err := controller.Reconcile("default", "run"); err != nil {
 			t.Fatalf("reconcile after recovery: %v", err)
 		}
-		if run.Status.Phase != RunPhaseRunning {
-			t.Fatalf("expected the run to re-admit as Running, got %s (%s)", run.Status.Phase, run.Status.Message)
+		if run.Status.Phase != RunPhasePending {
+			t.Fatalf("expected the run to re-admit by emitting intent pods (Pending), got %s (%s)", run.Status.Phase, run.Status.Message)
 		}
-		if run.Status.CheckpointDeadline != nil {
-			t.Fatalf("expected checkpoint deadline cleared after recovery, got %v", run.Status.CheckpointDeadline)
+		if activeIntentPods(state, "default", "run") == 0 {
+			t.Fatalf("expected recovery to emit unscheduled intent pods for the jobtree scheduler")
 		}
 	})
 
 	t.Run("checkpoint grace expires without recovery", func(t *testing.T) {
 		state, _ := checkpointFixtureState(10 * time.Minute)
 		controller := NewRunController(state, runClock{now: now})
-		if err := controller.Reconcile("default", "run"); err != nil {
-			t.Fatalf("reconcile: %v", err)
-		}
+		// SETUP: stand in for the scheduler plugin's bind so there is an active
+		// lease on node-a for HandleNodeFailure to act on.
+		seedRunning(t, state, "default/run", now)
 		if err := controller.HandleNodeFailure("node-a", now); err != nil {
 			t.Fatalf("handle node failure: %v", err)
 		}

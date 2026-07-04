@@ -61,21 +61,19 @@ func TestRunControllerAdmitsRun(t *testing.T) {
 		t.Fatalf("reconcile failed: %v", err)
 	}
 
+	// Post-cutover the controller no longer mints on the admission path: a
+	// placeable + fundable run emits unscheduled Active intent pods (a Roles-less
+	// run emits one 1-GPU pod per TotalGPU) and stays Pending for the scheduler
+	// plugin to bind and mint. The admission DECISION is covered by pkg/admission.
 	run := state.Runs["default/train-8"]
-	if run.Status.Phase != RunPhaseRunning {
-		t.Fatalf("expected run phase running, got %s", run.Status.Phase)
+	if run.Status.Phase != RunPhasePending {
+		t.Fatalf("expected run phase pending, got %s", run.Status.Phase)
 	}
-	if len(state.Pods) != 1 {
-		t.Fatalf("expected 1 pod manifest, got %d", len(state.Pods))
+	if got := activeIntentPods(state, "default", "train-8"); got != 4 {
+		t.Fatalf("expected 4 active intent pods, got %d", got)
 	}
-	if state.Pods[0].NodeName != "node-a" {
-		t.Fatalf("expected pod bound to node-a, got %s", state.Pods[0].NodeName)
-	}
-	if len(state.Leases) != 1 {
-		t.Fatalf("expected 1 lease, got %d", len(state.Leases))
-	}
-	if state.Leases[0].Spec.PaidByEnvelope != "west-h100" {
-		t.Fatalf("expected lease paid by west-h100, got %s", state.Leases[0].Spec.PaidByEnvelope)
+	if len(state.Leases) != 0 {
+		t.Fatalf("controller must mint nothing, got %d leases", len(state.Leases))
 	}
 }
 
@@ -156,31 +154,22 @@ func TestRunControllerCoFundedRunUpdatesFundingStatus(t *testing.T) {
 		t.Fatalf("reconcile failed: %v", err)
 	}
 
+	// Post-cutover the controller mints nothing on the admission path. This run
+	// is fundable only by borrowing 32 GPUs from the vision sponsor (96 owned +
+	// 32 borrowed = 128); keeping that co-funding SETUP, we now assert the emit
+	// contract — a placeable + fundable run emits its full width of unscheduled
+	// intent pods and stays Pending for the plugin. The funding-class breakdown
+	// (owned/shared/borrowed/lenders) is derived and asserted in pkg/admission,
+	// and reads zero here precisely because the controller attributes no leases.
 	run := state.Runs["default/train-128"]
-	if run.Status.Phase != RunPhaseRunning {
-		t.Fatalf("expected run phase running, got %s", run.Status.Phase)
+	if run.Status.Phase != RunPhasePending {
+		t.Fatalf("expected run phase pending, got %s", run.Status.Phase)
 	}
-	if run.Status.Funding == nil {
-		t.Fatalf("expected funding status populated")
+	if got := activeIntentPods(state, "default", "train-128"); got != 128 {
+		t.Fatalf("expected 128 active intent pods, got %d", got)
 	}
-	if run.Status.Funding.OwnedGPUs != 96 {
-		t.Fatalf("expected 96 owned GPUs, got %d", run.Status.Funding.OwnedGPUs)
-	}
-	// vision is not family to rai, so its capacity is reached only under the
-	// lending contract and classes borrowed (not shared).
-	if run.Status.Funding.BorrowedGPUs != 32 {
-		t.Fatalf("expected 32 borrowed GPUs, got %d", run.Status.Funding.BorrowedGPUs)
-	}
-	// The sponsor is attributed as a lender.
-	if len(run.Status.Funding.Lenders) != 1 {
-		t.Fatalf("expected single lender entry, got %d", len(run.Status.Funding.Lenders))
-	}
-	share := run.Status.Funding.Lenders[0]
-	if share.Owner != "org:ai:mm:vision" {
-		t.Fatalf("expected lender owner org:ai:mm:vision, got %s", share.Owner)
-	}
-	if share.GPUs != 32 {
-		t.Fatalf("expected lender GPUs 32, got %d", share.GPUs)
+	if len(state.Leases) != 0 {
+		t.Fatalf("controller must mint nothing, got %d leases", len(state.Leases))
 	}
 }
 
@@ -452,13 +441,12 @@ func TestElasticRunGrowsToDesired(t *testing.T) {
 	}
 
 	controller := NewRunController(state, runClock{now: now})
-	if err := controller.Reconcile("default", "train"); err != nil {
-		t.Fatalf("reconcile failed: %v", err)
-	}
+	// Post-cutover Reconcile no longer binds; seed the bound/Running run (96 GPUs
+	// allocated) the scheduler plugin would have produced, then drive the
+	// still-in-engine elastic grow. The grow-to-128 assertion below implies the
+	// 96 baseline (one +32 step).
+	seedRunning(t, state, "default/train", now)
 	run := state.Runs["default/train"]
-	if run.Status.Width == nil || run.Status.Width.Allocated != 96 {
-		t.Fatalf("expected allocated width 96, got %+v", run.Status.Width)
-	}
 
 	controller.Clock = runClock{now: now.Add(time.Minute)}
 	if err := controller.Reconcile("default", "train"); err != nil {
@@ -527,9 +515,10 @@ func TestElasticRunVoluntaryShrink(t *testing.T) {
 	}
 
 	controller := NewRunController(state, runClock{now: now})
-	if err := controller.Reconcile("default", "train"); err != nil {
-		t.Fatalf("reconcile failed: %v", err)
-	}
+	// Post-cutover Reconcile no longer binds; seed the bound/Running run (96 GPUs)
+	// the scheduler plugin would have produced, then drive the still-in-engine
+	// elastic grow (to 128) that sets up the voluntary shrink below.
+	seedRunning(t, state, "default/train", now)
 	controller.Clock = runClock{now: now.Add(time.Minute)}
 	if err := controller.Reconcile("default", "train"); err != nil {
 		t.Fatalf("reconcile failed: %v", err)
@@ -603,12 +592,11 @@ func TestActivateReservationRunsResolver(t *testing.T) {
 	}
 
 	controller := NewRunController(state, runClock{now: now})
-	if err := controller.Reconcile("default", "run-a"); err != nil {
-		t.Fatalf("run-a reconcile failed: %v", err)
-	}
-	if err := controller.Reconcile("default", "run-b"); err != nil {
-		t.Fatalf("run-b reconcile failed: %v", err)
-	}
+	// Post-cutover Reconcile no longer binds; seed run-a and run-b as the
+	// bound/Running incumbents the scheduler plugin would have produced, so the
+	// activation-time resolver has funded work to preempt (lottery) and shrink.
+	seedRunning(t, state, "default/run-a", now)
+	seedRunning(t, state, "default/run-b", now)
 
 	// Add the pending run that will trigger a reservation.
 	state.Runs["default/run-c"] = &v1.Run{
@@ -707,9 +695,10 @@ func TestHandleNodeFailureSwapsToSpare(t *testing.T) {
 	}
 
 	controller := NewRunController(state, runClock{now: now})
-	if err := controller.Reconcile("default", "run"); err != nil {
-		t.Fatalf("reconcile failed: %v", err)
-	}
+	// Post-cutover Reconcile no longer binds; seed the bound/Running run (4 active
+	// GPUs + 2 spares) the scheduler plugin would have produced, then exercise the
+	// still-in-engine node-failure spare swap.
+	seedRunning(t, state, "default/run", now)
 
 	var spareLease *v1.Lease
 	for i := range state.Leases {
@@ -1030,9 +1019,10 @@ func TestElasticGrowShrinkEmitMetrics(t *testing.T) {
 	}
 
 	controller := NewRunController(state, runClock{now: now})
-	if err := controller.Reconcile("default", "train-metrics"); err != nil {
-		t.Fatalf("reconcile: %v", err)
-	}
+	// Post-cutover Reconcile no longer binds; seed the bound/Running run (96 GPUs)
+	// the scheduler plugin would have produced, then drive the still-in-engine
+	// elastic grow/shrink so their metrics fire.
+	seedRunning(t, state, "default/train-metrics", now)
 	controller.Clock = runClock{now: now.Add(time.Minute)}
 	if err := controller.Reconcile("default", "train-metrics"); err != nil {
 		t.Fatalf("reconcile (grow): %v", err)

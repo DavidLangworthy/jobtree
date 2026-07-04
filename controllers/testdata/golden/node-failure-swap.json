@@ -1,0 +1,51 @@
+{
+  "scenario": "node-failure-swap",
+  "runs": [
+    {
+      "key": "default/run",
+      "phase": "Pending",
+      "message": "scheduling 4 GPUs (awaiting the jobtree scheduler)",
+      "width": {
+        "Min": 4,
+        "Max": 4,
+        "Desired": 4,
+        "Allocated": 0
+      }
+    }
+  ],
+  "leases": null,
+  "pods": [
+    {
+      "key": "default/run-active-0",
+      "run": "run",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-a"
+    },
+    {
+      "key": "default/run-active-1",
+      "run": "run",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-a"
+    },
+    {
+      "key": "default/run-active-2",
+      "run": "run",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-a"
+    },
+    {
+      "key": "default/run-active-3",
+      "run": "run",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-a"
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "scenario": "borrow-limited-reservation",
+  "runs": [
+    {
+      "key": "default/train-128",
+      "phase": "Pending",
+      "message": "reservation train-128-res-1704240000 scheduled for \u003cts\u003e (deficit 56 GPUs)",
+      "width": {
+        "Min": 128,
+        "Max": 128,
+        "Desired": 128,
+        "Allocated": 0
+      },
+      "pendingReservation": true,
+      "hasEarliestStart": true
+    }
+  ],
+  "leases": null,
+  "reservations": [
+    {
+      "name": "train-128-res-1704240000",
+      "run": "default/train-128",
+      "state": "Pending",
+      "payingEnvelope": "west-h100",
+      "earliestStartAfterNow": true,
+      "deficitGpus": 56,
+      "confidence": "conservative",
+      "remedies": [
+        "Run fair lottery if deficit remains"
+      ]
+    }
+  ]
+}

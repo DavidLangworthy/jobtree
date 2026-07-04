@@ -1,0 +1,50 @@
+# KubeSchedulerConfiguration for the jobtree out-of-tree scheduler binary
+# (cmd/scheduler). It defines a single profile, schedulerName: jobtree, that
+# enables the "jobtree" plugin at the extension points PLUGIN-2+ will own:
+# Filter/Score (pack-to-empty), Permit (gang + funding gate), PreBind (per-slice
+# Lease mint), and PostFilter (resolver-driven reclaim).
+#
+# PLUGIN-1 scaffold status: the jobtree plugin bodies are no-ops (see
+# cmd/scheduler/plugin), so a pod that sets `schedulerName: jobtree` is placed
+# exactly as the default profile would place it. Only pods that opt in via
+# schedulerName reach this profile; every other pod is handled by the default
+# kube-scheduler behavior.
+#
+# The plugin is registered into the binary at compile time via
+# app.WithPlugin("jobtree", plugin.New) in cmd/scheduler/main.go; this file only
+# turns it on for the jobtree profile.
+apiVersion: kubescheduler.config.k8s.io/v1
+kind: KubeSchedulerConfiguration
+
+# Single-replica dev/scaffold default. Enable leader election (and set a
+# distinct resourceName so it never contends with the default kube-scheduler's
+# lock) when running more than one replica.
+leaderElection:
+  leaderElect: false
+
+profiles:
+  - schedulerName: jobtree
+    plugins:
+      filter:
+        enabled:
+          - name: jobtree
+      score:
+        enabled:
+          - name: jobtree
+      reserve:
+        # Enables the plugin's Unreserve so gang bookkeeping is released when a
+        # parked member is rejected before it commits.
+        enabled:
+          - name: jobtree
+      permit:
+        enabled:
+          - name: jobtree
+      preBind:
+        enabled:
+          - name: jobtree
+      postFilter:
+        # The jobtree plugin is appended after the default PostFilter plugins
+        # (e.g. DefaultPreemption) rather than replacing them, so scaffold
+        # behavior is unchanged until PLUGIN-6 makes reclaim real.
+        enabled:
+          - name: jobtree

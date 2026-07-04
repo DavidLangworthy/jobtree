@@ -15,4 +15,6 @@ helm upgrade --install "$E2E_HELM_RELEASE" "$ROOT/deploy/helm/gpu-fleet" \
   --namespace "$E2E_NAMESPACE" --create-namespace \
   -f "$ROOT/hack/e2e/values-e2e.yaml" \
   --set "controller.image=$E2E_IMAGE" \
+  --set "scheduler.enabled=true" \
+  --set "scheduler.image=$E2E_SCHEDULER_IMAGE" \
   --wait --timeout 180s

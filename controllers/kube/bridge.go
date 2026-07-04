@@ -14,6 +14,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -30,10 +31,16 @@ const (
 	// counts from (the fake or real device plugin advertises it).
 	GPUCapacityResource = "nvidia.com/gpu"
 	// PodGPUAnnotation records how many GPUs of its node a workload pod
-	// claims.
-	PodGPUAnnotation = "rq.davidlangworthy.io/gpus"
-	// pauseImage is the placeholder workload container.
-	pauseImage = "registry.k8s.io/pause:3.10"
+	// claims. Aliased to the shared binder constant so the plugin reads the
+	// same key.
+	PodGPUAnnotation = binder.AnnotationGPUs
+	// schedulerName routes emitted workload pods to the jobtree scheduler
+	// plugin (the sole committer) instead of the default scheduler.
+	schedulerName = "jobtree"
+	// defaultWorkloadImage is the container for a legacy Roles-less Run (no
+	// template). It runs a real, terminating command so completion is real —
+	// unlike the old pause mannequin that never exited.
+	defaultWorkloadImage = "busybox:1.36"
 )
 
 // Bridge loads ClusterState snapshots from the API server and applies the
@@ -245,7 +252,8 @@ func (b *Bridge) apply(ctx context.Context, snap *worldSnapshot) error {
 	}
 	for key, manifest := range current {
 		if _, existed := snap.pods[key]; !existed {
-			if err := b.Client.Create(ctx, buildPod(manifest)); err != nil {
+			run := state.Runs[keys.NamespacedKey(manifest.Namespace, manifest.Labels[binder.LabelRunName])]
+			if err := b.Client.Create(ctx, buildPod(manifest, run)); err != nil {
 				return fmt.Errorf("create pod %s: %w", key, err)
 			}
 		}
@@ -306,21 +314,98 @@ func (b *Bridge) apply(ctx context.Context, snap *worldSnapshot) error {
 	return nil
 }
 
-func buildPod(manifest binder.PodManifest) *corev1.Pod {
+// buildPod renders an engine PodManifest into a real, UNSCHEDULED workload pod
+// for the jobtree scheduler plugin to place and fund. It never sets
+// spec.nodeName (the plugin/scheduler owns placement); it overlays only the
+// scheduling-owned fields onto the researcher's role Template — schedulerName,
+// the nvidia.com/gpu request==limit on the GPU-target container, gang/flavor
+// annotations the plugin reads, an advisory nodeAffinity toward pack's chosen
+// node, and RestartPolicy=Never so a Succeeded pod is a reliable completion
+// signal. Everything else in the template (image, command, env, volumes) is the
+// researcher's, preserved verbatim. A Roles-less legacy Run gets a real
+// terminating default container instead of the old pause mannequin.
+func buildPod(manifest binder.PodManifest, run *v1.Run) *corev1.Pod {
+	var spec corev1.PodSpec
+	targetIdx := 0
+	if run != nil && len(run.Spec.Roles) > 0 {
+		role := &run.Spec.Roles[0]
+		spec = *role.Template.Spec.DeepCopy()
+		if idx := role.GPUTargetContainerIndex(); idx >= 0 {
+			targetIdx = idx
+		}
+	} else {
+		spec = corev1.PodSpec{Containers: []corev1.Container{{
+			Name:    v1.GPUTargetContainerName,
+			Image:   defaultWorkloadImage,
+			Command: []string{"sh", "-c", "echo jobtree-placeholder; true"},
+		}}}
+	}
+
+	// Scheduling-owned overlay — never touch researcher fields.
+	spec.SchedulerName = schedulerName
+	spec.NodeName = "" // the plugin/scheduler places the pod; never pin here
+	spec.RestartPolicy = corev1.RestartPolicyNever
+
+	if manifest.GPUs > 0 && len(spec.Containers) > 0 {
+		if targetIdx >= len(spec.Containers) {
+			targetIdx = 0
+		}
+		q := resource.NewQuantity(int64(manifest.GPUs), resource.DecimalSI)
+		c := &spec.Containers[targetIdx]
+		if c.Resources.Requests == nil {
+			c.Resources.Requests = corev1.ResourceList{}
+		}
+		if c.Resources.Limits == nil {
+			c.Resources.Limits = corev1.ResourceList{}
+		}
+		c.Resources.Requests[GPUCapacityResource] = *q
+		c.Resources.Limits[GPUCapacityResource] = *q
+	}
+
+	// Advisory placement toward pack's chosen node: a preference the plugin's
+	// Filter/Score honor, NOT a pin.
+	if manifest.NodeName != "" {
+		preferNode(&spec, manifest.NodeName)
+	}
+
+	annotations := map[string]string{PodGPUAnnotation: strconv.Itoa(manifest.GPUs)}
+	if run != nil && run.Spec.Resources.GPUType != "" {
+		annotations[binder.AnnotationFlavor] = run.Spec.Resources.GPUType
+	}
+	for _, k := range []string{binder.AnnotationExpectedWidth, binder.AnnotationLeaseReason} {
+		if v, ok := manifest.Annotations[k]; ok {
+			annotations[k] = v
+		}
+	}
+
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace:   manifest.Namespace,
 			Name:        manifest.Name,
 			Labels:      manifest.Labels,
-			Annotations: map[string]string{PodGPUAnnotation: strconv.Itoa(manifest.GPUs)},
+			Annotations: annotations,
 		},
-		Spec: corev1.PodSpec{
-			NodeName:      manifest.NodeName,
-			RestartPolicy: corev1.RestartPolicyNever,
-			Containers: []corev1.Container{{
-				Name:  "workload",
-				Image: pauseImage,
-			}},
-		},
+		Spec: spec,
 	}
+}
+
+// preferNode appends a soft (preferred) node-affinity toward node, an advisory
+// hint from pkg/pack's placement that the scheduler honors when it can.
+func preferNode(spec *corev1.PodSpec, node string) {
+	term := corev1.PreferredSchedulingTerm{
+		Weight: 100,
+		Preference: corev1.NodeSelectorTerm{MatchExpressions: []corev1.NodeSelectorRequirement{{
+			Key:      "kubernetes.io/hostname",
+			Operator: corev1.NodeSelectorOpIn,
+			Values:   []string{node},
+		}}},
+	}
+	if spec.Affinity == nil {
+		spec.Affinity = &corev1.Affinity{}
+	}
+	if spec.Affinity.NodeAffinity == nil {
+		spec.Affinity.NodeAffinity = &corev1.NodeAffinity{}
+	}
+	na := spec.Affinity.NodeAffinity
+	na.PreferredDuringSchedulingIgnoredDuringExecution = append(na.PreferredDuringSchedulingIgnoredDuringExecution, term)
 }

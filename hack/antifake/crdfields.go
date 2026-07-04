@@ -29,6 +29,13 @@ import (
 // Generation, RunStatus.Generation, ReservationStatus.CanceledAt — newly
 // surfaced by this lint, awaiting a wire-or-delete triage) stay documented in
 // the allowlist file.
+//
+// Both in-flight roles-API seam fields added by #28 gained real readers in the
+// P2b cutover, so the trunk's temporary 4->6 bump has fully ratcheted back to 4:
+// RunRole.Template is read by controllers/kube/bridge.go's buildPod (renders the
+// real workload pod) and RunRole.GPUsPerPod by run_controller.go's
+// intentPodShape (the per-pod GPU count the controller emits). Back to the
+// original baseline — nothing to shrink before merging to main.
 const maxAllowedUnreadCRDFields = 4
 
 const crdFieldsAllowlistName = "crd-fields-allowlist.txt"

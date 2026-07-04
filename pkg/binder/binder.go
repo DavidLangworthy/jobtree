@@ -27,6 +27,28 @@ const (
 	RoleSpare  = "Spare"
 )
 
+// Pod-metadata the run controller stamps onto every workload pod it emits and
+// the scheduler plugin reads back. They make each pod self-describing so the
+// plugin's Filter/Permit need no per-pod Run lookup on the hot path.
+const (
+	// AnnotationGPUs records how many GPUs of its node one pod claims
+	// (== RunRole.GPUsPerPod). Also the value used for the pod's real
+	// nvidia.com/gpu request. Kept string-typed for the annotation map.
+	AnnotationGPUs = "rq.davidlangworthy.io/gpus"
+	// AnnotationExpectedWidth is the gang's target Active pod count
+	// (== RunRole.Width). Permit gates on all this many members being
+	// simultaneously waiting before it commits funding — reimplementing
+	// PodGroup.minMember's purpose without a PodGroup CRD.
+	AnnotationExpectedWidth = "rq.davidlangworthy.io/expected-width"
+	// AnnotationFlavor is the run's GPU flavor, so Filter can reject
+	// wrong-flavor nodes without resolving the owning Run.
+	AnnotationFlavor = "rq.davidlangworthy.io/flavor"
+	// AnnotationLeaseReason is the LeaseReason the plugin stamps on the
+	// Lease it mints for the pod (Start/Grow/Swap), carrying the
+	// controller's lifecycle intent to the single committer.
+	AnnotationLeaseReason = "rq.davidlangworthy.io/lease-reason"
+)
+
 // Request gathers the context required to materialize pods and leases for a Run.
 type Request struct {
 	Run              *v1.Run

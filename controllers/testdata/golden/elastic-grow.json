@@ -1,0 +1,787 @@
+{
+  "scenario": "elastic-grow",
+  "runs": [
+    {
+      "key": "default/train",
+      "phase": "Pending",
+      "message": "scheduling 96 GPUs (awaiting the jobtree scheduler)",
+      "width": {
+        "Min": 96,
+        "Max": 160,
+        "Desired": 160,
+        "Allocated": 0
+      }
+    }
+  ],
+  "leases": null,
+  "pods": [
+    {
+      "key": "default/train-active-0",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-1",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-10",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-11",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-12",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-13",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-14",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-15",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-16",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-17",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-18",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-19",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-2",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-20",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-21",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-22",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-23",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-24",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-25",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-26",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-27",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-28",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-29",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-3",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-30",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-31",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-32",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-33",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-34",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-35",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-36",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-37",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-38",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-39",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-4",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-40",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-41",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-42",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-43",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-44",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-45",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-46",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-47",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-48",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-49",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-5",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-50",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-51",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-52",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-53",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-54",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-55",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-56",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-57",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-58",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-59",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-6",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-60",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-61",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-62",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-63",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-64",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-65",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-66",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-67",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-68",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-69",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-7",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-70",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-71",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-72",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-73",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-74",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-75",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-76",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-77",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-78",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-79",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-8",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-80",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-81",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-82",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-83",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-84",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-85",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-86",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-87",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-88",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-89",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-9",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-90",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-91",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-92",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    },
+    {
+      "key": "default/train-active-93",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-0"
+    },
+    {
+      "key": "default/train-active-94",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-1"
+    },
+    {
+      "key": "default/train-active-95",
+      "run": "train",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-2"
+    }
+  ]
+}

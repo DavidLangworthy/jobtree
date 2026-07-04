@@ -142,9 +142,13 @@ func TestScenarioExhaustionDemotesWithoutKilling(t *testing.T) {
 	)
 	clock := &qsClock{now: qsBase}
 
+	// Single-committer cutover: the scheduler plugin schedules and funds the
+	// run (4x24h at start). seedRunning stands in for its mint, and the
+	// reconcile derives the funding status the lifecycle assertions read.
+	seedRunning(t, state, keys.NamespacedKey(keys.DefaultNamespace, "coaster"), qsBase)
 	run := qsReconcile(t, state, clock, "coaster")
 	if run.Status.Phase != RunPhaseRunning {
-		t.Fatalf("admission should fund 4x24h at start, got %s: %s", run.Status.Phase, run.Status.Message)
+		t.Fatalf("seeded run should be Running and funded at start, got %s: %s", run.Status.Phase, run.Status.Message)
 	}
 	if run.Status.Funding == nil || run.Status.Funding.OwnedGPUs != 4 {
 		t.Fatalf("expected 4 owned GPUs at start, got %+v", run.Status.Funding)
@@ -195,6 +199,10 @@ func TestScenarioWindowReopenRefunds(t *testing.T) {
 	)
 	clock := &qsClock{now: qsBase}
 
+	// Single-committer cutover: the plugin schedules and funds the run inside
+	// the open window. seedRunning stands in for its mint; the reconcile derives
+	// the funding status the coast/refund lifecycle below re-evaluates.
+	seedRunning(t, state, keys.NamespacedKey(keys.DefaultNamespace, "seasonal"), qsBase)
 	run := qsReconcile(t, state, clock, "seasonal")
 	if run.Status.Phase != RunPhaseRunning || run.Status.Funding.OwnedGPUs != 4 {
 		t.Fatalf("expected funded start, got %s %+v", run.Status.Phase, run.Status.Funding)
@@ -232,6 +240,10 @@ func TestScenarioFamilySharesExcessWithoutLending(t *testing.T) {
 	)
 	clock := &qsClock{now: qsBase}
 
+	// Single-committer cutover: the plugin schedules and funds the run from the
+	// family's excess. seedRunning stands in for its mint; the reconcile derives
+	// the classification the status surfaces (the substance this test asserts).
+	seedRunning(t, state, keys.NamespacedKey(keys.DefaultNamespace, "hungry"), qsBase)
 	run := qsReconcile(t, state, clock, "hungry")
 
 	if run.Status.Phase != RunPhaseRunning {
@@ -266,6 +278,10 @@ func TestScenarioOwnerRecallReclaimsFamilyBorrower(t *testing.T) {
 		qsRun("squatter", "org/team", 6, qsBase),
 	)
 	clock := &qsClock{now: qsBase}
+	// The family borrower is already scheduled and funded from the parent's
+	// excess (the plugin's mint, stood in for by seedRunning); the reconcile
+	// derives its 6 shared GPUs.
+	seedRunning(t, state, keys.NamespacedKey(keys.DefaultNamespace, "squatter"), qsBase)
 	squatterRun := qsReconcile(t, state, clock, "squatter")
 	if squatterRun.Status.Phase != RunPhaseRunning || squatterRun.Status.Funding.SharedGPUs != 6 {
 		t.Fatalf("setup: family run should start with 6 shared, got %s %+v", squatterRun.Status.Phase, squatterRun.Status.Funding)
@@ -277,11 +293,19 @@ func TestScenarioOwnerRecallReclaimsFamilyBorrower(t *testing.T) {
 	state.Runs[keys.NamespacedKey(owner.Namespace, owner.Name)] = owner
 	ownerRun := qsReconcile(t, state, clock, "landlord")
 
-	if ownerRun.Status.Phase != RunPhaseRunning {
-		t.Fatalf("owner recall must let the owner in: %s: %s", ownerRun.Status.Phase, ownerRun.Status.Message)
+	// The controller still runs the recall (reclaimForAdmission) on the owner's
+	// fundable admission — the reclaim of the family borrower is what this
+	// scenario asserts, and it still happens here. Under the single-committer
+	// cutover the owner no longer binds in the controller: it emits its full
+	// width of intent pods for the plugin and stays Pending, minting nothing.
+	if ownerRun.Status.Phase != RunPhasePending {
+		t.Fatalf("owner admission now emits intent and stays Pending, got %s: %s", ownerRun.Status.Phase, ownerRun.Status.Message)
 	}
-	if ownerRun.Status.Funding.OwnedGPUs != 8 {
-		t.Fatalf("owner should hold its full envelope, got %+v", ownerRun.Status.Funding)
+	if got := activeIntentPods(state, keys.DefaultNamespace, "landlord"); got != 8 {
+		t.Fatalf("owner should request its full 8-GPU envelope as intent pods, got %d", got)
+	}
+	if n := openLeaseCountForRun(state.Leases, keys.NamespacedKey(keys.DefaultNamespace, "landlord")); n != 0 {
+		t.Fatalf("controller must mint nothing for the owner, got %d open leases", n)
 	}
 	squatter := state.Runs[keys.NamespacedKey(keys.DefaultNamespace, "squatter")]
 	if squatter.Status.Phase != RunPhasePending {
@@ -330,6 +354,9 @@ func TestScenarioLendingCapsUnaffectedByFamilyUsage(t *testing.T) {
 		qsRun("family-user", "org/team", 5, qsBase),
 	)
 	clock := &qsClock{now: qsBase}
+	// Single-committer cutover: the plugin schedules and funds the family run.
+	// seedRunning stands in for its mint; the reconcile derives its 4 shared.
+	seedRunning(t, state, keys.NamespacedKey(keys.DefaultNamespace, "family-user"), qsBase)
 	if run := qsReconcile(t, state, clock, "family-user"); run.Status.Funding.SharedGPUs != 4 {
 		t.Fatalf("setup: family should take 4 shared GPUs, got %+v", run.Status.Funding)
 	}
@@ -342,6 +369,10 @@ func TestScenarioLendingCapsUnaffectedByFamilyUsage(t *testing.T) {
 	state.Runs[keys.NamespacedKey(guest.Namespace, guest.Name)] = guest
 
 	clock.now = qsBase.Add(2 * time.Minute)
+	// The stranger is likewise scheduled and funded by the plugin; seedRunning
+	// mints its borrow (2 GPUs, unblocked by family usage) so the reconcile can
+	// classify it. The borrowed-class number is the substance this test asserts.
+	seedRunning(t, state, keys.NamespacedKey(keys.DefaultNamespace, "guest-run"), clock.now)
 	guestRun := qsReconcile(t, state, clock, "guest-run")
 
 	if guestRun.Status.Phase != RunPhaseRunning {
@@ -364,6 +395,11 @@ func TestScenarioStatusSurfacesAgree(t *testing.T) {
 		qsRun("hungry", "org/team", 6, qsBase),
 	)
 	clock := &qsClock{now: qsBase}
+	// Single-committer cutover: the plugin schedules and funds the run.
+	// seedRunning stands in for its mint so the leases exist; the reconcile
+	// derives the run funding status, and the same evaluation feeds the budget
+	// status below — the one derivation every surface must agree on.
+	seedRunning(t, state, keys.NamespacedKey(keys.DefaultNamespace, "hungry"), qsBase)
 	run := qsReconcile(t, state, clock, "hungry")
 
 	ev := funding.Evaluate(funding.Input{

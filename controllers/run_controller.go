@@ -272,9 +272,13 @@ func (c *RunController) Reconcile(namespace, name string) error {
 			}
 		}
 
-		coverPlan, err := inventory.Plan(request)
-		if err != nil {
-			if planErr, ok := err.(*cover.PlanError); ok && planErr.Reason != cover.FailureReasonInvalidRequest {
+		// Cover is now a fundability PREDICTION, not a commit: if the run's
+		// width cannot be funded from its family/sponsors, reserve; the plugin
+		// is never handed unfundable pods to gate. The authoritative funding
+		// decision and the mint happen in the scheduler plugin's Permit/PreBind
+		// (borrow-vs-build.md §9) — the controller mints nothing.
+		if _, coverErr := inventory.Plan(request); coverErr != nil {
+			if planErr, ok := coverErr.(*cover.PlanError); ok && planErr.Reason != cover.FailureReasonInvalidRequest {
 				if err := c.planReservation(run, snapshot, &packPlan, nil, planErr, ev, request, now); err != nil {
 					result = "error"
 					return err
@@ -283,32 +287,25 @@ func (c *RunController) Reconcile(namespace, name string) error {
 				return nil
 			}
 			run.Status.Phase = RunPhasePending
-			run.Status.Message = err.Error()
+			run.Status.Message = coverErr.Error()
 			result = "waiting"
 			return nil
 		}
 
-		bindResult, err := binder.Materialize(binder.Request{Run: run.DeepCopy(), CoverPlan: coverPlan, PackPlan: packPlan, Now: now, NameSeed: leaseSeqBase(key, c.State.Leases)})
-		if err != nil {
-			result = "error"
-			return err
-		}
-
-		c.State.Pods = append(c.State.Pods, bindResult.Pods...)
-		c.State.Leases = append(c.State.Leases, bindResult.Leases...)
-
-		// Invariant 8: no Pending reservation exists for a Running run.
-		// Without this, a run that reserves and then binds directly would
-		// materialize a second set of pods/leases when the reservation
-		// activates.
-		c.releasePendingReservations(run, now)
-
-		run.Status.Phase = RunPhaseRunning
-		run.Status.Message = fmt.Sprintf("bound %d GPUs", packPlan.TotalGPUs)
+		// Placeable and fundable: emit unscheduled intent pods for the plugin to
+		// schedule and fund. The adoption path (above) flips the run Running once
+		// the plugin's leases appear — the run stays Pending until then.
+		created := c.emitIntentPods(run, packPlan)
+		run.Status.Phase = RunPhasePending
+		run.Status.Message = fmt.Sprintf("scheduling %d GPUs (awaiting the jobtree scheduler)", packPlan.TotalGPUs)
 		run.Status.Width = summarizeRunWidth(run, c.State.Leases)
-		run.Status.Funding = summarizeRunFunding(run, c.evaluate(now))
-		c.emit(run, EventTypeNormal, "Admitted", run.Status.Message)
-		result = "bound"
+		run.Status.Funding = summarizeRunFunding(run, ev)
+		// Emit the observable request-for-width event once, when the intent pods
+		// are first created — not on every reconcile of an already-pending run.
+		if created > 0 {
+			c.emit(run, EventTypeNormal, "Scheduling", run.Status.Message)
+		}
+		result = "scheduling"
 		return nil
 	}
 }
@@ -1420,6 +1417,77 @@ func expectedSpareTotal(run *v1.Run, plan *pack.Plan) int32 {
 		}
 	}
 	return spares * groups
+}
+
+// emitIntentPods ensures the run's Active gang has its full width of
+// unscheduled workload pods in the world for the scheduler plugin to place and
+// fund. It mints no leases (the plugin does). Pods are uniform — gpusPerPod
+// each, width of them — so the plugin's per-pod funding attribution holds; the
+// pack plan's nodes are attached as an advisory placement hint (the bridge
+// renders them as soft nodeAffinity, never a nodeName pin). Idempotent: it only
+// tops up the pods that do not yet exist.
+func (c *RunController) emitIntentPods(run *v1.Run, packPlan pack.Plan) int {
+	gpusPerPod, width := intentPodShape(run)
+	if gpusPerPod <= 0 || width <= 0 {
+		return 0
+	}
+	existing := 0
+	for i := range c.State.Pods {
+		p := &c.State.Pods[i]
+		if p.Namespace == run.Namespace && p.Labels[binder.LabelRunName] == run.Name && p.Labels[binder.LabelRunRole] == binder.RoleActive {
+			existing++
+		}
+	}
+	advisory := flattenPackNodes(packPlan)
+	widthStr := strconv.Itoa(width)
+	created := 0
+	for i := existing; i < width; i++ {
+		node := ""
+		if len(advisory) > 0 {
+			node = advisory[i%len(advisory)]
+		}
+		created++
+		c.State.Pods = append(c.State.Pods, binder.PodManifest{
+			Namespace: run.Namespace,
+			Name:      fmt.Sprintf("%s-active-%d", run.Name, i),
+			NodeName:  node, // advisory only; the bridge turns this into soft affinity
+			GPUs:      gpusPerPod,
+			Labels: map[string]string{
+				binder.LabelRunName:    run.Name,
+				binder.LabelRunRole:    binder.RoleActive,
+				binder.LabelGroupIndex: "0",
+			},
+			Annotations: map[string]string{
+				binder.AnnotationExpectedWidth: widthStr,
+				binder.AnnotationLeaseReason:   "Start",
+			},
+		})
+	}
+	return created
+}
+
+// intentPodShape returns the uniform (gpusPerPod, width) an intent gang emits.
+// A roled Run uses its role's GPUsPerPod × Width; a legacy Roles-less Run emits
+// one 1-GPU pod per requested GPU (uniform, so every cover segment funds a whole
+// number of pods).
+func intentPodShape(run *v1.Run) (gpusPerPod, width int) {
+	if len(run.Spec.Roles) > 0 {
+		r := run.Spec.Roles[0]
+		return int(r.GPUsPerPod), int(r.Width)
+	}
+	return 1, int(run.Spec.Resources.TotalGPUs)
+}
+
+// flattenPackNodes lists the nodes pack chose, in placement order, for use as
+// advisory per-pod placement hints.
+func flattenPackNodes(plan pack.Plan) []string {
+	var nodes []string
+	for _, g := range plan.Groups {
+		for _, np := range g.NodePlacements {
+			nodes = append(nodes, np.Node)
+		}
+	}
+	return nodes
 }
 
 func (c *RunController) reconcileElasticRun(run *v1.Run, snapshot *topology.Snapshot, inventory *cover.Inventory, now time.Time) error {

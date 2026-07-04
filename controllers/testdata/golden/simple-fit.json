@@ -1,0 +1,51 @@
+{
+  "scenario": "simple-fit",
+  "runs": [
+    {
+      "key": "default/train-8",
+      "phase": "Pending",
+      "message": "scheduling 4 GPUs (awaiting the jobtree scheduler)",
+      "width": {
+        "Min": 4,
+        "Max": 4,
+        "Desired": 4,
+        "Allocated": 0
+      }
+    }
+  ],
+  "leases": null,
+  "pods": [
+    {
+      "key": "default/train-8-active-0",
+      "run": "train-8",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-a"
+    },
+    {
+      "key": "default/train-8-active-1",
+      "run": "train-8",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-a"
+    },
+    {
+      "key": "default/train-8-active-2",
+      "run": "train-8",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-a"
+    },
+    {
+      "key": "default/train-8-active-3",
+      "run": "train-8",
+      "role": "Active",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-a"
+    }
+  ]
+}

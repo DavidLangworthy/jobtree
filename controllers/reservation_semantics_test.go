@@ -103,12 +103,11 @@ func TestActivateReservationBudgetOnlyShortfallAdmitsOpportunistically(t *testin
 	}
 
 	controller := NewRunController(state, runClock{now: now})
-	if err := controller.Reconcile("default", "hog"); err != nil {
-		t.Fatalf("hog reconcile failed: %v", err)
-	}
-	if err := controller.Reconcile("default", "bystander"); err != nil {
-		t.Fatalf("bystander reconcile failed: %v", err)
-	}
+	// SETUP: the scheduler plugin has already scheduled and funded hog and
+	// bystander — Reconcile no longer mints on the admission path, so seed the
+	// bound/Running state the old in-controller commit used to reach.
+	seedRunning(t, state, "default/hog", now)
+	seedRunning(t, state, "default/bystander", now)
 	if state.Runs["default/hog"].Status.Phase != RunPhaseRunning || state.Runs["default/bystander"].Status.Phase != RunPhaseRunning {
 		t.Fatalf("expected hog and bystander running, got %s and %s",
 			state.Runs["default/hog"].Status.Phase, state.Runs["default/bystander"].Status.Phase)
@@ -182,9 +181,10 @@ func TestActivateReservationCapacityDeficitStillResolves(t *testing.T) {
 	}
 
 	controller := NewRunController(state, runClock{now: now})
-	if err := controller.Reconcile("default", "victim"); err != nil {
-		t.Fatalf("victim reconcile failed: %v", err)
-	}
+	// SETUP: victim is already bound/Running (holding the whole node) via the
+	// plugin's mint — Reconcile no longer binds on admission. Seed it so the
+	// capacity-deficit reservation and preemption below have work to reclaim.
+	seedRunning(t, state, "default/victim", now)
 
 	// waiter needs all 8 GPUs; the node is full — a pure capacity deficit.
 	state.Runs["default/waiter"] = h100Run("waiter", "org:team", 8)
@@ -285,9 +285,9 @@ func TestDirectBindReleasesPendingReservation(t *testing.T) {
 	}
 
 	controller := NewRunController(state, runClock{now: now})
-	if err := controller.Reconcile("default", "hog"); err != nil {
-		t.Fatalf("hog reconcile failed: %v", err)
-	}
+	// SETUP: hog is already bound/Running holding the whole node via the plugin's
+	// mint — Reconcile no longer binds on admission.
+	seedRunning(t, state, "default/hog", now)
 
 	// waiter can't place while hog holds the node: it reserves.
 	state.Runs["default/waiter"] = h100Run("waiter", "org:team", 8)
@@ -308,22 +308,30 @@ func TestDirectBindReleasesPendingReservation(t *testing.T) {
 		state.Leases[i].Status.ClosureReason = "Completed"
 	}
 
-	// The next reconcile binds directly.
+	// The scheduler plugin now schedules waiter's freed-capacity slot and mints
+	// its leases; flipping the run Running is the controller's adoption job, and
+	// the bridge's apply is not atomic (R28), so model the pre-adoption state:
+	// waiter's leases exist but the run is still Pending.
 	bindTime := now.Add(20 * time.Minute)
 	controller.Clock = runClock{now: bindTime}
+	seedRunning(t, state, "default/waiter", bindTime)
+	waiter.Status.Phase = RunPhasePending
+
+	// The next reconcile adopts those leases: it flips waiter Running and, as
+	// part of adoption, releases the now-superseded pending reservation.
 	if err := controller.Reconcile("default", "waiter"); err != nil {
-		t.Fatalf("waiter direct-bind reconcile failed: %v", err)
+		t.Fatalf("waiter adoption reconcile failed: %v", err)
 	}
 	if waiter.Status.Phase != RunPhaseRunning {
-		t.Fatalf("expected waiter running after direct bind, got %s", waiter.Status.Phase)
+		t.Fatalf("expected waiter running after adoption, got %s", waiter.Status.Phase)
 	}
 	if waiter.Status.PendingReservation != nil || waiter.Status.EarliestStart != nil {
-		t.Errorf("expected reservation pointers cleared on direct bind, got %v / %v",
+		t.Errorf("expected reservation pointers cleared on adoption, got %v / %v",
 			waiter.Status.PendingReservation, waiter.Status.EarliestStart)
 	}
 	for key, res := range state.Reservations {
 		if res.Status.State == "Pending" {
-			t.Errorf("expected no pending reservations after direct bind, %s is %s", key, res.Status.State)
+			t.Errorf("expected no pending reservations after adoption, %s is %s", key, res.Status.State)
 		}
 	}
 	assertInvariantNoPendingReservationForRunningRun(t, state)
@@ -357,9 +365,10 @@ func TestActivateReservationSkipsRunningRun(t *testing.T) {
 	}
 
 	controller := NewRunController(state, runClock{now: now})
-	if err := controller.Reconcile("default", "runner"); err != nil {
-		t.Fatalf("runner reconcile failed: %v", err)
-	}
+	// SETUP: runner is already bound/Running via the plugin's mint — Reconcile no
+	// longer binds on admission. Seed the bound state so the activation guard
+	// below has a Running run whose stale reservation it must release.
+	seedRunning(t, state, "default/runner", now)
 	if state.Runs["default/runner"].Status.Phase != RunPhaseRunning {
 		t.Fatalf("expected runner running")
 	}

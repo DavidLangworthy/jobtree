@@ -52,11 +52,16 @@ func TestFollowerWaitsUntilUpstreamCompletesThenAdmits(t *testing.T) {
 		t.Errorf("waiting message should name the upstream, got %q", got.Status.Message)
 	}
 
-	// Upstream completes -> the follower clears the gate and admits.
+	// Upstream completes -> the follower clears the gate and emits unscheduled
+	// intent pods, leaving the run Pending for the scheduler plugin to commit
+	// (single-committer cutover; the controller no longer binds on this path).
 	up.Status.Phase = RunPhaseComplete
 	got = qsReconcile(t, state, clock, "train")
-	if got.Status.Phase != RunPhaseRunning {
-		t.Fatalf("expected Running after upstream completed, got %s (%s)", got.Status.Phase, got.Status.Message)
+	if got.Status.Phase != RunPhasePending {
+		t.Fatalf("expected Pending after upstream completed, got %s (%s)", got.Status.Phase, got.Status.Message)
+	}
+	if n := activeIntentPods(state, keys.DefaultNamespace, "train"); n == 0 {
+		t.Fatalf("expected the unblocked follower to emit intent pods, got %d", n)
 	}
 }
 
@@ -138,8 +143,11 @@ func TestUpstreamRecoversWithinGrace(t *testing.T) {
 
 	up.Status.Phase = RunPhaseComplete
 	got := qsReconcile(t, state, clock, "train")
-	if got.Status.Phase != RunPhaseRunning {
-		t.Fatalf("a recovered upstream should let the follower admit, got %s (%s)", got.Status.Phase, got.Status.Message)
+	if got.Status.Phase != RunPhasePending {
+		t.Fatalf("a recovered upstream should let the follower emit intent pods, got %s (%s)", got.Status.Phase, got.Status.Message)
+	}
+	if n := activeIntentPods(state, keys.DefaultNamespace, "train"); n == 0 {
+		t.Fatalf("expected the recovered follower to emit intent pods, got %d", n)
 	}
 	if got.Status.FollowDeadline != nil {
 		t.Errorf("deadline should clear once unblocked, got %+v", got.Status.FollowDeadline)

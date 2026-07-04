@@ -39,8 +39,12 @@ trap cleanup EXIT
 echo "Building the manager image ($E2E_IMAGE)..."
 docker build -t "$E2E_IMAGE" "$ROOT"
 
-echo "Loading it into kind cluster '$KIND_CLUSTER_NAME'..."
+echo "Building the scheduler image ($E2E_SCHEDULER_IMAGE)..."
+docker build -f "$ROOT/Dockerfile.scheduler" -t "$E2E_SCHEDULER_IMAGE" "$ROOT"
+
+echo "Loading both images into kind cluster '$KIND_CLUSTER_NAME'..."
 kind load docker-image "$E2E_IMAGE" --name "$KIND_CLUSTER_NAME"
+kind load docker-image "$E2E_SCHEDULER_IMAGE" --name "$KIND_CLUSTER_NAME"
 
 "$ROOT/hack/e2e/install.sh"
 

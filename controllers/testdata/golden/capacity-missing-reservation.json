@@ -1,0 +1,33 @@
+{
+  "scenario": "capacity-missing-reservation",
+  "runs": [
+    {
+      "key": "default/train-8",
+      "phase": "Pending",
+      "message": "reservation train-8-res-1704067200 scheduled for \u003cts\u003e (deficit 4 GPUs)",
+      "width": {
+        "Min": 8,
+        "Max": 8,
+        "Desired": 8,
+        "Allocated": 0
+      },
+      "pendingReservation": true,
+      "hasEarliestStart": true
+    }
+  ],
+  "leases": null,
+  "reservations": [
+    {
+      "name": "train-8-res-1704067200",
+      "run": "default/train-8",
+      "state": "Pending",
+      "payingEnvelope": "west",
+      "earliestStartAfterNow": true,
+      "deficitGpus": 4,
+      "confidence": "conservative",
+      "remedies": [
+        "Run fair lottery if deficit remains"
+      ]
+    }
+  ]
+}
