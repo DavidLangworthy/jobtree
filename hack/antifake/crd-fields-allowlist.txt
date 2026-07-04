@@ -1,0 +1,27 @@
+# Anti-fake lint allowlist: api/v1 CRD fields with zero non-generated,
+# non-test readers outside api/v1 (Track F / TESTINFRA-6,
+# docs/project/make-it-real-plan.md; docs/project/fake-features-audit.md §3.4
+# pattern P4, "API accepts fields no controller reads").
+#
+# Format: one entry per line, `<StructName.FieldName> <reason>`.
+# Blank lines and '#' comments are ignored.
+#
+# Shrink-only: a field that gains a real reader (or is deleted) must have its
+# entry removed here, not left behind — hack/antifake/crdfields_test.go fails
+# on stale entries. The ratchet is enforced in code:
+# hack/antifake/crdfields.go's maxAllowedUnreadCRDFields caps this file at 8
+# entries; raising it requires editing that constant deliberately.
+#
+# Three of the eight below were already named by the fake-features audit;
+# the other five were newly discovered by this lint's first run and are not
+# fixed by Track F (TESTINFRA) — they're recorded here as an honest,
+# ratcheted baseline for whichever track (mostly D/TRUTH) triages them next.
+
+RunSpec.Runtime reason: parent pointer to RunRuntime; unread because its only field (Checkpoint, next line) is unread. Track D (TRUTH-3): wire a checkpoint-grace window into HandleNodeFailure, or delete the whole Runtime section.
+RunRuntime.Checkpoint reason: accepted-but-unread (fake-features-audit.md #10/#18) — schema-validated, deep-copied, read by nothing; HandleNodeFailure goes straight to terminal Failed with no checkpoint consultation. Track D (TRUTH-3) wires a real grace window or deletes the field.
+BudgetSpec.AutoRenew reason: accepted-but-unread (fake-features-audit.md #22) — validate() ignores it, BudgetStatus has no renewal field. Track D (TRUTH-7) wires renewal into BudgetReconciler or deletes the field.
+LeaseSpec.CompPath reason: declared and deep-copied but written and read by zero code today (per-role GPU-hour attribution has no per-role concept yet). make-it-real-plan.md Track E (ROLES-7) populates it at mint once per-role gangs land; do not add a consumer here without that context.
+BudgetStatus.ObservedGeneration reason: newly discovered by this lint, not named in fake-features-audit.md — no code anywhere sets or reads it, despite the standard k8s observedGeneration-vs-metadata.generation freshness convention this name implies. Needs a Track D triage: either the reconciler stamps it and something (CLI/docs) documents the contract, or it should be deleted.
+RunStatus.Generation reason: same shape as BudgetStatus.ObservedGeneration above — newly discovered, unset and unread anywhere. Track D triage: wire or delete.
+ReservationStatus.CanceledAt reason: newly discovered — declared alongside ActivatedAt/ReleasedAt, which ARE written by controllers/run_controller.go; CanceledAt alone has no writer or reader, implying no cancellation flow is actually wired. Track D triage: wire a real Cancel path or delete the field.
+AutoRenewSchedule.NotifyBefore reason: nested under the already-listed BudgetSpec.AutoRenew. deploy/helm/gpu-fleet/values.yaml references a notifier.image/notifier Deployment that does not exist anywhere in this repo (`find -iname '*notifier*'` outside deploy/helm is empty) — a second, previously-undocumented fake this lint surfaced. Track D triage: build the notifier or delete the field and the helm notifier scaffolding together.

@@ -1,0 +1,31 @@
+# Helm values overlay for the kind e2e harness (Track F — TESTINFRA-2).
+# Layered on top of deploy/helm/gpu-fleet/values.yaml via `helm ... -f`.
+#
+# controller.image is overridden separately (--set) by hack/e2e/run-e2e.sh
+# once it knows the freshly-built, kind-loaded tag; the value below is just a
+# placeholder so this file is valid on its own.
+controller:
+  image: jobtree-controller:e2e-local
+
+# The notifier Deployment points at ghcr.io/davidlangworthy/jobtree-notifier,
+# an image that does not exist anywhere in this repo (see
+# hack/antifake/crd-fields-allowlist.txt, AutoRenewSchedule.NotifyBefore) —
+# `helm --wait` would hang forever waiting for an ImagePullBackOff pod to
+# become Ready. Disabling it here is a harness accommodation for a
+# pre-existing gap, not something this track is fixing.
+notifier:
+  enabled: false
+
+# The chart's ServiceMonitor template targets the Prometheus Operator CRD
+# (monitoring.coreos.com/v1), which a bare kind cluster does not have
+# installed. `helm --wait` fails outright on a manifest whose CRD is
+# missing, so observability wiring is out of scope for this harness.
+monitoring:
+  enabled: false
+
+webhook:
+  enabled: true
+  generateCert: true
+
+rbac:
+  create: true
