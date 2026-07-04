@@ -127,14 +127,30 @@ func cleanupDeletedRun(state *controllers.ClusterState, runKey, namespace, name 
 // each status write would re-trigger the reconciler in a self-sustaining
 // loop.
 func (r *RunReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// A workload pod reaching Succeeded re-triggers its run so the gang can
-	// finalize. The predicate is Succeeded-only: pod creates (Pending) and the
-	// controller's own deletes on completion do not match, so this adds no
-	// reconcile churn under the single serial worker.
-	podSucceeded := predicate.NewPredicateFuncs(func(obj client.Object) bool {
-		pod, ok := obj.(*corev1.Pod)
-		return ok && pod.Status.Phase == corev1.PodSucceeded
-	})
+	// A workload pod re-triggers its run only when it reaches Succeeded (so the
+	// gang can finalize — B0) or its reported ETA annotation changes (so status
+	// mirrors it — A). Pod creates (Pending), phase steps below Succeeded, and
+	// the controller's own deletes on completion do not match, so this adds no
+	// churn under the single serial worker at any reasonable ETA cadence.
+	podWatch := predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool {
+			pod, ok := e.Object.(*corev1.Pod)
+			return ok && (pod.Status.Phase == corev1.PodSucceeded || pod.Annotations[binder.EtaAnnotation] != "")
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldPod, ok1 := e.ObjectOld.(*corev1.Pod)
+			newPod, ok2 := e.ObjectNew.(*corev1.Pod)
+			if !ok1 || !ok2 {
+				return false
+			}
+			if newPod.Status.Phase == corev1.PodSucceeded && oldPod.Status.Phase != corev1.PodSucceeded {
+				return true
+			}
+			return oldPod.Annotations[binder.EtaAnnotation] != newPod.Annotations[binder.EtaAnnotation]
+		},
+		DeleteFunc:  func(event.DeleteEvent) bool { return false },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+	}
 	// A run reaching a terminal phase (or being deleted) re-triggers its
 	// followers so a blocked chain advances. This must NOT reuse the primary
 	// For() generation gate: phase lives in status, so a completion bumps no
@@ -160,7 +176,7 @@ func (r *RunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&v1.Budget{}, handler.EnqueueRequestsFromMapFunc(r.budgetToRuns),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(podToRun),
-			builder.WithPredicates(podSucceeded)).
+			builder.WithPredicates(podWatch)).
 		Watches(&v1.Run{}, handler.EnqueueRequestsFromMapFunc(r.runToFollowers),
 			builder.WithPredicates(runTerminalOrDelete)).
 		WithOptions(serialWorker).

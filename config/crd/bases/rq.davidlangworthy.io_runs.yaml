@@ -147,6 +147,25 @@ spec:
               earliestStart:
                 format: date-time
                 type: string
+              eta:
+                description: |-
+                  RunETA is an optional, best-effort estimate of when the run will finish. It
+                  is observability only — nothing in scheduling reads it and there is no
+                  penalty for omitting it. The workload reports it (a pod annotation the
+                  controller mirrors, source "job"); the CLI can set it directly (source
+                  "controller").
+                properties:
+                  estimatedCompletion:
+                    format: date-time
+                    type: string
+                  reportedAt:
+                    format: date-time
+                    type: string
+                  source:
+                    type: string
+                required:
+                - estimatedCompletion
+                type: object
               followDeadline:
                 description: |-
                   FollowDeadline is set while the run waits on a failed upstream under the

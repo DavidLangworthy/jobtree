@@ -314,6 +314,59 @@ func TestFollowGatesUntilUpstreamCompletes(t *testing.T) {
 	waitForRunPhase(t, "train", "Running")
 }
 
+// TestETAMirroredFromPodAnnotation (A): a workload pod's rq.davidlangworthy.io/
+// eta annotation is mirrored into Run.status.eta (source "job"), observability
+// only — the run stays Running.
+func TestETAMirroredFromPodAnnotation(t *testing.T) {
+	requireEnv(t)
+	resetWorld(t)
+
+	createH100Node(t, "node-a", 4)
+	createBudget(t, "team", "org:team", 8)
+	run := &v1.Run{
+		ObjectMeta: metav1.ObjectMeta{Name: "eta-run", Namespace: "default"},
+		Spec: v1.RunSpec{
+			Owner:     "org:team",
+			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
+		},
+	}
+	if err := kubeClient.Create(suiteCtx, run); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	waitForRunPhase(t, "eta-run", "Running")
+	pods := waitForRunPods(t, "eta-run", 1)
+
+	want := baseTime.Add(3 * time.Hour).UTC().Format(time.RFC3339)
+	pod := pods[0]
+	if pod.Annotations == nil {
+		pod.Annotations = map[string]string{}
+	}
+	pod.Annotations[binder.EtaAnnotation] = want
+	if err := kubeClient.Update(suiteCtx, &pod); err != nil {
+		t.Fatalf("annotate pod: %v", err)
+	}
+
+	eventually(t, 20*time.Second, func() error {
+		var got v1.Run
+		if err := kubeClient.Get(suiteCtx, types.NamespacedName{Namespace: "default", Name: "eta-run"}, &got); err != nil {
+			return err
+		}
+		if got.Status.Phase != "Running" {
+			return fmt.Errorf("run phase %q, want still Running", got.Status.Phase)
+		}
+		if got.Status.ETA == nil {
+			return fmt.Errorf("ETA not mirrored yet")
+		}
+		if g := got.Status.ETA.EstimatedCompletion.Time.UTC().Format(time.RFC3339); g != want {
+			return fmt.Errorf("ETA = %q, want %q", g, want)
+		}
+		if got.Status.ETA.Source != "job" {
+			return fmt.Errorf("ETA source = %q, want job", got.Status.ETA.Source)
+		}
+		return nil
+	})
+}
+
 // TestReservationActivatesWhenCapacityArrives: a run the cluster cannot
 // place parks as Pending behind a Reservation; once capacity exists and the
 // clock passes EarliestStart, the reservation reconciler activates it and

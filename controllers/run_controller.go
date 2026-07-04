@@ -125,6 +125,8 @@ func (c *RunController) Reconcile(namespace, name string) error {
 		return nil
 	}
 
+	c.mirrorETA(run, now)
+
 	usage := computeUsage(c.State.Leases, now)
 	snapshot, err := topology.BuildSnapshotForFlavor(c.State.Nodes, usage, run.Spec.Resources.GPUType)
 	if err != nil {
@@ -365,6 +367,44 @@ func (c *RunController) hypotheticalEvaluation(run *v1.Run, plan cover.Plan, now
 		Now:     now,
 		Period:  c.Period,
 	})
+}
+
+// mirrorETA reflects a workload-reported ETA (the pod annotation) into the run
+// status, taking the latest estimate across the gang. It manages only the
+// "job" source: a CLI-set ("controller") ETA is left untouched, and a
+// job-sourced ETA is cleared once no pod reports one. Observability only —
+// nothing schedules on it.
+func (c *RunController) mirrorETA(run *v1.Run, now time.Time) {
+	var latest time.Time
+	found := false
+	for i := range c.State.Pods {
+		pod := &c.State.Pods[i]
+		if pod.Namespace != run.Namespace || pod.Labels[binder.LabelRunName] != run.Name {
+			continue
+		}
+		raw := pod.Annotations[binder.EtaAnnotation]
+		if raw == "" {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			continue
+		}
+		if !found || t.After(latest) {
+			latest, found = t, true
+		}
+	}
+	if found {
+		run.Status.ETA = &v1.RunETA{
+			EstimatedCompletion: v1.NewTime(latest),
+			ReportedAt:          v1.NewTime(now),
+			Source:              "job",
+		}
+		return
+	}
+	if run.Status.ETA != nil && run.Status.ETA.Source == "job" {
+		run.Status.ETA = nil
+	}
 }
 
 // runGangComplete reports whether every active (non-spare) pod of the run has

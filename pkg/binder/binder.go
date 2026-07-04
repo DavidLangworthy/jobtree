@@ -53,17 +53,23 @@ type Result struct {
 // binder need no Kubernetes API dependency.
 const PodPhaseSucceeded = "Succeeded"
 
+// EtaAnnotation is the pod annotation a workload sets to report an estimated
+// completion time (RFC3339); the run controller mirrors it into
+// Run.status.eta. Optional and observability only.
+const EtaAnnotation = "rq.davidlangworthy.io/eta"
+
 // PodManifest captures the minimal data needed to create a pod-like workload.
 // Phase is populated only for pods loaded from the cluster (empty for pods the
 // binder is about to create); the run controller reads it to detect gang
 // completion.
 type PodManifest struct {
-	Namespace string
-	Name      string
-	NodeName  string
-	GPUs      int
-	Labels    map[string]string
-	Phase     string
+	Namespace   string
+	Name        string
+	NodeName    string
+	GPUs        int
+	Labels      map[string]string
+	Annotations map[string]string
+	Phase       string
 }
 
 // Materialize constructs pods and leases for the provided request. Node
