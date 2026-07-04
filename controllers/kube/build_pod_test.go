@@ -1,6 +1,7 @@
 package kube
 
 import (
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -126,6 +127,47 @@ func TestBuildPodCarriesCohortAnnotation(t *testing.T) {
 	}
 	if pod.Annotations[binder.AnnotationLeaseReason] != "Grow" {
 		t.Errorf("lease-reason = %q, want Grow", pod.Annotations[binder.AnnotationLeaseReason])
+	}
+}
+
+// A hot-spare pod reserves its GPU but runs a long-lived holder, NOT the
+// researcher's (terminating) workload — it holds the slice until a swap promotes
+// it. If it ran the terminating default it would exit and release the GPU.
+func TestBuildPodSpareIsLongLivedGPUHolder(t *testing.T) {
+	run := &v1.Run{
+		ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"},
+		Spec: v1.RunSpec{
+			Owner:     "org:ai:team",
+			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
+			Roles: []v1.RunRole{{
+				Name: "trainer", Width: 4, GPUsPerPod: 1,
+				Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{
+					Name: v1.GPUTargetContainerName, Image: "ghcr.io/acme/train:latest", Command: []string{"python", "train.py"},
+				}}}},
+			}},
+		},
+	}
+	manifest := binder.PodManifest{
+		Namespace: "default", Name: "train-spare-0", NodeName: "node-b", GPUs: 1,
+		Labels:      map[string]string{binder.LabelRunName: "train", binder.LabelRunRole: binder.RoleSpare},
+		Annotations: map[string]string{binder.AnnotationExpectedWidth: "4"},
+	}
+
+	pod := buildPod(manifest, run)
+
+	c := pod.Spec.Containers[0]
+	if c.Image == "ghcr.io/acme/train:latest" {
+		t.Errorf("spare must not run the researcher's workload, got image %q", c.Image)
+	}
+	joined := strings.Join(c.Command, " ")
+	if !strings.Contains(joined, "sleep") {
+		t.Errorf("spare container must be long-lived (a GPU holder), got command %v", c.Command)
+	}
+	if got := c.Resources.Requests[GPUCapacityResource]; got.Value() != 1 {
+		t.Errorf("spare gpu request = %s, want 1 (it reserves the slice)", got.String())
+	}
+	if pod.Spec.NodeName != "" || pod.Spec.SchedulerName != schedulerName {
+		t.Errorf("spare scheduling overlay wrong: node=%q scheduler=%q", pod.Spec.NodeName, pod.Spec.SchedulerName)
 	}
 }
 

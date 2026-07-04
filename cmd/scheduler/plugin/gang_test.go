@@ -191,6 +191,66 @@ func TestGangDecideGrowCohortFundsDelta(t *testing.T) {
 	}
 }
 
+// A held spare is funded by the base gang's cover (which already pays for
+// active+spares) — decide hands out one payer per active pod AND one per spare,
+// and verdict() reports the gang funded so a spare can allow itself without
+// gating the active width.
+func TestGangSpareFundedByBaseCover(t *testing.T) {
+	spares := int32(1)
+	run := &v1.Run{
+		ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"},
+		Spec: v1.RunSpec{
+			Owner:     "org:ai:team",
+			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 2},
+			Spares:    &spares,
+		},
+	}
+	m := newManager(t, run, teamBudget(8), gpuNode("node-a", 3)) // 2 active + 1 spare fit
+
+	onePod := func(name, role string) *corev1.Pod {
+		return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+			Namespace:   "default",
+			Name:        name,
+			Labels:      map[string]string{binder.LabelRunName: "train", binder.LabelRunRole: role},
+			Annotations: map[string]string{binder.AnnotationGPUs: "1", binder.AnnotationExpectedWidth: "2", binder.AnnotationFlavor: "H100-80GB"},
+		}}
+	}
+	active0 := onePod("train-active-0", binder.RoleActive)
+
+	fundable, reason := m.decide(context.Background(), active0)
+	if !fundable {
+		t.Fatalf("expected the base gang (2 active + 1 spare) to fund, got: %s", reason)
+	}
+	// Two active pods AND one spare each claim a payer — the cover funded all 3.
+	for _, p := range []*corev1.Pod{active0, onePod("train-active-1", binder.RoleActive), onePod("train-spare-0", binder.RoleSpare)} {
+		if _, _, ok := m.claimPayer(p); !ok {
+			t.Errorf("pod %s (role %s) should claim a payer from the active+spares cover", p.Name, p.Labels[binder.LabelRunRole])
+		}
+	}
+	// A 4th distinct pod overflows the funded active+spares footprint.
+	if _, _, ok := m.claimPayer(onePod("train-spare-1", binder.RoleSpare)); ok {
+		t.Errorf("funding should be exhausted after 2 active + 1 spare (cover was 3 GPUs)")
+	}
+	// verdict lets a spare allow itself: the gang is decided and fundable.
+	if fundable, decided := m.verdict(onePod("train-spare-0", binder.RoleSpare)); !decided || !fundable {
+		t.Errorf("verdict = (fundable=%v, decided=%v), want (true, true)", fundable, decided)
+	}
+}
+
+// verdict does not trigger a decision: an undecided gang reports decided=false so
+// a spare parks (Wait) rather than deciding the gang before its active width forms.
+func TestGangVerdictUndecided(t *testing.T) {
+	m := newManager(t, trainRun(), teamBudget(8), gpuNode("node-a", 4))
+	spare := gangPod()
+	spare.Labels[binder.LabelRunRole] = binder.RoleSpare
+	if _, decided := m.verdict(spare); decided {
+		t.Errorf("verdict on an untouched gang must report decided=false")
+	}
+	if _, ok := m.gangs[gangKey(spare)]; ok {
+		t.Errorf("verdict must not create gang state")
+	}
+}
+
 // forget clears an undecided/unclaimed gang so a retry re-derives; it must not
 // drop a gang that has already handed out a payer (its lease is being minted).
 func TestGangForget(t *testing.T) {

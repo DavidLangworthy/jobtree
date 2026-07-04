@@ -77,6 +77,64 @@ func TestRunControllerAdmitsRun(t *testing.T) {
 	}
 }
 
+// A run declaring spares emits held RoleSpare intent pods alongside the active
+// gang — real, funded standby capacity for the plugin to bind and mint, not the
+// PLUGIN-2-era inert declaration. Idempotent across reconciles.
+func TestRunControllerEmitsHeldSpares(t *testing.T) {
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	spares := int32(2)
+	state := &ClusterState{
+		Budgets: []v1.Budget{{
+			ObjectMeta: v1.ObjectMeta{Name: "rai"},
+			Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
+				Name: "west-h100", Flavor: "H100-80GB",
+				Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
+				Concurrency: 16,
+			}}},
+		}},
+		Nodes: []topology.SourceNode{{
+			Name: "node-a",
+			Labels: map[string]string{
+				topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a",
+				topology.LabelFabricDomain: "island-a", topology.LabelGPUFlavor: "H100-80GB",
+			},
+			GPUs: 8, // 4 active + 2 spare fit with room
+		}},
+	}
+	state.Runs = map[string]*v1.Run{
+		"default/train": {
+			ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"},
+			Spec: v1.RunSpec{
+				Owner:     "org:ai:rai",
+				Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
+				Spares:    &spares,
+			},
+		},
+	}
+
+	controller := NewRunController(state, runClock{now: now})
+	if err := controller.Reconcile("default", "train"); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	if got := activeIntentPods(state, "default", "train"); got != 4 {
+		t.Errorf("active intent pods = %d, want 4", got)
+	}
+	if got := spareIntentPods(state, "default", "train"); got != 2 {
+		t.Errorf("spare intent pods = %d, want 2 (spares must be held live)", got)
+	}
+	if len(state.Leases) != 0 {
+		t.Errorf("controller mints nothing; the plugin funds spares, got %d leases", len(state.Leases))
+	}
+
+	// Idempotent: a second reconcile does not double-emit spares.
+	if err := controller.Reconcile("default", "train"); err != nil {
+		t.Fatalf("second reconcile failed: %v", err)
+	}
+	if got := spareIntentPods(state, "default", "train"); got != 2 {
+		t.Errorf("spare intent pods after re-reconcile = %d, want 2 (idempotent)", got)
+	}
+}
+
 func TestRunControllerCoFundedRunUpdatesFundingStatus(t *testing.T) {
 	now := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
 	lendAllow := true
