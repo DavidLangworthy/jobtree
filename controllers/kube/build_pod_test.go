@@ -102,3 +102,29 @@ func TestBuildPodLegacyRolelessUsesRealDefault(t *testing.T) {
 		t.Errorf("legacy pod scheduling overlay wrong: scheduler=%q node=%q", pod.Spec.SchedulerName, pod.Spec.NodeName)
 	}
 }
+
+// A grow-cohort pod must carry the cohort annotation through to the real pod, or
+// the scheduler plugin folds it into the base gang and its funding claim fails
+// (regression: a live grow proof caught buildPod dropping the cohort).
+func TestBuildPodCarriesCohortAnnotation(t *testing.T) {
+	run := &v1.Run{
+		ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"},
+		Spec:       v1.RunSpec{Owner: "org:ai:team", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 2}},
+	}
+	manifest := binder.PodManifest{
+		Namespace: "default", Name: "train-c1-active-0", GPUs: 1,
+		Labels: map[string]string{binder.LabelRunName: "train", binder.LabelRunRole: binder.RoleActive},
+		Annotations: map[string]string{
+			binder.AnnotationExpectedWidth: "2",
+			binder.AnnotationLeaseReason:   "Grow",
+			binder.AnnotationCohort:        "1",
+		},
+	}
+	pod := buildPod(manifest, run)
+	if pod.Annotations[binder.AnnotationCohort] != "1" {
+		t.Errorf("cohort annotation = %q, want 1 (dropped → plugin folds it into the base gang)", pod.Annotations[binder.AnnotationCohort])
+	}
+	if pod.Annotations[binder.AnnotationLeaseReason] != "Grow" {
+		t.Errorf("lease-reason = %q, want Grow", pod.Annotations[binder.AnnotationLeaseReason])
+	}
+}

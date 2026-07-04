@@ -37,6 +37,33 @@ func seedRunning(t *testing.T, state *ClusterState, runKey string, now time.Time
 	run.Status.Phase = RunPhaseRunning
 }
 
+// seedGrowLeases mints the leases the scheduler plugin would create for an
+// elastic-grow cohort of deltaGPUs more GPUs (reason Grow), on top of the run's
+// existing leases — the test stand-in for the plugin funding + binding a grow
+// cohort now that growRun emits intent pods instead of minting.
+func seedGrowLeases(t *testing.T, state *ClusterState, runKey string, deltaGPUs int32, now time.Time) {
+	t.Helper()
+	run := state.Runs[runKey]
+	if run == nil {
+		t.Fatalf("seedGrowLeases: run %s not found", runKey)
+	}
+	res, err := admission.Plan(admission.Input{
+		Run:      run,
+		Budgets:  state.Budgets,
+		Runs:     state.Runs,
+		Leases:   state.Leases,
+		Nodes:    state.Nodes,
+		Now:      now,
+		Quantity: deltaGPUs,
+		Reason:   "Grow",
+	})
+	if err != nil {
+		t.Fatalf("seedGrowLeases %s +%d: %v", runKey, deltaGPUs, err)
+	}
+	state.Leases = append(state.Leases, res.Leases...)
+	state.Pods = append(state.Pods, res.Pods...)
+}
+
 // activeIntentPods counts the unscheduled Active workload pods Reconcile emitted
 // for a run (the width it is requesting from the scheduler).
 func activeIntentPods(state *ClusterState, namespace, runName string) int {

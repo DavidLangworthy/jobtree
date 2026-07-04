@@ -448,9 +448,17 @@ func TestElasticRunGrowsToDesired(t *testing.T) {
 	seedRunning(t, state, "default/train", now)
 	run := state.Runs["default/train"]
 
-	controller.Clock = runClock{now: now.Add(time.Minute)}
+	grewAt := now.Add(time.Minute)
+	controller.Clock = runClock{now: grewAt}
 	if err := controller.Reconcile("default", "train"); err != nil {
 		t.Fatalf("reconcile failed: %v", err)
+	}
+	// growRun now emits a +32 grow cohort of unscheduled intent pods; the plugin
+	// funds that delta and mints "Grow" leases (seedGrowLeases). The next
+	// reconcile reflects the grown width from those leases.
+	seedGrowLeases(t, state, "default/train", 32, grewAt)
+	if err := controller.Reconcile("default", "train"); err != nil {
+		t.Fatalf("reconcile after grow mint failed: %v", err)
 	}
 	if run.Status.Width == nil || run.Status.Width.Allocated != 128 {
 		t.Fatalf("expected allocated width 128 after growth, got %+v", run.Status.Width)
@@ -522,6 +530,12 @@ func TestElasticRunVoluntaryShrink(t *testing.T) {
 	controller.Clock = runClock{now: now.Add(time.Minute)}
 	if err := controller.Reconcile("default", "train"); err != nil {
 		t.Fatalf("reconcile failed: %v", err)
+	}
+	// growRun emitted a +32 grow cohort; the plugin mints it (seedGrowLeases) so
+	// the run reaches 128 before we ask it to shrink back to 96.
+	seedGrowLeases(t, state, "default/train", 32, now.Add(time.Minute))
+	if err := controller.Reconcile("default", "train"); err != nil {
+		t.Fatalf("reconcile after grow mint failed: %v", err)
 	}
 
 	target := int32(96)
@@ -1007,7 +1021,10 @@ func TestElasticGrowShrinkEmitMetrics(t *testing.T) {
 			GPUs: 32,
 		})
 	}
-	desired := int32(160)
+	// Desired one step above the 96 baseline: a single grow step reaches it, so
+	// exactly one IncElasticGrow fires (async grow needs a re-reconcile to
+	// advance the width gauge, which must not trigger a second grow step).
+	desired := int32(128)
 	group := int32(32)
 	runKey := "default/train-metrics"
 	state.Runs = map[string]*v1.Run{
@@ -1030,6 +1047,12 @@ func TestElasticGrowShrinkEmitMetrics(t *testing.T) {
 	controller.Clock = runClock{now: now.Add(time.Minute)}
 	if err := controller.Reconcile("default", "train-metrics"); err != nil {
 		t.Fatalf("reconcile (grow): %v", err)
+	}
+	// The grow was requested (IncElasticGrow fired); the plugin mints the +32
+	// cohort (seedGrowLeases) and the next reconcile advances the width gauge.
+	seedGrowLeases(t, state, "default/train-metrics", 32, now.Add(time.Minute))
+	if err := controller.Reconcile("default", "train-metrics"); err != nil {
+		t.Fatalf("reconcile (grow mint): %v", err)
 	}
 
 	snap := metrics.Snapshot()

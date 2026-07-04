@@ -55,9 +55,22 @@ func newGangManager(reader client.Reader, clock func() time.Time) *gangManager {
 	return &gangManager{reader: reader, clock: clock, gangs: map[string]*gangCommit{}}
 }
 
-// gangKey identifies the Active pod set a pod belongs to.
+// gangKey identifies the admission unit a pod belongs to: the run, plus its
+// cohort. The base gang (cohort "0"/absent) and each elastic-grow cohort are
+// independent gangs that assemble and fund separately.
 func gangKey(pod *corev1.Pod) string {
-	return keys.NamespacedKey(pod.Namespace, pod.Labels[binder.LabelRunName])
+	k := keys.NamespacedKey(pod.Namespace, pod.Labels[binder.LabelRunName])
+	if c := pod.Annotations[binder.AnnotationCohort]; c != "" && c != "0" {
+		return k + "#" + c
+	}
+	return k
+}
+
+// isGrowCohort reports whether the pod belongs to an elastic-grow cohort (funded
+// as a delta) rather than the base gang (funded as the full run + spares).
+func isGrowCohort(pod *corev1.Pod) bool {
+	c := pod.Annotations[binder.AnnotationCohort]
+	return c != "" && c != "0"
 }
 
 func podInt(pod *corev1.Pod, annotation string, def int) int {
@@ -93,6 +106,11 @@ func (m *gangManager) decide(ctx context.Context, pod *corev1.Pod) (fundable boo
 	if err != nil {
 		g.reason = fmt.Sprintf("load world: %v", err)
 		return false, g.reason
+	}
+	// A grow cohort funds only its DELTA against the live ledger (which already
+	// holds the base leases); the base gang funds the full run + spares.
+	if isGrowCohort(pod) {
+		world.Quantity = int32(podInt(pod, binder.AnnotationExpectedWidth, 1) * g.gpusPerPod)
 	}
 	// Fold other gangs' not-yet-minted commitments into the ledger so two
 	// gangs cannot both fund against the same free capacity.
@@ -160,7 +178,9 @@ func (m *gangManager) forget(pod *corev1.Pod) {
 
 // loadWorld reads the live cluster into an admission.Input for the pod's Run.
 func (m *gangManager) loadWorld(ctx context.Context, pod *corev1.Pod) (admission.Input, *v1.Run, error) {
-	key := gangKey(pod)
+	// The run key is the run, without any cohort suffix gangKey adds — a grow
+	// cohort's pods still belong to the same Run object.
+	runKey := keys.NamespacedKey(pod.Namespace, pod.Labels[binder.LabelRunName])
 	var runList v1.RunList
 	if err := m.reader.List(ctx, &runList); err != nil {
 		return admission.Input{}, nil, fmt.Errorf("list runs: %w", err)
@@ -171,12 +191,12 @@ func (m *gangManager) loadWorld(ctx context.Context, pod *corev1.Pod) (admission
 		r := &runList.Items[i]
 		rk := keys.NamespacedKey(r.Namespace, r.Name)
 		runs[rk] = r
-		if rk == key {
+		if rk == runKey {
 			run = r
 		}
 	}
 	if run == nil {
-		return admission.Input{}, nil, fmt.Errorf("run %s not found for pod %s", key, pod.Name)
+		return admission.Input{}, nil, fmt.Errorf("run %s not found for pod %s", runKey, pod.Name)
 	}
 
 	var budgetList v1.BudgetList

@@ -372,7 +372,7 @@ func buildPod(manifest binder.PodManifest, run *v1.Run) *corev1.Pod {
 	if run != nil && run.Spec.Resources.GPUType != "" {
 		annotations[binder.AnnotationFlavor] = run.Spec.Resources.GPUType
 	}
-	for _, k := range []string{binder.AnnotationExpectedWidth, binder.AnnotationLeaseReason} {
+	for _, k := range []string{binder.AnnotationExpectedWidth, binder.AnnotationLeaseReason, binder.AnnotationCohort} {
 		if v, ok := manifest.Annotations[k]; ok {
 			annotations[k] = v
 		}

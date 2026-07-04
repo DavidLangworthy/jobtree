@@ -47,6 +47,12 @@ const (
 	// Lease it mints for the pod (Start/Grow/Swap), carrying the
 	// controller's lifecycle intent to the single committer.
 	AnnotationLeaseReason = "rq.davidlangworthy.io/lease-reason"
+	// AnnotationCohort groups a run's pods into independent admission units.
+	// The base gang is cohort "0" (or absent); each elastic-grow step is a new
+	// cohort ("1", "2", …) the plugin gangs and funds SEPARATELY from the base,
+	// so a grow funds its delta incrementally on top of the base leases rather
+	// than re-gating the already-bound base gang.
+	AnnotationCohort = "rq.davidlangworthy.io/cohort"
 )
 
 // Request gathers the context required to materialize pods and leases for a Run.
