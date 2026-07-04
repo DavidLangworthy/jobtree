@@ -34,6 +34,7 @@ import (
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	"github.com/davidlangworthy/jobtree/pkg/admission"
 	"github.com/davidlangworthy/jobtree/pkg/binder"
+	"github.com/davidlangworthy/jobtree/pkg/cover"
 	"github.com/davidlangworthy/jobtree/pkg/topology"
 )
 
@@ -136,6 +137,14 @@ func (j *JobTree) Unreserve(_ context.Context, _ fwk.CycleState, pod *corev1.Pod
 // Active set is simultaneously waiting; the member that completes the set runs
 // the atomic funding check and either allows the gang or rejects it.
 func (j *JobTree) Permit(ctx context.Context, _ fwk.CycleState, pod *corev1.Pod, _ string) (*fwk.Status, time.Duration) {
+	// A node-failure swap re-places already-funded work onto capacity the
+	// controller reclaimed for it — it is not new demand, so it skips the gang
+	// and funding gate entirely and is allowed immediately. Its Lease is minted
+	// from the carried provenance at PreBind.
+	if isSwapPod(pod) {
+		return nil, 0
+	}
+
 	key := gangKey(pod)
 	expected := podInt(pod, binder.AnnotationExpectedWidth, 1)
 
@@ -177,16 +186,40 @@ func (j *JobTree) PreBindPreFlight(_ context.Context, _ fwk.CycleState, _ *corev
 // gpusPerPod GPUs on the node the scheduler bound the pod to. Idempotent by pod
 // name so a PreBind retry converges rather than duplicating.
 func (j *JobTree) PreBind(ctx context.Context, _ fwk.CycleState, pod *corev1.Pod, nodeName string) *fwk.Status {
-	seg, gpusPerPod, ok := j.gm.claimPayer(pod)
-	if !ok {
-		return fwk.NewStatus(fwk.Error, fmt.Sprintf("jobtree: no funding claim for pod %s/%s", pod.Namespace, pod.Name))
-	}
 	run := &v1.Run{ObjectMeta: v1.ObjectMeta{Namespace: pod.Namespace, Name: pod.Labels[binder.LabelRunName]}}
+
+	var seg cover.Segment
+	gpusPerPod := podInt(pod, binder.AnnotationGPUs, 1)
+	if isSwapPod(pod) {
+		// The swap's payer is carried on the pod (the spare's provenance), not
+		// re-derived — so continued work keeps its original envelope.
+		seg = cover.Segment{
+			Owner:        pod.Annotations[binder.AnnotationPayerOwner],
+			BudgetName:   pod.Annotations[binder.AnnotationPayerBudget],
+			EnvelopeName: pod.Annotations[binder.AnnotationPayerEnvelope],
+		}
+		if seg.Owner == "" || seg.EnvelopeName == "" {
+			return fwk.NewStatus(fwk.Error, fmt.Sprintf("jobtree: swap pod %s/%s missing funding provenance", pod.Namespace, pod.Name))
+		}
+	} else {
+		var ok bool
+		seg, gpusPerPod, ok = j.gm.claimPayer(pod)
+		if !ok {
+			return fwk.NewStatus(fwk.Error, fmt.Sprintf("jobtree: no funding claim for pod %s/%s", pod.Namespace, pod.Name))
+		}
+	}
+
 	lease := admission.PodLease(run, seg, nodeName, gpusPerPod, pod.Name+"-lease", time.Now().UTC(), pod.Annotations[binder.AnnotationLeaseReason])
 	if err := j.client.Create(ctx, &lease); err != nil && !apierrors.IsAlreadyExists(err) {
 		return fwk.NewStatus(fwk.Error, fmt.Sprintf("jobtree: mint lease for %s: %v", pod.Name, err))
 	}
 	return nil
+}
+
+// isSwapPod reports whether a pod is a node-failure swap re-placement (minted
+// from carried provenance, funding-gate-exempt).
+func isSwapPod(pod *corev1.Pod) bool {
+	return pod.Annotations[binder.AnnotationLeaseReason] == "Swap"
 }
 
 // PostFilter is a no-op: it reclaims nothing (reclaim stays a controller

@@ -128,3 +128,44 @@ func TestBuildPodCarriesCohortAnnotation(t *testing.T) {
 		t.Errorf("lease-reason = %q, want Grow", pod.Annotations[binder.AnnotationLeaseReason])
 	}
 }
+
+// A node-failure swap pod must carry its funding provenance AND be HARD-targeted
+// (required node affinity) at the reclaimed spare node.
+func TestBuildPodSwapHardTargetsAndCarriesProvenance(t *testing.T) {
+	run := &v1.Run{
+		ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"},
+		Spec:       v1.RunSpec{Owner: "org:ai:team", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 1}},
+	}
+	manifest := binder.PodManifest{
+		Namespace: "default", Name: "train-g0-swap-1", GPUs: 1,
+		Labels: map[string]string{binder.LabelRunName: "train", binder.LabelRunRole: binder.RoleActive},
+		Annotations: map[string]string{
+			binder.AnnotationLeaseReason:   "Swap",
+			binder.AnnotationSwapNode:      "node-b",
+			binder.AnnotationPayerOwner:    "org:sponsor",
+			binder.AnnotationPayerBudget:   "sponsor",
+			binder.AnnotationPayerEnvelope: "west",
+		},
+	}
+	pod := buildPod(manifest, run)
+
+	for k, want := range map[string]string{
+		binder.AnnotationSwapNode:      "node-b",
+		binder.AnnotationPayerOwner:    "org:sponsor",
+		binder.AnnotationPayerBudget:   "sponsor",
+		binder.AnnotationPayerEnvelope: "west",
+		binder.AnnotationLeaseReason:   "Swap",
+	} {
+		if pod.Annotations[k] != want {
+			t.Errorf("annotation %s = %q, want %q", k, pod.Annotations[k], want)
+		}
+	}
+	na := pod.Spec.Affinity.NodeAffinity
+	if na == nil || na.RequiredDuringSchedulingIgnoredDuringExecution == nil {
+		t.Fatalf("swap pod must have a REQUIRED node affinity, got %+v", pod.Spec.Affinity)
+	}
+	terms := na.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+	if len(terms) != 1 || len(terms[0].MatchExpressions) != 1 || terms[0].MatchExpressions[0].Values[0] != "node-b" {
+		t.Errorf("required affinity = %+v, want a single hostname==node-b term", terms)
+	}
+}

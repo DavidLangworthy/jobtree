@@ -4,10 +4,14 @@ Kubernetes-native gang scheduling for **job forests** that need to honor **time-
 
 ## What Jobtree does
 
+- **Real GPU workloads** – A Run's pods run the researcher's own container image and command
+  (`spec.roles[].template`) and request real `nvidia.com/gpu`. The **jobtree scheduler
+  plugin** — a kube-scheduler-framework plugin (`schedulerName: jobtree`) — places every pod
+  and is the sole committer of GPU funding: it mints the pod's Lease at bind time.
 - **Budget-aware orchestration** – Tracks spend commitments for labs, projects, and teams, ensuring scheduled work stays inside each budget window.
 - **Gang scheduling with dependencies** – A *run* is a set of pods that start together or not at all; runs chain into workflows with `follow` (start after the runs it follows complete), and are funded by a hierarchy of budgets.
 - **Smart packing and borrowing** – Packs workloads onto heterogeneous clusters, supports short-term borrowing across orgs, and gracefully shrinks elastic runs when pressure rises.
-- **Fast starts and reservations** – Combines immediate binders with forecasted reservations so urgent work launches quickly while long queues remain predictable.
+- **Fast starts and reservations** – The scheduler plugin binds and funds work the moment it's feasible; forecasted Reservations keep long queues predictable when it isn't.
 - **Observability first** – Ships dashboards, event streams, and a CLI (`kubectl runs`) to explain scheduling decisions and surface bottlenecks.
 
 ## Why it is useful
@@ -19,7 +23,8 @@ Kubernetes-native gang scheduling for **job forests** that need to honor **time-
 
 ## Key concepts
 
-- **Run**: a set of pods that must start together; may request elasticity or co-funding.
+- **Run**: a set of pods running the researcher's real container, scheduled together (or not at
+  all) by the jobtree scheduler plugin; may request elasticity or co-funding.
 - **Job forest**: runs joined by `follow` edges into workflows (e.g., data prep → training → evaluation), funded by a hierarchy of budgets. A follower waits until every run it follows completes; if one fails it waits a grace period (so you can fix and resubmit just that stage) and then fails honestly.
 - **Budget window**: time-scoped allowance (hours, credits, GPUs) that governs what can be scheduled and when.
 - **Borrowing & oversubscription**: policies that let teams temporarily exceed their caps without starving critical work.
@@ -41,7 +46,8 @@ Kubernetes-native gang scheduling for **job forests** that need to honor **time-
 
 ## Where to go next
 
-- Try a dry run with the simulated cluster: `kubectl runs --state cluster.yaml plan <run>`.
+- Try an offline dry run with the local simulator, which models both the controller's and the
+  scheduler plugin's decisions: `kubectl runs --local --state cluster.yaml plan <run>`.
 - Deploy the observability stack via Helm at `deploy/helm/gpu-fleet/` or use the Kustomize overlays in `deploy/kustomize/`.
 - Review the [directory tree plan](architecture/directory-tree.md) to see how the codebase will evolve.
 

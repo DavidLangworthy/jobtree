@@ -53,6 +53,17 @@ const (
 	// so a grow funds its delta incrementally on top of the base leases rather
 	// than re-gating the already-bound base gang.
 	AnnotationCohort = "rq.davidlangworthy.io/cohort"
+	// AnnotationSwapNode pins a node-failure SWAP pod to the specific spare node
+	// the controller reclaimed for it (a required placement, not the soft
+	// advisory hint normal pods carry): a swap must land on that held capacity.
+	AnnotationSwapNode = "rq.davidlangworthy.io/swap-node"
+	// The AnnotationPayer* trio carries the funding provenance of a swap: the
+	// spare's payer (owner/budget/envelope). The plugin's PreBind mints the Swap
+	// lease from these instead of re-deriving a payer via cover, so continued
+	// work keeps its original envelope (sponsor caps, lender attribution — R15).
+	AnnotationPayerOwner    = "rq.davidlangworthy.io/payer-owner"
+	AnnotationPayerBudget   = "rq.davidlangworthy.io/payer-budget"
+	AnnotationPayerEnvelope = "rq.davidlangworthy.io/payer-envelope"
 )
 
 // Request gathers the context required to materialize pods and leases for a Run.

@@ -31,13 +31,22 @@ kubectl label nodes gpu-b-[01-16] \
 helm repo add jobtree https://davidlangworthy.github.io/jobtree
 helm install jobtree deploy/helm/gpu-fleet \
   --namespace jobtree-system --create-namespace \
-  --set image.tag=$(git rev-parse --short HEAD)
+  --set image.tag=$(git rev-parse --short HEAD) \
+  --set scheduler.enabled=true
 ```
 
 What gets installed:
 
 * CRDs for Budget, Run, Reservation, and Lease.
-* Controller manager Deployment (scheduler/binder + webhooks).
+* Controller manager Deployment (admission, forecasting/Reservations, lifecycle, webhooks). It
+  requests width by creating real, unscheduled workload pods (`schedulerName: jobtree`) — it does
+  not place pods or mint Leases itself.
+* A second Deployment running the **jobtree scheduler** (`cmd/scheduler`, the out-of-tree
+  kube-scheduler-framework binary registering the `jobtree` plugin via a mounted
+  `KubeSchedulerConfiguration`). It is the sole committer of GPU funding: it schedules every
+  `schedulerName: jobtree` pod and mints the pod's Lease at bind time. Toggle it with
+  `--set scheduler.enabled=true` (see `deploy/helm/gpu-fleet/templates/scheduler-deployment.yaml`);
+  without it, workload pods created by the controller manager stay unscheduled forever.
 * ServiceMonitor + dashboard ConfigMap if Prometheus/Grafana are present.
 
 > Prefer `deploy/kustomize/*` for air-gapped clusters or when you need extra admission policy.
@@ -105,7 +114,7 @@ kubectl logs deploy/jobtree-controller-manager -n jobtree-system | rg RandomPree
 
 | Symptom | Action |
 | --- | --- |
-| Runs stuck in `Pending` | `kubectl runs plan <run>` for deficit + remedies; verify budgets have headroom. |
+| Runs stuck in `Pending` with unscheduled workload pods | `kubectl get pods -l rq.davidlangworthy.io/run=<run>` — if they show `schedulerName: jobtree` and no `nodeName`, confirm the jobtree scheduler Deployment is installed and running (`scheduler.enabled=true`); without it nothing places or funds the pods. Otherwise `kubectl runs plan <run>` for deficit + remedies; verify budgets have headroom. |
 | Reservations missing ETAs | `forecast.Plan` is an inline library call inside the `run` reconciler — there is no separate "forecast controller" process to check the liveness of. Check the `run` controller's logs/`jobtree_forecast_latency_seconds` metric instead. |
 | Unexpected preemptions | `kubectl get events --field-selector involvedObject.name=<run>` for the `ResolverAction` Warning event (carries the seed and reason); there is no `conflictSet` field — use `kubectl runs explain` for the resolved Lease closure reasons. |
 | Borrowing denied | Confirm lending envelopes set `lending.allow=true` and borrowers request ≤ `maxBorrowGPUs`. |

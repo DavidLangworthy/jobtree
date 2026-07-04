@@ -1126,11 +1126,13 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 		}
 		closeLease(spareLease, "Swap", now)
 		closeLease(lease, "NodeFailure", now)
-		newLease := createSwapLease(run, groupIndex, spareLease, now)
-		c.State.Leases = append(c.State.Leases, newLease)
-		c.updatePodsAfterSwap(run, groupIndex, nodeName, spareSet)
+		// Re-emit the group's pod as a SWAP onto the reclaimed spare node,
+		// stamped with the spare's funding provenance; the scheduler plugin binds
+		// it there (required node affinity) and mints the Swap lease from that
+		// provenance — the sole committer. We mint nothing here.
+		c.emitSwapPod(run, groupIndex, spareLease, now)
 		run.Status.Phase = RunPhaseRunning
-		run.Status.Message = fmt.Sprintf("group %s swapped to spare after node %s failure", groupIndex, nodeName)
+		run.Status.Message = fmt.Sprintf("group %s swapping to spare after node %s failure", groupIndex, nodeName)
 		c.emit(run, EventTypeNormal, "NodeFailureSwap", run.Status.Message)
 	}
 	if !handled {
@@ -1558,6 +1560,38 @@ func nextCohortForRun(pods []binder.PodManifest, run *v1.Run) int {
 		}
 	}
 	return maxC + 1
+}
+
+// emitSwapPod re-emits a failed group's pod as a node-failure SWAP: one
+// unscheduled pod hard-targeted (via the swap-node annotation) at the reclaimed
+// spare node, carrying the spare's funding provenance (owner/budget/envelope) so
+// the plugin mints the Swap lease from it without re-funding. The controller
+// mints nothing.
+func (c *RunController) emitSwapPod(run *v1.Run, groupIndex string, spareLease *v1.Lease, now time.Time) {
+	slots := spareLease.Spec.Slice.Nodes
+	if len(slots) == 0 {
+		return
+	}
+	node := nodeFromSlot(slots[0])
+	c.State.Pods = append(c.State.Pods, binder.PodManifest{
+		Namespace: run.Namespace,
+		Name:      fmt.Sprintf("%s-g%s-swap-%d", run.Name, groupIndex, now.UnixNano()),
+		NodeName:  node,
+		GPUs:      len(slots),
+		Labels: map[string]string{
+			binder.LabelRunName:    run.Name,
+			binder.LabelGroupIndex: groupIndex,
+			binder.LabelRunRole:    binder.RoleActive,
+		},
+		Annotations: map[string]string{
+			binder.AnnotationExpectedWidth: "1",
+			binder.AnnotationLeaseReason:   "Swap",
+			binder.AnnotationSwapNode:      node,
+			binder.AnnotationPayerOwner:    spareLease.Spec.Owner,
+			binder.AnnotationPayerBudget:   spareLease.Spec.PaidByBudget,
+			binder.AnnotationPayerEnvelope: spareLease.Spec.PaidByEnvelope,
+		},
+	})
 }
 
 // intentPodShape returns the uniform (gpusPerPod, width) an intent gang emits.
@@ -2005,79 +2039,6 @@ func closeLease(lease *v1.Lease, reason string, now time.Time) {
 	ended := v1.NewTime(now)
 	lease.Status.Ended = &ended
 	lease.Status.ClosureReason = reason
-}
-
-func createSwapLease(run *v1.Run, group string, spare *v1.Lease, now time.Time) v1.Lease {
-	nodes := append([]string{}, spare.Spec.Slice.Nodes...)
-	// The promoted lease keeps the spare's funding provenance (payer owner,
-	// budget, envelope): the derivation classifies it from those facts, so
-	// sponsor-paid capacity keeps counting against MaxBorrowGPUs and the
-	// lender's caps without any role stamping (R15).
-	role := binder.RoleActive
-	labels := map[string]string{
-		binder.LabelRunName:    run.Name,
-		binder.LabelGroupIndex: group,
-		binder.LabelRunRole:    role,
-	}
-	return v1.Lease{
-		ObjectMeta: v1.ObjectMeta{
-			Namespace: run.Namespace,
-			Name:      fmt.Sprintf("%s-g%s-swap-%d", run.Name, group, now.UnixNano()),
-			Labels:    labels,
-		},
-		Spec: v1.LeaseSpec{
-			Owner: spare.Spec.Owner,
-			RunRef: v1.RunReference{
-				Name:      run.Name,
-				Namespace: run.Namespace,
-			},
-			Slice: v1.LeaseSlice{
-				Nodes: nodes,
-				Role:  role,
-			},
-			Interval:       v1.LeaseInterval{Start: v1.NewTime(now)},
-			PaidByBudget:   spare.Spec.PaidByBudget,
-			PaidByEnvelope: spare.Spec.PaidByEnvelope,
-			Reason:         "Swap",
-		},
-	}
-}
-
-func (c *RunController) updatePodsAfterSwap(run *v1.Run, group, failedNode string, spareNodes map[string]int) {
-	var pods []binder.PodManifest
-	for _, pod := range c.State.Pods {
-		runName := pod.Labels[binder.LabelRunName]
-		groupIndex := pod.Labels[binder.LabelGroupIndex]
-		role := pod.Labels[binder.LabelRunRole]
-		if runName == run.Name && groupIndex == group {
-			if pod.NodeName == failedNode {
-				continue
-			}
-			if _, ok := spareNodes[pod.NodeName]; ok {
-				continue
-			}
-		}
-		if _, ok := spareNodes[pod.NodeName]; ok && role != binder.RoleActive {
-			continue
-		}
-		pods = append(pods, pod)
-	}
-	c.State.Pods = pods
-	for node, count := range spareNodes {
-		labels := map[string]string{
-			binder.LabelRunName:    run.Name,
-			binder.LabelGroupIndex: group,
-			binder.LabelRunRole:    binder.RoleActive,
-		}
-		podName := fmt.Sprintf("%s-g%s-swap-%s", run.Name, group, node)
-		c.State.Pods = append(c.State.Pods, binder.PodManifest{
-			Namespace: run.Namespace,
-			Name:      podName,
-			NodeName:  node,
-			GPUs:      count,
-			Labels:    labels,
-		})
-	}
 }
 
 func nodeFromSlot(slot string) string {

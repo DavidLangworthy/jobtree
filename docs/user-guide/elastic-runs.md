@@ -1,9 +1,9 @@
 # Elastic runs (INCR) and voluntary shrink
 
 Elastic runs let a training job adjust its width between `minTotalGPUs` and
-`maxTotalGPUs` in deterministic steps. This milestone wires the controller,
-binder, and API so Runs can grow when headroom appears and shrink when users
-reduce their desired footprint.
+`maxTotalGPUs` in deterministic steps. The controller, the jobtree scheduler
+plugin, and the API work together so Runs can grow when headroom appears and
+shrink when users reduce their desired footprint.
 
 ## Spec fields
 
@@ -52,9 +52,11 @@ number. When the controller is still working toward the desired width, the
 
 1. The controller observes `desired > allocated`.
 2. It plans an additional `stepGPUs` worth of work (subject to topology and
-   budget headroom).
-3. `pkg/binder` materialises the new pods and leases using the next group index
-   and tags the leases with `reason: Grow`.
+   budget headroom) and emits it as a new cohort of real, unscheduled intent
+   pods (the controller mints nothing).
+3. The jobtree scheduler plugin gangs and funds that cohort's delta
+   incrementally against the live ledger — separately from the base — and
+   mints the new pods' Leases with `reason: Grow`.
 4. Status updates to show the new allocation and, if more growth is pending,
    keeps a reminder in `status.width.pending`.
 

@@ -7,8 +7,9 @@ a fixed constant.
 
 ## When reservations are created
 
-The run controller attempts immediate admission (cover → pack → bind). If any of the following
-conditions hold, a Reservation is created instead of binding pods:
+The run controller attempts immediate admission (cover → pack, both predictions of what the
+jobtree scheduler plugin would do). If any of the following conditions hold, a Reservation is
+created instead of requesting pods now:
 
 - **Insufficient topology capacity:** the packer cannot find enough free GPUs in the required domains.
 - **Budget window not yet open:** the requested envelope forbids admission until its `start` time but allows reservations.

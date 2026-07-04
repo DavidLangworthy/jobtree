@@ -537,6 +537,10 @@ func TestSwapLeaseKeepsFundingProvenance(t *testing.T) {
 	if err := controller.HandleNodeFailure("node-a", now); err != nil {
 		t.Fatalf("node failure handling failed: %v", err)
 	}
+	// The controller emits a swap pod carrying the spare's funding provenance;
+	// the plugin mints the Swap lease from it — stood in for by seedSwapLease.
+	// The provenance is what must survive, so this is exactly what the test checks.
+	seedSwapLease(t, state, "train", now)
 
 	var swap *v1.Lease
 	for i := range state.Leases {
