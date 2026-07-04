@@ -3,6 +3,7 @@ package kube
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +16,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
+	"github.com/davidlangworthy/jobtree/pkg/admission"
 	"github.com/davidlangworthy/jobtree/pkg/binder"
+	"github.com/davidlangworthy/jobtree/pkg/keys"
+	"github.com/davidlangworthy/jobtree/pkg/topology"
 )
 
 // End-to-end scenarios through the real manager: API server, webhooks,
@@ -142,10 +146,137 @@ func waitForRunPods(t *testing.T, runName string, want int) []corev1.Pod {
 	return pods
 }
 
+// seedPluginLeases stands in for the out-of-process scheduler plugin: it
+// computes the leases admission.Plan would mint for the run against the live
+// world the test built (budgets, nodes, runs, existing leases) and CREATEs them
+// through the API. The running manager's Lease watch then re-triggers the run,
+// whose adoption path (run_controller.go: "adopted N open leases") flips it
+// Running — the very transition the plugin's PreBind mint drives on a real
+// cluster (proven end-to-end by hack/e2e/plugin-smoke.sh). It is the envtest,
+// client-side twin of the pure-engine seedRunning in controllers/cutover_test.go,
+// writing real Lease CRs instead of appending to an in-memory ClusterState.
+func seedPluginLeases(t *testing.T, runName string) []v1.Lease {
+	t.Helper()
+	now := clock.Now()
+
+	var budgetList v1.BudgetList
+	if err := kubeClient.List(suiteCtx, &budgetList); err != nil {
+		t.Fatalf("seedPluginLeases list budgets: %v", err)
+	}
+	var runList v1.RunList
+	if err := kubeClient.List(suiteCtx, &runList); err != nil {
+		t.Fatalf("seedPluginLeases list runs: %v", err)
+	}
+	var leaseList v1.LeaseList
+	if err := kubeClient.List(suiteCtx, &leaseList); err != nil {
+		t.Fatalf("seedPluginLeases list leases: %v", err)
+	}
+	var nodeList corev1.NodeList
+	if err := kubeClient.List(suiteCtx, &nodeList); err != nil {
+		t.Fatalf("seedPluginLeases list nodes: %v", err)
+	}
+
+	runs := make(map[string]*v1.Run, len(runList.Items))
+	for i := range runList.Items {
+		r := &runList.Items[i]
+		runs[keys.NamespacedKey(r.Namespace, r.Name)] = r
+	}
+	run := runs[keys.NamespacedKey("default", runName)]
+	if run == nil {
+		t.Fatalf("seedPluginLeases: run %s not found", runName)
+	}
+
+	// Mirror bridge.load's node projection: only schedulable, Ready nodes
+	// contribute capacity, and GPU counts come from status capacity.
+	var nodes []topology.SourceNode
+	for i := range nodeList.Items {
+		node := &nodeList.Items[i]
+		if node.Spec.Unschedulable {
+			continue
+		}
+		ready := false
+		for _, cond := range node.Status.Conditions {
+			if cond.Type == corev1.NodeReady {
+				ready = cond.Status == corev1.ConditionTrue
+			}
+		}
+		if !ready {
+			continue
+		}
+		gpus := 0
+		if qty, ok := node.Status.Capacity[GPUCapacityResource]; ok {
+			gpus = int(qty.Value())
+		}
+		nodes = append(nodes, topology.SourceNode{Name: node.Name, Labels: node.Labels, GPUs: gpus})
+	}
+
+	res, err := admission.Plan(admission.Input{
+		Run:     run,
+		Budgets: budgetList.Items,
+		Runs:    runs,
+		Leases:  leaseList.Items,
+		Nodes:   nodes,
+		Now:     now,
+	})
+	if err != nil {
+		t.Fatalf("seedPluginLeases plan %s: %v", runName, err)
+	}
+	// Freshly planned leases carry no status, so a bare Create is faithful to
+	// the plugin's PreBind mint (an open lease).
+	for i := range res.Leases {
+		lease := res.Leases[i].DeepCopy()
+		lease.ResourceVersion = ""
+		if err := kubeClient.Create(suiteCtx, lease); err != nil {
+			t.Fatalf("seedPluginLeases create lease %s: %v", lease.Name, err)
+		}
+	}
+	return res.Leases
+}
+
+// assertIntentPod checks one UNSCHEDULED workload pod against the new
+// manager→plugin contract: routed to the jobtree scheduler, unbound, restarted
+// never, carrying a real nvidia.com/gpu request and the gang metadata the
+// plugin reads. The manager only emits these; real binding + lease minting is
+// the plugin's job, proven live by hack/e2e/plugin-smoke.sh.
+func assertIntentPod(t *testing.T, pod corev1.Pod, runName string, gpusPerPod int) {
+	t.Helper()
+	if pod.Spec.SchedulerName != schedulerName {
+		t.Errorf("pod %s schedulerName = %q, want %q", pod.Name, pod.Spec.SchedulerName, schedulerName)
+	}
+	if pod.Spec.NodeName != "" {
+		t.Errorf("pod %s is bound to %q; an intent pod must be unscheduled", pod.Name, pod.Spec.NodeName)
+	}
+	if pod.Spec.RestartPolicy != corev1.RestartPolicyNever {
+		t.Errorf("pod %s restartPolicy = %q, want Never", pod.Name, pod.Spec.RestartPolicy)
+	}
+	var got resource.Quantity
+	found := false
+	for i := range pod.Spec.Containers {
+		if q, ok := pod.Spec.Containers[i].Resources.Requests[GPUCapacityResource]; ok {
+			got, found = q, true
+			break
+		}
+	}
+	if want := int64(gpusPerPod); !found || got.Value() != want {
+		t.Errorf("pod %s nvidia.com/gpu request = %d (found=%v), want %d", pod.Name, got.Value(), found, want)
+	}
+	if pod.Labels[binder.LabelRunName] != runName || pod.Labels[binder.LabelRunRole] != binder.RoleActive {
+		t.Errorf("pod %s gang labels = run %q/role %q, want %q/Active", pod.Name, pod.Labels[binder.LabelRunName], pod.Labels[binder.LabelRunRole], runName)
+	}
+	if pod.Annotations[binder.AnnotationFlavor] != "H100-80GB" {
+		t.Errorf("pod %s flavor annotation = %q, want H100-80GB", pod.Name, pod.Annotations[binder.AnnotationFlavor])
+	}
+	if pod.Annotations[PodGPUAnnotation] != strconv.Itoa(gpusPerPod) {
+		t.Errorf("pod %s gpus annotation = %q, want %d", pod.Name, pod.Annotations[PodGPUAnnotation], gpusPerPod)
+	}
+}
+
 // TestManagerBindsRunEndToEnd: a valid Run is defaulted by the mutating
-// webhook, admitted by the engine on the first reconcile, and materialized
-// as a lease and a workload pod; the budget reconciler folds the lease back
-// into envelope headroom.
+// webhook and admitted by the engine, which now emits UNSCHEDULED intent pods
+// for the jobtree scheduler plugin instead of binding them itself. Standing in
+// for the plugin (seedPluginLeases) drives the adoption flip to Running; the
+// budget reconciler then folds the plugin's lease back into envelope headroom.
+// Real end-to-end binding + minting is proven live by hack/e2e/plugin-smoke.sh.
 func TestManagerBindsRunEndToEnd(t *testing.T) {
 	requireEnv(t)
 	resetWorld(t)
@@ -165,6 +296,16 @@ func TestManagerBindsRunEndToEnd(t *testing.T) {
 	if run.Spec.Locality == nil || run.Spec.Locality.AllowCrossGroupSpread == nil || !*run.Spec.Locality.AllowCrossGroupSpread {
 		t.Errorf("mutating webhook should default allowCrossGroupSpread=true on a persisted create, got %+v", run.Spec.Locality)
 	}
+
+	// The manager emits its full width of UNSCHEDULED intent pods (1 GPU each)
+	// and parks Pending until the plugin schedules them; assert that contract
+	// before standing in for the plugin.
+	intents := waitForRunPods(t, "train", 4)
+	for _, pod := range intents {
+		assertIntentPod(t, pod, "train", 1)
+	}
+
+	seedPluginLeases(t, "train")
 
 	bound := waitForRunPhase(t, "train", "Running")
 	if bound.Status.Width == nil || bound.Status.Width.Allocated != 4 {
@@ -192,15 +333,6 @@ func TestManagerBindsRunEndToEnd(t *testing.T) {
 	}
 	if lease.Status.Closed {
 		t.Error("fresh lease must not be closed")
-	}
-
-	pods := waitForRunPods(t, "train", 1)
-	pod := pods[0]
-	if pod.Name != "train-g00-active-node-a-0" || pod.Spec.NodeName != "node-a" {
-		t.Errorf("pod = %s on %s, want train-g00-active-node-a-0 on node-a", pod.Name, pod.Spec.NodeName)
-	}
-	if pod.Annotations[PodGPUAnnotation] != "4" {
-		t.Errorf("pod GPU annotation = %q, want 4", pod.Annotations[PodGPUAnnotation])
 	}
 
 	eventually(t, 15*time.Second, func() error {
@@ -234,11 +366,16 @@ func TestRunCompletesWhenPodsSucceed(t *testing.T) {
 	if err := kubeClient.Create(suiteCtx, run); err != nil {
 		t.Fatalf("create run: %v", err)
 	}
+	// Let the manager emit its intent pods, then stand in for the plugin so the
+	// run adopts the leases and reaches Running (it no longer binds/mints itself).
+	waitForRunPods(t, "finish", 4)
+	seedPluginLeases(t, "finish")
 	waitForRunPhase(t, "finish", "Running")
-	pods := waitForRunPods(t, "finish", 1)
+	pods := waitForRunPods(t, "finish", 4)
 
-	// No kubelet in envtest, so drive the workload pod to Succeeded by hand;
-	// the Succeeded-only pod watch should re-trigger the run.
+	// No kubelet in envtest, so drive the workload pods to Succeeded by hand;
+	// the Succeeded-only pod watch should re-trigger the run once the whole
+	// active gang has finished.
 	for i := range pods {
 		pods[i].Status.Phase = corev1.PodSucceeded // antifake:allow-terminal-phase — documented interim exception, see hack/antifake/terminal-phase-allowlist.txt; remove when Track B (JOBSET) lands a real container
 		if err := kubeClient.Status().Update(suiteCtx, &pods[i]); err != nil {
@@ -282,6 +419,8 @@ func TestFollowGatesUntilUpstreamCompletes(t *testing.T) {
 	if err := kubeClient.Create(suiteCtx, prep); err != nil {
 		t.Fatalf("create prep: %v", err)
 	}
+	waitForRunPods(t, "prep", 4)
+	seedPluginLeases(t, "prep")
 	waitForRunPhase(t, "prep", "Running")
 
 	train := &v1.Run{
@@ -301,7 +440,7 @@ func TestFollowGatesUntilUpstreamCompletes(t *testing.T) {
 	}
 
 	// Complete the upstream by driving its pods to Succeeded.
-	pods := waitForRunPods(t, "prep", 1)
+	pods := waitForRunPods(t, "prep", 4)
 	for i := range pods {
 		pods[i].Status.Phase = corev1.PodSucceeded // antifake:allow-terminal-phase — documented interim exception, see hack/antifake/terminal-phase-allowlist.txt; remove when Track B (JOBSET) lands a real container
 		if err := kubeClient.Status().Update(suiteCtx, &pods[i]); err != nil {
@@ -310,7 +449,10 @@ func TestFollowGatesUntilUpstreamCompletes(t *testing.T) {
 	}
 	waitForRunPhase(t, "prep", "Completed")
 
-	// The Run→Run watch should re-trigger train, which now admits.
+	// The Run→Run watch should re-trigger train, which now clears the follow
+	// gate and emits its intent pods; standing in for the plugin flips it Running.
+	waitForRunPods(t, "train", 4)
+	seedPluginLeases(t, "train")
 	waitForRunPhase(t, "train", "Running")
 }
 
@@ -333,8 +475,10 @@ func TestETAMirroredFromPodAnnotation(t *testing.T) {
 	if err := kubeClient.Create(suiteCtx, run); err != nil {
 		t.Fatalf("create run: %v", err)
 	}
+	waitForRunPods(t, "eta-run", 4)
+	seedPluginLeases(t, "eta-run")
 	waitForRunPhase(t, "eta-run", "Running")
-	pods := waitForRunPods(t, "eta-run", 1)
+	pods := waitForRunPods(t, "eta-run", 4)
 
 	want := baseTime.Add(3 * time.Hour).UTC().Format(time.RFC3339)
 	pod := pods[0]
@@ -491,14 +635,26 @@ func TestReservationActivatesWhenCapacityArrives(t *testing.T) {
 		return nil
 	})
 
-	waitForRunLeases(t, "train8", 2)
-	pods := waitForRunPods(t, "train8", 2)
+	// Reservation activation still mints the leases (it is not part of the
+	// pod-emission cutover), so placement is recorded in the leases; the
+	// workload pods are emitted UNSCHEDULED for the jobtree plugin to bind
+	// (proven live by hack/e2e/plugin-smoke.sh). Assert the activated leases
+	// span both nodes and the pods carry no nodeName.
+	leases := waitForRunLeases(t, "train8", 2)
 	nodesUsed := map[string]bool{}
-	for _, pod := range pods {
-		nodesUsed[pod.Spec.NodeName] = true
+	for _, lease := range leases {
+		for _, slot := range lease.Spec.Slice.Nodes {
+			nodesUsed[strings.SplitN(slot, "#", 2)[0]] = true
+		}
 	}
 	if !nodesUsed["node-a"] || !nodesUsed["node-b"] {
-		t.Errorf("pods landed on %v, want both node-a and node-b", nodesUsed)
+		t.Errorf("activated leases cover %v, want both node-a and node-b", nodesUsed)
+	}
+	pods := waitForRunPods(t, "train8", 2)
+	for _, pod := range pods {
+		if pod.Spec.NodeName != "" {
+			t.Errorf("pod %s bound to %q; workload pods must be unscheduled for the plugin", pod.Name, pod.Spec.NodeName)
+		}
 	}
 }
 
@@ -526,6 +682,13 @@ func TestNodeFailureSwapsToSpare(t *testing.T) {
 	if err := kubeClient.Create(suiteCtx, run); err != nil {
 		t.Fatalf("create run: %v", err)
 	}
+	// The manager emits the active gang's width of unscheduled intent pods;
+	// standing in for the plugin mints the active + spare leases and adopts.
+	intents := waitForRunPods(t, "resilient", 4)
+	for _, pod := range intents {
+		assertIntentPod(t, pod, "resilient", 1)
+	}
+	seedPluginLeases(t, "resilient")
 	waitForRunPhase(t, "resilient", "Running")
 
 	leases := waitForRunLeases(t, "resilient", 2)
@@ -593,27 +756,11 @@ func TestNodeFailureSwapsToSpare(t *testing.T) {
 		t.Errorf("swap funding = %q/%q, want team/west", swap.Spec.PaidByBudget, swap.Spec.PaidByEnvelope)
 	}
 
-	// The workload followed the swap: a live pod on node-b, the originals
-	// deleted (envtest has no kubelet, so deletion shows as a tombstone).
-	eventually(t, 15*time.Second, func() error {
-		pods := listRunPods(t, "resilient")
-		var live []corev1.Pod
-		for _, pod := range pods {
-			if pod.DeletionTimestamp == nil {
-				live = append(live, pod)
-			}
-		}
-		if len(live) != 1 {
-			return fmt.Errorf("want exactly 1 live pod, got %d of %d total", len(live), len(pods))
-		}
-		if live[0].Name != "resilient-g0-swap-node-b" || live[0].Spec.NodeName != "node-b" {
-			return fmt.Errorf("live pod = %s on %s, want resilient-g0-swap-node-b on node-b", live[0].Name, live[0].Spec.NodeName)
-		}
-		if live[0].Annotations[PodGPUAnnotation] != "2" {
-			return fmt.Errorf("swap pod GPU annotation = %q, want 2", live[0].Annotations[PodGPUAnnotation])
-		}
-		return nil
-	})
+	// The swap's placement now lives in the open swap lease (node-b#0,#1),
+	// asserted above — the controller no longer binds the workload to a node.
+	// Real pod movement onto the spare is the plugin's job on a live cluster
+	// (proven by hack/e2e/plugin-smoke.sh); here the immutable lease ledger is
+	// the authoritative record of the swap.
 
 	// Regression: the cordoned node's 4 GPUs must not count as capacity
 	// for later admissions — its evacuation freed the leases, not the
@@ -661,6 +808,8 @@ func TestSpareNodeFailureIsAbsorbed(t *testing.T) {
 	if err := kubeClient.Create(suiteCtx, run); err != nil {
 		t.Fatalf("create run: %v", err)
 	}
+	waitForRunPods(t, "steady", 4)
+	seedPluginLeases(t, "steady")
 	waitForRunPhase(t, "steady", "Running")
 
 	// Fail the spare node (node-b holds only the spare lease).
@@ -710,9 +859,11 @@ func TestRunDeletionReleasesItsWorld(t *testing.T) {
 	if err := kubeClient.Create(suiteCtx, run); err != nil {
 		t.Fatalf("create run: %v", err)
 	}
+	waitForRunPods(t, "ephemeral", 4)
+	seedPluginLeases(t, "ephemeral")
 	waitForRunPhase(t, "ephemeral", "Running")
 	waitForRunLeases(t, "ephemeral", 1)
-	waitForRunPods(t, "ephemeral", 1)
+	waitForRunPods(t, "ephemeral", 4)
 
 	if err := kubeClient.Delete(suiteCtx, run); err != nil {
 		t.Fatalf("delete run: %v", err)

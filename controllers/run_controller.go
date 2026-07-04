@@ -295,11 +295,16 @@ func (c *RunController) Reconcile(namespace, name string) error {
 		// Placeable and fundable: emit unscheduled intent pods for the plugin to
 		// schedule and fund. The adoption path (above) flips the run Running once
 		// the plugin's leases appear — the run stays Pending until then.
-		c.emitIntentPods(run, packPlan)
+		created := c.emitIntentPods(run, packPlan)
 		run.Status.Phase = RunPhasePending
 		run.Status.Message = fmt.Sprintf("scheduling %d GPUs (awaiting the jobtree scheduler)", packPlan.TotalGPUs)
 		run.Status.Width = summarizeRunWidth(run, c.State.Leases)
 		run.Status.Funding = summarizeRunFunding(run, ev)
+		// Emit the observable request-for-width event once, when the intent pods
+		// are first created — not on every reconcile of an already-pending run.
+		if created > 0 {
+			c.emit(run, EventTypeNormal, "Scheduling", run.Status.Message)
+		}
 		result = "scheduling"
 		return nil
 	}
@@ -1421,10 +1426,10 @@ func expectedSpareTotal(run *v1.Run, plan *pack.Plan) int32 {
 // pack plan's nodes are attached as an advisory placement hint (the bridge
 // renders them as soft nodeAffinity, never a nodeName pin). Idempotent: it only
 // tops up the pods that do not yet exist.
-func (c *RunController) emitIntentPods(run *v1.Run, packPlan pack.Plan) {
+func (c *RunController) emitIntentPods(run *v1.Run, packPlan pack.Plan) int {
 	gpusPerPod, width := intentPodShape(run)
 	if gpusPerPod <= 0 || width <= 0 {
-		return
+		return 0
 	}
 	existing := 0
 	for i := range c.State.Pods {
@@ -1435,11 +1440,13 @@ func (c *RunController) emitIntentPods(run *v1.Run, packPlan pack.Plan) {
 	}
 	advisory := flattenPackNodes(packPlan)
 	widthStr := strconv.Itoa(width)
+	created := 0
 	for i := existing; i < width; i++ {
 		node := ""
 		if len(advisory) > 0 {
 			node = advisory[i%len(advisory)]
 		}
+		created++
 		c.State.Pods = append(c.State.Pods, binder.PodManifest{
 			Namespace: run.Namespace,
 			Name:      fmt.Sprintf("%s-active-%d", run.Name, i),
@@ -1456,6 +1463,7 @@ func (c *RunController) emitIntentPods(run *v1.Run, packPlan pack.Plan) {
 			},
 		})
 	}
+	return created
 }
 
 // intentPodShape returns the uniform (gpusPerPod, width) an intent gang emits.

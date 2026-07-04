@@ -114,6 +114,11 @@ func TestEngineEmitsEventsIncludingAttestedSeed(t *testing.T) {
 	if rec.has("run-a", EventTypeNormal, "Admitted", "") || rec.has("run-b", EventTypeNormal, "Admitted", "") {
 		t.Errorf("engine must not emit an Admitted event on the bind path post-cutover, got %+v", rec.events)
 	}
+	// It emits the honest "Scheduling" event on the path it does own (requesting
+	// width), once, when the intent pods are first created.
+	if !rec.has("run-a", EventTypeNormal, "Scheduling", "") || !rec.has("run-b", EventTypeNormal, "Scheduling", "") {
+		t.Errorf("engine must emit a Scheduling event when it emits intent pods, got %+v", rec.events)
+	}
 
 	// Stand in for the scheduler plugin scheduling + funding those intent pods:
 	// run-a and run-b become Running with the exact leases admission.Plan mints
