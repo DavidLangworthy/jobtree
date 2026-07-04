@@ -29,8 +29,12 @@ jobs:
           # shellcheck source=/dev/null
           source hack/e2e/versions.env
           KIND_VERSION="v0.32.0"
-          curl -fsSLo /usr/local/bin/kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
-          chmod +x /usr/local/bin/kind
+          # /usr/local/bin/kind is pre-installed on the runner owned by root, so
+          # a plain chmod fails ("Operation not permitted"). Install our pinned
+          # version as root into a scratch path and move it into place.
+          curl -fsSLo "${RUNNER_TEMP}/kind" "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          chmod +x "${RUNNER_TEMP}/kind"
+          sudo mv "${RUNNER_TEMP}/kind" /usr/local/bin/kind
           kind version
 
       - uses: azure/setup-helm@v4
