@@ -15,3 +15,7 @@ app.kubernetes.io/component: scheduler
 {{- define "gpu-fleet.notifierName" -}}
 {{- printf "%s-notifier" (include "gpu-fleet.name" .) -}}
 {{- end -}}
+
+{{- define "gpu-fleet.schedulerName" -}}
+{{- printf "%s-scheduler" (include "gpu-fleet.name" .) -}}
+{{- end -}}
