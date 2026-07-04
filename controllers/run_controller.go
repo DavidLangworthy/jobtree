@@ -96,6 +96,17 @@ func (c *RunController) Reconcile(namespace, name string) error {
 	}
 
 	now := c.Clock.Now()
+
+	// A gang whose active pods have all Succeeded is complete: finalize it and
+	// close its leases so it stops holding GPUs and charging its budget. A
+	// single pod failure neither completes nor fails the run (owner decision):
+	// the run keeps running until every active pod succeeds.
+	if run.Status.Phase == RunPhaseRunning && c.runGangComplete(run) {
+		c.completeRun(run, now)
+		result = "completed"
+		return nil
+	}
+
 	usage := computeUsage(c.State.Leases, now)
 	snapshot, err := topology.BuildSnapshotForFlavor(c.State.Nodes, usage, run.Spec.Resources.GPUType)
 	if err != nil {
@@ -336,6 +347,60 @@ func (c *RunController) hypotheticalEvaluation(run *v1.Run, plan cover.Plan, now
 		Now:     now,
 		Period:  c.Period,
 	})
+}
+
+// runGangComplete reports whether every active (non-spare) pod of the run has
+// reached the Succeeded phase. Spare pods are held capacity and do not gate
+// completion; a run with no active pods (never bound) is not complete. A pod
+// that Failed is simply not Succeeded, so it holds the run open rather than
+// completing or failing it.
+func (c *RunController) runGangComplete(run *v1.Run) bool {
+	sawActive := false
+	for i := range c.State.Pods {
+		pod := &c.State.Pods[i]
+		if pod.Namespace != run.Namespace || pod.Labels[binder.LabelRunName] != run.Name {
+			continue
+		}
+		if pod.Labels[binder.LabelRunRole] == binder.RoleSpare {
+			continue
+		}
+		sawActive = true
+		if pod.Phase != binder.PodPhaseSucceeded {
+			return false
+		}
+	}
+	return sawActive
+}
+
+// completeRun finalizes a succeeded gang: it closes the run's open leases
+// (reason Completed) so the funding derivation stops counting them, drops the
+// run's pods, and records the terminal phase.
+func (c *RunController) completeRun(run *v1.Run, now time.Time) {
+	runKey := keys.NamespacedKey(run.Namespace, run.Name)
+	for i := range c.State.Leases {
+		lease := &c.State.Leases[i]
+		if lease.Status.Closed {
+			continue
+		}
+		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
+			continue
+		}
+		closeLease(lease, "Completed", now)
+	}
+	kept := c.State.Pods[:0]
+	for _, pod := range c.State.Pods {
+		if pod.Namespace == run.Namespace && pod.Labels[binder.LabelRunName] == run.Name {
+			continue
+		}
+		kept = append(kept, pod)
+	}
+	c.State.Pods = kept
+	run.Status.Phase = RunPhaseComplete
+	run.Status.Message = "run completed: all active pods succeeded"
+	run.Status.PendingReservation = nil
+	run.Status.EarliestStart = nil
+	run.Status.Width = summarizeRunWidth(run, c.State.Leases)
+	run.Status.Funding = summarizeRunFunding(run, c.evaluate(now))
 }
 
 // releasePendingReservations marks every Pending reservation for the run as

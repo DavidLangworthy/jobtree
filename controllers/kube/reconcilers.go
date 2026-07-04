@@ -117,14 +117,43 @@ func cleanupDeletedRun(state *controllers.ClusterState, runKey, namespace, name 
 // each status write would re-trigger the reconciler in a self-sustaining
 // loop.
 func (r *RunReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// A workload pod reaching Succeeded re-triggers its run so the gang can
+	// finalize. The predicate is Succeeded-only: pod creates (Pending) and the
+	// controller's own deletes on completion do not match, so this adds no
+	// reconcile churn under the single serial worker.
+	podSucceeded := predicate.NewPredicateFuncs(func(obj client.Object) bool {
+		pod, ok := obj.(*corev1.Pod)
+		return ok && pod.Status.Phase == corev1.PodSucceeded
+	})
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("run").
 		For(&v1.Run{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(&v1.Lease{}, handler.EnqueueRequestsFromMapFunc(leaseToRun)).
 		Watches(&v1.Budget{}, handler.EnqueueRequestsFromMapFunc(r.budgetToRuns),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(podToRun),
+			builder.WithPredicates(podSucceeded)).
 		WithOptions(serialWorker).
 		Complete(r)
+}
+
+// podToRun maps a workload pod event to its owning run via the run-name label.
+func podToRun(ctx context.Context, obj client.Object) []reconcile.Request {
+	pod, ok := obj.(*corev1.Pod)
+	if !ok {
+		return nil
+	}
+	runName := pod.Labels[binder.LabelRunName]
+	if runName == "" {
+		return nil
+	}
+	namespace := pod.Namespace
+	if namespace == "" {
+		namespace = keys.DefaultNamespace
+	}
+	return []reconcile.Request{{
+		NamespacedName: types.NamespacedName{Namespace: namespace, Name: runName},
+	}}
 }
 
 // budgetToRuns fans a budget change out to every run: family sharing and
