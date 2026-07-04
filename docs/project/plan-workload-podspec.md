@@ -4,7 +4,15 @@ systems + academic ML schedulers) on 2026-07-04. Owner decision: embed a full co
 
 # jobtree Workload Materialization: Embedding a PodTemplateSpec
 
-*Design + work plan. Grounded in `controllers/kube/bridge.go`, `api/v1/run_types.go`, `pkg/binder/binder.go`, `controllers/run_controller.go`. Owner decision (fixed): the Run embeds a full `corev1.PodTemplateSpec`; jobtree overlays scheduling-derived fields.*
+> **⚠️ Partly superseded by `borrow-vs-build.md` (2026-07-04).** The owner has since decided
+> jobtree becomes a **scheduler-framework plugin** (not a `nodeName`-pinning binder) and **formalizes
+> roles** (gang-of-gangs). The recommended direction is to **lower a Run to a JobSet** and place it
+> with the plugin (Option C), borrowing JobSet's roles/DNS/success-failure rather than hand-building
+> them here. The findings below — the GPU-resource gap, the injection contract, the SLURM/Kueue
+> migration, the rendezvous env — remain valid; the *mechanism* (overlay in `buildPod` vs
+> plugin+JobSet) is what changes. Read `borrow-vs-build.md` first.*
+
+*Design + work plan. Grounded in `controllers/kube/bridge.go`, `api/v1/run_types.go`, `pkg/binder/binder.go`, `controllers/run_controller.go`.*
 
 ---
 
