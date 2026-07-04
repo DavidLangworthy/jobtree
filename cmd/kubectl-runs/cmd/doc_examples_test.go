@@ -8,10 +8,16 @@ import (
 	"testing"
 )
 
-// R12: every command line shown in docs/cli/kubectl-runs.md must actually
-// run. The examples are extracted from the doc's fenced code blocks, so a
-// doc edit that documents an invocation the parser rejects fails this test.
-// (Only the --state and --file values are rewritten to test fixtures.)
+// R12: every --local command line shown in docs/cli/kubectl-runs.md must
+// actually run against the in-process simulator. The examples are extracted
+// from the doc's fenced code blocks, so a doc edit that documents an
+// invocation the parser rejects fails this test. (Only the --state and
+// --file values are rewritten to test fixtures.)
+//
+// Live-mode examples (no --local/--dry-run) are illustrative only and are
+// not exercised here: this is a fast unit test with no reachable API
+// server. A real kind cluster is Track F/TESTINFRA's job (see
+// docs/project/make-it-real-plan.md, CLI-8's `make e2e-kind`).
 func TestDocumentedExamplesRun(t *testing.T) {
 	statePath := seedDocExampleState(t)
 	manifestPath := writeDocExampleManifest(t)
@@ -48,6 +54,10 @@ func extractDocExamples(t *testing.T) [][]string {
 			continue
 		}
 		if !inFence || !strings.HasPrefix(trimmed, "kubectl runs ") {
+			continue
+		}
+		if !strings.Contains(trimmed, "--local") && !strings.Contains(trimmed, "--dry-run") {
+			// Live-mode illustration; see the doc comment above.
 			continue
 		}
 		examples = append(examples, strings.Fields(strings.TrimPrefix(trimmed, "kubectl runs ")))

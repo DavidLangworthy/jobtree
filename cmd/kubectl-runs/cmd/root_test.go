@@ -70,7 +70,7 @@ func TestSubmitPlanAndBudgets(t *testing.T) {
 	buf := &bytes.Buffer{}
 	root.SetOut(buf)
 	root.SetErr(&bytes.Buffer{})
-	root.SetArgs([]string{"--state", statePath, "--namespace", "default", "--output", "table", "submit", "--file", manifestPath})
+	root.SetArgs([]string{"--local", "--state", statePath, "--namespace", "default", "--output", "table", "submit", "--file", manifestPath})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("submit command: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestSubmitPlanAndBudgets(t *testing.T) {
 	root = NewRootCommand()
 	root.SetOut(buf)
 	root.SetErr(&bytes.Buffer{})
-	root.SetArgs([]string{"--state", statePath, "--namespace", "default", "--output", "table", "plan", "train-1"})
+	root.SetArgs([]string{"--local", "--state", statePath, "--namespace", "default", "--output", "table", "plan", "train-1"})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("plan command: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestSubmitPlanAndBudgets(t *testing.T) {
 	root = NewRootCommand()
 	root.SetOut(buf)
 	root.SetErr(&bytes.Buffer{})
-	root.SetArgs([]string{"--state", statePath, "--output", "table", "budgets", "usage"})
+	root.SetArgs([]string{"--local", "--state", statePath, "--output", "table", "budgets", "usage"})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("budgets usage: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestSponsorsAndShrink(t *testing.T) {
 	buf := &bytes.Buffer{}
 	root.SetOut(buf)
 	root.SetErr(&bytes.Buffer{})
-	root.SetArgs([]string{"--state", statePath, "--namespace", "default", "--output", "table", "sponsors", "add", "--max", "4", "elastic", "org:team-b"})
+	root.SetArgs([]string{"--local", "--state", statePath, "--namespace", "default", "--output", "table", "sponsors", "add", "--max", "4", "elastic", "org:team-b"})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("sponsors add: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestSponsorsAndShrink(t *testing.T) {
 	root = NewRootCommand()
 	root.SetOut(buf)
 	root.SetErr(&bytes.Buffer{})
-	root.SetArgs([]string{"--state", statePath, "--namespace", "default", "--output", "table", "shrink", "--by", "4", "elastic"})
+	root.SetArgs([]string{"--local", "--state", statePath, "--namespace", "default", "--output", "table", "shrink", "--by", "4", "elastic"})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("shrink command: %v", err)
 	}

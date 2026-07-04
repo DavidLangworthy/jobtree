@@ -19,15 +19,27 @@ func NewLeasesCommand(opts *RootOptions, store *StateStore, printer *Printer) *c
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
-			state, err := store.Load(opts.StatePath)
-			if err != nil {
-				return err
-			}
-			if err := ensureRunExists(state, opts.Namespace, name); err != nil {
-				return err
+			var leases []v1.Lease
+			if opts.UseLocal() {
+				state, err := store.Load(opts.StatePath)
+				if err != nil {
+					return err
+				}
+				if err := ensureRunExists(state, opts.Namespace, name); err != nil {
+					return err
+				}
+				leases = filterLeases(state, opts.Namespace, name)
+			} else {
+				c, err := opts.LiveClient()
+				if err != nil {
+					return err
+				}
+				leases, err = liveListLeases(cmd.Context(), c, opts.Namespace, name)
+				if err != nil {
+					return err
+				}
 			}
 			key := keys.NamespacedKey(opts.Namespace, name)
-			leases := filterLeases(state, opts.Namespace, name)
 			sort.Slice(leases, func(i, j int) bool {
 				return leases[i].Spec.Interval.Start.Time.Before(leases[j].Spec.Interval.Start.Time)
 			})

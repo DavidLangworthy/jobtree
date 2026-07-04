@@ -240,7 +240,7 @@ func TestRunCompletesWhenPodsSucceed(t *testing.T) {
 	// No kubelet in envtest, so drive the workload pod to Succeeded by hand;
 	// the Succeeded-only pod watch should re-trigger the run.
 	for i := range pods {
-		pods[i].Status.Phase = corev1.PodSucceeded
+		pods[i].Status.Phase = corev1.PodSucceeded // antifake:allow-terminal-phase — documented interim exception, see hack/antifake/terminal-phase-allowlist.txt; remove when Track B (JOBSET) lands a real container
 		if err := kubeClient.Status().Update(suiteCtx, &pods[i]); err != nil {
 			t.Fatalf("mark pod succeeded: %v", err)
 		}
@@ -303,7 +303,7 @@ func TestFollowGatesUntilUpstreamCompletes(t *testing.T) {
 	// Complete the upstream by driving its pods to Succeeded.
 	pods := waitForRunPods(t, "prep", 1)
 	for i := range pods {
-		pods[i].Status.Phase = corev1.PodSucceeded
+		pods[i].Status.Phase = corev1.PodSucceeded // antifake:allow-terminal-phase — documented interim exception, see hack/antifake/terminal-phase-allowlist.txt; remove when Track B (JOBSET) lands a real container
 		if err := kubeClient.Status().Update(suiteCtx, &pods[i]); err != nil {
 			t.Fatalf("mark prep pod succeeded: %v", err)
 		}

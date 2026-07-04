@@ -7,7 +7,11 @@ family-funded borrowing.
 
 > **Tip:** Everything here works with `kubectl runs …` (our dedicated plugin) or by applying
 > YAML manifests with standard `kubectl`. The plugin keeps the UX minimal while still exposing
-> every planner/binder decision.
+> every planner/binder decision. By default `kubectl runs` talks to your current kube-context
+> like any other kubectl plugin — `submit` really creates the Run object and the controller
+> manager reconciles it. Pass `--local` (or `--dry-run`) to instead drive an in-process,
+> offline `cluster-state.json` simulator for docs/demos; see
+> [docs/cli/kubectl-runs.md](../cli/kubectl-runs.md).
 
 ## 1. Required context
 
@@ -143,7 +147,9 @@ kubectl runs submit --file eval.json  --follow train
 Notes:
 
 * Runs complete when their workload pods finish; a completed run releases its GPUs and stops charging
-  its budget. On the local simulator, `kubectl runs complete <run>` marks a run finished.
+  its budget. `kubectl runs complete <run>` is a `--local`-only convenience that marks a run
+  finished in the offline simulator; it has no live-cluster equivalent because the CLI does not
+  drive completion of a real Run — the controller does, from real pod status.
 * If an upstream **fails**, by default the follower waits a grace window (so you can fix and resubmit
   just that stage) and then fails with a clear message — it will not silently hang forever. Set
   `follow.onUpstreamFailure: fail` to fail followers immediately instead, or

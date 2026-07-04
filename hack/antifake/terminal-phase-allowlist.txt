@@ -1,0 +1,19 @@
+# Anti-fake lint allowlist: hand-set terminal Pod phase (Track F / TESTINFRA-5,
+# docs/project/make-it-real-plan.md; docs/project/fake-features-audit.md #5).
+#
+# Format: one entry per line, `<path-relative-to-repo-root>:<line> <reason>`.
+# Blank lines and '#' comments are ignored.
+#
+# Every entry here must be a documented INTERIM exception, and the flagged
+# source line must additionally carry an inline `antifake:allow-terminal-
+# phase` comment — the checker (hack/antifake/terminalphase_test.go) requires
+# both to be present and in sync, and fails if either drifts from the other.
+#
+# This list is shrink-only: as Track TESTINFRA-4 / Track B (JOBSET) land a
+# real container a real kubelet can run to completion, these two envtest
+# hand-injections are superseded by test/e2e/completion_test.go and must be
+# deleted, not grown. The ratchet is enforced in code:
+# hack/antifake/terminalphase.go's maxAllowedTerminalPhaseExceptions caps this
+# file at 2 entries; raising it requires editing that constant deliberately.
+controllers/kube/scenario_test.go:243 documented interim exception (TestRunCompletesWhenPodsSucceed, B0) — envtest has no kubelet, so completion is proven by hand-driving the pause pod to Succeeded; superseded by test/e2e/completion_test.go once Track B (JOBSET) lands a real container a real kubelet can run to exit 0.
+controllers/kube/scenario_test.go:306 documented interim exception (TestFollowGatesUntilUpstreamCompletes, B) — same envtest-has-no-kubelet gap as above, applied to the upstream leg of a follow chain; superseded by test/e2e/follow_test.go once Track B (JOBSET) lands.

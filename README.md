@@ -24,6 +24,13 @@ Kubernetes-native gang scheduling of job forests under time-scoped organizationa
 
    For overlays, use the Kustomize bundles under `deploy/kustomize/`.
 
+## Testing
+
+- `go test ./...` — unit tests; no external dependencies.
+- `make envtest` — integration tests against a real `kube-apiserver` (no kubelet): real reconcilers, real webhooks, real watches. See `controllers/kube/scenario_test.go`.
+- `make antifake` — the anti-fake lint gates (`hack/antifake/`): fail the build if a `*_test.go` hand-sets a workload Pod's terminal `.Status.Phase` without a documented, ratcheted exception, or if an `api/v1` field ships with zero readers outside `api/v1`.
+- `make e2e` — the kind e2e harness: a real cluster, a real built-and-loaded manager image, the real Helm chart (with real webhook certs), and a real kubelet. Requires `kind`, `docker`, and `helm` on `PATH` (`make kind-up`/`make kind-down` drive the cluster directly). See [`docs/project/testing-and-simulation.md`](docs/project/testing-and-simulation.md) for exactly what this tier proves and what it still cannot: there is no real workload container yet (`RunSpec` has no image/command field), so the completion/follow e2e cases in `test/e2e/` are documented, deliberate skips until that lands.
+
 ## Roadmap snapshot
 
 The full roadmap lives in [`docs/roadmap/milestones.md`](docs/roadmap/milestones.md). A quick summary of the current state:

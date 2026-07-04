@@ -129,6 +129,36 @@ design review. `sigs.k8s.io/controller-runtime`'s **envtest** runs a real `kube-
 
 ### Tier 3 — kind + KWOK: real cluster mechanics on one machine (minutes, nightly)
 
+**Implementation status (2026-07-04, Track F — TESTINFRA):** the kind half of this tier now
+exists — `make e2e` (or `make kind-up` / `make kind-down` to drive the cluster directly) stands up
+a real kind cluster, builds and loads the real `cmd/manager` image
+(`Dockerfile`), installs the real Helm chart (`deploy/helm/gpu-fleet`, including its real
+self-signed webhook certs), and runs `test/e2e/` (build tag `e2e`) against it; CI runs this as a
+named job (`.github/workflows/e2e.yaml`). What it proves *today*, all via a real API server, real
+webhooks, and a real kubelet, none of it hand-injected:
+
+- the real validating webhook rejects a malformed `Run` (`test/e2e/smoke_test.go`);
+- the real engine admits a `Run`, mints a real `Lease`, and binds a real workload pod to a real
+  node — a synthetic GPU-labeled node, not a fake device plugin (see gap below);
+- that pod is actually started and observed `Running` by the real kubelet — read-only observation,
+  never an assignment (the anti-fake lint in `hack/antifake/` would flag it if it were).
+
+Two honest gaps against the plan below, both deliberate and documented rather than papered over:
+
+- **No fake device plugin yet.** GPU capacity is stamped directly onto the kind node's
+  `status.capacity` (mirroring `controllers/kube/scenario_test.go`'s envtest fixture), not
+  advertised through a real device-plugin gRPC server. A real device plugin — the bullet just below
+  — is still worth building so kubelet-side allocation is exercised, not just capacity accounting.
+- **No real workload container.** `RunSpec` still has no image/command field
+  (`docs/project/fake-features-audit.md` #1/#2), so every workload pod is still the `pause`
+  mannequin — it starts and runs forever, but never completes. `test/e2e/completion_test.go` and
+  `follow_test.go` are the named, currently-`t.Skip`'d placeholders for the real-container proof;
+  they are expected to stay red/skipped until Track B (JOBSET) lands, at which point deleting the
+  skip (not stubbing it green) is the job.
+
+The rest of this tier — the fake device plugin, KWOK scale rig, and nightly smoke schedule — is
+still the plan described below.
+
 Two complementary single-machine environments:
 
 - **kind** (Kubernetes-in-Docker) for *behavioral* fidelity on small clusters (3–10 nodes).

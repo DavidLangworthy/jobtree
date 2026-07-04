@@ -53,7 +53,10 @@ kubectl apply -f config/samples/budgets/budget-west-h100.yaml
 kubectl apply -f config/samples/budgets/budget-vision-lending.yaml
 ```
 
-`kubectl runs budgets usage --owner org:ai:rai:sys` shows headroom in real time.
+`kubectl runs budgets usage` shows headroom for every Budget in the namespace, straight from the
+`BudgetReconciler`'s last-written `status.usage`/`status.headroom` (it does not recompute funding
+client-side, so it can lag the manager's next reconcile by one interval). By default this talks
+to the live cluster named by your kubeconfig; pass `--local` only for the offline simulator.
 
 ## 5. Validate the workflow end-to-end
 
