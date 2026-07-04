@@ -80,6 +80,29 @@ re-funding, it is closest in shape to the opportunistic escape hatch (§1) and
 should be implemented and live-proven (swap-smoke.sh) as its own careful
 increment, after CASCADE-2.
 
+**Status:** the swap MECHANISM is implemented + green (pure-engine + envtest +
+a buildPod unit test), using seeded spares as the plugin stand-in. But see the
+gap below — a LIVE swap has no spare to land on yet.
+
+## Discovered gap — SPARES ARE NOT EMITTED LIVE (blocks live swap + productive spares)
+
+The PLUGIN-2 cutover's `emitIntentPods`/`emitCohortPods` emit only **Active**
+pods. The old `binder.Materialize` path (which the controller no longer calls for
+admission) also materialized **Spare**-role pods/leases; nothing does now. So:
+- a run's declared `spares` are FUNDED in the cover quantity but no spare
+  pod/lease is actually held live (the "productive spares" feature, docs §6, is
+  inert live);
+- node-failure swap (CASCADE-3) has no held spare to swap onto on a real cluster
+  — its unit/envtest coverage seeds a spare, but `swap-smoke.sh` cannot pass
+  until spares are emitted.
+
+**CASCADE-3b (next):** emit **Spare**-role intent pods alongside Active (from
+pack's spare placements), which the plugin binds and mints as `RoleSpare` leases
+— held, funded capacity. Spares sit out the gang (they are not gang members) but
+are bound + funded independently. Once spares are held live, `swap-smoke.sh`
+(2-node kind cluster, cordon the active node → the manager reclaims the spare and
+the plugin re-binds the swap onto it, provenance preserved) becomes provable.
+
 ## Sequencing
 1. **CASCADE-1** reservation activation (funded → emit; opportunistic → keep,
    documented; once-per-eviction guard). No plugin change. Migrate the
