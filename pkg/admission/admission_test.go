@@ -131,6 +131,75 @@ func TestPlanBorrowSponsorRuns(t *testing.T) {
 	}
 }
 
+// PerPodPayer attributes whole pods to envelopes in family-proximity order:
+// the borrow gang's 96 owned + 32 borrowed GPUs become 24 rai pods + 8 vision
+// pods at 4 GPUs/pod, owned first.
+func TestPerPodPayerAttributesOwnedBeforeBorrowed(t *testing.T) {
+	now := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
+	in := Input{
+		Now: now,
+		Budgets: []v1.Budget{
+			{ObjectMeta: v1.ObjectMeta{Name: "rai"}, Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
+				Name: "west-h100", Flavor: "H100-80GB", Selector: sel(), Concurrency: 96,
+			}}}},
+			{ObjectMeta: v1.ObjectMeta{Name: "vision"}, Spec: v1.BudgetSpec{Owner: "org:ai:mm:vision", Envelopes: []v1.BudgetEnvelope{{
+				Name: "west-h100", Flavor: "H100-80GB", Selector: sel(), Concurrency: 64,
+				Lending: &v1.LendingPolicy{Allow: true, To: []string{"org:ai:rai", "org:ai:rai:*"}, MaxConcurrency: i32(32)},
+			}}}},
+		},
+	}
+	for i := 0; i < 4; i++ {
+		in.Nodes = append(in.Nodes, node(fmt.Sprintf("node-%d", i), 32))
+	}
+	in.Run = &v1.Run{
+		ObjectMeta: v1.ObjectMeta{Name: "train-128", Namespace: "default"},
+		Spec: v1.RunSpec{Owner: "org:ai:rai", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 128},
+			Locality: &v1.RunLocality{GroupGPUs: i32(32)},
+			Funding:  &v1.RunFunding{AllowBorrow: true, MaxBorrowGPUs: i32(64), Sponsors: []string{"org:ai:mm:vision"}}},
+	}
+	in.Runs = map[string]*v1.Run{"default/train-128": in.Run}
+
+	_, coverPlan, _, err := Feasible(in)
+	if err != nil {
+		t.Fatalf("feasible: %v", err)
+	}
+	payers, err := PerPodPayer(coverPlan, 4)
+	if err != nil {
+		t.Fatalf("perPodPayer: %v", err)
+	}
+	if len(payers) != 32 {
+		t.Fatalf("pod count = %d, want 32 (128/4)", len(payers))
+	}
+	var rai, vision int
+	for _, p := range payers {
+		switch p.Owner {
+		case "org:ai:rai":
+			rai++
+		case "org:ai:mm:vision":
+			vision++
+		}
+	}
+	if rai != 24 || vision != 8 {
+		t.Errorf("rai/vision pods = %d/%d, want 24/8", rai, vision)
+	}
+	// Owned pods come before borrowed ones.
+	if payers[0].Owner != "org:ai:rai" || payers[len(payers)-1].Owner != "org:ai:mm:vision" {
+		t.Errorf("expected owned-first ordering, got first=%s last=%s", payers[0].Owner, payers[len(payers)-1].Owner)
+	}
+
+	// PodLease mints a well-formed per-pod lease against the actual bound node.
+	l := PodLease(in.Run, payers[0], "node-2", 4, "train-128-pod-0", now, "Start")
+	if l.Spec.PaidByEnvelope != "west-h100" || l.Spec.Owner != "org:ai:rai" {
+		t.Errorf("lease payer = %s/%s, want org:ai:rai/west-h100", l.Spec.Owner, l.Spec.PaidByEnvelope)
+	}
+	if len(l.Spec.Slice.Nodes) != 4 || l.Spec.Slice.Nodes[0] != "node-2#0" {
+		t.Errorf("lease slice = %v, want 4 slots on node-2", l.Spec.Slice.Nodes)
+	}
+	if l.Spec.Slice.Role != "Active" || l.Spec.Reason != "Start" {
+		t.Errorf("lease role/reason = %s/%s, want Active/Start", l.Spec.Slice.Role, l.Spec.Reason)
+	}
+}
+
 // capacity-missing: budget has headroom but the cluster is too small; pack fails
 // → Plan errors, the caller's signal to reserve.
 func TestPlanCapacityMissingErrors(t *testing.T) {

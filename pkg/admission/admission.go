@@ -59,28 +59,30 @@ type Result struct {
 	Pods   []binder.PodManifest
 }
 
-// Plan decides whether the Run's gang can be admitted against the live world
-// and, if so, returns the leases to mint. A non-nil error means the gang cannot
-// be admitted now: a pack error (no topology fits) or a cover error (no funding)
-// is the caller's signal to leave the pods pending so the controller forecasts a
-// reservation. This is the exact cover→pack→binder.Materialize sequence
-// run_controller.go performs today, minus the inline reclaim (reclaim stays a
-// controller/PostFilter concern per §9).
-func Plan(in Input) (*Result, error) {
+// Feasible answers the plugin's atomic gate question: against the live world,
+// can this Run's gang be placed (topology) AND funded (cover)? It runs the same
+// pack + funding.Evaluate + cover sequence the controller's admission loop uses,
+// stopping short of minting. A non-nil error means the gang cannot be admitted
+// now — a pack error (no topology fits) or a cover error (no funding) — which is
+// the plugin's signal to reject the pods (Unschedulable) so the controller
+// forecasts a reservation. The returned funding.Evaluation is reused by callers
+// (e.g. status mirrors). This is the authoritative check the plugin repeats at
+// Permit (optimistic) and PreBind (under lock, before the mint) per §9 D6.
+func Feasible(in Input) (pack.Plan, cover.Plan, *funding.Evaluation, error) {
 	if in.Run == nil {
-		return nil, fmt.Errorf("run must be provided")
+		return pack.Plan{}, cover.Plan{}, nil, fmt.Errorf("run must be provided")
 	}
 	run := in.Run
 
 	usage := computeUsage(in.Leases, in.Now)
 	snapshot, err := topology.BuildSnapshotForFlavor(in.Nodes, usage, run.Spec.Resources.GPUType)
 	if err != nil {
-		return nil, err
+		return pack.Plan{}, cover.Plan{}, nil, err
 	}
 
 	packPlan, err := planPlacement(run, snapshot)
 	if err != nil {
-		return nil, err
+		return pack.Plan{}, cover.Plan{}, nil, err
 	}
 
 	ev := funding.Evaluate(funding.Input{
@@ -92,13 +94,11 @@ func Plan(in Input) (*Result, error) {
 	})
 	inventory := cover.NewInventory(ev)
 
-	location := deriveLocation(packPlan)
-	spareTotal := expectedSpareTotal(run, &packPlan)
 	request := cover.Request{
 		Owner:       run.Spec.Owner,
 		Flavor:      run.Spec.Resources.GPUType,
-		Quantity:    run.Spec.Resources.TotalGPUs + spareTotal,
-		Location:    location,
+		Quantity:    run.Spec.Resources.TotalGPUs + expectedSpareTotal(run, &packPlan),
+		Location:    deriveLocation(packPlan),
 		Now:         in.Now,
 		Admitted:    run.CreationTimestamp.Time,
 		AllowBorrow: run.Spec.Funding != nil && run.Spec.Funding.AllowBorrow,
@@ -116,12 +116,24 @@ func Plan(in Input) (*Result, error) {
 
 	coverPlan, err := inventory.Plan(request)
 	if err != nil {
+		return packPlan, cover.Plan{}, ev, err
+	}
+	return packPlan, coverPlan, ev, nil
+}
+
+// Plan is Feasible followed by binder.Materialize — the full commit sequence,
+// returning the leases and intended placement. Retained for the controller's
+// current admission loop and the parity tests; the plugin uses Feasible +
+// PerPodPayer + PodLease so it can mint one lease per real pod against the
+// actual bound node.
+func Plan(in Input) (*Result, error) {
+	packPlan, coverPlan, _, err := Feasible(in)
+	if err != nil {
 		return nil, err
 	}
-
-	key := keys.NamespacedKey(run.Namespace, run.Name)
+	key := keys.NamespacedKey(in.Run.Namespace, in.Run.Name)
 	res, err := binder.Materialize(binder.Request{
-		Run:         run.DeepCopy(),
+		Run:         in.Run.DeepCopy(),
 		CoverPlan:   coverPlan,
 		PackPlan:    packPlan,
 		Now:         in.Now,
@@ -131,8 +143,68 @@ func Plan(in Input) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	return &Result{Pack: packPlan, Cover: coverPlan, Leases: res.Leases, Pods: res.Pods}, nil
+}
+
+// PerPodPayer expands a cover plan into one paying Segment per pod, assuming
+// each pod consumes gpusPerPod GPUs. A pod is funded wholly by one envelope, so
+// each segment's quantity must be a multiple of gpusPerPod (true when envelope
+// grants and pod size align, which they do for real GPU workloads). The order
+// matches the cover plan's family-proximity order (own before borrowed), so
+// zipping it against the gang's pods (in a stable order) attributes owned pods
+// before borrowed ones deterministically.
+func PerPodPayer(plan cover.Plan, gpusPerPod int) ([]cover.Segment, error) {
+	if gpusPerPod <= 0 {
+		return nil, fmt.Errorf("gpusPerPod must be positive, got %d", gpusPerPod)
+	}
+	var out []cover.Segment
+	for _, seg := range plan.Segments {
+		if seg.Quantity <= 0 {
+			continue
+		}
+		if int(seg.Quantity)%gpusPerPod != 0 {
+			return nil, fmt.Errorf("cover segment %s/%s quantity %d is not a multiple of pod size %d",
+				seg.BudgetName, seg.EnvelopeName, seg.Quantity, gpusPerPod)
+		}
+		for i := 0; i < int(seg.Quantity)/gpusPerPod; i++ {
+			out = append(out, seg)
+		}
+	}
+	return out, nil
+}
+
+// PodLease builds the immutable Lease for one workload pod: gpusPerPod GPUs on
+// the node the scheduler actually bound it to, funded by seg. This is the
+// plugin's mint at PreBind — the single point a Lease becomes a fact. name must
+// be unique and stable for the pod (the plugin uses the pod's own name) so the
+// create is idempotent across PreBind retries.
+func PodLease(run *v1.Run, seg cover.Segment, node string, gpusPerPod int, name string, now time.Time, reason string) v1.Lease {
+	if reason == "" {
+		reason = "Start"
+	}
+	slots := make([]string, gpusPerPod)
+	for i := range slots {
+		slots[i] = fmt.Sprintf("%s#%d", node, i)
+	}
+	return v1.Lease{
+		ObjectMeta: v1.ObjectMeta{
+			Namespace: run.Namespace,
+			Name:      name,
+			Labels: map[string]string{
+				binder.LabelRunName: run.Name,
+				binder.LabelRunRole: binder.RoleActive,
+			},
+		},
+		Spec: v1.LeaseSpec{
+			Owner:          seg.Owner,
+			RunRef:         v1.RunReference{Name: run.Name, Namespace: run.Namespace},
+			Slice:          v1.LeaseSlice{Nodes: slots, Role: binder.RoleActive},
+			Interval:       v1.LeaseInterval{Start: v1.NewTime(now)},
+			PaidByBudget:   seg.BudgetName,
+			PaidByEnvelope: seg.EnvelopeName,
+			Reason:         reason,
+		},
+	}
 }
 
 // --- helpers moved from controllers/run_controller.go (admission-only) ---
