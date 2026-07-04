@@ -91,18 +91,36 @@ func TestEngineEmitsEventsIncludingAttestedSeed(t *testing.T) {
 	controller := NewRunController(state, runClock{now: now})
 	controller.Recorder = rec
 
+	// Bind path, post-cutover: Reconcile emits unscheduled intent pods and
+	// leaves the run Pending — it mints nothing and no longer emits an
+	// "Admitted" event (the scheduler plugin admits now). The bound "fate"
+	// the resolver later shrinks/ends is delivered by the plugin, stood in for
+	// by seedRunning below.
 	if err := controller.Reconcile("default", "run-a"); err != nil {
 		t.Fatalf("run-a reconcile failed: %v", err)
 	}
 	if err := controller.Reconcile("default", "run-b"); err != nil {
 		t.Fatalf("run-b reconcile failed: %v", err)
 	}
-	if !rec.has("run-a", EventTypeNormal, "Admitted", "") {
-		t.Errorf("expected an Admitted event for run-a, got %+v", rec.events)
+	if got := activeIntentPods(state, "default", "run-a"); got != 8 {
+		t.Errorf("expected run-a to emit 8 unscheduled intent pods on the bind path, got %d (events %+v)", got, rec.events)
 	}
-	if !rec.has("run-b", EventTypeNormal, "Admitted", "") {
-		t.Errorf("expected an Admitted event for run-b, got %+v", rec.events)
+	if got := activeIntentPods(state, "default", "run-b"); got != 16 {
+		t.Errorf("expected run-b to emit 16 unscheduled intent pods on the bind path, got %d (events %+v)", got, rec.events)
 	}
+	if len(state.Leases) != 0 {
+		t.Errorf("controller must mint nothing on the bind path, got %d leases", len(state.Leases))
+	}
+	if rec.has("run-a", EventTypeNormal, "Admitted", "") || rec.has("run-b", EventTypeNormal, "Admitted", "") {
+		t.Errorf("engine must not emit an Admitted event on the bind path post-cutover, got %+v", rec.events)
+	}
+
+	// Stand in for the scheduler plugin scheduling + funding those intent pods:
+	// run-a and run-b become Running with the exact leases admission.Plan mints
+	// — the bound state the resolver later shrinks (run-b) and ends by lottery
+	// (run-a) once run-c's reservation activates.
+	seedRunning(t, state, "default/run-a", now)
+	seedRunning(t, state, "default/run-b", now)
 
 	state.Runs["default/run-c"] = &v1.Run{
 		ObjectMeta: v1.ObjectMeta{Name: "run-c", Namespace: "default"},

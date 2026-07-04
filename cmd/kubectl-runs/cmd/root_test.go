@@ -75,8 +75,8 @@ func TestSubmitPlanAndBudgets(t *testing.T) {
 		t.Fatalf("submit command: %v", err)
 	}
 	output := buf.String()
-	if !strings.Contains(output, "bound") {
-		t.Fatalf("expected bound message in output, got %s", output)
+	if !strings.Contains(output, "Running") {
+		t.Fatalf("expected the run Running after the offline simulator committed it, got %s", output)
 	}
 
 	// plan command should surface reservation info (none expected for immediate run)

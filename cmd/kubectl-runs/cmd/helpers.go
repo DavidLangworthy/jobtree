@@ -7,11 +7,17 @@ import (
 	"time"
 
 	"github.com/davidlangworthy/jobtree/controllers"
+	"github.com/davidlangworthy/jobtree/pkg/admission"
 	"github.com/davidlangworthy/jobtree/pkg/keys"
 )
 
 func reconcileRun(state *controllers.ClusterState, namespace, name string) error {
 	controller := controllers.NewRunController(state, controllers.RealClock{})
+	if err := controller.Reconcile(namespace, name); err != nil {
+		return err
+	}
+	simulatePluginCommit(state)
+	// Re-reconcile so the adoption path flips the just-committed run Running.
 	return controller.Reconcile(namespace, name)
 }
 
@@ -33,7 +39,58 @@ func reconcileAll(state *controllers.ClusterState) error {
 			return err
 		}
 	}
+	simulatePluginCommit(state)
+	for _, key := range runKeys {
+		run := state.Runs[key]
+		if run == nil {
+			continue
+		}
+		if err := controller.Reconcile(run.Namespace, run.Name); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// simulatePluginCommit is the OFFLINE (--local) stand-in for the real scheduler
+// plugin. On a live cluster the plugin schedules the controller's intent pods
+// and mints the Lease; the offline simulator has no scheduler, so — for each run
+// Reconcile left Pending with intent pods but no lease — it mints the leases
+// admission.Plan would produce, so the demo shows the realistic bound state. A
+// run that cannot be admitted now (admission.Plan errors → it reserves) is left
+// Pending. This never runs on the live path; there the plugin is authoritative.
+func simulatePluginCommit(state *controllers.ClusterState) {
+	now := time.Now().UTC()
+	for _, run := range state.Runs {
+		if run == nil || run.Status.Phase != controllers.RunPhasePending {
+			continue
+		}
+		if runHasOpenLease(state, run.Namespace, run.Name) {
+			continue
+		}
+		res, err := admission.Plan(admission.Input{
+			Run:     run,
+			Budgets: state.Budgets,
+			Runs:    state.Runs,
+			Leases:  state.Leases,
+			Nodes:   state.Nodes,
+			Now:     now,
+		})
+		if err != nil {
+			continue // not admittable now; the controller reserves it
+		}
+		state.Leases = append(state.Leases, res.Leases...)
+	}
+}
+
+func runHasOpenLease(state *controllers.ClusterState, namespace, name string) bool {
+	for i := range state.Leases {
+		l := &state.Leases[i]
+		if l.Spec.RunRef.Namespace == namespace && l.Spec.RunRef.Name == name && !l.Status.Closed {
+			return true
+		}
+	}
+	return false
 }
 
 func waitDuration(interval int) time.Duration {
