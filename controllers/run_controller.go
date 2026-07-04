@@ -774,6 +774,16 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 		return nil
 	}
 
+	// Already activated on a prior tick (funded path): intent pods are out for
+	// the plugin to place, but its leases have not been adopted yet. Do NOT
+	// re-run the resolver — that would evict more capacity every tick while the
+	// freed room waits for the plugin's async bind. Wait; the run's adoption
+	// path releases the reservation once the leases appear.
+	if runHasActivePods(c.State.Pods, run) {
+		metrics.ClearReservationBacklog(key)
+		return nil
+	}
+
 	usage := computeUsage(c.State.Leases, now)
 	snapshot, err := topology.BuildSnapshotForFlavor(c.State.Nodes, usage, run.Spec.Resources.GPUType)
 	if err != nil {
@@ -782,6 +792,13 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 
 	ev := c.evaluate(now)
 	inventory := cover.NewInventory(ev)
+
+	// opportunistic tracks whether funding fell back to the promised-but-
+	// unfunded escape hatch (opportunisticCoverPlan). A funded activation emits
+	// intent pods for the plugin to mint; an opportunistic one is the one narrow
+	// mint the controller still performs, since the plugin's funding gate would
+	// refuse an unfunded gang (cascade-plan.md §1).
+	opportunistic := false
 
 	location := reservation.Spec.IntendedSlice.Domain
 	request := cover.Request{
@@ -909,6 +926,7 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 						return c.failReservationNoEnvelope(reservation, runKey)
 					}
 					coverPlan = plan
+					opportunistic = true
 				} else {
 					return err
 				}
@@ -929,18 +947,48 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 				return c.failReservationNoEnvelope(reservation, runKey)
 			}
 			coverPlan = plan
+			opportunistic = true
 		}
 	}
 
-	result, err := binder.Materialize(binder.Request{Run: run.DeepCopy(), CoverPlan: coverPlan, PackPlan: plan, Now: now, NameSeed: leaseSeqBase(runKey, c.State.Leases)})
-	if err != nil {
-		return err
+	activated := v1.NewTime(now)
+	if opportunistic {
+		// Promised-but-unfunded start: the plugin's Permit funding gate would
+		// refuse this gang, so honoring the earlier promise is the one narrow
+		// mint the controller still performs (cascade-plan.md §1). It attributes
+		// the demand to a real envelope (classed Unfunded now, re-funded by
+		// arithmetic when quota returns) — not a second funding authority.
+		result, err := binder.Materialize(binder.Request{Run: run.DeepCopy(), CoverPlan: coverPlan, PackPlan: plan, Now: now, NameSeed: leaseSeqBase(runKey, c.State.Leases)})
+		if err != nil {
+			return err
+		}
+		c.State.Pods = append(c.State.Pods, result.Pods...)
+		c.State.Leases = append(c.State.Leases, result.Leases...)
+
+		reservation.Status.State = "Released"
+		reservation.Status.Reason = "Activated"
+		reservation.Status.ActivatedAt = &activated
+		reservation.Status.ReleasedAt = &activated
+		reservation.Status.CountdownSeconds = nil
+		metrics.ClearReservationBacklog(key)
+
+		run.Status.Phase = RunPhaseRunning
+		run.Status.Message = fmt.Sprintf("reservation %s activated (opportunistic)", reservation.Name)
+		run.Status.PendingReservation = nil
+		run.Status.EarliestStart = nil
+		run.Status.CheckpointDeadline = nil
+		run.Status.Funding = summarizeRunFunding(run, c.evaluate(now))
+		c.emit(run, EventTypeNormal, "Activated", run.Status.Message)
+		return nil
 	}
 
-	c.State.Pods = append(c.State.Pods, result.Pods...)
-	c.State.Leases = append(c.State.Leases, result.Leases...)
-
-	activated := v1.NewTime(now)
+	// Funded activation: capacity is freed and the demand funds, so emit the
+	// run's intent pods for the scheduler plugin to place and mint — exactly as
+	// initial admission does. We mint nothing. The reservation's promise has
+	// fired (its capacity is freed and its pods are out), so it Releases now; the
+	// run reaches Running when the plugin's leases are adopted. The once-per-
+	// activation guard above stops the resolver re-firing while that bind lands.
+	c.emitIntentPods(run, plan)
 	reservation.Status.State = "Released"
 	reservation.Status.Reason = "Activated"
 	reservation.Status.ActivatedAt = &activated
@@ -948,15 +996,24 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 	reservation.Status.CountdownSeconds = nil
 	metrics.ClearReservationBacklog(key)
 
-	run.Status.Phase = RunPhaseRunning
-	run.Status.Message = fmt.Sprintf("reservation %s activated", reservation.Name)
 	run.Status.PendingReservation = nil
 	run.Status.EarliestStart = nil
-	run.Status.CheckpointDeadline = nil
-	run.Status.Funding = summarizeRunFunding(run, c.evaluate(now))
+	run.Status.Message = fmt.Sprintf("reservation %s activated; scheduling %d GPUs (awaiting the jobtree scheduler)", reservation.Name, run.Spec.Resources.TotalGPUs)
+	run.Status.Funding = summarizeRunFunding(run, ev)
 	c.emit(run, EventTypeNormal, "Activated", run.Status.Message)
-
 	return nil
+}
+
+// runHasActivePods reports whether the run already has unscheduled Active intent
+// pods emitted (funded reservation activation is idempotent per tick).
+func runHasActivePods(pods []binder.PodManifest, run *v1.Run) bool {
+	for i := range pods {
+		p := &pods[i]
+		if p.Namespace == run.Namespace && p.Labels[binder.LabelRunName] == run.Name && p.Labels[binder.LabelRunRole] == binder.RoleActive {
+			return true
+		}
+	}
+	return false
 }
 
 // opportunisticCoverPlan funds an activation the budget cannot cover: the
