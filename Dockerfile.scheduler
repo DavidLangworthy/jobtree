@@ -1,0 +1,21 @@
+# Builds the jobtree out-of-tree scheduler-framework binary (cmd/scheduler) for
+# deployment via deploy/helm/gpu-fleet (values.yaml's scheduler.image) and the
+# kind e2e harness. It registers the "jobtree" plugin — the sole committer of
+# GPU funding — and runs it for the schedulerName: jobtree profile.
+#
+# Same multi-stage, distroless, non-root posture as the manager image
+# (Dockerfile): full toolchain to build, static binary on a shell-less base.
+FROM golang:1.26 AS build
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/scheduler ./cmd/scheduler
+
+FROM gcr.io/distroless/static-debian12:nonroot
+WORKDIR /
+COPY --from=build /out/scheduler /scheduler
+USER 65532:65532
+ENTRYPOINT ["/scheduler"]

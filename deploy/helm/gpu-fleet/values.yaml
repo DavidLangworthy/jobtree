@@ -20,10 +20,11 @@ notifier:
 scheduler:
   # The out-of-tree jobtree scheduler-framework binary (cmd/scheduler). It runs
   # as a second Deployment alongside the manager and places pods that set
-  # schedulerName: jobtree. PLUGIN-1 ships it as a no-op scaffold (the plugin's
-  # Filter/Score/Permit/PreBind/PostFilter bodies do nothing), so it is DISABLED
-  # by default until PLUGIN-2+ makes placement real. Turning it on today would
-  # place jobtree pods identically to the default scheduler.
+  # schedulerName: jobtree. As of PLUGIN-2 it is the REAL sole committer: Filter
+  # gates flavor, Permit assembles the gang and gates funding, and PreBind mints
+  # the Lease on the bound node. Left DISABLED by default so operators opt in
+  # deliberately (it needs the -committer RBAC below and workload pods that set
+  # schedulerName: jobtree with the gang/gpu metadata the controller stamps).
   enabled: false
   image: ghcr.io/davidlangworthy/jobtree-scheduler:latest
   replicas: 1
