@@ -299,6 +299,42 @@ This supersedes parts of `plan-workload-podspec.md`:
    (Option A) but keep the plugin.
 4. RL role-pools, per-role elasticity/criticality, and fault-tolerant carry-forward land on top.
 
+## 9. Funding commit under the plugin — ONE committer, not two (decided 2026-07-04)
+
+An early PLUGIN-track framing said run_controller's cover/inventory pass becomes *advisory* while the
+scheduler's Permit gate becomes the *authoritative committer of width/funding*. **Rejected — that is two
+sources of truth for one decision, and every drift between them is a phantom bug** (a run the controller
+thinks is funded that Permit rejects; a width the controller committed that never binds; double-counted
+GPU-hours). The moat makes the split unnecessary.
+
+**The load-bearing fact (`pkg/funding/evaluate.go:27,38`): funding class is *derived, never stored* —
+"nothing in the control path reads a classification back from status." The one source of truth is the
+LEASES (immutable facts, minted by `binder.Materialize`).** Everyone else — status, dashboards, the
+forecaster — re-derives the class from `(leases, budgets, clock)` via the single pure `funding.Evaluate`.
+So there is never "two funding decisions": there is exactly **one committer — whoever mints the lease** —
+and everyone else derives. Today that committer is run_controller (it does `Evaluate → cover → pack →
+Materialize` in one pass). The correct move is not to add a second committer in Permit; it is to **move
+the one committer into the plugin:**
+
+- **The plugin is the sole authority.** At **Permit** it gang-gates the role-set and checks funding fit
+  with `funding.Evaluate`; at **Bind/PreBind** it mints the Lease. One place decides, one place commits.
+- **run_controller stops committing funding.** It sheds cover→pack→bind and keeps only: (a) create/delete
+  *intent* pods to **request** a width; (b) **forecast** reservations/ETA; (c) lifecycle (completion,
+  elasticity requests, reclaim).
+- **Reclaim (demote-not-kill)** stays a re-derivation that closes leases — operating on the one truth, not
+  a second ledger. It runs as `funding.Evaluate` (deterministic, logged) → controller/PostFilter evicts →
+  Permit re-gates the freed capacity (per §6.1 Q5).
+- **The forecaster is a prediction, not a second commit.** Reservation/ETA must evaluate funding+capacity
+  *ahead of* the scheduler, but it produces a `Reservation` (a guess), never a `Lease` (a fact). A wrong
+  forecast is a forecast doing its job, not a bug — because it commits nothing. **Discipline (guardable by
+  the anti-fake lint): the forecaster never mints a lease.** End state: the forecast itself can move into
+  the plugin (Filter/Permit already computes the deficit), leaving run_controller pure pod-lifecycle — one
+  place for all funding. Deferred past v1.
+
+**Net:** one pure function (`funding.Evaluate`), one committer (the plugin, via the Lease), one truth (the
+Lease ledger). No advisory-vs-authoritative split, no drift surface. This supersedes any "advisory cover /
+authoritative Permit" language in the PLUGIN track detail.
+
 ---
 
 *Companion docs: `plan-workload-podspec.md` (the mannequin/GPU-gap findings + injection contract, now
