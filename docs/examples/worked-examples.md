@@ -1,10 +1,15 @@
 # Worked Examples for RQλ (Budget / Run / Reservation / Lease)
 
 A collection of end-to-end scenarios that exercise cover → pack → bind, Reservations,
-structural cuts, fair lottery, hot spares, elasticity, and co-funded runs. For milestone M3
-the binder emits pod manifests and Lease objects directly from the cover/pack output, so the
-examples focus on that immediate-start pathway. Sample commands assume manifests are available
-as JSON (see `config/samples/runs/*.json` or convert the published YAML with `yq -o=json`).
+structural cuts, fair lottery, hot spares, elasticity, and co-funded runs. The scenarios below
+describe the leases/pods that appear at each step and why — that logic hasn't changed. What has
+changed since these were written: the controller no longer binds pods or mints Leases itself: it
+requests width by creating real, unscheduled workload pods running the Run's container, and the
+**jobtree scheduler plugin** places each pod and mints its Lease at bind time, as the sole
+committer of GPU funding. Read "the binder emits …" below as "a Lease/pod with these properties
+appears" rather than as which component performs the mint. Sample commands assume manifests are
+available as JSON (see `config/samples/runs/*.json` or convert the published YAML with
+`yq -o=json`).
 
 > Domains represent fast-fabric islands. The default behavior keeps islands quiet; you only
 > specify `groupGPUs` when you need groups to stay close.

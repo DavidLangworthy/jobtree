@@ -45,10 +45,17 @@ spec:
     totalGPUs: 32
   locality:
     groupGPUs: 16
+  roles:
+    - name: trainer
+      width: 32
+      gpusPerPod: 1
+      template: …   # your podSets[0].template carries over almost as-is
 ```
 
-Jobtree handles the PodTemplate generation automatically based on the Run (binder materializes
-pod specs per group).
+Your `podSets[].template` maps directly to `spec.roles[].template` — same researcher-owned
+PodTemplateSpec (image, command, env, volumes). Jobtree only overlays the scheduling-owned
+fields (`schedulerName`, the `nvidia.com/gpu` request, gang labels, `restartPolicy: Never`); the
+jobtree scheduler plugin then places each pod and mints its Lease at bind time.
 
 ## 3. Budgeting vs ClusterQueues
 

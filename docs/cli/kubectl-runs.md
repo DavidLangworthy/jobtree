@@ -2,7 +2,7 @@
 
 The `kubectl runs` plugin provides an operator- and researcher-friendly wrapper around the Jobtree scheduler APIs.
 
-**By default it talks to a live Kubernetes API server** — the same kubeconfig/context resolution as `kubectl` — and does real `Get`/`List`/`Create`/`Update` calls against `Run`, `Budget`, `Reservation`, and `Lease` objects. It never re-runs the scheduling/funding brain client-side: `submit` creates the object and lets the controller manager reconcile it, and commands that print status (`plan`, `explain`, `watch`, `budgets usage`) render whatever the manager already wrote.
+**By default it talks to a live Kubernetes API server** — the same kubeconfig/context resolution as `kubectl` — and does real `Get`/`List`/`Create`/`Update` calls against `Run`, `Budget`, `Reservation`, and `Lease` objects. It never re-runs the scheduling/funding brain client-side: `submit` creates the object and lets the control plane handle it — the controller manager requests width (real, unscheduled workload pods running the Run's own container, `schedulerName: jobtree`) and forecasts, while the **jobtree scheduler plugin** places each pod and mints its Lease at bind time as the sole committer of GPU funding. Commands that print status (`plan`, `explain`, `watch`, `budgets usage`) render whatever the manager and the plugin already wrote.
 
 ## Installation
 
@@ -33,7 +33,7 @@ kubectl runs budgets usage
 
 ## `--local` (in-process simulator)
 
-Pass `--local` (or its synonym `--dry-run`) to instead drive an **in-process `cluster-state.json` simulator** — useful for docs, demos, and offline experimentation. This is not a cluster: no `kube-apiserver` is contacted, no controller manager reconciles anything, and no webhook runs. Every `--local` invocation prints a notice to stderr saying so.
+Pass `--local` (or its synonym `--dry-run`) to instead drive an **in-process `cluster-state.json` simulator** — useful for docs, demos, and offline experimentation. This is not a cluster: no `kube-apiserver` is contacted, no controller manager reconciles anything, and no webhook runs. The simulator models both halves of the live path in one process — the controller's admission/forecast logic, then `simulatePluginCommit`, an offline stand-in for the scheduler plugin's bind/fund decision — so a `--local` run still ends up "bound" with realistic Leases instead of stuck pending. Every `--local` invocation prints a notice to stderr saying so.
 
 Use the `--state` flag to select the snapshot file (default `cluster-state.json`). Commands that modify state (`submit`, `shrink`, `sponsors add`, `watch`, `complete`, `eta`) hold an advisory lock (`<state>.lock`) for the whole load-modify-save cycle and replace the snapshot atomically, so concurrent invocations cannot lose writes. Read commands (`plan`, `explain`, `budgets usage`, `leases`) never modify the state file.
 
