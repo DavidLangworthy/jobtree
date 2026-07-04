@@ -100,9 +100,16 @@ func TestGangDecideFundable(t *testing.T) {
 	if gpusPerPod != 4 {
 		t.Errorf("gpusPerPod = %d, want 4", gpusPerPod)
 	}
-	// Only one pod's worth of funding: a second claim overflows.
-	if _, _, ok := m.claimPayer(pod); ok {
-		t.Errorf("expected the 1-pod gang's funding to be exhausted after one claim")
+	// Idempotent per pod: re-claiming for the same pod returns the same payer
+	// (a PreBind retry must not consume another).
+	if seg2, _, ok := m.claimPayer(pod); !ok || seg2.EnvelopeName != seg.EnvelopeName {
+		t.Errorf("expected idempotent re-claim for the same pod, got ok=%v seg=%s", ok, seg2.EnvelopeName)
+	}
+	// Only one pod's worth of funding: a different pod overflows the 1-pod gang.
+	other := gangPod()
+	other.Name = "train-pod-1"
+	if _, _, ok := m.claimPayer(other); ok {
+		t.Errorf("expected the 1-pod gang's funding to be exhausted for a second distinct pod")
 	}
 }
 

@@ -42,7 +42,8 @@ type gangCommit struct {
 	fundable   bool
 	reason     string
 	payers     []cover.Segment // one paying envelope per pod, owned-before-borrowed
-	claimed    int             // payers handed to PreBind so far
+	claimed    int             // distinct pods that have claimed a payer
+	assigned   map[string]int  // pod name -> payer index (idempotent across PreBind retries)
 	gpusPerPod int
 	// pending are the leases this gang will mint but has not yet; they are
 	// folded into other gangs' funding checks until the real leases appear in
@@ -118,19 +119,31 @@ func (m *gangManager) decide(ctx context.Context, pod *corev1.Pod) (fundable boo
 	return true, ""
 }
 
-// claimPayer hands the next unused paying envelope to a PreBinding pod. The
-// second return is false if the gang is not fundable or has been exhausted
-// (which would indicate more pods than the funded width — a bug, surfaced).
+// claimPayer hands a paying envelope to a PreBinding pod. It is idempotent per
+// pod: a PreBind retry for the same pod returns the same envelope rather than
+// consuming another (so a transient mint failure does not exhaust the gang).
+// The second return is false if the gang is not fundable or has been exhausted
+// (more distinct pods than the funded width — a bug, surfaced).
 func (m *gangManager) claimPayer(pod *corev1.Pod) (cover.Segment, int, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	g := m.gangs[gangKey(pod)]
-	if g == nil || !g.fundable || g.claimed >= len(g.payers) {
+	if g == nil || !g.fundable {
 		return cover.Segment{}, 0, false
 	}
-	seg := g.payers[g.claimed]
+	if idx, ok := g.assigned[pod.Name]; ok {
+		return g.payers[idx], g.gpusPerPod, true
+	}
+	if g.claimed >= len(g.payers) {
+		return cover.Segment{}, 0, false
+	}
+	idx := g.claimed
 	g.claimed++
-	return seg, g.gpusPerPod, true
+	if g.assigned == nil {
+		g.assigned = map[string]int{}
+	}
+	g.assigned[pod.Name] = idx
+	return g.payers[idx], g.gpusPerPod, true
 }
 
 // forget drops a gang's state (on Unreserve of an unbound member) so a later

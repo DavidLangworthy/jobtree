@@ -27,6 +27,7 @@ import (
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	fwk "k8s.io/kube-scheduler/framework"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -70,7 +71,13 @@ func New(_ context.Context, _ apiruntime.Object, h fwk.Handle) (fwk.Plugin, erro
 	scheme := apiruntime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(v1.AddToScheme(scheme))
-	c, err := client.New(h.KubeConfig(), client.Options{Scheme: scheme})
+	// The scheduler configures its clients for protobuf, but the jobtree CRDs
+	// (Run/Budget/Lease) are JSON-only — encoding a Lease as protobuf fails. Use
+	// a JSON copy of the config for our client.
+	cfg := rest.CopyConfig(h.KubeConfig())
+	cfg.ContentType = "application/json"
+	cfg.AcceptContentTypes = "application/json"
+	c, err := client.New(cfg, client.Options{Scheme: scheme})
 	if err != nil {
 		return nil, fmt.Errorf("jobtree plugin: build client: %w", err)
 	}

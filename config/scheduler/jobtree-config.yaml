@@ -31,6 +31,11 @@ profiles:
       score:
         enabled:
           - name: jobtree
+      reserve:
+        # Enables the plugin's Unreserve so gang bookkeeping is released when a
+        # parked member is rejected before it commits.
+        enabled:
+          - name: jobtree
       permit:
         enabled:
           - name: jobtree
