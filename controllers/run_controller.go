@@ -54,6 +54,34 @@ type RunController struct {
 	// and the evaluation cadence both measure width × Period. Zero means
 	// funding.DefaultPeriod.
 	Period time.Duration
+	// Recorder receives observability events as the engine discovers them
+	// (admit, reserve, activate, resolver action, node-failure swap,
+	// complete). Nil is safe — the CLI's local simulator leaves it unset;
+	// the k8s bridge wires a real client-go EventRecorder.
+	Recorder EventRecorder
+}
+
+// EventRecorder receives observability events keyed to the Run object they
+// concern. The k8s bridge implements this against a real
+// client-go/controller-runtime EventRecorder (surfacing real corev1.Events);
+// the pure engine package has no such dependency itself.
+type EventRecorder interface {
+	Event(run *v1.Run, eventType, reason, message string)
+}
+
+// Event type strings mirroring corev1.EventTypeNormal/EventTypeWarning
+// without giving the pure engine package a k8s.io/api dependency.
+const (
+	EventTypeNormal  = "Normal"
+	EventTypeWarning = "Warning"
+)
+
+// emit is a nil-safe convenience wrapper around Recorder.Event.
+func (c *RunController) emit(run *v1.Run, eventType, reason, message string) {
+	if c.Recorder == nil || run == nil {
+		return
+	}
+	c.Recorder.Event(run, eventType, reason, message)
 }
 
 // NewRunController constructs a controller with the given state store.
@@ -122,6 +150,18 @@ func (c *RunController) Reconcile(namespace, name string) error {
 	if isPreAdmission(run.Status.Phase) && !c.evaluateFollow(run, now) {
 		run.Status.Width = summarizeRunWidth(run, c.State.Leases)
 		result = "waiting"
+		return nil
+	}
+
+	// Checkpoint grace: a run parked Pending by HandleNodeFailure (no spare,
+	// but spec.runtime.checkpoint > 0) gets to keep trying to re-admit
+	// (below, and via reservation) only until this deadline; past it, the
+	// checkpoint is presumed stale and the run fails rather than retrying
+	// forever.
+	if run.Status.Phase == RunPhasePending && run.Status.CheckpointDeadline != nil && !now.Before(run.Status.CheckpointDeadline.Time) {
+		c.failRun(run, "checkpoint grace expired without recovering capacity")
+		run.Status.Width = summarizeRunWidth(run, c.State.Leases)
+		result = "failed"
 		return nil
 	}
 
@@ -267,6 +307,7 @@ func (c *RunController) Reconcile(namespace, name string) error {
 		run.Status.Message = fmt.Sprintf("bound %d GPUs", packPlan.TotalGPUs)
 		run.Status.Width = summarizeRunWidth(run, c.State.Leases)
 		run.Status.Funding = summarizeRunFunding(run, c.evaluate(now))
+		c.emit(run, EventTypeNormal, "Admitted", run.Status.Message)
 		result = "bound"
 		return nil
 	}
@@ -459,6 +500,8 @@ func (c *RunController) completeRun(run *v1.Run, now time.Time) {
 	run.Status.EarliestStart = nil
 	run.Status.Width = summarizeRunWidth(run, c.State.Leases)
 	run.Status.Funding = summarizeRunFunding(run, c.evaluate(now))
+	metrics.ClearElasticWidth(runKey)
+	c.emit(run, EventTypeNormal, "Completed", run.Status.Message)
 }
 
 // isPreAdmission reports whether a run has not yet started or terminated, so
@@ -538,6 +581,17 @@ func followGrace(f *v1.RunFollow) time.Duration {
 	return defaultUpstreamFailureGrace
 }
 
+// checkpointGrace returns the run's configured checkpoint window, or zero
+// when unset — the real (only) reader of RunSpec.Runtime.Checkpoint. Zero
+// means a node failure without a spare fails the run immediately, same as
+// before this field was wired.
+func checkpointGrace(run *v1.Run) time.Duration {
+	if run == nil || run.Spec.Runtime == nil {
+		return 0
+	}
+	return run.Spec.Runtime.Checkpoint.Duration
+}
+
 // followCycle reports whether the run's transitive follow closure contains a
 // cycle (which would deadlock it), returning a readable path. Same-namespace.
 func (c *RunController) followCycle(start *v1.Run) (string, bool) {
@@ -584,14 +638,18 @@ func (c *RunController) setWaiting(run *v1.Run, msg string) {
 	run.Status.EarliestStart = nil
 }
 
-// failRun terminally fails a pre-admission run (a follow cycle, or an upstream
-// failure past grace). It never held leases, so there is nothing to close.
+// failRun terminally fails a pre-admission run (a follow cycle, an upstream
+// failure past grace, or an expired checkpoint grace window). It never holds
+// leases at this point (a checkpoint-grace run's lease was already closed by
+// HandleNodeFailure), so there is nothing to close.
 func (c *RunController) failRun(run *v1.Run, msg string) {
 	run.Status.Phase = RunPhaseFailed
 	run.Status.Message = msg
 	run.Status.PendingReservation = nil
 	run.Status.EarliestStart = nil
 	run.Status.FollowDeadline = nil
+	run.Status.CheckpointDeadline = nil
+	c.emit(run, EventTypeWarning, "Failed", msg)
 }
 
 // releasePendingReservations marks every Pending reservation for the run as
@@ -610,9 +668,16 @@ func (c *RunController) releasePendingReservations(run *v1.Run, now time.Time) {
 		res.Status.Reason = "Superseded"
 		res.Status.ReleasedAt = &released
 		res.Status.CountdownSeconds = nil
+		// The reservation is leaving Pending: stop reporting a backlog for
+		// it so the gauge does not persist forever (audit finding #21).
+		metrics.ClearReservationBacklog(keys.NamespacedKey(res.Namespace, res.Name))
 	}
 	run.Status.PendingReservation = nil
 	run.Status.EarliestStart = nil
+	// Every caller either just (re-)admitted the run (checkpoint grace
+	// satisfied) or is a no-op on an already-terminal/Running run (where the
+	// deadline is already nil); clearing here is safe either way.
+	run.Status.CheckpointDeadline = nil
 }
 
 // ActivateReservations attempts to start any due reservations in sorted key
@@ -637,6 +702,10 @@ func (c *RunController) ActivateReservations(now time.Time) error {
 			continue
 		}
 		if reservation.Spec.EarliestStart.Time.After(now) {
+			// Not due yet: refresh the countdown gauge instead of leaving it
+			// frozen at whatever value it had when the reservation was
+			// created (audit finding #21).
+			c.refreshReservationBacklog(key, reservation, now)
 			continue
 		}
 		if err := c.activateReservation(key, reservation, now); err != nil {
@@ -647,6 +716,23 @@ func (c *RunController) ActivateReservations(now time.Time) error {
 	return errors.Join(errs...)
 }
 
+// refreshReservationBacklog recomputes a still-pending reservation's backlog
+// gauge from its EarliestStart against the current clock, so the value
+// tracks the shrinking countdown instead of freezing at the value it had
+// when the reservation was created (audit finding #21).
+func (c *RunController) refreshReservationBacklog(key string, reservation *v1.Reservation, now time.Time) {
+	runKey := keys.NamespacedKey(reservation.Spec.RunRef.Namespace, reservation.Spec.RunRef.Name)
+	run := c.State.Runs[runKey]
+	if run == nil {
+		return
+	}
+	delta := reservation.Spec.EarliestStart.Time.Sub(now).Seconds()
+	if delta < 0 {
+		delta = 0
+	}
+	metrics.SetReservationBacklog(key, run.Spec.Resources.GPUType, delta)
+}
+
 func (c *RunController) activateReservation(key string, reservation *v1.Reservation, now time.Time) error {
 	runKey := keys.NamespacedKey(reservation.Spec.RunRef.Namespace, reservation.Spec.RunRef.Name)
 	run, ok := c.State.Runs[runKey]
@@ -655,6 +741,7 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 		// terminally rather than retrying every tick.
 		reservation.Status.State = "Failed"
 		reservation.Status.CountdownSeconds = nil
+		metrics.ClearReservationBacklog(key)
 		return fmt.Errorf("run %s referenced by reservation %s not found", runKey, key)
 	}
 	if run.Status.Phase == RunPhaseRunning || run.Status.Phase == RunPhaseComplete || run.Status.Phase == RunPhaseFailed {
@@ -679,10 +766,12 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 		reservation.Status.ActivatedAt = &activated
 		reservation.Status.ReleasedAt = &activated
 		reservation.Status.CountdownSeconds = nil
+		metrics.ClearReservationBacklog(key)
 		run.Status.Phase = RunPhaseRunning
 		run.Status.Message = fmt.Sprintf("adopted %d open leases from an earlier activation", open)
 		run.Status.PendingReservation = nil
 		run.Status.EarliestStart = nil
+		run.Status.CheckpointDeadline = nil
 		run.Status.Width = summarizeRunWidth(run, c.State.Leases)
 		run.Status.Funding = summarizeRunFunding(run, c.evaluate(now))
 		return nil
@@ -860,12 +949,15 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 	reservation.Status.ActivatedAt = &activated
 	reservation.Status.ReleasedAt = &activated
 	reservation.Status.CountdownSeconds = nil
+	metrics.ClearReservationBacklog(key)
 
 	run.Status.Phase = RunPhaseRunning
 	run.Status.Message = fmt.Sprintf("reservation %s activated", reservation.Name)
 	run.Status.PendingReservation = nil
 	run.Status.EarliestStart = nil
+	run.Status.CheckpointDeadline = nil
 	run.Status.Funding = summarizeRunFunding(run, c.evaluate(now))
+	c.emit(run, EventTypeNormal, "Activated", run.Status.Message)
 
 	return nil
 }
@@ -913,6 +1005,7 @@ func (c *RunController) opportunisticCoverPlan(run *v1.Run, reservation *v1.Rese
 func (c *RunController) failReservationNoEnvelope(reservation *v1.Reservation, runKey string) error {
 	reservation.Status.State = "Failed"
 	reservation.Status.CountdownSeconds = nil
+	metrics.ClearReservationBacklog(keys.NamespacedKey(reservation.Namespace, reservation.Name))
 	return fmt.Errorf("run %s has no envelope to fund reservation %s (budget removed)", runKey, reservation.Name)
 }
 
@@ -944,8 +1037,22 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 		spareLease, spareIdx := findSpareLease(c.State.Leases, runKey, groupIndex)
 		if spareLease == nil {
 			closeLease(lease, "NodeFailure", now)
+			if grace := checkpointGrace(run); grace > 0 {
+				// spec.runtime.checkpoint says the workload can be safely
+				// requeued: park the run Pending (it re-enters the normal
+				// cover/pack/bind or reservation path on the next reconcile)
+				// instead of failing immediately, but only for up to the
+				// checkpoint grace window (enforced in Reconcile).
+				deadline := v1.NewTime(now.Add(grace))
+				run.Status.Phase = RunPhasePending
+				run.Status.CheckpointDeadline = &deadline
+				run.Status.Message = fmt.Sprintf("node %s failed without spare coverage; checkpoint grace until %s", nodeName, deadline.Time.UTC().Format(time.RFC3339))
+				c.emit(run, EventTypeWarning, "NodeFailureCheckpointGrace", run.Status.Message)
+				continue
+			}
 			run.Status.Phase = RunPhaseFailed
 			run.Status.Message = fmt.Sprintf("node %s failed without spare coverage", nodeName)
+			c.emit(run, EventTypeWarning, "NodeFailureNoSpare", run.Status.Message)
 			continue
 		}
 		spareNodes := leaseNodeNames(spareLease)
@@ -970,6 +1077,7 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 		c.updatePodsAfterSwap(run, groupIndex, nodeName, spareSet)
 		run.Status.Phase = RunPhaseRunning
 		run.Status.Message = fmt.Sprintf("group %s swapped to spare after node %s failure", groupIndex, nodeName)
+		c.emit(run, EventTypeNormal, "NodeFailureSwap", run.Status.Message)
 	}
 	if !handled {
 		return fmt.Errorf("no active lease found on node %s", nodeName)
@@ -993,6 +1101,7 @@ func (c *RunController) planReservation(run *v1.Run, snapshot *topology.Snapshot
 	}
 	spareTotal := expectedSpareTotal(run, planPtr)
 	request.Quantity = run.Spec.Resources.TotalGPUs + spareTotal
+	forecastStart := time.Now()
 	forecastResult, err := forecast.Plan(forecast.Input{
 		Run:          run,
 		Now:          now,
@@ -1002,7 +1111,12 @@ func (c *RunController) planReservation(run *v1.Run, snapshot *topology.Snapshot
 		CoverErr:     coverErr,
 		CoverRequest: request,
 		Evaluation:   ev,
+		Runs:         c.State.Runs,
 	})
+	// forecast.Plan is an inline library call made from this reconcile path,
+	// not a separate "forecast controller" (audit finding #24) — the metric
+	// is observed at the one call site that exists.
+	metrics.ObserveForecastLatency(run.Spec.Resources.GPUType, time.Since(forecastStart))
 	if err != nil {
 		run.Status.Phase = RunPhasePending
 		run.Status.Message = fmt.Sprintf("reservation planning failed: %v", err)
@@ -1019,13 +1133,6 @@ func (c *RunController) planReservation(run *v1.Run, snapshot *topology.Snapshot
 
 	reservationName := fmt.Sprintf("%s-res-%d", run.Name, now.Unix())
 	earliest := v1.NewTime(forecastResult.EarliestStart)
-	if !forecastResult.EarliestStart.IsZero() {
-		delta := forecastResult.EarliestStart.Sub(now).Seconds()
-		if delta < 0 {
-			delta = 0
-		}
-		metrics.SetReservationBacklog(run.Spec.Resources.GPUType, delta)
-	}
 	status := v1.ReservationStatus{
 		State:    "Pending",
 		Reason:   forecastResult.Reason,
@@ -1057,14 +1164,31 @@ func (c *RunController) planReservation(run *v1.Run, snapshot *topology.Snapshot
 	for existingKey, existing := range c.State.Reservations {
 		if existing.Spec.RunRef.Name == run.Name && existing.Spec.RunRef.Namespace == run.Namespace {
 			delete(c.State.Reservations, existingKey)
+			// The superseded reservation is leaving Pending; its backlog
+			// series must not linger under the old key (audit finding #21).
+			metrics.ClearReservationBacklog(existingKey)
 		}
 	}
 	c.State.Reservations[key] = reservation
+
+	// Keyed by reservation (not just flavor) so concurrent reservations of
+	// the same flavor do not collapse onto one series. The run reconciler's
+	// resync requeue (and the reservation reconciler's countdown poll) keep
+	// calling this while the reservation stays Pending, so the value tracks
+	// the shrinking countdown instead of freezing at creation time.
+	if !forecastResult.EarliestStart.IsZero() {
+		delta := forecastResult.EarliestStart.Sub(now).Seconds()
+		if delta < 0 {
+			delta = 0
+		}
+		metrics.SetReservationBacklog(key, run.Spec.Resources.GPUType, delta)
+	}
 
 	run.Status.Phase = RunPhasePending
 	run.Status.Message = fmt.Sprintf("reservation %s scheduled for %s (deficit %d GPUs)", reservationName, forecastResult.EarliestStart.Format(time.RFC3339), forecastResult.Forecast.DeficitGPUs)
 	run.Status.PendingReservation = ptrString(reservationName)
 	run.Status.EarliestStart = &earliest
+	c.emit(run, EventTypeNormal, "Reserved", run.Status.Message)
 	return nil
 }
 
@@ -1092,6 +1216,11 @@ func (c *RunController) applyResolution(result resolver.Result, now time.Time) {
 		// discarded (e.g. the lottery errors), and only applied actions
 		// should show up in metrics.
 		metrics.IncResolverAction(string(action.Kind))
+		// action.Reason carries the attested lottery/reclaim seed for
+		// ActionLottery/ActionReclaimUnfunded (e.g. "RandomPreempt(0x...)");
+		// emitting it as a real Warning event makes the seed discoverable
+		// without grepping controller logs (audit finding #23).
+		c.emit(action.Run, EventTypeWarning, "ResolverAction", fmt.Sprintf("%s: %s (lease %s)", action.Kind, action.Reason, lease.Name))
 		runKey := keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name)
 		if _, seen := affectedRuns[runKey]; !seen {
 			reclaimedOnly[runKey] = true
@@ -1130,14 +1259,17 @@ func (c *RunController) applyResolution(result resolver.Result, now time.Time) {
 		case active > 0:
 			run.Status.Phase = RunPhaseRunning
 			run.Status.Message = "shrunk by resolver"
+			c.emit(run, EventTypeWarning, "ResolverShrink", run.Status.Message)
 		case reclaimedOnly[runKey]:
 			run.Status.Phase = RunPhasePending
 			run.Status.Message = "reclaimed by funded demand; will re-admit when quota allows"
 			run.Status.PendingReservation = nil
 			run.Status.EarliestStart = nil
+			c.emit(run, EventTypeWarning, "ResolverReclaimed", run.Status.Message)
 		default:
 			run.Status.Phase = RunPhaseFailed
 			run.Status.Message = "ended by resolver"
+			c.emit(run, EventTypeWarning, "ResolverEnded", run.Status.Message)
 		}
 		run.Status.Width = summarizeRunWidth(run, c.State.Leases)
 	}
@@ -1325,6 +1457,8 @@ func (c *RunController) reconcileElasticRun(run *v1.Run, snapshot *topology.Snap
 			run.Status.Width.Pending = fmt.Sprintf("Grow to %d", desired)
 		}
 		run.Status.Message = fmt.Sprintf("grew to %d GPUs", newWidth.Allocated)
+		metrics.IncElasticGrow(run.Spec.Resources.GPUType)
+		metrics.SetElasticWidth(keys.NamespacedKey(run.Namespace, run.Name), float64(newWidth.Allocated))
 		return nil
 	}
 
@@ -1343,6 +1477,8 @@ func (c *RunController) reconcileElasticRun(run *v1.Run, snapshot *topology.Snap
 			run.Status.Width.Pending = fmt.Sprintf("Shrink to %d", desired)
 		}
 		run.Status.Message = fmt.Sprintf("shrunk to %d GPUs", newWidth.Allocated)
+		metrics.IncElasticShrink(run.Spec.Resources.GPUType)
+		metrics.SetElasticWidth(keys.NamespacedKey(run.Namespace, run.Name), float64(newWidth.Allocated))
 	}
 
 	return nil

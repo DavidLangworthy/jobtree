@@ -65,6 +65,7 @@ func (r *RunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 		rc := controllers.NewRunController(state, staticClock{now})
 		rc.Period = r.Bridge.Period
+		rc.Recorder = r.Bridge.recorderFor()
 		err := rc.Reconcile(req.Namespace, req.Name)
 		parked = run.Status.Phase == controllers.RunPhasePending && run.Status.PendingReservation == nil
 		running = run.Status.Phase == controllers.RunPhaseRunning
@@ -290,6 +291,7 @@ func (r *ReservationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 		rc := controllers.NewRunController(state, staticClock{now})
 		rc.Period = r.Bridge.Period
+		rc.Recorder = r.Bridge.recorderFor()
 		err := rc.ActivateReservations(now)
 		if res.Status.State == "Pending" || res.Status.State == "" {
 			// A due reservation can park at activation (an unfunded promise
@@ -330,6 +332,7 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	err := r.Bridge.WithWorld(ctx, func(state *controllers.ClusterState, now time.Time) error {
 		rc := controllers.NewRunController(state, staticClock{now})
 		rc.Period = r.Bridge.Period
+		rc.Recorder = r.Bridge.recorderFor()
 		if err := rc.HandleNodeFailure(req.Name, now); err != nil {
 			// Nothing was running there: the failure needs no response.
 			if strings.Contains(err.Error(), "no active lease found") {

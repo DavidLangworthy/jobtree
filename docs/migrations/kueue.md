@@ -65,10 +65,9 @@ an ETA, intended slice, and deficit forecast:
 
 ```bash
 kubectl runs plan mm3
-# earliestStart: 14:05
-# intendedSlice: domain=B (nodes b01-b08)
-# deficit: 60 GPUs
-# remedies: shrink RAI-SYS (16), lottery conflict set [mm1]
+# EarliestStart: 14:05:00Z
+# Deficit: 60 GPUs
+# Remedies: Drop spares in scope; Shrink elastic runs by step size; Run fair lottery if deficit remains
 ```
 
 At `earliestStart`, the resolver performs deterministic cuts followed by a public lottery with a
@@ -90,7 +89,7 @@ packs group-by-group within a fast-fabric domain (`pack-to-empty`):
 | Auditing | Workload status | Lease CRD (immutable interval, payer, nodes) |
 | Elasticity | Limited (requeue with new size) | Built-in `malleable` width + voluntary shrink |
 | CLI | kubectl + `kueuectl` | `kubectl runs` plugin (plan/watch/explain/budgets) |
-| Forecasting | Queue length estimates | Reservation ETA, deficit, kill probability, remedies |
+| Forecasting | Queue length estimates | Reservation ETA (scales with deficit size), deficit, real remedies list |
 
 ## 7. Migration checklist
 

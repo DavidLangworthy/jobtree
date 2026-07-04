@@ -66,13 +66,26 @@ to the live cluster named by your kubeconfig; pass `--local` only for the offlin
 
 ## 6. Observability checklist
 
-* `/metrics` exposes counters and histograms for submissions, admission time, Reservations, and
-  lottery outcomes.
+* `/metrics` exposes counters and histograms for submissions, admission time, Reservations,
+  lottery outcomes, forecast latency (`jobtree_forecast_latency_seconds`), and elastic
+  grow/shrink activity (`jobtree_elastic_grows_total`, `jobtree_elastic_shrinks_total`,
+  `jobtree_elastic_width_current`).
 * Import `deploy/grafana/dashboards/observability.json` into Grafana for ready-made panels:
   - Budget headroom per envelope
   - Reservation backlog + ETA buckets
   - Preemption rate broken down by scope
-* Tail controller logs for attested seeds:
+* The manager emits real Kubernetes Events (`EventRecorder`, not a log-only side channel) at
+  admit/reserve/activate/resolver-action/node-failure-swap/complete:
+
+```bash
+kubectl get events --field-selector involvedObject.kind=Run
+kubectl describe run <run>   # shows the same events inline
+```
+
+* The attested lottery/reclaim seed is embedded in the `Reason` of both the `ResolverAction`
+  Warning event above and the closed Lease's `status.closureReason` (e.g.
+  `RandomPreempt(0xdeadbeef...)`); the controller's structured logger also logs every Event at
+  debug level, so grepping logs still works as a fallback:
 
 ```bash
 kubectl logs deploy/jobtree-controller-manager -n jobtree-system | rg RandomPreempt
@@ -93,8 +106,8 @@ kubectl logs deploy/jobtree-controller-manager -n jobtree-system | rg RandomPree
 | Symptom | Action |
 | --- | --- |
 | Runs stuck in `Pending` | `kubectl runs plan <run>` for deficit + remedies; verify budgets have headroom. |
-| Reservations missing ETAs | Ensure `forecast` controller is running; check metrics `jobtree_forecast_latency_seconds`. |
-| Unexpected preemptions | Review `resolver` logs for the seed + conflict set; use `kubectl runs explain`. |
+| Reservations missing ETAs | `forecast.Plan` is an inline library call inside the `run` reconciler — there is no separate "forecast controller" process to check the liveness of. Check the `run` controller's logs/`jobtree_forecast_latency_seconds` metric instead. |
+| Unexpected preemptions | `kubectl get events --field-selector involvedObject.name=<run>` for the `ResolverAction` Warning event (carries the seed and reason); there is no `conflictSet` field — use `kubectl runs explain` for the resolved Lease closure reasons. |
 | Borrowing denied | Confirm lending envelopes set `lending.allow=true` and borrowers request ≤ `maxBorrowGPUs`. |
 
 With these steps your cluster is ready for external researchers and internal teams alike.

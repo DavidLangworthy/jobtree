@@ -126,3 +126,22 @@ themselves are needed.
   demotion/promotion message protocols, which no longer exist.
 - R7's rule stands and is sharpened: preemption of *funded* work remains capacity-only; budget
   shortfall now manifests as opportunistic classification, never as a lottery over funded runs.
+
+## Decision record (2026-07-04): spare billing rate and AutoRenew
+
+Two fake-features-audit findings (#22, #25) resolved as part of the control-plane honesty pass
+(`docs/project/fake-features-audit.md`, `docs/project/make-it-real-plan.md` Track D):
+
+- **Spares are billed at the same rate as active GPU-hours — no discount exists or is planned for
+  v1.** `pkg/funding/evaluate.go`'s `accrue`/`commit` do not branch on `Slice.Role`; spare width and
+  hours are surfaced as a separate *reporting* bucket (`EnvelopeAccount.SpareWidth`,
+  `EnvelopeUsage.SpareGPUs`) purely for visibility, not to change the charge. `M6-failure-and-spares.md`'s
+  "Open Questions" billing item is closed on this basis. Revisit only if a real discount policy is
+  built; until then, no doc may claim spares cost less.
+- **`Budget.Spec.AutoRenew` is wired, narrowly.** `BudgetReconciler`/`BudgetController.ReconcileBudget`
+  reads it and populates `BudgetStatus.PendingRenewals` — the envelopes whose window closes within
+  `notifyBefore` — when set; an unset `AutoRenew` always yields an empty list. It deliberately does
+  **not** auto-extend any envelope's `end` — window rotation stays an explicit operator action (the
+  Budget's own concurrency/integral invariants are validated at admission time by the mutating/
+  validating webhooks, not by a background rewrite of the spec). This closes finding #22
+  (previously read by nothing) without introducing a second, harder-to-audit writer of Budget specs.

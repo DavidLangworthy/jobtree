@@ -21,16 +21,15 @@ import (
 // Seeded with the 8 api/v1 fields this lint's first run found accepted by
 // the API, schema-validated, and deep-copied, but read (or even written) by
 // nothing outside api/v1 — see crd-fields-allowlist.txt for the full,
-// individually-reasoned list. Three were already named by
-// docs/project/fake-features-audit.md (RunRuntime.Checkpoint #10/#18,
-// BudgetSpec.AutoRenew #22, LeaseSpec.CompPath); the other five
-// (RunSpec.Runtime, BudgetStatus.ObservedGeneration, RunStatus.Generation,
-// ReservationStatus.CanceledAt, AutoRenewSchedule.NotifyBefore) were not
-// named in the audit and are newly surfaced by this lint — see the
-// allowlist file for per-field detail. None of these are fixed by Track F;
-// they are recorded here as a documented, ratcheted baseline for whichever
-// track (mostly D/TRUTH) triages them next.
-const maxAllowedUnreadCRDFields = 8
+// individually-reasoned list. Track D (TRUTH, PR #32) then wired four of them
+// for real — RunSpec.Runtime + RunRuntime.Checkpoint (checkpoint grace in
+// HandleNodeFailure) and BudgetSpec.AutoRenew + AutoRenewSchedule.NotifyBefore
+// (renewal in BudgetController) — so the ratchet was shrunk 8→4. The remaining
+// four (LeaseSpec.CompPath — deferred to Track E/ROLES; BudgetStatus.Observed
+// Generation, RunStatus.Generation, ReservationStatus.CanceledAt — newly
+// surfaced by this lint, awaiting a wire-or-delete triage) stay documented in
+// the allowlist file.
+const maxAllowedUnreadCRDFields = 4
 
 const crdFieldsAllowlistName = "crd-fields-allowlist.txt"
 

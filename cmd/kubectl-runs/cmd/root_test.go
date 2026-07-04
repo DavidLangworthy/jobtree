@@ -172,3 +172,49 @@ func TestSponsorsAndShrink(t *testing.T) {
 }
 
 func ptrInt32(v int32) *int32 { return &v }
+
+// TestBuildPlanPayloadPrintsRemedies proves TRUTH-2/finding #12 fixed: the
+// plan command's row builder actually renders the forecast's real
+// (input-derived) Remedies list instead of omitting it (the old code never
+// referenced Forecast.Remedies at all, which is also why the fabricated
+// conflictSet/remedies transcript in the docs was never checked by
+// anything).
+func TestBuildPlanPayloadPrintsRemedies(t *testing.T) {
+	run := &v1.Run{
+		ObjectMeta: v1.ObjectMeta{Name: "train-2", Namespace: "default"},
+		Status: v1.RunStatus{
+			Phase:              "Pending",
+			PendingReservation: strPtr("train-2-res-1"),
+		},
+	}
+	reservation := &v1.Reservation{
+		ObjectMeta: v1.ObjectMeta{Name: "train-2-res-1", Namespace: "default"},
+		Status: v1.ReservationStatus{
+			Forecast: &v1.ReservationForecast{
+				DeficitGPUs: 4,
+				Confidence:  "conservative",
+				Remedies:    []string{"Reclaim unfunded capacity in scope", "Run fair lottery if deficit remains"},
+			},
+		},
+	}
+	state := &controllers.ClusterState{
+		Runs:         map[string]*v1.Run{keys.NamespacedKey("default", "train-2"): run},
+		Reservations: map[string]*v1.Reservation{keys.NamespacedKey("default", "train-2-res-1"): reservation},
+	}
+
+	payload := buildPlanPayload(state, &RootOptions{Namespace: "default"}, run)
+	found := false
+	for _, row := range payload.Rows {
+		if len(row) == 2 && row[0] == "Remedies" {
+			found = true
+			if row[1] != "Reclaim unfunded capacity in scope; Run fair lottery if deficit remains" {
+				t.Fatalf("unexpected remedies row: %q", row[1])
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected a Remedies row, got %+v", payload.Rows)
+	}
+}
+
+func strPtr(v string) *string { return &v }

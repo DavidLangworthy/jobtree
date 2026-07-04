@@ -64,9 +64,9 @@ SLURM reservations are manual; in Jobtree they’re automatic. When a Run cannot
 
 ```bash
 kubectl runs plan mm3
-# earliestStart: 14:05 on domain=B
-# deficit: 60 GPUs
-# remedies: shrink RA2 16, lottery conflict set [mm1, demo]
+# EarliestStart: 14:05:00Z
+# Deficit: 60 GPUs
+# Remedies: Shrink elastic runs by step size; Run fair lottery if deficit remains
 ```
 
 At activation time Jobtree performs structural cuts (drop spares, shrink INCR) and, if needed, runs a
@@ -78,7 +78,8 @@ public fair lottery with an attested seed. The proof is visible via `kubectl run
   lotteries.
 * Preemption causes a Lease to end with a reason; you can see it and correlate to Reservation
   activations.
-* Use `checkpoint` to control how long your job can run before writing state.
+* Set `checkpoint` to bound how long a run may sit re-admitting after a node fails with no spare
+  available before it is failed outright — a SLURM-requeue-like safety net, not a runtime timer.
 
 ## 6. Common migration tips
 

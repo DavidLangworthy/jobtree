@@ -88,15 +88,20 @@ When cover+pack cannot satisfy the Run now, Jobtree writes a Reservation:
 
 ```bash
 kubectl runs plan trainer-128
-# earliestStart: 2025-11-01T14:05Z
-# deficit: 48 GPUs in domain=B
-# conflictSet: [run/mm1, run/research-demo]
-# remedies: drop spares (32), shrink malleable (16)
+# EarliestStart: 2025-11-01T14:05:00Z
+# Deficit: 48 GPUs
+# Confidence: conservative
+# Remedies: Reclaim unfunded capacity in scope; Drop spares in scope; Shrink elastic runs by step size; Run fair lottery if deficit remains
 ```
 
-The Run status shows the ETA, deficit, and kill probability. At `earliestStart`, the controller
-resolves the deficit (drop spares → shrink → fair lottery) and starts the Run. You get advance
-warning when you are in someone else’s conflict set.
+`EarliestStart` scales with the size of the deficit (a bigger shortfall gets a longer estimate,
+not the same fixed window every time); `Remedies` lists only the structural steps the resolver
+would actually find something to do for — reclaiming unfunded capacity, dropping spares, or
+shrinking elastic runs — plus the fair lottery, which is always the last resort. At
+`earliestStart`, the controller resolves the deficit in that order and starts the Run. There is no
+`conflictSet` or "kill probability" field — those never existed on any type; the closest real
+signal is the resolver's lease closure reason (visible via `kubectl runs explain`) and a `Warning`
+event on the affected Run once a cut actually happens.
 
 ## 5. Borrowing GPUs to finish early
 
@@ -117,8 +122,11 @@ spec:
 
 ## 6. Productive spares and opportunistic fill
 
-Declare `spares: 1` (or more) per group. They are accounted at a discount and may host short
-opportunistic work until you need them. When a failure occurs:
+Declare `spares: 1` (or more) per group. Spare concurrency and GPU-hours are tracked as a
+separate, visible bucket in Budget/Run status (so you can see how much of your footprint is
+spare vs. active) but are **charged at the same rate as active GPU-hours** — there is no billing
+discount today. They may host short opportunistic work until you need them. When a failure
+occurs:
 
 1. The controller ends the opportunistic Leases with reason `ReclaimedBySpare`.
 2. Your active ranks resume on the spare nodes with zero topology changes.

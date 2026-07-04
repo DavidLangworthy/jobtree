@@ -144,6 +144,16 @@ spec:
           status:
             description: RunStatus reports lifecycle information.
             properties:
+              checkpointDeadline:
+                description: |-
+                  CheckpointDeadline is set when a node fails with no spare to swap onto
+                  and spec.runtime.checkpoint is a positive duration: instead of failing
+                  immediately, the run is parked Pending and given until this deadline
+                  to re-admit (bind directly or via a reservation) before it is failed
+                  terminally. A zero/unset Checkpoint keeps the old behavior of failing
+                  immediately on an uncovered node failure.
+                format: date-time
+                type: string
               earliestStart:
                 format: date-time
                 type: string

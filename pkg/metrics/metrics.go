@@ -16,10 +16,14 @@ var (
 	mu sync.Mutex
 
 	admissionLatency   = make(map[string]map[string]*histogram)
-	reservationBacklog = make(map[string]float64)
+	forecastLatency    = make(map[string]*histogram)
+	reservationBacklog = make(map[string]reservationBacklogEntry)
 	resolverActions    = make(map[string]float64)
 	budgetData         = make(map[BudgetKey]BudgetUsage)
 	spareData          = make(map[string]float64)
+	elasticGrows       = make(map[string]float64)
+	elasticShrinks     = make(map[string]float64)
+	elasticWidth       = make(map[string]float64)
 )
 
 var defaultBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
@@ -68,14 +72,59 @@ func ObserveAdmission(flavor, result string, dur time.Duration) {
 	hist.observe(dur.Seconds())
 }
 
-// SetReservationBacklog updates the backlog forecast for a flavor.
-func SetReservationBacklog(flavor string, seconds float64) {
+// ObserveForecastLatency records how long one forecast.Plan call took for a
+// flavor. forecast.Plan is an inline library call made from the run
+// reconciler's Reconcile path — there is no separate "forecast controller" —
+// so this is the only place the metric is observed from.
+func ObserveForecastLatency(flavor string, dur time.Duration) {
 	if flavor == "" {
 		return
 	}
 	mu.Lock()
-	reservationBacklog[flavor] = seconds
-	mu.Unlock()
+	defer mu.Unlock()
+	hist, ok := forecastLatency[flavor]
+	if !ok {
+		hist = newHistogram()
+		forecastLatency[flavor] = hist
+	}
+	hist.observe(dur.Seconds())
+}
+
+// reservationBacklogEntry pairs the forecasted backlog with the flavor it
+// applies to so the gauge can be labeled by both the owning reservation
+// (avoiding same-flavor collapse) and the flavor (for fleet-wide rollups).
+type reservationBacklogEntry struct {
+	Flavor  string
+	Seconds float64
+}
+
+// SetReservationBacklog updates the backlog forecast for one reservation,
+// keyed by its namespaced name so concurrent reservations of the same
+// flavor do not collapse onto a single series. Callers are expected to keep
+// calling this while the reservation stays Pending (the run reconciler's
+// resync requeues do so) so the value tracks the shrinking countdown
+// instead of freezing at creation time, and to call ClearReservationBacklog
+// once the reservation activates or is released so the series does not
+// persist forever.
+func SetReservationBacklog(reservationKey, flavor string, seconds float64) {
+	if reservationKey == "" || flavor == "" {
+		return
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	reservationBacklog[reservationKey] = reservationBacklogEntry{Flavor: flavor, Seconds: seconds}
+}
+
+// ClearReservationBacklog removes a reservation's backlog series. Call this
+// when a reservation activates, is released/superseded, or is deleted so a
+// stale value does not linger in the gauge forever.
+func ClearReservationBacklog(reservationKey string) {
+	if reservationKey == "" {
+		return
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	delete(reservationBacklog, reservationKey)
 }
 
 // IncResolverAction increments the resolver action counter for the kind.
@@ -111,6 +160,50 @@ func SetSpareUsage(flavor string, value float64) {
 	mu.Unlock()
 }
 
+// IncElasticGrow counts a successful elastic grow step for a flavor,
+// emitted from growRun's success point.
+func IncElasticGrow(flavor string) {
+	if flavor == "" {
+		return
+	}
+	mu.Lock()
+	elasticGrows[flavor]++
+	mu.Unlock()
+}
+
+// IncElasticShrink counts a successful elastic (voluntary) shrink step for a
+// flavor, emitted from shrinkRun's success point.
+func IncElasticShrink(flavor string) {
+	if flavor == "" {
+		return
+	}
+	mu.Lock()
+	elasticShrinks[flavor]++
+	mu.Unlock()
+}
+
+// SetElasticWidth records a malleable run's current allocated width, keyed
+// by its namespaced name.
+func SetElasticWidth(runKey string, width float64) {
+	if runKey == "" {
+		return
+	}
+	mu.Lock()
+	elasticWidth[runKey] = width
+	mu.Unlock()
+}
+
+// ClearElasticWidth removes a run's width gauge (call on completion/failure
+// so a finished run does not linger in the series forever).
+func ClearElasticWidth(runKey string) {
+	if runKey == "" {
+		return
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	delete(elasticWidth, runKey)
+}
+
 // BudgetKey identifies a budget usage entry.
 type BudgetKey struct {
 	Owner    string
@@ -137,13 +230,23 @@ type Histogram struct {
 	Sum     float64
 }
 
+// ReservationBacklogValue is a snapshot of one reservation's backlog gauge.
+type ReservationBacklogValue struct {
+	Flavor  string
+	Seconds float64
+}
+
 // MetricsSnapshot captures a copy of the metrics state.
 type MetricsSnapshot struct {
 	AdmissionLatency   map[string]map[string]Histogram
-	ReservationBacklog map[string]float64
+	ForecastLatency    map[string]Histogram
+	ReservationBacklog map[string]ReservationBacklogValue
 	ResolverActions    map[string]float64
 	BudgetUsage        map[BudgetKey]BudgetUsage
 	SpareUsage         map[string]float64
+	ElasticGrows       map[string]float64
+	ElasticShrinks     map[string]float64
+	ElasticWidth       map[string]float64
 }
 
 // Snapshot returns the current metrics data for inspection/testing.
@@ -153,10 +256,14 @@ func Snapshot() MetricsSnapshot {
 
 	snap := MetricsSnapshot{
 		AdmissionLatency:   make(map[string]map[string]Histogram, len(admissionLatency)),
-		ReservationBacklog: make(map[string]float64, len(reservationBacklog)),
+		ForecastLatency:    make(map[string]Histogram, len(forecastLatency)),
+		ReservationBacklog: make(map[string]ReservationBacklogValue, len(reservationBacklog)),
 		ResolverActions:    make(map[string]float64, len(resolverActions)),
 		BudgetUsage:        make(map[BudgetKey]BudgetUsage, len(budgetData)),
 		SpareUsage:         make(map[string]float64, len(spareData)),
+		ElasticGrows:       make(map[string]float64, len(elasticGrows)),
+		ElasticShrinks:     make(map[string]float64, len(elasticShrinks)),
+		ElasticWidth:       make(map[string]float64, len(elasticWidth)),
 	}
 
 	for flavor, byResult := range admissionLatency {
@@ -172,8 +279,17 @@ func Snapshot() MetricsSnapshot {
 		}
 	}
 
-	for flavor, seconds := range reservationBacklog {
-		snap.ReservationBacklog[flavor] = seconds
+	for flavor, hist := range forecastLatency {
+		snap.ForecastLatency[flavor] = Histogram{
+			Buckets: append([]float64(nil), hist.buckets...),
+			Counts:  append([]uint64(nil), hist.counts...),
+			Count:   hist.count,
+			Sum:     hist.sum,
+		}
+	}
+
+	for key, entry := range reservationBacklog {
+		snap.ReservationBacklog[key] = ReservationBacklogValue{Flavor: entry.Flavor, Seconds: entry.Seconds}
 	}
 
 	for kind, count := range resolverActions {
@@ -188,6 +304,16 @@ func Snapshot() MetricsSnapshot {
 		snap.SpareUsage[flavor] = value
 	}
 
+	for flavor, value := range elasticGrows {
+		snap.ElasticGrows[flavor] = value
+	}
+	for flavor, value := range elasticShrinks {
+		snap.ElasticShrinks[flavor] = value
+	}
+	for runKey, value := range elasticWidth {
+		snap.ElasticWidth[runKey] = value
+	}
+
 	return snap
 }
 
@@ -196,10 +322,14 @@ func Reset() {
 	mu.Lock()
 	defer mu.Unlock()
 	admissionLatency = make(map[string]map[string]*histogram)
-	reservationBacklog = make(map[string]float64)
+	forecastLatency = make(map[string]*histogram)
+	reservationBacklog = make(map[string]reservationBacklogEntry)
 	resolverActions = make(map[string]float64)
 	budgetData = make(map[BudgetKey]BudgetUsage)
 	spareData = make(map[string]float64)
+	elasticGrows = make(map[string]float64)
+	elasticShrinks = make(map[string]float64)
+	elasticWidth = make(map[string]float64)
 }
 
 // Handler exposes the metrics using Prometheus' text exposition format.
@@ -247,10 +377,33 @@ func WritePrometheus(w io.Writer) {
 		}
 	}
 
-	writeHeader(buf, "jobtree_reservations_backlog_seconds", "Forecasted backlog until pending reservations can start.", "gauge")
-	for _, flavor := range sortedKeys(snap.ReservationBacklog) {
-		value := snap.ReservationBacklog[flavor]
-		writeSample(buf, "jobtree_reservations_backlog_seconds", map[string]string{"flavor": flavor}, formatFloat(value))
+	writeHeader(buf, "jobtree_forecast_latency_seconds", "Time spent in forecast.Plan (an inline library call from the run reconciler, not a separate controller).", "histogram")
+	for _, flavor := range sortedKeys(snap.ForecastLatency) {
+		hist := snap.ForecastLatency[flavor]
+		cumulative := uint64(0)
+		for i, bound := range hist.Buckets {
+			cumulative = hist.Counts[i]
+			writeSample(buf, "jobtree_forecast_latency_seconds_bucket", map[string]string{
+				"flavor": flavor,
+				"le":     formatFloat(bound),
+			}, strconv.FormatUint(cumulative, 10))
+		}
+		writeSample(buf, "jobtree_forecast_latency_seconds_bucket", map[string]string{
+			"flavor": flavor,
+			"le":     "+Inf",
+		}, strconv.FormatUint(hist.Count, 10))
+		writeSample(buf, "jobtree_forecast_latency_seconds_count", map[string]string{
+			"flavor": flavor,
+		}, strconv.FormatUint(hist.Count, 10))
+		writeSample(buf, "jobtree_forecast_latency_seconds_sum", map[string]string{
+			"flavor": flavor,
+		}, formatFloat(hist.Sum))
+	}
+
+	writeHeader(buf, "jobtree_reservations_backlog_seconds", "Forecasted backlog until a pending reservation can activate; cleared on activation/release.", "gauge")
+	for _, key := range sortedKeys(snap.ReservationBacklog) {
+		entry := snap.ReservationBacklog[key]
+		writeSample(buf, "jobtree_reservations_backlog_seconds", map[string]string{"reservation": key, "flavor": entry.Flavor}, formatFloat(entry.Seconds))
 	}
 
 	writeHeader(buf, "jobtree_resolver_actions_total", "Structural actions performed by the resolver.", "counter")
@@ -295,6 +448,21 @@ func WritePrometheus(w io.Writer) {
 	writeHeader(buf, "jobtree_spares_concurrency_gpus", "Aggregate spare usage across envelopes.", "gauge")
 	for _, flavor := range sortedKeys(snap.SpareUsage) {
 		writeSample(buf, "jobtree_spares_concurrency_gpus", map[string]string{"flavor": flavor}, formatFloat(snap.SpareUsage[flavor]))
+	}
+
+	writeHeader(buf, "jobtree_elastic_grows_total", "Successful elastic grow steps applied by the run controller.", "counter")
+	for _, flavor := range sortedKeys(snap.ElasticGrows) {
+		writeSample(buf, "jobtree_elastic_grows_total", map[string]string{"flavor": flavor}, formatFloat(snap.ElasticGrows[flavor]))
+	}
+
+	writeHeader(buf, "jobtree_elastic_shrinks_total", "Successful elastic (voluntary) shrink steps applied by the run controller.", "counter")
+	for _, flavor := range sortedKeys(snap.ElasticShrinks) {
+		writeSample(buf, "jobtree_elastic_shrinks_total", map[string]string{"flavor": flavor}, formatFloat(snap.ElasticShrinks[flavor]))
+	}
+
+	writeHeader(buf, "jobtree_elastic_width_current", "Current allocated width of a malleable run.", "gauge")
+	for _, runKey := range sortedKeys(snap.ElasticWidth) {
+		writeSample(buf, "jobtree_elastic_width_current", map[string]string{"run": runKey}, formatFloat(snap.ElasticWidth[runKey]))
 	}
 
 	buf.Flush()

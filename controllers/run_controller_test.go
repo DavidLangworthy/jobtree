@@ -9,6 +9,7 @@ import (
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	"github.com/davidlangworthy/jobtree/pkg/binder"
 	"github.com/davidlangworthy/jobtree/pkg/forecast"
+	"github.com/davidlangworthy/jobtree/pkg/metrics"
 	"github.com/davidlangworthy/jobtree/pkg/topology"
 )
 
@@ -977,4 +978,199 @@ func TestActivateReservationAdoptsHalfAppliedActivation(t *testing.T) {
 	if len(state.Leases) != 1 {
 		t.Fatalf("adoption must not create leases, got %d", len(state.Leases))
 	}
+}
+
+// TestElasticGrowShrinkEmitMetrics proves TRUTH-10/audit finding #19 fixed:
+// growRun/shrinkRun actually emit jobtree_elastic_grows_total,
+// jobtree_elastic_shrinks_total, and jobtree_elastic_width_current — not
+// just bookkeeping leases with no observability, and M9 is genuinely done on
+// this front rather than the elastic-runs.md "will follow in M9" hedge.
+func TestElasticGrowShrinkEmitMetrics(t *testing.T) {
+	metrics.Reset()
+	now := time.Date(2024, 2, 2, 10, 0, 0, 0, time.UTC)
+	state := &ClusterState{
+		Budgets: []v1.Budget{{
+			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			Spec: v1.BudgetSpec{
+				Owner: "org:ai:rai",
+				Envelopes: []v1.BudgetEnvelope{{
+					Name:        "west",
+					Flavor:      "H100-80GB",
+					Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
+					Concurrency: 256,
+				}},
+			},
+		}},
+	}
+	for i := 0; i < 5; i++ {
+		state.Nodes = append(state.Nodes, topology.SourceNode{
+			Name: fmt.Sprintf("node-%d", i),
+			Labels: map[string]string{
+				topology.LabelRegion:       "us-west",
+				topology.LabelCluster:      "cluster-a",
+				topology.LabelFabricDomain: "island-a",
+				topology.LabelGPUFlavor:    "H100-80GB",
+			},
+			GPUs: 32,
+		})
+	}
+	desired := int32(160)
+	group := int32(32)
+	runKey := "default/train-metrics"
+	state.Runs = map[string]*v1.Run{
+		runKey: {
+			ObjectMeta: v1.ObjectMeta{Name: "train-metrics", Namespace: "default"},
+			Spec: v1.RunSpec{
+				Owner:     "org:ai:rai",
+				Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 96},
+				Locality:  &v1.RunLocality{GroupGPUs: &group},
+				Malleable: &v1.RunMalleability{MinTotalGPUs: 96, MaxTotalGPUs: 160, StepGPUs: 32, DesiredTotalGPUs: &desired},
+			},
+		},
+	}
+
+	controller := NewRunController(state, runClock{now: now})
+	if err := controller.Reconcile("default", "train-metrics"); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	controller.Clock = runClock{now: now.Add(time.Minute)}
+	if err := controller.Reconcile("default", "train-metrics"); err != nil {
+		t.Fatalf("reconcile (grow): %v", err)
+	}
+
+	snap := metrics.Snapshot()
+	if snap.ElasticGrows["H100-80GB"] != 1 {
+		t.Fatalf("expected 1 elastic grow, got %+v", snap.ElasticGrows)
+	}
+	if snap.ElasticWidth[runKey] != 128 {
+		t.Fatalf("expected elastic width 128, got %+v", snap.ElasticWidth)
+	}
+
+	// Now shrink back down and verify the shrink counter and updated width.
+	shrinkDesired := int32(96)
+	state.Runs[runKey].Spec.Malleable.DesiredTotalGPUs = &shrinkDesired
+	controller.Clock = runClock{now: now.Add(2 * time.Minute)}
+	if err := controller.Reconcile("default", "train-metrics"); err != nil {
+		t.Fatalf("reconcile (shrink): %v", err)
+	}
+	snap = metrics.Snapshot()
+	if snap.ElasticShrinks["H100-80GB"] != 1 {
+		t.Fatalf("expected 1 elastic shrink, got %+v", snap.ElasticShrinks)
+	}
+	if snap.ElasticWidth[runKey] != 96 {
+		t.Fatalf("expected elastic width 96 after shrink, got %+v", snap.ElasticWidth)
+	}
+}
+
+// TestReservationBacklogMetricLifecycle proves TRUTH-13/audit finding #21
+// fixed: the backlog gauge is (a) keyed per reservation, not collapsed by
+// flavor, (b) refreshed on later reconciles instead of frozen at creation
+// time, and (c) cleared once the reservation activates.
+func TestReservationBacklogMetricLifecycle(t *testing.T) {
+	metrics.Reset()
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	state := &ClusterState{
+		Budgets: []v1.Budget{{
+			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			Spec: v1.BudgetSpec{
+				Owner: "org:ai:team",
+				Envelopes: []v1.BudgetEnvelope{{
+					Name:        "west",
+					Flavor:      "H100-80GB",
+					Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
+					Concurrency: 16,
+				}},
+			},
+		}},
+		Nodes: []topology.SourceNode{{
+			Name: "node-a",
+			Labels: map[string]string{
+				topology.LabelRegion:       "us-west",
+				topology.LabelCluster:      "cluster-a",
+				topology.LabelFabricDomain: "island-a",
+				topology.LabelGPUFlavor:    "H100-80GB",
+			},
+			GPUs: 4,
+		}},
+	}
+	state.Runs = map[string]*v1.Run{
+		"default/train-backlog": {
+			ObjectMeta: v1.ObjectMeta{Name: "train-backlog", Namespace: "default"},
+			Spec: v1.RunSpec{
+				Owner:     "org:ai:team",
+				Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 8},
+			},
+		},
+	}
+
+	controller := NewRunController(state, runClock{now: now})
+	if err := controller.Reconcile("default", "train-backlog"); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	run := state.Runs["default/train-backlog"]
+	if run.Status.PendingReservation == nil {
+		t.Fatalf("expected a pending reservation")
+	}
+	resKey := keysNamespacedKeyTest("default", *run.Status.PendingReservation)
+
+	snap := metrics.Snapshot()
+	initial, ok := snap.ReservationBacklog[resKey]
+	if !ok {
+		t.Fatalf("expected a backlog entry keyed by reservation %q, got %+v", resKey, snap.ReservationBacklog)
+	}
+	if initial.Flavor != "H100-80GB" || initial.Seconds <= 0 {
+		t.Fatalf("unexpected initial backlog entry: %+v", initial)
+	}
+
+	// A later tick, still before EarliestStart, must refresh (shrink) the
+	// countdown rather than leaving it frozen at the creation-time value.
+	laterNotDue := now.Add(30 * time.Second)
+	controller.Clock = runClock{now: laterNotDue}
+	if err := controller.ActivateReservations(laterNotDue); err != nil {
+		t.Fatalf("activate reservations (not due): %v", err)
+	}
+	snap = metrics.Snapshot()
+	refreshed, ok := snap.ReservationBacklog[resKey]
+	if !ok {
+		t.Fatalf("expected the backlog entry to still exist while pending")
+	}
+	if refreshed.Seconds >= initial.Seconds {
+		t.Fatalf("expected backlog to shrink from %v to something smaller, got %v", initial.Seconds, refreshed.Seconds)
+	}
+
+	// Capacity arrives and the clock reaches EarliestStart: activation must
+	// clear the backlog entry entirely rather than leaving a stale value.
+	state.Nodes = append(state.Nodes, topology.SourceNode{
+		Name: "node-b",
+		Labels: map[string]string{
+			topology.LabelRegion:       "us-west",
+			topology.LabelCluster:      "cluster-a",
+			topology.LabelFabricDomain: "island-a",
+			topology.LabelGPUFlavor:    "H100-80GB",
+		},
+		GPUs: 4,
+	})
+	var reservation *v1.Reservation
+	for _, res := range state.Reservations {
+		reservation = res
+	}
+	activationTime := reservation.Spec.EarliestStart.Time.Add(time.Second)
+	controller.Clock = runClock{now: activationTime}
+	if err := controller.ActivateReservations(activationTime); err != nil {
+		t.Fatalf("activate reservations: %v", err)
+	}
+	if run.Status.Phase != RunPhaseRunning {
+		t.Fatalf("expected run to activate to Running, got %s (%s)", run.Status.Phase, run.Status.Message)
+	}
+	snap = metrics.Snapshot()
+	if _, ok := snap.ReservationBacklog[resKey]; ok {
+		t.Fatalf("expected backlog entry cleared after activation, got %+v", snap.ReservationBacklog)
+	}
+}
+
+func keysNamespacedKeyTest(namespace, name string) string {
+	if namespace == "" {
+		return name
+	}
+	return namespace + "/" + name
 }

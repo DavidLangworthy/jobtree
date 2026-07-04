@@ -95,6 +95,13 @@ type RunStatus struct {
 	// FollowDeadline is set while the run waits on a failed upstream under the
 	// "wait" policy: if the upstream is not resolved by then, the run fails.
 	FollowDeadline *metav1.Time `json:"followDeadline,omitempty"`
+	// CheckpointDeadline is set when a node fails with no spare to swap onto
+	// and spec.runtime.checkpoint is a positive duration: instead of failing
+	// immediately, the run is parked Pending and given until this deadline
+	// to re-admit (bind directly or via a reservation) before it is failed
+	// terminally. A zero/unset Checkpoint keeps the old behavior of failing
+	// immediately on an uncovered node failure.
+	CheckpointDeadline *metav1.Time `json:"checkpointDeadline,omitempty"`
 }
 
 // RunETA is an optional, best-effort estimate of when the run will finish. It

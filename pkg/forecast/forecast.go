@@ -14,12 +14,21 @@ import (
 )
 
 const (
-	// DefaultActivationLead is the conservative delay used when no precise time can be inferred.
+	// DefaultActivationLead is the conservative base lead used when the
+	// deficit is zero or unknown (e.g. a budget-window gate rather than a
+	// capacity shortfall) — the floor the deficit-scaled estimate builds on.
 	DefaultActivationLead = 15 * time.Minute
 	// MinimumActivationLead ensures we never promise activation in the past.
 	MinimumActivationLead = time.Minute
 	// WindowActivationOffset accounts for binder jitter when aligning to an envelope window.
 	WindowActivationOffset = 10 * time.Second
+	// DeficitActivationLeadPerGPU scales the conservative estimate with the
+	// size of the capacity shortfall: clearing a larger deficit structurally
+	// requires the resolver to walk more reclaim phases (unfunded → spares →
+	// shrink → lottery) and more candidate leases within each, so the
+	// estimate grows with the deficit instead of promising the same fixed
+	// window for a 1-GPU shortfall as for a 500-GPU one.
+	DeficitActivationLeadPerGPU = 30 * time.Second
 )
 
 // Input captures the data needed to derive a reservation forecast.
@@ -32,6 +41,11 @@ type Input struct {
 	CoverErr     *cover.PlanError
 	CoverRequest cover.Request
 	Evaluation   *funding.Evaluation
+	// Runs is the cluster's run set, used only to decide whether "shrink
+	// elastic runs" is a real remedy (some malleable run of the same flavor
+	// actually exists to shrink). Optional: when nil, that remedy is omitted
+	// rather than guessed.
+	Runs map[string]*v1.Run
 }
 
 // Result contains the reservation plan emitted by the forecaster.
@@ -60,10 +74,10 @@ func Plan(in Input) (Result, error) {
 
 	intended := deriveSlice(in, scope)
 
-	earliest := conservativeEarliest(in, envelope, scope)
-
 	deficit := estimateDeficit(in)
-	remedies := defaultRemedies()
+	earliest := conservativeEarliest(in, envelope, scope, deficit)
+
+	remedies := computeRemedies(in, scope)
 	confidence := confidenceLabel(in)
 
 	forecast := v1.ReservationForecast{
@@ -127,11 +141,27 @@ func deriveSlice(in Input, scope map[string]string) v1.IntendedSlice {
 	return slice
 }
 
-func conservativeEarliest(in Input, env *funding.EnvelopeAccount, scope map[string]string) time.Time {
-	candidate := in.Now.Add(DefaultActivationLead)
+// activationLeadForDeficit is the data-driven replacement for the flat
+// DefaultActivationLead constant: the lead grows with the size of the
+// capacity deficit instead of being identical for a 1-GPU and a 500-GPU
+// shortfall, and is always clamped at MinimumActivationLead.
+func activationLeadForDeficit(deficit int) time.Duration {
+	lead := DefaultActivationLead
+	if deficit > 0 {
+		lead += time.Duration(deficit) * DeficitActivationLeadPerGPU
+	}
+	if lead < MinimumActivationLead {
+		lead = MinimumActivationLead
+	}
+	return lead
+}
+
+func conservativeEarliest(in Input, env *funding.EnvelopeAccount, scope map[string]string, deficit int) time.Time {
+	candidate := in.Now.Add(activationLeadForDeficit(deficit))
 	if env.Spec.Start != nil && in.Now.Before(env.Spec.Start.Time) {
 		if env.Spec.PreActivation != nil && !env.Spec.PreActivation.AllowReservations {
-			// Reservations not allowed before start; fall back to default lead to avoid promising the window.
+			// Reservations not allowed before start; fall back to the
+			// deficit-scaled lead to avoid promising the window.
 			return candidate
 		}
 		start := env.Spec.Start.Time.Add(WindowActivationOffset)
@@ -288,15 +318,89 @@ func cloneMap(in map[string]string) map[string]string {
 	return out
 }
 
-// defaultRemedies lists the consolidated reclaim order (quota-semantics.md):
-// unfunded capacity first, then spares, then shrink, then lottery.
-func defaultRemedies() []string {
-	return []string{
-		"Reclaim unfunded capacity in scope",
-		"Drop spares in scope",
-		"Shrink elastic runs by step size",
-		"Run fair lottery if deficit remains",
+// computeRemedies replaces the old static defaultRemedies() constant: each
+// structural step is included only when the real inputs show it would find
+// something to work with. "Reclaim unfunded capacity" and "Drop spares"
+// read the same funding.Evaluation the resolver itself consults (any
+// envelope of the run's flavor currently carrying unfunded or spare width);
+// "Shrink elastic runs" requires an actual malleable run of the same
+// flavor to exist. The fair lottery always stays last: it is the resolver's
+// backstop regardless of what structural cuts found. These signals are
+// necessarily flavor-scoped (not location-scoped): forecast.Input carries
+// the funding evaluation but not the per-node lease/class join the resolver
+// itself uses, so this is a coarser but still real-data-derived read.
+func computeRemedies(in Input, scope map[string]string) []string {
+	var remedies []string
+	if hasUnfundedCapacity(in) {
+		remedies = append(remedies, "Reclaim unfunded capacity in scope")
 	}
+	if hasSpareCapacity(in) {
+		remedies = append(remedies, "Drop spares in scope")
+	}
+	if hasMalleableRuns(in) {
+		remedies = append(remedies, "Shrink elastic runs by step size")
+	}
+	remedies = append(remedies, "Run fair lottery if deficit remains")
+	return remedies
+}
+
+func hasUnfundedCapacity(in Input) bool {
+	if in.Evaluation == nil || in.Run == nil {
+		return false
+	}
+	flavor := in.Run.Spec.Resources.GPUType
+	for _, acct := range in.Evaluation.Envelopes() {
+		if acct.Spec.Flavor != flavor {
+			continue
+		}
+		if acct.WidthByClass[funding.ClassUnfunded] > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func hasSpareCapacity(in Input) bool {
+	if in.Evaluation == nil || in.Run == nil {
+		return false
+	}
+	flavor := in.Run.Spec.Resources.GPUType
+	for _, acct := range in.Evaluation.Envelopes() {
+		if acct.Spec.Flavor != flavor {
+			continue
+		}
+		if acct.SpareWidth > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMalleableRuns(in Input) bool {
+	if in.Run == nil {
+		return false
+	}
+	flavor := in.Run.Spec.Resources.GPUType
+	for key, run := range in.Runs {
+		if run == nil || run.Spec.Malleable == nil {
+			continue
+		}
+		if run.Spec.Resources.GPUType != flavor {
+			continue
+		}
+		if in.Run != nil && key == runKey(in.Run) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func runKey(run *v1.Run) string {
+	if run.Namespace == "" {
+		return run.Name
+	}
+	return run.Namespace + "/" + run.Name
 }
 
 func confidenceLabel(in Input) string {

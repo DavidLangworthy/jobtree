@@ -57,7 +57,7 @@ kubectl runs --local --state my-cluster.json submit --file run-128-groups.yaml
 | `leases` | List leases (active and historical) for a Run. |
 | `complete` | Mark a Run's workload as finished (`--local` only). |
 | `eta` | Set a Run's estimated completion time (`--local` only). |
-| `completions` | Emit a shell completion script. |
+| `completions bash\|zsh\|fish` | Generate a shell completion script from the real Cobra command tree (not a hand-maintained list — new subcommands are picked up automatically). |
 
 ## Output formats
 

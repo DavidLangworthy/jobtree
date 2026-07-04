@@ -114,16 +114,110 @@ func TestPlanFromCapacityDeficit(t *testing.T) {
 	if plan.EarliestStart.Before(now) {
 		t.Fatalf("earliest start should be in future")
 	}
-	// The consolidated reclaim order from quota-semantics.md: unfunded
-	// capacity is the first cut, ahead of spares, shrink, and the lottery.
+	// No unfunded, spare, or malleable signal exists in this scenario's
+	// evaluation, so the only real remedy left is the lottery backstop.
 	wantRemedies := []string{
+		"Run fair lottery if deficit remains",
+	}
+	if !reflect.DeepEqual(plan.Forecast.Remedies, wantRemedies) {
+		t.Fatalf("unexpected remedies: got %v, want %v", plan.Forecast.Remedies, wantRemedies)
+	}
+	// 4 GPUs short should take longer to activate than a flat 15-minute
+	// constant would promise (the old hardcoded behavior): the deficit is
+	// fed into the estimate instead of being ignored.
+	if !plan.EarliestStart.After(now.Add(DefaultActivationLead)) {
+		t.Fatalf("expected earliest start to scale past the base lead for a 4 GPU deficit, got %s", plan.EarliestStart)
+	}
+}
+
+// TestActivationLeadScalesWithDeficit proves finding #6 fixed: a 1-GPU and a
+// 500-GPU deficit must no longer produce the identical ETA. The lead must be
+// monotonically non-decreasing in the deficit and never below the floor.
+func TestActivationLeadScalesWithDeficit(t *testing.T) {
+	prev := time.Duration(-1)
+	for _, deficit := range []int{0, 1, 4, 10, 100, 500} {
+		lead := activationLeadForDeficit(deficit)
+		if lead < MinimumActivationLead {
+			t.Fatalf("deficit %d: lead %s below minimum %s", deficit, lead, MinimumActivationLead)
+		}
+		if prev >= 0 && lead <= prev {
+			t.Fatalf("deficit %d: lead %s did not increase over previous %s", deficit, lead, prev)
+		}
+		prev = lead
+	}
+}
+
+// TestComputeRemediesVariesWithRealSignals proves finding #13 fixed: the
+// same static list is not returned unconditionally. Presence of unfunded
+// width, spare width, and a malleable run of the same flavor each
+// independently turn on their remedy row; absence turns it off.
+func TestComputeRemediesVariesWithRealSignals(t *testing.T) {
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	run := runOf("train", "org:ai:team", 8)
+
+	budgets := []v1.Budget{{
+		ObjectMeta: v1.ObjectMeta{Name: "team-budget"},
+		Spec: v1.BudgetSpec{
+			Owner: "org:ai:team",
+			Envelopes: []v1.BudgetEnvelope{{
+				Name:        "west",
+				Flavor:      testFlavor,
+				Selector:    map[string]string{topology.LabelRegion: "us-west"},
+				Concurrency: 32,
+			}},
+		},
+	}}
+
+	// Case 1: no unfunded/spare/malleable signal at all.
+	ev := funding.Evaluate(funding.Input{Budgets: budgets, Now: now})
+	plan, err := Plan(Input{
+		Run:          run,
+		Now:          now,
+		CoverErr:     &cover.PlanError{Reason: cover.FailureReasonInsufficientCapacity},
+		CoverRequest: cover.Request{Owner: run.Spec.Owner},
+		Evaluation:   ev,
+	})
+	if err != nil {
+		t.Fatalf("plan (bare): %v", err)
+	}
+	if want := []string{"Run fair lottery if deficit remains"}; !reflect.DeepEqual(plan.Forecast.Remedies, want) {
+		t.Fatalf("bare case: got %v, want %v", plan.Forecast.Remedies, want)
+	}
+
+	// Case 2: an unfunded lease and a spare lease exist on the same
+	// envelope/flavor, and a malleable run of the same flavor is present.
+	leases := []v1.Lease{
+		leaseOf("l-unfunded", "orphan", "team-budget", "west", 40, now.Add(-time.Hour)), // exceeds concurrency 32, tail goes unfunded
+	}
+	spareLease := leaseOf("l-spare", "steady", "team-budget", "west", 1, now.Add(-time.Hour))
+	spareLease.Spec.Slice.Role = "Spare"
+	leases = append(leases, spareLease)
+	runs := runsMap(
+		trackedRunOf("orphan", "org:ai:team", now.Add(-time.Hour)),
+		trackedRunOf("steady", "org:ai:team", now.Add(-time.Hour)),
+	)
+	runs[keys.NamespacedKey("default", "steady")].Spec.Malleable = &v1.RunMalleability{MinTotalGPUs: 4, MaxTotalGPUs: 8, StepGPUs: 4}
+	ev2 := funding.Evaluate(funding.Input{Budgets: budgets, Leases: leases, Runs: runs, Now: now})
+
+	plan2, err := Plan(Input{
+		Run:          run,
+		Now:          now,
+		CoverErr:     &cover.PlanError{Reason: cover.FailureReasonInsufficientCapacity},
+		CoverRequest: cover.Request{Owner: run.Spec.Owner},
+		Evaluation:   ev2,
+		Runs:         runs,
+	})
+	if err != nil {
+		t.Fatalf("plan (populated): %v", err)
+	}
+	want2 := []string{
 		"Reclaim unfunded capacity in scope",
 		"Drop spares in scope",
 		"Shrink elastic runs by step size",
 		"Run fair lottery if deficit remains",
 	}
-	if !reflect.DeepEqual(plan.Forecast.Remedies, wantRemedies) {
-		t.Fatalf("unexpected remedies: got %v, want %v", plan.Forecast.Remedies, wantRemedies)
+	if !reflect.DeepEqual(plan2.Forecast.Remedies, want2) {
+		t.Fatalf("populated case: got %v, want %v", plan2.Forecast.Remedies, want2)
 	}
 }
 
