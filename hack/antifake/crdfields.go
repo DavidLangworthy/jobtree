@@ -29,7 +29,13 @@ import (
 // Generation, RunStatus.Generation, ReservationStatus.CanceledAt — newly
 // surfaced by this lint, awaiting a wire-or-delete triage) stay documented in
 // the allowlist file.
-const maxAllowedUnreadCRDFields = 4
+//
+// Raised 4->6 on feat/workload-trunk for the two in-flight roles-API seam
+// fields RunRole.Template + RunRole.GPUsPerPod (added by #28; their consumer,
+// the Run→JobSet lowering, is JOBSET-2, in progress on this trunk). They
+// ratchet back off — and this cap back to 4 — the moment pkg/lowering reads
+// them; this bump must be shrunk again before the trunk merges to main.
+const maxAllowedUnreadCRDFields = 6
 
 const crdFieldsAllowlistName = "crd-fields-allowlist.txt"
 
