@@ -169,8 +169,11 @@ if JobSet lacks something we need, fork it and add it there rather than invent f
   growing first-class gang scheduling (`Workload`/`PodGroup`, `.spec.schedulingGroup`,
   `gang.minCount`) **and** workload-aware preemption (KEP-4671/5547/5710; alpha in k8s 1.35, advancing
   in 1.36), explicitly to unify the coscheduling/Kueue/Volcano split. This **strengthens** C — the
-  ecosystem is standardizing on "scheduler treats a workload as one gang," exactly our model. Build our
-  own funding-aware **Permit** gate now; compose with WAS later. (Q1 de-risked.)
+  ecosystem is standardizing on "scheduler treats a workload as one gang," exactly our model.
+  **Maturity caveat (corrected):** WAS is **alpha, off by default**; the API already churned
+  (`v1alpha1`→`v1alpha2`), gang's beta slipped to 1.37, the controller-facing API (KEP-6089) is
+  unshipped, and Kueue itself hasn't decided how to consume it. So **build our own funding-aware Permit
+  gate now; track WAS and prototype behind a feature gate — do not depend on it yet** (see §6.3).
 - **Q1 gang gating: FEASIBLE (high).** Framework `Permit` (Approve/Deny/**Wait**) + walking the waiting-
   pods list to `Allow`/`Reject` a whole set atomically is exactly this; coscheduling does it per
   `PodGroup` via Permit. Correction: **Kueue does NOT use Permit** — it gates by keeping the Job
@@ -245,6 +248,31 @@ model" = **cede the funding moat.** Decision: **mirror TAS's conventions, don't 
   never will. **TAS is a compatibility target, not a dependency.**
 - Kueue-for-quota-only is rejected for the same reason: quota *is* the moat. (C and B still aren't
   mutually exclusive if that ever changes — Kueue could own queue/quota while our plugin owns placement.)
+
+**TAS fact-check confirmed all of the above (citation-backed, 2026-07-04), with two sharper findings:**
+- **The precise mechanism proves the shape mismatch.** TAS computes a domain assignment at *admission*,
+  stamps each pod with a `nodeSelector` + a scheduling gate, and a `TopologyUngater` controller removes
+  the gate so **stock kube-scheduler binds** — i.e. TAS is an *admission-time nodeSelector injector that
+  defers to kube-scheduler*, not a scheduler-framework plugin. Adopting it would put Kueue *above*
+  jobtree (two schedulers with overlapping concerns), the opposite of "we are the scheduler." The KEP
+  itself rejected exposing the assignment to kube-scheduler, and there is no standalone-TAS path.
+- **`reclaimWithinCohort` is owner-recall by *eviction*, not re-rank** — it kills the borrower. Combined
+  with "preemption is DELETE-only" and "no unfunded tier," this confirms the three moat features Kueue
+  structurally can't do. (Roles fully supported; family-DAG structure genuinely close via hierarchical
+  cohorts, GA'd v0.17 — worth studying, not adopting.)
+
+## 6.3 The real long-term topology home: upstream native WAS, not Kueue TAS
+
+For a system that intends to *be* the scheduler plugin, the right integration target is **not** Kueue's
+TAS (KEP-2724, welded to admission) but the **native kube-scheduler Workload-Aware Scheduling** track —
+specifically **KEP-5732 (native topology-aware scheduling)**, which adds first-class
+`PlacementGenerator`/`State`/`Scorer` scheduler-framework plugin interfaces, alongside **KEP-4671**
+(gang) and **KEP-5710** (workload-aware preemption). That is where jobtree's funding-coupled topology +
+gang + reclaim logic would eventually plug in natively. **But it is alpha and unstable today** (off by
+default, API churn, Kueue itself undecided on consuming it). **Posture: build our own topology
+assignment + Permit gate now (the assignment→nodeSelector→gate pattern is small and we already have
+`pkg/pack`); track KEP-5732/4671 and prototype behind a feature gate; adopt when it stabilizes
+(~1.37+).** Borrow Kueue's and WAS's *designs*, not their *stacks*.
 
 ## 7. Impact on the near-term plan
 
