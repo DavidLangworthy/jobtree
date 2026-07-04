@@ -215,6 +215,37 @@ if JobSet lacks something we need, fork it and add it there rather than invent f
 parallelism-as-width (Q2) or held-slot persistence (Q3) proves too lossy in the spike — neither looks
 blocking.**
 
+## 6.2 Kueue TAS: mirror the conventions, don't take the dependency (decided 2026-07-04)
+
+**TAS is not a placement library — it runs inside Kueue's admission flow.** You cannot use TAS without
+Kueue owning ClusterQueue quota + preemption; it computes a topology-domain assignment at admission and
+hands final binding to kube-scheduler via node affinity. So "adopt TAS" = "adopt Kueue's admission
+model" = **cede the funding moat.** Decision: **mirror TAS's conventions, don't take the dependency.**
+
+- **What TAS covers:** gang co-location — a `Topology` CRD, a node-label hierarchy (block/rack/host),
+  and `podset-required-topology` / `podset-preferred-topology` annotations, per-podset. Good enough for
+  our fabric-domain + `groupGPUs` need.
+- **What it misses (ours):** pack-to-empty (leave big contiguous holes for the next large job — TAS does
+  least-fragmenting bin-pack), funding-coupled placement (TAS has no notion of who-pays / funding class
+  / reclaim ranking), per-slice lease attribution, and spare placement.
+- **Impact on our features if we took full Kueue:**
+  - **Family sharing — big cost.** Kueue's hierarchical cohorts + borrowing/lending + `reclaimWithinCohort`
+    get ~60–70% (a quota tree ≈ family DAG; reclaim-within-cohort ≈ owner-recall-*ish*), but structurally
+    **cannot** express the **unfunded/opportunistic tier** (run over quota, cut first), **demote-not-kill**
+    (Kueue preemption deletes victims), or the **audit-by-replay lease ledger** — the three things that
+    are the "why jobtree" thesis.
+  - **Roles — fine.** Kueue admits multi-podset Workloads (JobSet `replicatedJobs`) all-or-nothing and
+    TAS applies per-podset; heterogeneous RL gangs are well-supported. Not a casualty.
+  - **Spares — lost.** Kueue has no held hot-standby concept, let alone productive spares. Doesn't fit.
+- **The move:** borrow TAS's *conventions* — the `Topology` CRD shape, node-label hierarchy, and the
+  `podset-required/preferred-topology` annotation UX — so workloads/JobSet express locality the
+  ecosystem-legible way, but implement the actual pack in our **scheduler plugin's Filter/Score**, where
+  it stays funding-coupled, mints per-slice leases, and honors spares. We already have `pkg/pack` (357
+  LOC of pack-to-empty), so taking TAS's packer saves little and ours knows about funding, which theirs
+  never will. **TAS is a compatibility target, not a dependency.**
+- Kueue-for-quota-only is rejected for the same reason: quota *is* the moat. (C and B still aren't
+  mutually exclusive if that ever changes — Kueue could own queue/quota while our plugin owns placement.)
+
 ## 7. Impact on the near-term plan
 
 This supersedes parts of `plan-workload-podspec.md`:
