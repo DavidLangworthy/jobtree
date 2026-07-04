@@ -669,6 +669,54 @@ func TestReservationActivatesWhenCapacityArrives(t *testing.T) {
 // TestNodeFailureSwapsToSpare: the node watch drives HandleNodeFailure (R21):
 // when the active node dies, the spare lease is promoted into a swap lease
 // and the workload pods move to the spare's nodes.
+// seedSwapLease mints, via the client, the Swap lease the scheduler plugin would
+// create for a run's node-failure swap pod — from the provenance the controller
+// stamped on it (the spare's payer, on the swap node). The envtest stand-in for
+// the plugin's provenance-preserving PreBind now that HandleNodeFailure emits a
+// swap pod instead of minting.
+func seedSwapLease(t *testing.T, runName string) {
+	t.Helper()
+	var podList corev1.PodList
+	if err := kubeClient.List(suiteCtx, &podList); err != nil {
+		t.Fatalf("seedSwapLease list pods: %v", err)
+	}
+	var swapPod *corev1.Pod
+	for i := range podList.Items {
+		p := &podList.Items[i]
+		if p.Labels[binder.LabelRunName] == runName && p.Annotations[binder.AnnotationLeaseReason] == "Swap" {
+			swapPod = p
+		}
+	}
+	if swapPod == nil {
+		t.Fatalf("seedSwapLease: no swap pod for run %s", runName)
+	}
+	node := swapPod.Annotations[binder.AnnotationSwapNode]
+	gpus, _ := strconv.Atoi(swapPod.Annotations[binder.AnnotationGPUs])
+	slots := make([]string, gpus)
+	for i := range slots {
+		slots[i] = fmt.Sprintf("%s#%d", node, i)
+	}
+	lease := &v1.Lease{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "default",
+			Name:      swapPod.Name + "-lease",
+			Labels:    map[string]string{binder.LabelRunName: runName, binder.LabelRunRole: binder.RoleActive},
+		},
+		Spec: v1.LeaseSpec{
+			Owner:          swapPod.Annotations[binder.AnnotationPayerOwner],
+			RunRef:         v1.RunReference{Name: runName, Namespace: "default"},
+			Slice:          v1.LeaseSlice{Nodes: slots, Role: binder.RoleActive},
+			Interval:       v1.LeaseInterval{Start: v1.NewTime(clock.Now())},
+			PaidByBudget:   swapPod.Annotations[binder.AnnotationPayerBudget],
+			PaidByEnvelope: swapPod.Annotations[binder.AnnotationPayerEnvelope],
+			Reason:         "Swap",
+		},
+	}
+	if err := kubeClient.Create(suiteCtx, lease); err != nil {
+		t.Fatalf("seedSwapLease create: %v", err)
+	}
+}
+
 func TestNodeFailureSwapsToSpare(t *testing.T) {
 	requireEnv(t)
 	resetWorld(t)
@@ -728,11 +776,16 @@ func TestNodeFailureSwapsToSpare(t *testing.T) {
 		if err := kubeClient.Get(suiteCtx, types.NamespacedName{Namespace: "default", Name: "resilient"}, &swapped); err != nil {
 			return err
 		}
-		if want := "group 0 swapped to spare after node node-a failure"; swapped.Status.Message != want {
+		if want := "group 0 swapping to spare after node node-a failure"; swapped.Status.Message != want {
 			return fmt.Errorf("run message %q, want %q", swapped.Status.Message, want)
 		}
 		return nil
 	})
+
+	// The manager closed the failed + spare leases and emitted a SWAP pod
+	// (stamped with the spare's provenance, hard-targeted at node-b); the plugin
+	// mints the Swap lease from that provenance — stood in for by seedSwapLease.
+	seedSwapLease(t, "resilient")
 
 	leases = waitForRunLeases(t, "resilient", 3) // closed active, closed spare, open swap
 	var swap *v1.Lease

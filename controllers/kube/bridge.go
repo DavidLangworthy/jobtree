@@ -372,10 +372,18 @@ func buildPod(manifest binder.PodManifest, run *v1.Run) *corev1.Pod {
 	if run != nil && run.Spec.Resources.GPUType != "" {
 		annotations[binder.AnnotationFlavor] = run.Spec.Resources.GPUType
 	}
-	for _, k := range []string{binder.AnnotationExpectedWidth, binder.AnnotationLeaseReason, binder.AnnotationCohort} {
+	for _, k := range []string{
+		binder.AnnotationExpectedWidth, binder.AnnotationLeaseReason, binder.AnnotationCohort,
+		binder.AnnotationSwapNode, binder.AnnotationPayerOwner, binder.AnnotationPayerBudget, binder.AnnotationPayerEnvelope,
+	} {
 		if v, ok := manifest.Annotations[k]; ok {
 			annotations[k] = v
 		}
+	}
+	// A swap pod must land on the specific reclaimed spare node — a REQUIRED
+	// affinity, overriding the soft advisory above.
+	if swapNode := manifest.Annotations[binder.AnnotationSwapNode]; swapNode != "" {
+		requireNode(&spec, swapNode)
 	}
 
 	return &corev1.Pod{
@@ -408,4 +416,26 @@ func preferNode(spec *corev1.PodSpec, node string) {
 	}
 	na := spec.Affinity.NodeAffinity
 	na.PreferredDuringSchedulingIgnoredDuringExecution = append(na.PreferredDuringSchedulingIgnoredDuringExecution, term)
+}
+
+// requireNode adds a REQUIRED node-affinity pinning the pod to node — used for a
+// node-failure swap, which must land on the specific reclaimed spare node.
+func requireNode(spec *corev1.PodSpec, node string) {
+	sel := corev1.NodeSelectorTerm{MatchExpressions: []corev1.NodeSelectorRequirement{{
+		Key:      "kubernetes.io/hostname",
+		Operator: corev1.NodeSelectorOpIn,
+		Values:   []string{node},
+	}}}
+	if spec.Affinity == nil {
+		spec.Affinity = &corev1.Affinity{}
+	}
+	if spec.Affinity.NodeAffinity == nil {
+		spec.Affinity.NodeAffinity = &corev1.NodeAffinity{}
+	}
+	na := spec.Affinity.NodeAffinity
+	if na.RequiredDuringSchedulingIgnoredDuringExecution == nil {
+		na.RequiredDuringSchedulingIgnoredDuringExecution = &corev1.NodeSelector{}
+	}
+	na.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms = append(
+		na.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms, sel)
 }

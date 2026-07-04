@@ -1,9 +1,11 @@
 package controllers
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
+	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	"github.com/davidlangworthy/jobtree/pkg/admission"
 	"github.com/davidlangworthy/jobtree/pkg/binder"
 )
@@ -62,6 +64,48 @@ func seedGrowLeases(t *testing.T, state *ClusterState, runKey string, deltaGPUs 
 	}
 	state.Leases = append(state.Leases, res.Leases...)
 	state.Pods = append(state.Pods, res.Pods...)
+}
+
+// seedSwapLease mints the Swap lease the scheduler plugin would create for a
+// node-failure swap pod — from the provenance the controller stamped on that pod
+// (the spare's payer), on the swap node — the test stand-in for the plugin's
+// provenance-preserving PreBind now that HandleNodeFailure emits a swap pod
+// instead of minting. Returns the minted lease.
+func seedSwapLease(t *testing.T, state *ClusterState, runName string, now time.Time) v1.Lease {
+	t.Helper()
+	var pod *binder.PodManifest
+	for i := range state.Pods {
+		p := &state.Pods[i]
+		if p.Labels[binder.LabelRunName] == runName && p.Annotations[binder.AnnotationLeaseReason] == "Swap" {
+			pod = p // last swap pod wins
+		}
+	}
+	if pod == nil {
+		t.Fatalf("seedSwapLease: no swap pod found for run %s", runName)
+	}
+	node := pod.Annotations[binder.AnnotationSwapNode]
+	slots := make([]string, pod.GPUs)
+	for i := range slots {
+		slots[i] = node + "#" + strconv.Itoa(i)
+	}
+	lease := v1.Lease{
+		ObjectMeta: v1.ObjectMeta{
+			Namespace: pod.Namespace,
+			Name:      pod.Name + "-lease",
+			Labels:    map[string]string{binder.LabelRunName: pod.Labels[binder.LabelRunName], binder.LabelRunRole: binder.RoleActive},
+		},
+		Spec: v1.LeaseSpec{
+			Owner:          pod.Annotations[binder.AnnotationPayerOwner],
+			RunRef:         v1.RunReference{Name: pod.Labels[binder.LabelRunName], Namespace: pod.Namespace},
+			Slice:          v1.LeaseSlice{Nodes: slots, Role: binder.RoleActive},
+			Interval:       v1.LeaseInterval{Start: v1.NewTime(now)},
+			PaidByBudget:   pod.Annotations[binder.AnnotationPayerBudget],
+			PaidByEnvelope: pod.Annotations[binder.AnnotationPayerEnvelope],
+			Reason:         "Swap",
+		},
+	}
+	state.Leases = append(state.Leases, lease)
+	return lease
 }
 
 // activeIntentPods counts the unscheduled Active workload pods Reconcile emitted

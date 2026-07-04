@@ -766,9 +766,13 @@ func TestHandleNodeFailureSwapsToSpare(t *testing.T) {
 	if run.Status.Phase != RunPhaseRunning {
 		t.Fatalf("expected run to remain running, got %s", run.Status.Phase)
 	}
-	if !strings.Contains(run.Status.Message, "swapped") {
+	if !strings.Contains(run.Status.Message, "swapping") {
 		t.Fatalf("expected swap message, got %s", run.Status.Message)
 	}
+	// HandleNodeFailure now emits a swap pod (stamped with the spare's provenance
+	// + hard-targeted at the spare node) instead of minting; the plugin mints the
+	// Swap lease from that provenance — stood in for by seedSwapLease.
+	seedSwapLease(t, state, "run", failTime)
 
 	var activeOnSpare *v1.Lease
 	fillerClosed := false
