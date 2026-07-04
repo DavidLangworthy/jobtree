@@ -1,0 +1,155 @@
+{{- if .Values.scheduler.enabled }}
+# The jobtree out-of-tree scheduler-framework binary (cmd/scheduler), run as a
+# second Deployment alongside the manager. It registers the "jobtree" plugin and
+# runs it for the schedulerName: jobtree profile defined in the mounted
+# KubeSchedulerConfiguration. PLUGIN-1 scaffold: the plugin bodies are no-ops.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "gpu-fleet.schedulerName" . }}-config
+  labels: {{- include "gpu-fleet.labels" . | nindent 4 }}
+data:
+  # Kept in sync with config/scheduler/jobtree-config.yaml (the standalone
+  # canonical artifact). The plugin is registered into the binary at compile
+  # time; this profile only turns it on for schedulerName: jobtree.
+  jobtree-config.yaml: |
+    apiVersion: kubescheduler.config.k8s.io/v1
+    kind: KubeSchedulerConfiguration
+    leaderElection:
+      leaderElect: {{ .Values.scheduler.leaderElect }}
+    profiles:
+      - schedulerName: {{ .Values.scheduler.schedulerName }}
+        plugins:
+          filter:
+            enabled:
+              - name: jobtree
+          score:
+            enabled:
+              - name: jobtree
+          permit:
+            enabled:
+              - name: jobtree
+          preBind:
+            enabled:
+              - name: jobtree
+          postFilter:
+            enabled:
+              - name: jobtree
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gpu-fleet.schedulerName" . }}
+  labels: {{- include "gpu-fleet.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.scheduler.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "gpu-fleet.schedulerName" . }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "gpu-fleet.schedulerName" . }}
+        {{- include "gpu-fleet.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ .Values.scheduler.serviceAccount }}
+      imagePullSecrets:
+        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
+      containers:
+        - name: scheduler
+          image: {{ .Values.scheduler.image }}
+          args:
+            - "--config=/etc/jobtree/scheduler/jobtree-config.yaml"
+            - "--leader-elect={{ .Values.scheduler.leaderElect }}"
+            - "--secure-port={{ .Values.scheduler.secureServingPort }}"
+            {{- range $arg := .Values.scheduler.extraArgs }}
+            - {{ $arg | quote }}
+            {{- end }}
+          ports:
+            - containerPort: {{ .Values.scheduler.secureServingPort }}
+              name: https
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.scheduler.secureServingPort }}
+              scheme: HTTPS
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: {{ .Values.scheduler.secureServingPort }}
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /etc/jobtree/scheduler
+              readOnly: true
+          resources: {{- toYaml .Values.scheduler.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "gpu-fleet.schedulerName" . }}-config
+      nodeSelector: {{- toYaml .Values.nodeSelector | nindent 8 }}
+      tolerations: {{- toYaml .Values.tolerations | nindent 8 }}
+      affinity: {{- toYaml .Values.affinity | nindent 8 }}
+{{- if .Values.rbac.create }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.scheduler.serviceAccount }}
+  labels: {{- include "gpu-fleet.labels" . | nindent 4 }}
+---
+# A custom scheduler reuses the built-in kube-scheduler cluster roles rather
+# than a hand-rolled wildcard grant (keeps the no-wildcard CI check green). This
+# is the standard "configure multiple schedulers" RBAC. Leader election with a
+# non-default lock name (when replicas > 1) needs an additional lease rule the
+# operator must add.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "gpu-fleet.schedulerName" . }}-kube-scheduler
+  labels: {{- include "gpu-fleet.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.scheduler.serviceAccount }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:kube-scheduler
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "gpu-fleet.schedulerName" . }}-volume-scheduler
+  labels: {{- include "gpu-fleet.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.scheduler.serviceAccount }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:volume-scheduler
+---
+# Lets the scheduler read the extension-apiserver-authentication ConfigMap so it
+# can authenticate delegated requests to its own secure serving port.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "gpu-fleet.schedulerName" . }}-auth-reader
+  namespace: kube-system
+  labels: {{- include "gpu-fleet.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.scheduler.serviceAccount }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: extension-apiserver-authentication-reader
+{{- end }}
+{{- end }}
