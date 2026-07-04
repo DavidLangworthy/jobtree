@@ -128,6 +128,81 @@ spec:
                 - gpuType
                 - totalGPUs
                 type: object
+              roles:
+                description: |-
+                  Roles is the researcher's real workload: one homogeneous pod pool per
+                  role, each lowering to a single JobSet ReplicatedJob (see pkg/lowering
+                  and Option C in docs/project/borrow-vs-build.md). v1 admits exactly one
+                  role; the field is a list so heterogeneous multi-role Runs (RL
+                  gang-of-gangs: trainer/sampler/grader) land later as a purely additive,
+                  non-breaking change (borrow-vs-build.md §2.2, growth path Option A).
+
+                  Roles is optional during the JOBSET-1..JOBSET-9 transition: a Run with no
+                  role still follows the legacy pause-pod materialization path. It becomes
+                  the sole workload surface once the pause path is retired (JOBSET-9).
+                items:
+                  description: |-
+                    RunRole is one homogeneous pool of pods within a Run — the unit that lowers
+                    to a single JobSet ReplicatedJob (roles → replicatedJobs). It carries the
+                    per-role workload template plus the width/topology/spare knobs that were
+                    previously spread across RunSpec, so a future multi-role Run can size each
+                    role independently.
+                  properties:
+                    gpusPerPod:
+                      description: |-
+                        GPUsPerPod is the nvidia.com/gpu request (== limit, extended resources
+                        are non-overcommit) injected on the GPU-target container of each pod.
+                        Must be positive; the zero-GPU CPU-only role path is a later addition.
+                      format: int32
+                      type: integer
+                    groupGPUs:
+                      description: |-
+                        GroupGPUs optionally overrides spec.locality.groupGPUs for this role: the
+                        number of GPUs packed into one fabric domain. Positive when set.
+                      format: int32
+                      type: integer
+                    name:
+                      description: |-
+                        Name identifies the role (e.g. "trainer"). It becomes the JobSet
+                        ReplicatedJob name and the gang-role label value, so it must be a
+                        non-empty DNS label.
+                      type: string
+                    spares:
+                      description: |-
+                        Spares optionally overrides spec.sparesPerGroup for this role: hot spares
+                        held per group for fast node-failure swap. Non-negative when set.
+                      format: int32
+                      type: integer
+                    template:
+                      description: |-
+                        Template is the researcher's workload pod. jobtree deep-copies it per
+                        materialized slice and overlays only the scheduling-owned fields
+                        (schedulerName, nodeName is never set — Track A places it; the
+                        nvidia.com/gpu limit; gang labels; rendezvous env; restartPolicy=Never).
+                        Everything else — image, command, env, volumes, resources — is the
+                        researcher's and is preserved verbatim.
+
+                        The field is marked PreserveUnknownFields so controller-gen does NOT
+                        inline the (hundreds-of-KB) PodTemplateSpec OpenAPI schema into the CRD —
+                        that would blow the 262144-byte last-applied-configuration annotation
+                        limit under `kubectl apply`. The template is validated in the webhook
+                        (>=1 container, non-empty image on the GPU-target container, no
+                        jobtree-owned fields) instead of by the apiserver's structural schema.
+                      x-kubernetes-preserve-unknown-fields: true
+                    width:
+                      description: |-
+                        Width is the number of pods in this role's gang — the JobSet
+                        parallelism/completions. Must be positive. Width*GPUsPerPod must equal
+                        the Run's Resources.TotalGPUs in v1 (single role).
+                      format: int32
+                      type: integer
+                  required:
+                  - gpusPerPod
+                  - name
+                  - template
+                  - width
+                  type: object
+                type: array
               runtime:
                 description: RunRuntime covers runtime behavior hints.
                 properties:
