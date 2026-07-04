@@ -1126,6 +1126,9 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 		}
 		closeLease(spareLease, "Swap", now)
 		closeLease(lease, "NodeFailure", now)
+		// Free the held spare's pod on the reclaimed node so the bridge deletes it
+		// and the swap pod (which hard-targets that node) can bind there.
+		c.removeSparePodOnNodes(run, spareNodes)
 		// Re-emit the group's pod as a SWAP onto the reclaimed spare node,
 		// stamped with the spare's funding provenance; the scheduler plugin binds
 		// it there (required node affinity) and mints the Swap lease from that
@@ -1502,7 +1505,13 @@ func (c *RunController) emitSparePods(run *v1.Run, packPlan pack.Plan, gpusPerPo
 	if gpusPerPod <= 0 || packPlan.TotalSpares <= 0 || packPlan.TotalSpares%gpusPerPod != 0 {
 		return 0
 	}
-	count := packPlan.TotalSpares / gpusPerPod
+	// A spare consumed by a node-failure swap (its lease closed with reason
+	// "Swap") is not re-provisioned: that funded capacity now carries the
+	// swapped-in active work. Only genuinely-missing spares are topped up.
+	count := packPlan.TotalSpares/gpusPerPod - c.consumedSpareCount(run)
+	if count <= 0 {
+		return 0
+	}
 	advisory := flattenSpareNodes(packPlan)
 	existing := 0
 	for i := range c.State.Pods {
@@ -1536,6 +1545,43 @@ func (c *RunController) emitSparePods(run *v1.Run, packPlan pack.Plan, gpusPerPo
 		})
 	}
 	return created
+}
+
+// consumedSpareCount is how many of a run's spares have been promoted by a
+// node-failure swap (their RoleSpare lease closed with reason "Swap"). Those
+// spare slots are gone for good — the swap re-used their funded capacity — so
+// emitSparePods must not re-provision them.
+func (c *RunController) consumedSpareCount(run *v1.Run) int {
+	runKey := keys.NamespacedKey(run.Namespace, run.Name)
+	n := 0
+	for i := range c.State.Leases {
+		l := &c.State.Leases[i]
+		if l.Status.Closed && l.Spec.Slice.Role == binder.RoleSpare && l.Status.ClosureReason == "Swap" &&
+			keys.NamespacedKey(l.Spec.RunRef.Namespace, l.Spec.RunRef.Name) == runKey {
+			n++
+		}
+	}
+	return n
+}
+
+// removeSparePodOnNodes drops the run's held-spare pod manifest bound to one of
+// nodes (the reclaimed spare node) so the bridge deletes the real spare Pod,
+// freeing its GPU for the swap pod that hard-targets that node. Removes at most
+// one spare (the swap consumes one held slot).
+func (c *RunController) removeSparePodOnNodes(run *v1.Run, nodes []string) {
+	want := buildNodeSet(nodes)
+	for i := range c.State.Pods {
+		p := &c.State.Pods[i]
+		if p.Namespace != run.Namespace || p.Labels[binder.LabelRunName] != run.Name ||
+			p.Labels[binder.LabelRunRole] != binder.RoleSpare {
+			continue
+		}
+		if p.NodeName == "" || want[p.NodeName] == 0 {
+			continue
+		}
+		c.State.Pods = append(c.State.Pods[:i], c.State.Pods[i+1:]...)
+		return
+	}
 }
 
 // flattenSpareNodes lists the nodes pack chose for a run's spare placements, in

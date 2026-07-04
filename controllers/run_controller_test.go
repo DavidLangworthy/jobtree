@@ -852,6 +852,20 @@ func TestHandleNodeFailureSwapsToSpare(t *testing.T) {
 	if len(state.Pods) == 0 || state.Pods[len(state.Pods)-1].NodeName != nodeFromSlot(spareLease.Spec.Slice.Nodes[0]) {
 		t.Fatalf("expected new pod on spare node, got %+v", state.Pods)
 	}
+	// The held spare's pod on the reclaimed node was removed so the bridge frees
+	// its GPU for the swap pod (which hard-targets that node). One spare remains.
+	spareNode := nodeFromSlot(spareLease.Spec.Slice.Nodes[0])
+	for i := range state.Pods {
+		p := &state.Pods[i]
+		if p.Labels[binder.LabelRunName] == "run" && p.Labels[binder.LabelRunRole] == binder.RoleSpare && p.NodeName == spareNode {
+			t.Fatalf("spare pod on reclaimed node %s was not removed: %+v", spareNode, *p)
+		}
+	}
+	// A consumed spare (its lease closed with reason Swap) is not re-provisioned:
+	// re-running admission-side spare emission tops up to declared-minus-consumed.
+	if got := controller.consumedSpareCount(state.Runs["default/run"]); got != 1 {
+		t.Fatalf("consumedSpareCount = %d, want 1 after one swap", got)
+	}
 }
 
 func int32Ptr(v int32) *int32 { return &v }
