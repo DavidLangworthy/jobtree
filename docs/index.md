@@ -5,7 +5,7 @@ Kubernetes-native gang scheduling for **job forests** that need to honor **time-
 ## What Jobtree does
 
 - **Budget-aware orchestration** – Tracks spend commitments for labs, projects, and teams, ensuring scheduled work stays inside each budget window.
-- **Gang scheduling with hierarchy** – Treats related pods as *runs* grouped into trees, so dependent stages start together or not at all.
+- **Gang scheduling with dependencies** – A *run* is a set of pods that start together or not at all; runs chain into workflows with `follow` (start after the runs it follows complete), and are funded by a hierarchy of budgets.
 - **Smart packing and borrowing** – Packs workloads onto heterogeneous clusters, supports short-term borrowing across orgs, and gracefully shrinks elastic runs when pressure rises.
 - **Fast starts and reservations** – Combines immediate binders with forecasted reservations so urgent work launches quickly while long queues remain predictable.
 - **Observability first** – Ships dashboards, event streams, and a CLI (`kubectl runs`) to explain scheduling decisions and surface bottlenecks.
@@ -20,7 +20,7 @@ Kubernetes-native gang scheduling for **job forests** that need to honor **time-
 ## Key concepts
 
 - **Run**: a set of pods that must start together; may request elasticity or co-funding.
-- **Job tree**: a hierarchy of runs representing a workflow (e.g., data prep → training → evaluation) with shared quotas.
+- **Job forest**: runs joined by `follow` edges into workflows (e.g., data prep → training → evaluation), funded by a hierarchy of budgets. A follower waits until every run it follows completes; if one fails it waits a grace period (so you can fix and resubmit just that stage) and then fails honestly.
 - **Budget window**: time-scoped allowance (hours, credits, GPUs) that governs what can be scheduled and when.
 - **Borrowing & oversubscription**: policies that let teams temporarily exceed their caps without starving critical work.
 
@@ -35,7 +35,7 @@ Kubernetes-native gang scheduling for **job forests** that need to honor **time-
 ## How it is different
 
 - **Budget-native scheduling**: budgets are first-class primitives, not side-band alerts.
-- **Tree-shaped workloads**: understands dependencies and elastic stages, not just flat jobs.
+- **Workflow-shaped workloads**: runs express ordering with `follow` and scale with elastic stages, not just flat jobs.
 - **Predictable starts**: blends immediate binding, reservations, and shrink-to-fit to minimize idle time.
 - **Transparent UX**: every scheduling decision is auditable via CLI and dashboards.
 

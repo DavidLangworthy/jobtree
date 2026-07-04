@@ -14,6 +14,7 @@ import (
 // NewSubmitCommand wires the submit subcommand.
 func NewSubmitCommand(opts *RootOptions, store *StateStore, printer *Printer) *cobra.Command {
 	var file string
+	var follow []string
 	cmd := &cobra.Command{
 		Use:   "submit",
 		Short: "Submit a Run manifest and trigger immediate reconciliation",
@@ -41,6 +42,12 @@ func NewSubmitCommand(opts *RootOptions, store *StateStore, printer *Printer) *c
 			}
 			if run.Name == "" {
 				return fmt.Errorf("metadata.name is required")
+			}
+			if len(follow) > 0 {
+				if run.Spec.Follow == nil {
+					run.Spec.Follow = &v1.RunFollow{}
+				}
+				run.Spec.Follow.After = append(run.Spec.Follow.After, follow...)
 			}
 			run.Default()
 			if err := run.ValidateCreate(); err != nil {
@@ -77,5 +84,6 @@ func NewSubmitCommand(opts *RootOptions, store *StateStore, printer *Printer) *c
 		},
 	}
 	cmd.Flags().StringVar(&file, "file", "", "Path to a Run manifest")
+	cmd.Flags().StringSliceVar(&follow, "follow", nil, "Run name(s) this run must wait to complete before starting (repeatable)")
 	return cmd
 }

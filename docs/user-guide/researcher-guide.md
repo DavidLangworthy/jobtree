@@ -120,12 +120,36 @@ opportunistic work until you need them. When a failure occurs:
 2. Your active ranks resume on the spare nodes with zero topology changes.
 3. The failed node is cordoned for later repair.
 
-## 7. Checklist before you submit
+## 7. Chaining runs (follow)
+
+To run stages in order — data prep, then training, then evaluation — give each run a `follow` list of
+the runs it must wait for. A follower stays in the `Waiting` phase (visible in `kubectl runs explain`)
+until **every** run it follows reaches `Completed`, then it enters normal admission.
+
+```bash
+kubectl runs submit --file prep.json
+kubectl runs submit --file train.json --follow prep
+kubectl runs submit --file eval.json  --follow train
+```
+
+Notes:
+
+* Runs complete when their workload pods finish; a completed run releases its GPUs and stops charging
+  its budget. On the local simulator, `kubectl runs complete <run>` marks a run finished.
+* If an upstream **fails**, by default the follower waits a grace window (so you can fix and resubmit
+  just that stage) and then fails with a clear message — it will not silently hang forever. Set
+  `follow.onUpstreamFailure: fail` to fail followers immediately instead, or
+  `follow.upstreamFailureGrace` to change the window.
+* Follow is same-namespace and all-must-complete (`AND`). There is no branching/parallel combinator
+  language — compose workflows from runs and follow edges.
+
+## 8. Checklist before you submit
 
 * Pick the right `groupGPUs` for your communication pattern.
 * Declare `checkpoint` so the system knows when it is safe to requeue.
 * Use `malleable` for any job that can tolerate elastic width.
 * Add `funding.sponsors` when you expect to borrow.
+* Use `follow` to order dependent stages; a follower waits for its upstreams to complete.
 * Watch `kubectl runs plan <run>` after submission—Reservations are transparent and auditable.
 
 With these primitives you can scale from laptop-sized experiments to multi-cluster trainings while

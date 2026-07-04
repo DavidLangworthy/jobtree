@@ -45,8 +45,13 @@ const pendingRunResync = time.Minute
 // close), so status drifts stale with no watch event to announce it.
 const runningRunResync = 5 * time.Minute
 
+// waitingRunResync re-drives runs blocked on follow dependencies: the Run→Run
+// watch handles upstream transitions, but this backstops missed events and
+// fires the "wait" grace deadline on a failed upstream.
+const waitingRunResync = 30 * time.Second
+
 func (r *RunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	var parked, running bool
+	var parked, running, waiting bool
 	err := r.Bridge.WithWorld(ctx, func(state *controllers.ClusterState, now time.Time) error {
 		key := keys.NamespacedKey(req.Namespace, req.Name)
 		run, ok := state.Runs[key]
@@ -63,15 +68,20 @@ func (r *RunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		err := rc.Reconcile(req.Namespace, req.Name)
 		parked = run.Status.Phase == controllers.RunPhasePending && run.Status.PendingReservation == nil
 		running = run.Status.Phase == controllers.RunPhaseRunning
+		waiting = run.Status.Phase == controllers.RunPhaseWaiting
 		return err
 	})
-	if err == nil && parked {
+	switch {
+	case err != nil:
+		return ctrl.Result{}, err
+	case waiting:
+		return ctrl.Result{RequeueAfter: waitingRunResync}, nil
+	case parked:
 		return ctrl.Result{RequeueAfter: pendingRunResync}, nil
-	}
-	if err == nil && running {
+	case running:
 		return ctrl.Result{RequeueAfter: runningRunResync}, nil
 	}
-	return ctrl.Result{}, err
+	return ctrl.Result{}, nil
 }
 
 // cleanupDeletedRun closes the open leases, drops the pods, and removes the
@@ -141,6 +151,24 @@ func (r *RunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		DeleteFunc:  func(event.DeleteEvent) bool { return false },
 		GenericFunc: func(event.GenericEvent) bool { return false },
 	}
+	// A run reaching a terminal phase (or being deleted) re-triggers its
+	// followers so a blocked chain advances. This must NOT reuse the primary
+	// For() generation gate: phase lives in status, so a completion bumps no
+	// generation — a naïve "any Run update" watch would fire on every status
+	// write and churn under the single serial worker.
+	runTerminalOrDelete := predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool {
+			run, ok := e.Object.(*v1.Run)
+			return ok && isTerminalPhase(run.Status.Phase)
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldRun, ok1 := e.ObjectOld.(*v1.Run)
+			newRun, ok2 := e.ObjectNew.(*v1.Run)
+			return ok1 && ok2 && !isTerminalPhase(oldRun.Status.Phase) && isTerminalPhase(newRun.Status.Phase)
+		},
+		DeleteFunc:  func(event.DeleteEvent) bool { return true },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("run").
 		For(&v1.Run{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
@@ -149,8 +177,45 @@ func (r *RunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(podToRun),
 			builder.WithPredicates(podWatch)).
+		Watches(&v1.Run{}, handler.EnqueueRequestsFromMapFunc(r.runToFollowers),
+			builder.WithPredicates(runTerminalOrDelete)).
 		WithOptions(serialWorker).
 		Complete(r)
+}
+
+// isTerminalPhase reports whether a run has reached a state that unblocks or
+// permanently blocks its followers.
+func isTerminalPhase(phase string) bool {
+	return phase == controllers.RunPhaseComplete || phase == controllers.RunPhaseFailed
+}
+
+// runToFollowers maps a finished (or deleted) upstream run to every run in the
+// same namespace that follows it, so blocked followers re-evaluate.
+func (r *RunReconciler) runToFollowers(ctx context.Context, obj client.Object) []reconcile.Request {
+	upstream, ok := obj.(*v1.Run)
+	if !ok {
+		return nil
+	}
+	var runList v1.RunList
+	if err := r.Bridge.APIReader.List(ctx, &runList); err != nil {
+		return nil
+	}
+	var requests []reconcile.Request
+	for i := range runList.Items {
+		run := &runList.Items[i]
+		if run.Namespace != upstream.Namespace || run.Spec.Follow == nil {
+			continue
+		}
+		for _, name := range run.Spec.Follow.After {
+			if name == upstream.Name {
+				requests = append(requests, reconcile.Request{
+					NamespacedName: types.NamespacedName{Namespace: run.Namespace, Name: run.Name},
+				})
+				break
+			}
+		}
+	}
+	return requests
 }
 
 // podToRun maps a workload pod event to its owning run via the run-name label.

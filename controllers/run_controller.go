@@ -26,7 +26,15 @@ const (
 	RunPhaseRunning  = "Running"
 	RunPhaseFailed   = "Failed"
 	RunPhaseComplete = "Completed"
+	// RunPhaseWaiting means the run is blocked on its follow dependencies and
+	// has not entered admission (distinct from Pending, which is admitted but
+	// short on capacity).
+	RunPhaseWaiting = "Waiting"
 )
+
+// defaultUpstreamFailureGrace bounds how long a follower waits on a failed
+// upstream (under the default "wait" policy) before failing itself.
+const defaultUpstreamFailureGrace = 30 * time.Minute
 
 // ClusterState stores the in-memory view of the cluster for the simplified controller.
 type ClusterState struct {
@@ -104,6 +112,16 @@ func (c *RunController) Reconcile(namespace, name string) error {
 	if run.Status.Phase == RunPhaseRunning && c.runGangComplete(run) {
 		c.completeRun(run, now)
 		result = "completed"
+		return nil
+	}
+
+	// Follow gate: a run with unmet dependencies waits (or fails) before any
+	// admission — placed before topology/adoption so a Waiting run never packs,
+	// reserves, or is flipped Running by a stray lease. Once Running/terminal,
+	// follow no longer applies.
+	if isPreAdmission(run.Status.Phase) && !c.evaluateFollow(run, now) {
+		run.Status.Width = summarizeRunWidth(run, c.State.Leases)
+		result = "waiting"
 		return nil
 	}
 
@@ -441,6 +459,139 @@ func (c *RunController) completeRun(run *v1.Run, now time.Time) {
 	run.Status.EarliestStart = nil
 	run.Status.Width = summarizeRunWidth(run, c.State.Leases)
 	run.Status.Funding = summarizeRunFunding(run, c.evaluate(now))
+}
+
+// isPreAdmission reports whether a run has not yet started or terminated, so
+// the follow gate still applies.
+func isPreAdmission(phase string) bool {
+	switch phase {
+	case RunPhaseRunning, RunPhaseComplete, RunPhaseFailed:
+		return false
+	}
+	return true
+}
+
+// evaluateFollow gates a pre-admission run on its follow dependencies. It
+// returns true when the run may proceed to admission (no deps, or every
+// upstream Completed); otherwise it sets Waiting or Failed and returns false.
+// Existence and cycle detection live here because the webhook has no cluster
+// view.
+func (c *RunController) evaluateFollow(run *v1.Run, now time.Time) bool {
+	if run.Spec.Follow == nil || len(run.Spec.Follow.After) == 0 {
+		run.Status.FollowDeadline = nil
+		return true
+	}
+	if path, cyclic := c.followCycle(run); cyclic {
+		c.failRun(run, "follow cycle: "+path)
+		return false
+	}
+
+	var pending, failed []string
+	for _, name := range run.Spec.Follow.After {
+		up, ok := c.State.Runs[keys.NamespacedKey(run.Namespace, name)]
+		switch {
+		case !ok:
+			failed = append(failed, name+" (deleted)")
+		case up.Status.Phase == RunPhaseComplete:
+			// satisfied
+		case up.Status.Phase == RunPhaseFailed:
+			failed = append(failed, name)
+		default:
+			pending = append(pending, name)
+		}
+	}
+
+	if len(failed) > 0 {
+		if run.Spec.Follow.OnUpstreamFailure == v1.OnUpstreamFailureFail {
+			c.failRun(run, "upstream failed: "+strings.Join(failed, ", "))
+			return false
+		}
+		// "wait" (default): give the researcher a grace window to fix and
+		// resubmit the failed stage, then fail so it is not a silent zombie.
+		if run.Status.FollowDeadline == nil {
+			deadline := v1.NewTime(now.Add(followGrace(run.Spec.Follow)))
+			run.Status.FollowDeadline = &deadline
+		}
+		if !now.Before(run.Status.FollowDeadline.Time) {
+			c.failRun(run, "upstream failed and grace expired: "+strings.Join(failed, ", "))
+			return false
+		}
+		c.setWaiting(run, fmt.Sprintf("waiting: upstream failed (%s); fails at %s if unresolved",
+			strings.Join(failed, ", "), run.Status.FollowDeadline.Time.UTC().Format(time.RFC3339)))
+		return false
+	}
+	if len(pending) > 0 {
+		run.Status.FollowDeadline = nil
+		c.setWaiting(run, "waiting for: "+strings.Join(pending, ", "))
+		return false
+	}
+	run.Status.FollowDeadline = nil
+	return true
+}
+
+// followGrace is the run's configured wait window on a failed upstream, or the
+// default.
+func followGrace(f *v1.RunFollow) time.Duration {
+	if f.UpstreamFailureGrace != nil {
+		return f.UpstreamFailureGrace.Duration
+	}
+	return defaultUpstreamFailureGrace
+}
+
+// followCycle reports whether the run's transitive follow closure contains a
+// cycle (which would deadlock it), returning a readable path. Same-namespace.
+func (c *RunController) followCycle(start *v1.Run) (string, bool) {
+	inStack := make(map[string]bool)
+	done := make(map[string]bool)
+	var path []string
+	var dfs func(r *v1.Run) (string, bool)
+	dfs = func(r *v1.Run) (string, bool) {
+		key := keys.NamespacedKey(r.Namespace, r.Name)
+		inStack[key] = true
+		path = append(path, r.Name)
+		if r.Spec.Follow != nil {
+			for _, name := range r.Spec.Follow.After {
+				up, ok := c.State.Runs[keys.NamespacedKey(r.Namespace, name)]
+				if !ok {
+					continue
+				}
+				upKey := keys.NamespacedKey(up.Namespace, up.Name)
+				if inStack[upKey] {
+					return strings.Join(append(path, up.Name), " -> "), true
+				}
+				if done[upKey] {
+					continue
+				}
+				if p, cyclic := dfs(up); cyclic {
+					return p, true
+				}
+			}
+		}
+		inStack[key] = false
+		done[key] = true
+		path = path[:len(path)-1]
+		return "", false
+	}
+	return dfs(start)
+}
+
+// setWaiting parks a run on its follow dependencies (not admitted, no
+// reservation).
+func (c *RunController) setWaiting(run *v1.Run, msg string) {
+	run.Status.Phase = RunPhaseWaiting
+	run.Status.Message = msg
+	run.Status.PendingReservation = nil
+	run.Status.EarliestStart = nil
+}
+
+// failRun terminally fails a pre-admission run (a follow cycle, or an upstream
+// failure past grace). It never held leases, so there is nothing to close.
+func (c *RunController) failRun(run *v1.Run, msg string) {
+	run.Status.Phase = RunPhaseFailed
+	run.Status.Message = msg
+	run.Status.PendingReservation = nil
+	run.Status.EarliestStart = nil
+	run.Status.FollowDeadline = nil
 }
 
 // releasePendingReservations marks every Pending reservation for the run as
