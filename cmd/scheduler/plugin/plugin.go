@@ -146,11 +146,31 @@ func (j *JobTree) Permit(ctx context.Context, _ fwk.CycleState, pod *corev1.Pod,
 	}
 
 	key := gangKey(pod)
+
+	// A held spare is funded by its gang's base cover (which already funds
+	// active+spares) but is NOT a gang member: it must not gate the active
+	// width, and it is allowed as soon as the gang is funded. If the gang has
+	// not decided yet it parks (Wait) and is released by the active completer's
+	// Allow loop below, or re-checks here on the next Permit attempt — so a
+	// late-arriving spare (gang already decided) does not deadlock.
+	if isSparePod(pod) {
+		fundable, decided := j.gm.verdict(pod)
+		if !decided {
+			return fwk.NewStatus(fwk.Wait, fmt.Sprintf("jobtree: spare awaiting gang %s funding", key)), permitTimeout
+		}
+		if !fundable {
+			return fwk.NewStatus(fwk.Unschedulable, fmt.Sprintf("jobtree: gang %s not fundable, no spare", key)), 0
+		}
+		return nil, 0
+	}
+
 	expected := podInt(pod, binder.AnnotationExpectedWidth, 1)
 
 	waiting := 1 // this pod (not yet in the waiting map)
 	j.handle.IterateOverWaitingPods(func(wp fwk.WaitingPod) {
-		if gangKey(wp.GetPod()) == key {
+		// Spares share the base gangKey but are not gang members — they do not
+		// count toward the active width the gate assembles.
+		if gangKey(wp.GetPod()) == key && !isSparePod(wp.GetPod()) {
 			waiting++
 		}
 	})
@@ -209,7 +229,11 @@ func (j *JobTree) PreBind(ctx context.Context, _ fwk.CycleState, pod *corev1.Pod
 		}
 	}
 
-	lease := admission.PodLease(run, seg, nodeName, gpusPerPod, pod.Name+"-lease", time.Now().UTC(), pod.Annotations[binder.AnnotationLeaseReason])
+	role := pod.Labels[binder.LabelRunRole]
+	if role == "" {
+		role = binder.RoleActive
+	}
+	lease := admission.PodLeaseWithRole(run, seg, nodeName, gpusPerPod, pod.Name+"-lease", time.Now().UTC(), pod.Annotations[binder.AnnotationLeaseReason], role)
 	if err := j.client.Create(ctx, &lease); err != nil && !apierrors.IsAlreadyExists(err) {
 		return fwk.NewStatus(fwk.Error, fmt.Sprintf("jobtree: mint lease for %s: %v", pod.Name, err))
 	}
@@ -220,6 +244,12 @@ func (j *JobTree) PreBind(ctx context.Context, _ fwk.CycleState, pod *corev1.Pod
 // from carried provenance, funding-gate-exempt).
 func isSwapPod(pod *corev1.Pod) bool {
 	return pod.Annotations[binder.AnnotationLeaseReason] == "Swap"
+}
+
+// isSparePod reports whether a pod is a held spare — funded by its gang's base
+// cover but not a gang member (it does not gate the active width).
+func isSparePod(pod *corev1.Pod) bool {
+	return pod.Labels[binder.LabelRunRole] == binder.RoleSpare
 }
 
 // PostFilter is a no-op: it reclaims nothing (reclaim stays a controller

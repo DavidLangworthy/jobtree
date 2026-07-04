@@ -195,8 +195,19 @@ func PerPodPayer(plan cover.Plan, gpusPerPod int) ([]cover.Segment, error) {
 // be unique and stable for the pod (the plugin uses the pod's own name) so the
 // create is idempotent across PreBind retries.
 func PodLease(run *v1.Run, seg cover.Segment, node string, gpusPerPod int, name string, now time.Time, reason string) v1.Lease {
+	return PodLeaseWithRole(run, seg, node, gpusPerPod, name, now, reason, binder.RoleActive)
+}
+
+// PodLeaseWithRole is PodLease with an explicit slice role. A held spare mints an
+// identically-funded lease with RoleSpare so it sits out the gang's active width
+// (summarizeRunWidth skips spares) yet is real, funded, reclaimable capacity a
+// node-failure swap can land on.
+func PodLeaseWithRole(run *v1.Run, seg cover.Segment, node string, gpusPerPod int, name string, now time.Time, reason, role string) v1.Lease {
 	if reason == "" {
 		reason = "Start"
+	}
+	if role == "" {
+		role = binder.RoleActive
 	}
 	slots := make([]string, gpusPerPod)
 	for i := range slots {
@@ -208,13 +219,13 @@ func PodLease(run *v1.Run, seg cover.Segment, node string, gpusPerPod int, name 
 			Name:      name,
 			Labels: map[string]string{
 				binder.LabelRunName: run.Name,
-				binder.LabelRunRole: binder.RoleActive,
+				binder.LabelRunRole: role,
 			},
 		},
 		Spec: v1.LeaseSpec{
 			Owner:          seg.Owner,
 			RunRef:         v1.RunReference{Name: run.Name, Namespace: run.Namespace},
-			Slice:          v1.LeaseSlice{Nodes: slots, Role: binder.RoleActive},
+			Slice:          v1.LeaseSlice{Nodes: slots, Role: role},
 			Interval:       v1.LeaseInterval{Start: v1.NewTime(now)},
 			PaidByBudget:   seg.BudgetName,
 			PaidByEnvelope: seg.EnvelopeName,

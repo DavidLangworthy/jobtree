@@ -1487,7 +1487,67 @@ func expectedSpareTotal(run *v1.Run, plan *pack.Plan) int32 {
 // tops up the pods that do not yet exist.
 func (c *RunController) emitIntentPods(run *v1.Run, packPlan pack.Plan) int {
 	gpusPerPod, width := intentPodShape(run)
-	return c.emitCohortPods(run, flattenPackNodes(packPlan), gpusPerPod, width, "0", "Start")
+	created := c.emitCohortPods(run, flattenPackNodes(packPlan), gpusPerPod, width, "0", "Start")
+	created += c.emitSparePods(run, packPlan, gpusPerPod)
+	return created
+}
+
+// emitSparePods emits the run's declared spares as held, unscheduled RoleSpare
+// intent pods (gpusPerPod each) advisory-targeted at pack's spare placements.
+// The base gang's cover already funds active+spares, so the plugin binds these
+// and mints RoleSpare leases from the leftover payers — real, funded standby
+// capacity that sits out the active width and that a node-failure swap lands on.
+// Idempotent: only tops up to the declared spare-pod count.
+func (c *RunController) emitSparePods(run *v1.Run, packPlan pack.Plan, gpusPerPod int) int {
+	if gpusPerPod <= 0 || packPlan.TotalSpares <= 0 || packPlan.TotalSpares%gpusPerPod != 0 {
+		return 0
+	}
+	count := packPlan.TotalSpares / gpusPerPod
+	advisory := flattenSpareNodes(packPlan)
+	existing := 0
+	for i := range c.State.Pods {
+		p := &c.State.Pods[i]
+		if p.Namespace == run.Namespace && p.Labels[binder.LabelRunName] == run.Name &&
+			p.Labels[binder.LabelRunRole] == binder.RoleSpare {
+			existing++
+		}
+	}
+	created := 0
+	for i := existing; i < count; i++ {
+		node := ""
+		if len(advisory) > 0 {
+			node = advisory[i%len(advisory)]
+		}
+		created++
+		c.State.Pods = append(c.State.Pods, binder.PodManifest{
+			Namespace: run.Namespace,
+			Name:      fmt.Sprintf("%s-spare-%d", run.Name, i),
+			NodeName:  node, // advisory only; the bridge turns this into soft affinity
+			GPUs:      gpusPerPod,
+			Labels: map[string]string{
+				binder.LabelRunName:    run.Name,
+				binder.LabelRunRole:    binder.RoleSpare,
+				binder.LabelGroupIndex: "0",
+			},
+			Annotations: map[string]string{
+				binder.AnnotationExpectedWidth: strconv.Itoa(count),
+				binder.AnnotationLeaseReason:   "Start",
+			},
+		})
+	}
+	return created
+}
+
+// flattenSpareNodes lists the nodes pack chose for a run's spare placements, in
+// group order — the advisory targets for spare intent pods.
+func flattenSpareNodes(plan pack.Plan) []string {
+	var nodes []string
+	for _, g := range plan.Groups {
+		for _, np := range g.SparePlacements {
+			nodes = append(nodes, np.Node)
+		}
+	}
+	return nodes
 }
 
 // emitCohortPods tops up one cohort of a run to `count` uniform, unscheduled
