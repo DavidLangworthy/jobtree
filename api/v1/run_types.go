@@ -3,6 +3,7 @@ package v1
 import (
 	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -21,14 +22,98 @@ type Run struct {
 
 // RunSpec defines the desired Run behavior.
 type RunSpec struct {
-	Owner     string           `json:"owner"`
-	Resources RunResources     `json:"resources"`
+	Owner     string       `json:"owner"`
+	Resources RunResources `json:"resources"`
+	// Roles is the researcher's real workload: one homogeneous pod pool per
+	// role, each lowering to a single JobSet ReplicatedJob (see pkg/lowering
+	// and Option C in docs/project/borrow-vs-build.md). v1 admits exactly one
+	// role; the field is a list so heterogeneous multi-role Runs (RL
+	// gang-of-gangs: trainer/sampler/grader) land later as a purely additive,
+	// non-breaking change (borrow-vs-build.md §2.2, growth path Option A).
+	//
+	// Roles is optional during the JOBSET-1..JOBSET-9 transition: a Run with no
+	// role still follows the legacy pause-pod materialization path. It becomes
+	// the sole workload surface once the pause path is retired (JOBSET-9).
+	Roles     []RunRole        `json:"roles,omitempty"`
 	Locality  *RunLocality     `json:"locality,omitempty"`
 	Runtime   *RunRuntime      `json:"runtime,omitempty"`
 	Malleable *RunMalleability `json:"malleable,omitempty"`
 	Funding   *RunFunding      `json:"funding,omitempty"`
 	Spares    *int32           `json:"sparesPerGroup,omitempty"`
 	Follow    *RunFollow       `json:"follow,omitempty"`
+}
+
+// GPUTargetContainerName is the convention for the container that receives the
+// injected nvidia.com/gpu request/limit and the rendezvous env. A role's
+// template should name its workload container this; if none matches, the first
+// container is the target. Kept here (not in a controller package) so the
+// webhook validation and the lowering both agree on one definition.
+const GPUTargetContainerName = "workload"
+
+// RunRole is one homogeneous pool of pods within a Run — the unit that lowers
+// to a single JobSet ReplicatedJob (roles → replicatedJobs). It carries the
+// per-role workload template plus the width/topology/spare knobs that were
+// previously spread across RunSpec, so a future multi-role Run can size each
+// role independently.
+type RunRole struct {
+	// Name identifies the role (e.g. "trainer"). It becomes the JobSet
+	// ReplicatedJob name and the gang-role label value, so it must be a
+	// non-empty DNS label.
+	Name string `json:"name"`
+
+	// Template is the researcher's workload pod. jobtree deep-copies it per
+	// materialized slice and overlays only the scheduling-owned fields
+	// (schedulerName, nodeName is never set — Track A places it; the
+	// nvidia.com/gpu limit; gang labels; rendezvous env; restartPolicy=Never).
+	// Everything else — image, command, env, volumes, resources — is the
+	// researcher's and is preserved verbatim.
+	//
+	// The field is marked PreserveUnknownFields so controller-gen does NOT
+	// inline the (hundreds-of-KB) PodTemplateSpec OpenAPI schema into the CRD —
+	// that would blow the 262144-byte last-applied-configuration annotation
+	// limit under `kubectl apply`. The template is validated in the webhook
+	// (>=1 container, non-empty image on the GPU-target container, no
+	// jobtree-owned fields) instead of by the apiserver's structural schema.
+	//
+	// +kubebuilder:validation:Schemaless
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Template corev1.PodTemplateSpec `json:"template"`
+
+	// Width is the number of pods in this role's gang — the JobSet
+	// parallelism/completions. Must be positive. Width*GPUsPerPod must equal
+	// the Run's Resources.TotalGPUs in v1 (single role).
+	Width int32 `json:"width"`
+
+	// GPUsPerPod is the nvidia.com/gpu request (== limit, extended resources
+	// are non-overcommit) injected on the GPU-target container of each pod.
+	// Must be positive; the zero-GPU CPU-only role path is a later addition.
+	GPUsPerPod int32 `json:"gpusPerPod"`
+
+	// GroupGPUs optionally overrides spec.locality.groupGPUs for this role: the
+	// number of GPUs packed into one fabric domain. Positive when set.
+	GroupGPUs *int32 `json:"groupGPUs,omitempty"`
+
+	// Spares optionally overrides spec.sparesPerGroup for this role: hot spares
+	// held per group for fast node-failure swap. Non-negative when set.
+	Spares *int32 `json:"spares,omitempty"`
+}
+
+// GPUTargetContainerIndex returns the index of the container that receives the
+// injected nvidia.com/gpu request: the one named GPUTargetContainerName by
+// convention, otherwise the first container. Returns -1 when the template has
+// no containers. The webhook and the lowering both use this so a template can
+// never silently produce a zero-GPU pod.
+func (r *RunRole) GPUTargetContainerIndex() int {
+	containers := r.Template.Spec.Containers
+	if len(containers) == 0 {
+		return -1
+	}
+	for i := range containers {
+		if containers[i].Name == GPUTargetContainerName {
+			return i
+		}
+	}
+	return 0
 }
 
 // Upstream-failure policies for a followed run.
@@ -262,6 +347,68 @@ func (r *Run) validate() error {
 		if err := r.Spec.Follow.Validate(r.Name); err != nil {
 			return err
 		}
+	}
+	if err := r.Spec.validateRoles(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateRoles enforces the v1 workload contract. Roles is optional while the
+// legacy pause-pod path still exists; when present, v1 admits exactly one role
+// (multi-role RL is a later additive fast-follow) and fully validates it.
+func (s *RunSpec) validateRoles() error {
+	if len(s.Roles) == 0 {
+		return nil
+	}
+	if len(s.Roles) > 1 {
+		return fmt.Errorf("spec.roles: v1 supports exactly one role; multi-role runs are a later additive feature")
+	}
+	role := &s.Roles[0]
+	if role.Name == "" {
+		return fmt.Errorf("spec.roles[0].name is required")
+	}
+	if role.Width <= 0 {
+		return fmt.Errorf("spec.roles[0].width must be positive")
+	}
+	if role.GPUsPerPod <= 0 {
+		return fmt.Errorf("spec.roles[0].gpusPerPod must be positive")
+	}
+	if role.Width*role.GPUsPerPod != s.Resources.TotalGPUs {
+		return fmt.Errorf("spec.roles[0]: width*gpusPerPod (%d) must equal resources.totalGPUs (%d)", role.Width*role.GPUsPerPod, s.Resources.TotalGPUs)
+	}
+	if role.GroupGPUs != nil && *role.GroupGPUs <= 0 {
+		return fmt.Errorf("spec.roles[0].groupGPUs must be positive when set")
+	}
+	if role.Spares != nil && *role.Spares < 0 {
+		return fmt.Errorf("spec.roles[0].spares must be >= 0 when set")
+	}
+	return role.validateTemplate()
+}
+
+// validateTemplate checks the workload pod template. Because the template is
+// stored with PreserveUnknownFields (no structural schema in the CRD), these
+// checks are the only guard against a malformed or reserved-field-setting
+// template: at least one container, a non-empty image on the GPU-target
+// container, and none of the jobtree-owned pod fields (nodeName, schedulerName,
+// restartPolicy) set by the researcher.
+func (r *RunRole) validateTemplate() error {
+	spec := &r.Template.Spec
+	if len(spec.Containers) == 0 {
+		return fmt.Errorf("spec.roles[0].template must define at least one container")
+	}
+	target := r.GPUTargetContainerIndex()
+	if target < 0 || spec.Containers[target].Image == "" {
+		return fmt.Errorf("spec.roles[0].template: the GPU-target container (named %q, else the first) must set a non-empty image", GPUTargetContainerName)
+	}
+	if spec.NodeName != "" {
+		return fmt.Errorf("spec.roles[0].template.spec.nodeName is owned by jobtree and must not be set")
+	}
+	if spec.SchedulerName != "" {
+		return fmt.Errorf("spec.roles[0].template.spec.schedulerName is owned by jobtree and must not be set")
+	}
+	if spec.RestartPolicy != "" {
+		return fmt.Errorf("spec.roles[0].template.spec.restartPolicy is owned by jobtree (forced to Never) and must not be set")
 	}
 	return nil
 }
