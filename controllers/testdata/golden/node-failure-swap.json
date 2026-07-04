@@ -46,6 +46,22 @@
       "group": "0",
       "gpus": 1,
       "nodeName": "node-a"
+    },
+    {
+      "key": "default/run-spare-0",
+      "run": "run",
+      "role": "Spare",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-b"
+    },
+    {
+      "key": "default/run-spare-1",
+      "run": "run",
+      "role": "Spare",
+      "group": "0",
+      "gpus": 1,
+      "nodeName": "node-b"
     }
   ]
 }

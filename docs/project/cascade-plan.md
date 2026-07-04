@@ -81,27 +81,39 @@ should be implemented and live-proven (swap-smoke.sh) as its own careful
 increment, after CASCADE-2.
 
 **Status:** the swap MECHANISM is implemented + green (pure-engine + envtest +
-a buildPod unit test), using seeded spares as the plugin stand-in. But see the
-gap below — a LIVE swap has no spare to land on yet.
+a buildPod unit test) and, with CASCADE-3b below, LIVE-proven end to end.
 
-## Discovered gap — SPARES ARE NOT EMITTED LIVE (blocks live swap + productive spares)
+## CASCADE-3b — held spares emitted live (DONE + live-proven)
 
-The PLUGIN-2 cutover's `emitIntentPods`/`emitCohortPods` emit only **Active**
-pods. The old `binder.Materialize` path (which the controller no longer calls for
-admission) also materialized **Spare**-role pods/leases; nothing does now. So:
-- a run's declared `spares` are FUNDED in the cover quantity but no spare
-  pod/lease is actually held live (the "productive spares" feature, docs §6, is
-  inert live);
-- node-failure swap (CASCADE-3) has no held spare to swap onto on a real cluster
-  — its unit/envtest coverage seeds a spare, but `swap-smoke.sh` cannot pass
-  until spares are emitted.
+The PLUGIN-2 cutover's `emitIntentPods`/`emitCohortPods` emitted only **Active**
+pods, so a run's declared `spares` were funded in the cover quantity but no spare
+pod/lease was held live — the "productive spares" feature was inert, and a real
+node-failure swap had nothing to land on. CASCADE-3b closes that:
 
-**CASCADE-3b (next):** emit **Spare**-role intent pods alongside Active (from
-pack's spare placements), which the plugin binds and mints as `RoleSpare` leases
-— held, funded capacity. Spares sit out the gang (they are not gang members) but
-are bound + funded independently. Once spares are held live, `swap-smoke.sh`
-(2-node kind cluster, cordon the active node → the manager reclaims the spare and
-the plugin re-binds the swap onto it, provenance preserved) becomes provable.
+- **No new funding authority.** The base gang's cover already funds
+  active+spares (its `payers` list has one segment per active pod AND per spare,
+  owned-before-borrowed — exactly the legacy `binder.Materialize` single-cover
+  model). Spares only needed emitting, binding, and minting.
+- **Emission.** `emitSparePods` emits `TotalSpares/gpusPerPod` unscheduled
+  **RoleSpare** intent pods, advisory-targeted at pack's spare placements.
+  `buildPod` renders a spare as a long-lived GPU **holder** (it reserves its
+  slice, runs no work until a swap promotes it — a true hot spare).
+- **Plugin.** Permit treats a spare as non-gating: it is funded by the base
+  gang (`verdict()` reports the decided outcome without triggering a decision)
+  and excluded from the active width count, so spares never gate admission.
+  PreBind mints a `RoleSpare` lease from a leftover payer (`PodLeaseWithRole`).
+  `summarizeRunWidth` already skips spares.
+- **Swap consumes a spare.** `HandleNodeFailure` frees the held spare's pod on
+  the reclaimed node (so the swap pod can bind there) and `emitSparePods`
+  subtracts `consumedSpareCount` (RoleSpare leases closed with reason `Swap`) so
+  a promoted spare is not re-provisioned — its funded capacity now carries the
+  swapped-in active work.
+
+**Live proof `hack/e2e/swap-smoke.sh`:** a 2-node kind cluster, 1 active GPU + 1
+held spare (one per node). Cordoning the active node drives `HandleNodeFailure`
+→ reclaim + swap pod → the **plugin** mints the `Swap` lease on the former spare
+node **preserving provenance** (owner/budget/envelope), the run stays Running.
+No injected state; the plugin is the sole committer of the swap too.
 
 ## Sequencing
 1. **CASCADE-1** reservation activation (funded → emit; opportunistic → keep,

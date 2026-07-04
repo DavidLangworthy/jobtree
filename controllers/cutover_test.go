@@ -111,10 +111,18 @@ func seedSwapLease(t *testing.T, state *ClusterState, runName string, now time.T
 // activeIntentPods counts the unscheduled Active workload pods Reconcile emitted
 // for a run (the width it is requesting from the scheduler).
 func activeIntentPods(state *ClusterState, namespace, runName string) int {
+	return intentPodsByRole(state, namespace, runName, binder.RoleActive)
+}
+
+func spareIntentPods(state *ClusterState, namespace, runName string) int {
+	return intentPodsByRole(state, namespace, runName, binder.RoleSpare)
+}
+
+func intentPodsByRole(state *ClusterState, namespace, runName, role string) int {
 	n := 0
 	for i := range state.Pods {
 		p := &state.Pods[i]
-		if p.Namespace == namespace && p.Labels[binder.LabelRunName] == runName && p.Labels[binder.LabelRunRole] == binder.RoleActive {
+		if p.Namespace == namespace && p.Labels[binder.LabelRunName] == runName && p.Labels[binder.LabelRunRole] == role {
 			n++
 		}
 	}

@@ -136,7 +136,7 @@ func listRunPods(t *testing.T, runName string) []corev1.Pod {
 func waitForRunPods(t *testing.T, runName string, want int) []corev1.Pod {
 	t.Helper()
 	var pods []corev1.Pod
-	eventually(t, 15*time.Second, func() error {
+	eventually(t, 30*time.Second, func() error {
 		pods = listRunPods(t, runName)
 		if len(pods) != want {
 			return fmt.Errorf("%d pods, want %d", len(pods), want)
@@ -738,11 +738,36 @@ func TestNodeFailureSwapsToSpare(t *testing.T) {
 	if err := kubeClient.Create(suiteCtx, run); err != nil {
 		t.Fatalf("create run: %v", err)
 	}
-	// The manager emits the active gang's width of unscheduled intent pods;
-	// standing in for the plugin mints the active + spare leases and adopts.
-	intents := waitForRunPods(t, "resilient", 4)
+	// The manager emits the active gang's width of unscheduled intent pods AND
+	// the declared spares as held RoleSpare intent pods (CASCADE-3b) — real
+	// standby capacity, not an inert declaration. Standing in for the plugin
+	// mints the active + spare leases and adopts.
+	intents := waitForRunPods(t, "resilient", 6) // 4 active + 2 spare
+	active, spares2 := 0, 0
 	for _, pod := range intents {
-		assertIntentPod(t, pod, "resilient", 1)
+		switch pod.Labels[binder.LabelRunRole] {
+		case binder.RoleActive:
+			active++
+			assertIntentPod(t, pod, "resilient", 1)
+		case binder.RoleSpare:
+			spares2++
+			// A held spare is a real, unscheduled pod reserving one GPU with a
+			// long-lived holder container (it runs no work until a swap promotes it).
+			if pod.Spec.NodeName != "" {
+				t.Errorf("spare pod %s is bound to %q; a held spare intent pod must be unscheduled", pod.Name, pod.Spec.NodeName)
+			}
+			if pod.Spec.SchedulerName != schedulerName {
+				t.Errorf("spare pod %s schedulerName = %q, want %q", pod.Name, pod.Spec.SchedulerName, schedulerName)
+			}
+			if pod.Annotations[PodGPUAnnotation] != "1" {
+				t.Errorf("spare pod %s gpus annotation = %q, want 1 (it reserves the slice)", pod.Name, pod.Annotations[PodGPUAnnotation])
+			}
+		default:
+			t.Errorf("unexpected pod role %q on %s", pod.Labels[binder.LabelRunRole], pod.Name)
+		}
+	}
+	if active != 4 || spares2 != 2 {
+		t.Fatalf("emitted %d active + %d spare intent pods, want 4 + 2", active, spares2)
 	}
 	seedPluginLeases(t, "resilient")
 	waitForRunPhase(t, "resilient", "Running")
@@ -869,7 +894,7 @@ func TestSpareNodeFailureIsAbsorbed(t *testing.T) {
 	if err := kubeClient.Create(suiteCtx, run); err != nil {
 		t.Fatalf("create run: %v", err)
 	}
-	waitForRunPods(t, "steady", 4)
+	waitForRunPods(t, "steady", 6) // 4 active + 2 held spare (CASCADE-3b)
 	seedPluginLeases(t, "steady")
 	waitForRunPhase(t, "steady", "Running")
 

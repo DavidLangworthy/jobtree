@@ -164,6 +164,20 @@ func (m *gangManager) claimPayer(pod *corev1.Pod) (cover.Segment, int, bool) {
 	return g.payers[idx], g.gpusPerPod, true
 }
 
+// verdict reports a gang's decided funding outcome without triggering a
+// decision. A held spare uses it to allow itself once the active gang has
+// funded (its base cover already paid for the spares), rather than gating the
+// active width. decided is false until the active completer runs decide.
+func (m *gangManager) verdict(pod *corev1.Pod) (fundable, decided bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	g := m.gangs[gangKey(pod)]
+	if g == nil || !g.decided {
+		return false, false
+	}
+	return g.fundable, true
+}
+
 // forget drops a gang's state (on Unreserve of an unbound member) so a later
 // retry re-decides against fresh state. It is a no-op once any pod has claimed
 // a payer, since those leases are (being) minted and must not be re-derived.

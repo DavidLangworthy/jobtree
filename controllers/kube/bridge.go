@@ -327,13 +327,24 @@ func (b *Bridge) apply(ctx context.Context, snap *worldSnapshot) error {
 func buildPod(manifest binder.PodManifest, run *v1.Run) *corev1.Pod {
 	var spec corev1.PodSpec
 	targetIdx := 0
-	if run != nil && len(run.Spec.Roles) > 0 {
+	switch {
+	case manifest.Labels[binder.LabelRunRole] == binder.RoleSpare:
+		// A hot spare reserves its GPU but runs no work: it holds the slice until
+		// a node-failure swap promotes it (the swap pod runs the real workload).
+		// So it never runs the researcher's container — a long-lived holder that
+		// simply occupies the GPU, terminated by the controller when reclaimed.
+		spec = corev1.PodSpec{Containers: []corev1.Container{{
+			Name:    v1.GPUTargetContainerName,
+			Image:   defaultWorkloadImage,
+			Command: []string{"sh", "-c", "echo jobtree-hot-spare; sleep 2147483647"},
+		}}}
+	case run != nil && len(run.Spec.Roles) > 0:
 		role := &run.Spec.Roles[0]
 		spec = *role.Template.Spec.DeepCopy()
 		if idx := role.GPUTargetContainerIndex(); idx >= 0 {
 			targetIdx = idx
 		}
-	} else {
+	default:
 		spec = corev1.PodSpec{Containers: []corev1.Container{{
 			Name:    v1.GPUTargetContainerName,
 			Image:   defaultWorkloadImage,
