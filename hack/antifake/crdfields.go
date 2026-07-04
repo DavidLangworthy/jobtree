@@ -31,11 +31,13 @@ import (
 // the allowlist file.
 //
 // Raised 4->6 on feat/workload-trunk for the two in-flight roles-API seam
-// fields RunRole.Template + RunRole.GPUsPerPod (added by #28; their consumer,
-// the Run→JobSet lowering, is JOBSET-2, in progress on this trunk). They
-// ratchet back off — and this cap back to 4 — the moment pkg/lowering reads
-// them; this bump must be shrunk again before the trunk merges to main.
-const maxAllowedUnreadCRDFields = 6
+// fields RunRole.Template + RunRole.GPUsPerPod (added by #28). RunRole.Template
+// gained a real reader in the P2b cutover — controllers/kube/bridge.go's
+// buildPod deep-copies role.Template.Spec to render the real workload pod — so
+// it came off the allowlist and this cap shrank 6->5. RunRole.GPUsPerPod is the
+// last seam field; it ratchets off (cap back to 4) once the lowering/overlay
+// reads it. This must reach 4 before the trunk merges to main.
+const maxAllowedUnreadCRDFields = 5
 
 const crdFieldsAllowlistName = "crd-fields-allowlist.txt"
 
