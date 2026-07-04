@@ -121,6 +121,7 @@ func runSuite(m *testing.M) int {
 		Client:    mgr.GetClient(),
 		APIReader: mgr.GetAPIReader(),
 		Clock:     clock,
+		Recorder:  mgr.GetEventRecorderFor("jobtree"),
 	}
 	suiteBridge = bridge
 	if err := (&RunReconciler{Bridge: bridge}).SetupWithManager(mgr); err != nil {

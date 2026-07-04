@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
@@ -56,6 +57,13 @@ func buildPlanPayload(state *controllers.ClusterState, opts *RootOptions, run *v
 		}
 		if reservation != nil && reservation.Status.Forecast.Confidence != "" {
 			rows = append(rows, []string{"Confidence", reservation.Status.Forecast.Confidence})
+		}
+		// Remedies are computed from real scope signals (pkg/forecast) —
+		// unfunded/spare capacity and malleable runs actually present — not
+		// a fabricated transcript; print exactly what the forecast emitted,
+		// including when that is just the lottery backstop.
+		if reservation != nil && len(reservation.Status.Forecast.Remedies) > 0 {
+			rows = append(rows, []string{"Remedies", strings.Join(reservation.Status.Forecast.Remedies, "; ")})
 		}
 	}
 	raw := map[string]interface{}{

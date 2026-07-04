@@ -74,5 +74,9 @@ Enable resilient execution by provisioning per-group spares, running opportunist
 - **Unreliable failure signals:** Use multiple signal sources (Node condition, device plugin health) and configurable debounce timers.
 
 ## Open Questions
-- Should spare usage be billed at full rate or discounted? Policy decision pending finance alignment.
+- ~~Should spare usage be billed at full rate or discounted?~~ **Decided 2026-07-04 (see
+  `docs/project/quota-semantics.md`): full rate, no discount.** `pkg/funding/evaluate.go`'s
+  `accrue`/`commit` charge spare leases the same as active ones (`Slice.Role` is not consulted in
+  the charge path); Budget/Run status track spare width/hours as a separate *reporting* bucket
+  only. Revisit if finance alignment produces an actual discount policy.
 - Do we need multi-spare tiers (warm vs. cold)? Collect data post-launch.

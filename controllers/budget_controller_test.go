@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	"github.com/davidlangworthy/jobtree/pkg/funding"
 	"github.com/davidlangworthy/jobtree/pkg/keys"
@@ -133,4 +135,51 @@ func valueOrNil(v *int64) interface{} {
 		return nil
 	}
 	return *v
+}
+
+// TestReconcileBudgetPendingRenewals proves audit finding #22 fixed:
+// spec.autoRenew is read by the budget controller and changes the output
+// (PendingRenewals) — it is not merely accepted and ignored. The window's
+// End is unaffected either way (renewal reports due, it does not itself
+// rotate the window).
+func TestReconcileBudgetPendingRenewals(t *testing.T) {
+	now := time.Date(2025, 11, 1, 12, 0, 0, 0, time.UTC)
+	closingSoon := v1.NewTime(now.Add(2 * time.Hour))
+	farOut := v1.NewTime(now.Add(30 * 24 * time.Hour))
+
+	baseSpec := v1.BudgetSpec{
+		Owner: "org:a",
+		Envelopes: []v1.BudgetEnvelope{
+			{Name: "closing-soon", Flavor: "H100", Selector: map[string]string{"region": "us-west"}, Concurrency: 4, End: &closingSoon},
+			{Name: "far-out", Flavor: "H100", Selector: map[string]string{"region": "us-west"}, Concurrency: 4, End: &farOut},
+		},
+	}
+
+	t.Run("no AutoRenew yields no pending renewals", func(t *testing.T) {
+		budgetObj := &v1.Budget{ObjectMeta: v1.ObjectMeta{Name: "budget-no-renew"}, Spec: baseSpec}
+		bc := NewBudgetController(fakeClock{now: now}, NewBudgetMetrics())
+		ev := funding.Evaluate(funding.Input{Budgets: []v1.Budget{*budgetObj}, Now: now})
+		status := bc.ReconcileBudget(budgetObj, ev)
+		if len(status.PendingRenewals) != 0 {
+			t.Fatalf("expected no pending renewals without spec.autoRenew, got %+v", status.PendingRenewals)
+		}
+	})
+
+	t.Run("AutoRenew flags only the envelope closing within notifyBefore", func(t *testing.T) {
+		specWithRenew := baseSpec
+		specWithRenew.AutoRenew = &v1.AutoRenewSchedule{
+			Period:       metav1.Duration{Duration: 30 * 24 * time.Hour},
+			NotifyBefore: metav1.Duration{Duration: 4 * time.Hour},
+		}
+		budgetObj := &v1.Budget{ObjectMeta: v1.ObjectMeta{Name: "budget-with-renew"}, Spec: specWithRenew}
+		bc := NewBudgetController(fakeClock{now: now}, NewBudgetMetrics())
+		ev := funding.Evaluate(funding.Input{Budgets: []v1.Budget{*budgetObj}, Now: now})
+		status := bc.ReconcileBudget(budgetObj, ev)
+		if len(status.PendingRenewals) != 1 {
+			t.Fatalf("expected exactly 1 pending renewal, got %+v", status.PendingRenewals)
+		}
+		if status.PendingRenewals[0].Name != "closing-soon" {
+			t.Fatalf("expected closing-soon to be pending renewal, got %+v", status.PendingRenewals[0])
+		}
+	})
 }

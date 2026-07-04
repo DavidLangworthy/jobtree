@@ -12,10 +12,15 @@ func TestMetricsRecording(t *testing.T) {
 	Reset()
 
 	ObserveAdmission("H100", "bound", 150*time.Millisecond)
-	SetReservationBacklog("H100", 3600)
+	ObserveForecastLatency("H100", 25*time.Millisecond)
+	SetReservationBacklog("default/train-res-1", "H100", 3600)
 	IncResolverAction("Lottery")
 	RecordBudgetUsage("org", "bud", "env", "H100", BudgetUsage{Owned: 32, Shared: 5, Borrowed: 8, Unfunded: 3, Spare: 4})
 	SetSpareUsage("H100", 6)
+	IncElasticGrow("H100")
+	IncElasticGrow("H100")
+	IncElasticShrink("H100")
+	SetElasticWidth("default/train", 128)
 
 	snap := Snapshot()
 
@@ -30,8 +35,16 @@ func TestMetricsRecording(t *testing.T) {
 		t.Fatalf("expected histogram sum close to 0.150, got %f", hist.Sum)
 	}
 
-	if v := snap.ReservationBacklog["H100"]; v != 3600 {
-		t.Fatalf("expected backlog 3600, got %f", v)
+	forecastHist, ok := snap.ForecastLatency["H100"]
+	if !ok {
+		t.Fatalf("expected forecast latency entry for H100")
+	}
+	if forecastHist.Count != 1 {
+		t.Fatalf("expected forecast latency count 1, got %d", forecastHist.Count)
+	}
+
+	if v := snap.ReservationBacklog["default/train-res-1"]; v.Seconds != 3600 || v.Flavor != "H100" {
+		t.Fatalf("expected backlog {H100 3600}, got %+v", v)
 	}
 
 	if v := snap.ResolverActions["Lottery"]; v != 1 {
@@ -50,16 +63,42 @@ func TestMetricsRecording(t *testing.T) {
 	if v := snap.SpareUsage["H100"]; v != 6 {
 		t.Fatalf("expected spare usage 6, got %f", v)
 	}
+
+	if v := snap.ElasticGrows["H100"]; v != 2 {
+		t.Fatalf("expected 2 elastic grows, got %f", v)
+	}
+	if v := snap.ElasticShrinks["H100"]; v != 1 {
+		t.Fatalf("expected 1 elastic shrink, got %f", v)
+	}
+	if v := snap.ElasticWidth["default/train"]; v != 128 {
+		t.Fatalf("expected elastic width 128, got %f", v)
+	}
+
+	// Clearing removes the series entirely rather than zeroing it in place,
+	// so a completed reservation/run does not linger in the gauge forever.
+	ClearReservationBacklog("default/train-res-1")
+	ClearElasticWidth("default/train")
+	snap = Snapshot()
+	if _, ok := snap.ReservationBacklog["default/train-res-1"]; ok {
+		t.Fatalf("expected reservation backlog entry to be cleared")
+	}
+	if _, ok := snap.ElasticWidth["default/train"]; ok {
+		t.Fatalf("expected elastic width entry to be cleared")
+	}
 }
 
 func TestWritePrometheus(t *testing.T) {
 	Reset()
 	ObserveAdmission("H100", "bound", 100*time.Millisecond)
-	SetReservationBacklog("H100", 120)
+	ObserveForecastLatency("H100", 10*time.Millisecond)
+	SetReservationBacklog("default/train-res-1", "H100", 120)
 	IncResolverAction("Shrink")
 	// All five derived classes are exposed per envelope (R14/R15).
 	RecordBudgetUsage("org", "bud", "env", "H100", BudgetUsage{Owned: 10, Shared: 6, Borrowed: 2, Unfunded: 5, Spare: 1})
 	SetSpareUsage("H100", 3)
+	IncElasticGrow("H100")
+	IncElasticShrink("H100")
+	SetElasticWidth("default/train", 64)
 
 	var buf bytes.Buffer
 	WritePrometheus(&buf)
@@ -67,7 +106,8 @@ func TestWritePrometheus(t *testing.T) {
 
 	for _, needle := range []string{
 		"jobtree_runs_admission_latency_seconds_count{flavor=\"H100\",result=\"bound\"} 1",
-		"jobtree_reservations_backlog_seconds{flavor=\"H100\"} 120",
+		"jobtree_forecast_latency_seconds_count{flavor=\"H100\"} 1",
+		"jobtree_reservations_backlog_seconds{flavor=\"H100\",reservation=\"default/train-res-1\"} 120",
 		"jobtree_resolver_actions_total{kind=\"Shrink\"} 1",
 		"jobtree_budgets_concurrency_gpus{budget=\"bud\",class=\"owned\",envelope=\"env\",flavor=\"H100\",owner=\"org\"} 10",
 		"jobtree_budgets_concurrency_gpus{budget=\"bud\",class=\"shared\",envelope=\"env\",flavor=\"H100\",owner=\"org\"} 6",
@@ -75,6 +115,9 @@ func TestWritePrometheus(t *testing.T) {
 		"jobtree_budgets_concurrency_gpus{budget=\"bud\",class=\"unfunded\",envelope=\"env\",flavor=\"H100\",owner=\"org\"} 5",
 		"jobtree_budgets_concurrency_gpus{budget=\"bud\",class=\"spare\",envelope=\"env\",flavor=\"H100\",owner=\"org\"} 1",
 		"jobtree_spares_concurrency_gpus{flavor=\"H100\"} 3",
+		"jobtree_elastic_grows_total{flavor=\"H100\"} 1",
+		"jobtree_elastic_shrinks_total{flavor=\"H100\"} 1",
+		"jobtree_elastic_width_current{run=\"default/train\"} 64",
 	} {
 		if !strings.Contains(output, needle) {
 			t.Fatalf("expected output to contain %q, got:\n%s", needle, output)

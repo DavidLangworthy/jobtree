@@ -405,8 +405,11 @@ func TestReservationActivatesWhenCapacityArrives(t *testing.T) {
 	if err := kubeClient.Get(suiteCtx, types.NamespacedName{Namespace: "default", Name: resName}, &res); err != nil {
 		t.Fatalf("get reservation: %v", err)
 	}
-	if got, want := res.Spec.EarliestStart.Time, baseTime.Add(15*time.Minute); !got.Equal(want) {
-		t.Errorf("earliestStart = %s, want %s (conservative activation lead)", got, want)
+	// The activation lead is data-driven (forecast.go): a base 15-minute
+	// lead plus 30s per deficit GPU, so a 4-GPU deficit adds 2 minutes
+	// instead of promising the same flat window regardless of size.
+	if got, want := res.Spec.EarliestStart.Time, baseTime.Add(17*time.Minute); !got.Equal(want) {
+		t.Errorf("earliestStart = %s, want %s (deficit-scaled activation lead)", got, want)
 	}
 	if res.Spec.RunRef != (v1.RunReference{Name: "train8", Namespace: "default"}) {
 		t.Errorf("reservation runRef = %+v", res.Spec.RunRef)
@@ -426,7 +429,7 @@ func TestReservationActivatesWhenCapacityArrives(t *testing.T) {
 	// pace the pokes and, when a reschedule pushed EarliestStart out, march
 	// the clock past it.
 	createH100Node(t, "node-b", 4)
-	clock.Set(baseTime.Add(16 * time.Minute))
+	clock.Set(baseTime.Add(18 * time.Minute))
 	attempt := 0
 	eventually(t, 30*time.Second, func() error {
 		var current v1.Run

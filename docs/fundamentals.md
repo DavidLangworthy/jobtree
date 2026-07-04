@@ -39,7 +39,7 @@ $$
 - **Lowering**: if \(g\) is present the run becomes \(m = \lceil G/g \rceil\) placement groups of \(g\) GPUs (write this \(\text{SHARD}(m)\)); if \(g\) is absent it is a soft grouping hint. A **malleable** run carries an elastic width in \([\text{min},\text{max}]\) stepped by \(\text{step}\) toward \(\text{desired}\) (default \(\text{max}\)); write this \(\text{INCR}\).
 - **funding** carries the run’s borrowing intent: `allowBorrow` and a `sponsors` list gate the sponsor path in §4; family sharing needs none of this.
 - **follow** joins runs into a workflow (a "job forest"): the run is not admitted until every run in `after` (same namespace) reaches `Completed`. This is a minimal dependency edge, not a combinator engine — `AND` is the conjunction over `after`, and there is no `SEQ`/`SHARD` composition language (§10).
-- `SHARD`/`INCR` are descriptive names for grouping and elasticity, not a combinator engine; general DAG composition across components and `checkpoint`-driven restart are **not yet built** (§10).
+- `SHARD`/`INCR` are descriptive names for grouping and elasticity, not a combinator engine; general DAG composition across components is **not yet built** (§10). `checkpoint` *is* wired — as a bounded safe-requeue window on an unspared node failure, not restore of in-process model state (§10).
 
 ### Reservations
 
@@ -173,7 +173,7 @@ The shortfall splits along two axes — physical capacity and budget:
 ### Failure and spares
 
 - **Swap-from-spare**: if node \(n\) fails inside a bundle that has a spare in the same domain, end the failed lease (reason \(\text{NodeFailure}\)), reclaim any unfunded filler, and start the spare as active (reason \(\text{Swap}\) or \(\text{ReclaimedBySpare}\)). The promoted lease inherits the spare’s payer facts, so the derivation re-classifies it automatically.
-- **No in-domain spare**: end the affected leases and mark the run **Failed**. Checkpoint-driven restart / abort-and-requeue is **not yet built** (§10) — a node loss without spare coverage is currently terminal.
+- **No in-domain spare**: end the affected lease. If `spec.runtime.checkpoint` is a positive duration, the run parks **Pending** with `status.checkpointDeadline = now + checkpoint` and re-enters normal admission (bind directly, or reserve-and-wait) until that deadline; otherwise, or once the deadline passes without recovering capacity, the run is marked **Failed**. This is a bounded *safe-requeue* window, not checkpoint-restore of in-process model state (§10) — the workload container itself carries no state to restore.
 
 ### Elasticity (INCR)
 
@@ -208,7 +208,7 @@ Run: owner RAI, totalGPUs=128, groupGPUs=64, allowCrossGroupSpread=true. Supply:
 ## 9. Mapping to CRDs and controller behavior
 
 - **Budget ↔ envelopes**: selector, concurrency, optional window (`start`/`end`), optional `maxGPUHours`, `sharing`, `preActivation`, `lending` ACLs, and aggregate caps — plus `Budget.spec.parents`, the family DAG from which the whole proximity/sharing/recall order derives.
-- **Run ↔ surface spec**: `totalGPUs`, `groupGPUs`, `allowCrossGroupSpread`, malleable `{min,max,step,desired}`, `spares`, and `funding = {allowBorrow, maxBorrowGPUs, sponsors}`; `checkpoint` is accepted but not yet acted on. `Run.status.funding` reports the derived four-class breakdown with per-lender attribution.
+- **Run ↔ surface spec**: `totalGPUs`, `groupGPUs`, `allowCrossGroupSpread`, malleable `{min,max,step,desired}`, `spares`, and `funding = {allowBorrow, maxBorrowGPUs, sponsors}`; `checkpoint` bounds the safe-requeue window on an unspared node failure (§ Failure and spares). `Run.status.funding` reports the derived four-class breakdown with per-lender attribution.
 - **Reservation ↔ CRD**: `runRef`, `intendedSlice`, `payingEnvelope`, `earliestStart` (spec immutable). Status evolves **Pending → Released** (reason `Activated`), or **Pending → Failed** for a run that vanished or cannot be kept.
 - **Lease ↔ CRD/event**: `runRef`, nodes (GPU slots), `role` \(\in \{\text{Active},\text{Spare}\}\), `paidByEnvelope`, `interval.start`, `reason` (immutable once recorded; closed with End events). Funding class is **derived**, not a stored field.
 - **Conflict resolution**: the consolidated cut order (unfunded → spares → shrink → lottery) and the published seed match the controller’s deterministic path; the ranking (not a priority) decides who is cut first.
@@ -219,7 +219,7 @@ Run: owner RAI, totalGPUs=128, groupGPUs=64, allowCrossGroupSpread=true. Supply:
 Some vocabulary above names concepts the surface accepts but the controllers do not yet act on. They are kept in the calculus as intent, not as implemented behavior:
 
 - **General DAG composition** (`SEQ`/`SHARD` combinators across multi-component runs) and a lease `compPath` provenance field — today a run lowers directly to groups; the `compPath` field exists but is unpopulated. The common ordering case this was meant to serve is now delivered by `follow` (§2, §6): runs joined by dependency edges, conjunction over `after`. A full combinator language remains out of scope.
-- **Checkpoint-driven restart / abort-and-requeue** — `Run.spec.runtime.checkpoint` is accepted but unused; a node failure without in-domain spare coverage is currently a terminal `Failed`, not a checkpoint requeue. This is the one gap with clear product value.
-- **AutoRenew rotation** of open-ended envelopes — a declared schedule with no behavior yet; window-reopen re-funding already falls out of the evaluation arithmetic without it.
+- **Checkpoint-driven restart of in-process model state** — `Run.spec.runtime.checkpoint` now bounds a real *safe-requeue window* (a node failure without in-domain spare coverage parks the run Pending, retrying admission, until the checkpoint deadline; only then does it fail). What remains not-yet-built is restoring the *training process's own state* — the workload container carries none to restore, so this is a scheduling-level grace period, not a checkpoint/restore mechanism.
+- **AutoRenew auto-extension** of open-ended envelopes — `Budget.spec.autoRenew` is read: `BudgetStatus.pendingRenewals` lists envelopes whose window closes within `notifyBefore`. It does not itself extend `end` (window rotation stays an explicit operator action); window-reopen re-funding already falls out of the evaluation arithmetic once an operator does rotate it.
 
 The calculus above is deliberately small: one funding evaluation (Cover, classifying rather than gating), one placement function (Pack), immutable lease facts, and a deterministic, ranking-first pathway for contention. It is sufficient to analyze work-conservation, borrowing fairness, and reservation soundness while matching the implementation and CRD vocabulary.

@@ -210,6 +210,27 @@ spec:
               observedGeneration:
                 format: int64
                 type: integer
+              pendingRenewals:
+                description: |-
+                  PendingRenewals lists envelopes whose window is closing within
+                  spec.autoRenew.notifyBefore and have not yet been rotated by an
+                  operator. Populated only when spec.autoRenew is set; an unset
+                  AutoRenew always yields an empty list (the real, non-fabricated
+                  reader of spec.autoRenew — see quota-semantics.md).
+                items:
+                  description: EnvelopeRenewalDue reports one envelope whose window
+                    needs rotating.
+                  properties:
+                    end:
+                      format: date-time
+                      type: string
+                    name:
+                      type: string
+                  required:
+                  - end
+                  - name
+                  type: object
+                type: array
               updatedAt:
                 format: date-time
                 type: string

@@ -171,8 +171,32 @@ func (c *BudgetController) ReconcileBudget(budgetObj *v1.Budget, ev *funding.Eva
 		AggregateHeadroom: aggregateHeadroom,
 		Usage:             usage,
 		UpdatedAt:         ptrTime(v1.NewTime(ev.Now)),
+		PendingRenewals:   pendingRenewals(budgetObj, ev.Now),
 	}
 	return updated
+}
+
+// pendingRenewals is the real reader of spec.autoRenew (audit finding #22):
+// when set, any time-scoped envelope whose End falls within notifyBefore of
+// now (or has already passed) is reported so an operator can rotate it. An
+// unset AutoRenew — the field's default — always yields an empty list; it
+// does not itself extend any window (windows stay operator-controlled), it
+// only surfaces that a rotation is due.
+func pendingRenewals(budgetObj *v1.Budget, now time.Time) []v1.EnvelopeRenewalDue {
+	if budgetObj.Spec.AutoRenew == nil {
+		return nil
+	}
+	notifyBefore := budgetObj.Spec.AutoRenew.NotifyBefore.Duration
+	var due []v1.EnvelopeRenewalDue
+	for _, env := range budgetObj.Spec.Envelopes {
+		if env.End == nil {
+			continue
+		}
+		if !now.Before(env.End.Time.Add(-notifyBefore)) {
+			due = append(due, v1.EnvelopeRenewalDue{Name: env.Name, End: *env.End})
+		}
+	}
+	return due
 }
 
 func (c *BudgetController) updateMetrics(budgetObj *v1.Budget, acct *funding.EnvelopeAccount) {

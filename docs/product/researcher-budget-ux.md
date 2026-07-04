@@ -19,8 +19,11 @@ Budgets, Reservations, and Leases.
 3. **Plan a large run**
    * While filling run details, the UX displays a cost calculator referencing relevant envelopes and
      any sponsor budgets.
-   * If the run cannot start now, it immediately shows the reservation countdown and the probability
-     of cuts (leveraging forecasting APIs).
+   * If the run cannot start now, it immediately shows the reservation countdown (`status.earliestStart`,
+     which scales with the size of the capacity deficit) and the real `remedies` list
+     (`pkg/forecast`). **Not yet built:** a numeric "probability of cuts" — no such field or
+     computation exists today (there is no `conflictSet`/kill-probability on any type); this
+     journey should not promise one until it is.
 
 ## 2. Surfaces
 

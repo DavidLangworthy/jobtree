@@ -9,10 +9,13 @@ The controller manager exposes Prometheus metrics on the configured metrics port
 | Metric | Description |
 | ------ | ----------- |
 | `jobtree_runs_admission_latency_seconds` | Histogram of run admission attempts labelled by outcome (`bound`, `reserved`, `waiting`, `error`). |
-| `jobtree_reservations_backlog_seconds` | Gauge tracking forecasted backlog per GPU flavor. |
-| `jobtree_resolver_actions_total` | Counter of resolver actions segmented by `kind` (`DropSpare`, `Shrink`, `Lottery`). |
+| `jobtree_forecast_latency_seconds` | Histogram of time spent in `forecast.Plan`, labelled by flavor — an inline call inside the `run` reconciler, not a separate controller. |
+| `jobtree_reservations_backlog_seconds` | Gauge tracking forecasted backlog **per pending reservation** (`reservation`, `flavor` labels — not collapsed by flavor alone), refreshed while Pending and cleared on activation/release. |
+| `jobtree_resolver_actions_total` | Counter of resolver actions segmented by `kind` (`ReclaimUnfunded`, `DropSpare`, `Shrink`, `Lottery`). |
 | `jobtree_budgets_concurrency_gpus` | Gauge for concurrency per envelope by derived funding class (`owned`, `shared`, `borrowed`, `unfunded`) plus the `spare` role, on the `class` label. |
 | `jobtree_spares_concurrency_gpus` | Aggregate spare usage per flavor. |
+| `jobtree_elastic_grows_total` / `jobtree_elastic_shrinks_total` | Counters of successful elastic grow/shrink steps, per flavor. |
+| `jobtree_elastic_width_current` | Gauge of a malleable run's current allocated width, per run. |
 
 ### Scraping
 
@@ -37,6 +40,17 @@ estimate by setting the pod annotation `rq.davidlangworthy.io/eta` to an RFC3339
 controller mirrors the latest such annotation across the gang into `status.eta` (`source: job`). For
 demos, `kubectl runs eta <run> <RFC3339>` sets it directly (`source: controller`). `kubectl runs
 explain` shows it, and dashboards can read the field when present.
+
+## Events
+
+Beyond metrics, the manager emits real Kubernetes `Events` on the affected `Run` (via
+`client-go`'s `EventRecorder`) at admission, reservation, activation, resolver action (Warning,
+carrying the attested lottery/reclaim seed in the reason), node-failure swap, and completion:
+
+```bash
+kubectl get events --field-selector involvedObject.kind=Run
+kubectl describe run <run>
+```
 
 ## Alerting
 

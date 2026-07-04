@@ -80,8 +80,11 @@ first when Reservations activate. The new width tracking means the controller
 can reconcile back to the desired width after the deficit clears, and reporting
 shows deterministic shrink versus lottery outcomes.
 
-## What’s next
+## Observability
 
-- A `kubectl runs shrink` helper will wrap the `desiredTotalGPUs` patch.
-- Metrics (`elastic_grows_total`, `elastic_shrinks_total`,
-  `elastic_width_current`) will follow in M9.
+- `kubectl runs shrink <run> --by <n>` wraps the `desiredTotalGPUs` patch shown above.
+- `jobtree_elastic_grows_total{flavor="..."}` and `jobtree_elastic_shrinks_total{flavor="..."}`
+  count successful grow/shrink steps; `jobtree_elastic_width_current{run="<ns>/<name>"}` tracks
+  each malleable run's live allocated width. All three are emitted from `growRun`/`shrinkRun`'s
+  actual success points (`pkg/metrics`, asserted via `metrics.Snapshot()` in
+  `controllers/run_controller_test.go`), not aspirational — M9 is genuinely done on this front.

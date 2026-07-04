@@ -76,6 +76,10 @@ func main() {
 		APIReader: mgr.GetAPIReader(),
 		Clock:     controllers.RealClock{},
 		Period:    accountingPeriod,
+		// Real corev1.Events for admit/reserve/activate/resolver-action/
+		// swap/complete transitions (audit findings #9 event streams, #23
+		// attested seed never logged).
+		Recorder: mgr.GetEventRecorderFor("jobtree"),
 	}
 
 	if err := (&kube.RunReconciler{Bridge: bridge}).SetupWithManager(mgr); err != nil {

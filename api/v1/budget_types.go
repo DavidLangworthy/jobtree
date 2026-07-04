@@ -95,6 +95,18 @@ type BudgetStatus struct {
 	AggregateHeadroom  []AggregateHeadroom `json:"aggregateHeadroom,omitempty"`
 	Usage              []EnvelopeUsage     `json:"usage,omitempty"`
 	UpdatedAt          *metav1.Time        `json:"updatedAt,omitempty"`
+	// PendingRenewals lists envelopes whose window is closing within
+	// spec.autoRenew.notifyBefore and have not yet been rotated by an
+	// operator. Populated only when spec.autoRenew is set; an unset
+	// AutoRenew always yields an empty list (the real, non-fabricated
+	// reader of spec.autoRenew — see quota-semantics.md).
+	PendingRenewals []EnvelopeRenewalDue `json:"pendingRenewals,omitempty"`
+}
+
+// EnvelopeRenewalDue reports one envelope whose window needs rotating.
+type EnvelopeRenewalDue struct {
+	Name string      `json:"name"`
+	End  metav1.Time `json:"end"`
 }
 
 // EnvelopeUsage reports an envelope's width split by derived funding class

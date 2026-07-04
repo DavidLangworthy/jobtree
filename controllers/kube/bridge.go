@@ -15,6 +15,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
@@ -49,8 +50,34 @@ type Bridge struct {
 	// Period is the accounting horizon for the funding derivation's
 	// admission lookahead (<= 0 uses funding.DefaultPeriod).
 	Period time.Duration
+	// Recorder emits real corev1.Events for the engine's admit/reserve/
+	// activate/resolver-action/swap/complete transitions. Nil is safe (no
+	// events are emitted); cmd/manager wires mgr.GetEventRecorderFor.
+	Recorder record.EventRecorder
 
 	mu sync.Mutex
+}
+
+// engineRecorder adapts a real client-go/controller-runtime EventRecorder to
+// the pure engine's minimal controllers.EventRecorder interface, so
+// pkg/controllers never has to import k8s.io/client-go itself.
+type engineRecorder struct{ rec record.EventRecorder }
+
+func (e engineRecorder) Event(run *v1.Run, eventType, reason, message string) {
+	if e.rec == nil || run == nil {
+		return
+	}
+	e.rec.Event(run, eventType, reason, message)
+}
+
+// recorderFor returns the engine-facing recorder adapter, or nil when the
+// Bridge has none configured (nil is a valid, safe controllers.EventRecorder
+// value — RunController.emit checks for it).
+func (b *Bridge) recorderFor() controllers.EventRecorder {
+	if b.Recorder == nil {
+		return nil
+	}
+	return engineRecorder{rec: b.Recorder}
 }
 
 type worldSnapshot struct {

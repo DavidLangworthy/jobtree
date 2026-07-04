@@ -40,7 +40,7 @@ kubectl runs --state my-cluster.json submit --file run-128-groups.json
 | `sponsors list/add` | Inspect or modify borrowing sponsors. |
 | `shrink` | Request a voluntary shrink for an elastic Run. |
 | `leases` | List leases (active and historical) for a Run. |
-| `completions` | Emit a lightweight bash completion script for the simulator. |
+| `completions bash\|zsh\|fish` | Generate a shell completion script from the real Cobra command tree (not a hand-maintained list — new subcommands are picked up automatically). |
 
 ## Output formats
 
