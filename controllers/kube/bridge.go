@@ -383,6 +383,16 @@ func buildPod(manifest binder.PodManifest, run *v1.Run) *corev1.Pod {
 	if run != nil && run.Spec.Resources.GPUType != "" {
 		annotations[binder.AnnotationFlavor] = run.Spec.Resources.GPUType
 	}
+	// Carry the run's per-incarnation nonce (a prefix of its UID) so the plugin's
+	// minted lease name is unique per incarnation — a delete+resubmit of a same-
+	// named Run cannot then alias the prior incarnation's closed lease (R2).
+	if run != nil && run.UID != "" {
+		uid := string(run.UID)
+		if len(uid) > 12 {
+			uid = uid[:12]
+		}
+		annotations[binder.AnnotationRunNonce] = uid
+	}
 	for _, k := range []string{
 		binder.AnnotationExpectedWidth, binder.AnnotationLeaseReason, binder.AnnotationCohort,
 		binder.AnnotationSwapNode, binder.AnnotationPayerOwner, binder.AnnotationPayerBudget, binder.AnnotationPayerEnvelope,

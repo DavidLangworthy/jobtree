@@ -3,6 +3,20 @@
 **Priority:** P0 (the load-bearing one) · **Design:** complete (Fable) · **Next:** Opus implements, Sonnet verifies
 **Depends on:** nothing hard; **enables** R1 (shares `PostBind` + sweep) and R3 (correct adoption width).
 
+> **Implementation status (see IMPLEMENTATION-LOG.md):**
+> - ✅ **Part 1 (pieces 1 + 4, merged):** Permit counts committed siblings
+>   (`committedCount`) so a transient-failure partial gang re-assembles instead of
+>   wedging; ABA lease-name nonce (`run-nonce`) so delete+resubmit mints a fresh
+>   open lease. Plugin-side, fully unit-tested.
+> - ⏳ **Part 2 (piece 3, next):** controller adopts at correct width (Degraded +
+>   re-emit missing) instead of flipping Running on any open lease.
+> - ⏳ **Part 3 / R2b (piece 2, follow-up):** full scheduler-restart reconstruction
+>   from open leases + delta re-funding of un-minted survivors. Part 1's
+>   committed-count is in-memory and does NOT survive a process restart, so a
+>   restart-mid-gang can still wedge until this lands; it is the hardest sub-part
+>   (needs cohort-labelled leases so leases can be grouped back into gangs, plus
+>   delta funding of the survivors like a grow cohort).
+
 ## Problem (evidence)
 
 After `Permit` allows a gang, members mint and bind **independently**. The gang

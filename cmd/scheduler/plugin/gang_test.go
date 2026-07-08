@@ -363,6 +363,50 @@ func TestGangPostBindGCsFullyMintedGang(t *testing.T) {
 	}
 }
 
+// R2: committedCount reports how many pods have claimed a payer, so Permit can
+// count already-committed siblings toward the gang width and let a lone survivor
+// re-assemble after a transient failure instead of wedging. It is 0 before any
+// pod commits (so the first funding decision still needs the full waiting set).
+func TestGangCommittedCount(t *testing.T) {
+	ctx := context.Background()
+	m := newManager(t, trainRun2Wide(), teamBudget(8), gpuNode("node-a", 4))
+	key := gangKey(twoWidePod("train-pod-0"))
+
+	if got := m.committedCount(key); got != 0 {
+		t.Fatalf("committedCount before decide = %d, want 0", got)
+	}
+	m.decide(ctx, twoWidePod("train-pod-0"))
+	if got := m.committedCount(key); got != 0 {
+		t.Errorf("committedCount after decide but before any claim = %d, want 0", got)
+	}
+	m.claimPayer(twoWidePod("train-pod-0"))
+	if got := m.committedCount(key); got != 1 {
+		t.Errorf("committedCount after 1 claim = %d, want 1", got)
+	}
+	m.claimPayer(twoWidePod("train-pod-1"))
+	if got := m.committedCount(key); got != 2 {
+		t.Errorf("committedCount after 2 claims = %d, want 2 (Permit: waiting+committed>=width de-wedges a lost member)", got)
+	}
+}
+
+// trainRun2Wide is a 2-GPU run whose gang is 2 pods of 1 GPU each — width 2, so a
+// single lost member is a partial gang the committed-count must be able to heal.
+func trainRun2Wide() *v1.Run {
+	return &v1.Run{
+		ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"},
+		Spec:       v1.RunSpec{Owner: "org:ai:team", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 2}},
+	}
+}
+
+func twoWidePod(name string) *corev1.Pod {
+	return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Namespace:   "default",
+		Name:        name,
+		Labels:      map[string]string{binder.LabelRunName: "train", binder.LabelRunRole: binder.RoleActive},
+		Annotations: map[string]string{binder.AnnotationGPUs: "1", binder.AnnotationExpectedWidth: "2", binder.AnnotationFlavor: "H100-80GB"},
+	}}
+}
+
 // R1: a gang with an unbound member is NOT GC'd by PostBind of the bound members
 // (it stays for recovery), and the TTL sweep is what eventually reclaims it if it
 // is abandoned. A fresh gang is never swept.

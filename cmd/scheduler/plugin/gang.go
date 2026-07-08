@@ -225,6 +225,21 @@ func (m *gangManager) verdict(pod *corev1.Pod) (fundable, decided bool) {
 	return g.fundable, true
 }
 
+// committedCount reports how many of a gang's pods have already claimed a payer
+// (are minting or minted). Permit adds this to the count of still-waiting members
+// so a gang that lost a member to a transient failure can re-assemble its full
+// width from the survivors instead of wedging (R2). It is 0 for a gang that has
+// not yet funded, so the first funding decision still requires the whole active
+// set to be simultaneously waiting.
+func (m *gangManager) committedCount(key string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if g := m.gangs[key]; g != nil {
+		return g.claimed
+	}
+	return 0
+}
+
 // forget drops a gang's state (on Unreserve of an unbound member) so a later
 // retry re-decides against fresh state. It is a no-op once any pod has claimed
 // a payer, since those leases are (being) minted and must not be re-derived.

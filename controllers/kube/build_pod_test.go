@@ -5,10 +5,37 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	"github.com/davidlangworthy/jobtree/pkg/binder"
 )
+
+// R2: buildPod stamps a per-incarnation run nonce (a 12-char prefix of the Run
+// UID) so the plugin's minted lease name is unique per incarnation — a
+// delete+resubmit of a same-named Run cannot alias the prior incarnation's
+// closed lease (the ABA hazard). A run with no UID (pure-engine tests) stamps
+// nothing, keeping the legacy lease name.
+func TestBuildPodStampsRunNonce(t *testing.T) {
+	run := &v1.Run{
+		ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default", UID: types.UID("0123456789abcdef-aaaa-bbbb")},
+		Spec:       v1.RunSpec{Owner: "org:ai:team", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 1}},
+	}
+	manifest := binder.PodManifest{
+		Namespace: "default", Name: "train-active-0", GPUs: 1,
+		Labels: map[string]string{binder.LabelRunName: "train", binder.LabelRunRole: binder.RoleActive},
+	}
+	pod := buildPod(manifest, run)
+	if got := pod.Annotations[binder.AnnotationRunNonce]; got != "0123456789ab" {
+		t.Errorf("run-nonce = %q, want the 12-char UID prefix %q", got, "0123456789ab")
+	}
+
+	// No UID → no nonce annotation (backward compatible).
+	run.UID = ""
+	if pod := buildPod(manifest, run); pod.Annotations[binder.AnnotationRunNonce] != "" {
+		t.Errorf("run-nonce = %q, want empty when the Run has no UID", pod.Annotations[binder.AnnotationRunNonce])
+	}
+}
 
 // buildPod must render a real, UNSCHEDULED pod: the researcher's container is
 // preserved, only scheduling-owned fields are overlaid, and nodeName is never
