@@ -17,6 +17,7 @@ import (
 	"github.com/davidlangworthy/jobtree/pkg/admission"
 	"github.com/davidlangworthy/jobtree/pkg/binder"
 	"github.com/davidlangworthy/jobtree/pkg/cover"
+	"github.com/davidlangworthy/jobtree/pkg/metrics"
 	"github.com/davidlangworthy/jobtree/pkg/topology"
 )
 
@@ -112,6 +113,48 @@ func TestGangDecideFundable(t *testing.T) {
 	other.Name = "train-pod-1"
 	if _, _, ok := m.claimPayer(other); ok {
 		t.Errorf("expected the 1-pod gang's funding to be exhausted for a second distinct pod")
+	}
+}
+
+// R4 hot-path observability: a gang decision records its latency (labeled by
+// outcome) and the size of the ledger it fed to the funding replay — the two
+// signals that make the caching/compaction cost observable.
+func TestDecideObservesHotPathMetrics(t *testing.T) {
+	metrics.Reset()
+	t.Cleanup(metrics.Reset)
+
+	// One unrelated open lease so the ledger fed to the replay is non-empty: the
+	// evaluate-input-size gauge must report it (the O(history) cost signal).
+	sibling := &v1.Lease{
+		ObjectMeta: v1.ObjectMeta{Name: "sibling-lease", Namespace: "default"},
+		Spec: v1.LeaseSpec{
+			Owner:          "org:ai:team",
+			RunRef:         v1.RunReference{Name: "sibling", Namespace: "default"},
+			Slice:          v1.LeaseSlice{Nodes: []string{"node-a#0", "node-a#1"}, Role: binder.RoleActive},
+			PaidByBudget:   "team",
+			PaidByEnvelope: "west",
+		},
+	}
+	m := newManager(t, trainRun(), teamBudget(8), gpuNode("node-a", 8), sibling)
+
+	if fundable, reason := m.decide(context.Background(), gangPod()); !fundable {
+		t.Fatalf("expected fundable, got: %s", reason)
+	}
+	snap := metrics.Snapshot()
+	if got := snap.DecideLatency["fundable"].Count; got != 1 {
+		t.Errorf("expected one fundable decide observed, got count %d", got)
+	}
+	if snap.EvaluateInputSize != 1 {
+		t.Errorf("expected evaluate-input-size gauge = 1 (the one seeded lease fed to the replay), got %v", snap.EvaluateInputSize)
+	}
+
+	// An unfundable decision is labeled distinctly.
+	m2 := newManager(t, trainRun(), teamBudget(0), gpuNode("node-a", 8))
+	if fundable, _ := m2.decide(context.Background(), gangPod()); fundable {
+		t.Fatalf("expected not-fundable (zero-concurrency envelope)")
+	}
+	if got := metrics.Snapshot().DecideLatency["unfundable"].Count; got != 1 {
+		t.Errorf("expected one unfundable decide observed, got count %d", got)
 	}
 }
 

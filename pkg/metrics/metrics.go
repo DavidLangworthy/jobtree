@@ -24,6 +24,8 @@ var (
 	elasticGrows       = make(map[string]float64)
 	elasticShrinks     = make(map[string]float64)
 	elasticWidth       = make(map[string]float64)
+	decideLatency      = make(map[string]*histogram)
+	evaluateInputSize  float64
 )
 
 var defaultBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
@@ -88,6 +90,35 @@ func ObserveForecastLatency(flavor string, dur time.Duration) {
 		forecastLatency[flavor] = hist
 	}
 	hist.observe(dur.Seconds())
+}
+
+// ObserveDecideLatency records how long one scheduler-plugin gang funding
+// decision took (the loadWorld snapshot plus admission.Feasible replay). result
+// is "fundable", "unfundable", or "error". This is the R4 hot-path signal: it
+// makes the cost of the sole committer's decision — and any regression from the
+// caching/compaction work — observable.
+func ObserveDecideLatency(result string, dur time.Duration) {
+	if result == "" {
+		return
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	hist, ok := decideLatency[result]
+	if !ok {
+		hist = newHistogram()
+		decideLatency[result] = hist
+	}
+	hist.observe(dur.Seconds())
+}
+
+// SetEvaluateInputSize records how many leases the last gang funding decision
+// fed to the funding evaluation (open ledger + folded phantoms). It is the
+// direct measure of the O(history) replay cost R4's compaction targets; watching
+// it flatten is how the compaction (R4 pt2) is verified in production.
+func SetEvaluateInputSize(leases float64) {
+	mu.Lock()
+	evaluateInputSize = leases
+	mu.Unlock()
 }
 
 // reservationBacklogEntry pairs the forecasted backlog with the flavor it
@@ -247,6 +278,8 @@ type MetricsSnapshot struct {
 	ElasticGrows       map[string]float64
 	ElasticShrinks     map[string]float64
 	ElasticWidth       map[string]float64
+	DecideLatency      map[string]Histogram
+	EvaluateInputSize  float64
 }
 
 // Snapshot returns the current metrics data for inspection/testing.
@@ -264,6 +297,8 @@ func Snapshot() MetricsSnapshot {
 		ElasticGrows:       make(map[string]float64, len(elasticGrows)),
 		ElasticShrinks:     make(map[string]float64, len(elasticShrinks)),
 		ElasticWidth:       make(map[string]float64, len(elasticWidth)),
+		DecideLatency:      make(map[string]Histogram, len(decideLatency)),
+		EvaluateInputSize:  evaluateInputSize,
 	}
 
 	for flavor, byResult := range admissionLatency {
@@ -313,6 +348,14 @@ func Snapshot() MetricsSnapshot {
 	for runKey, value := range elasticWidth {
 		snap.ElasticWidth[runKey] = value
 	}
+	for result, hist := range decideLatency {
+		snap.DecideLatency[result] = Histogram{
+			Buckets: append([]float64(nil), hist.buckets...),
+			Counts:  append([]uint64(nil), hist.counts...),
+			Count:   hist.count,
+			Sum:     hist.sum,
+		}
+	}
 
 	return snap
 }
@@ -330,6 +373,8 @@ func Reset() {
 	elasticGrows = make(map[string]float64)
 	elasticShrinks = make(map[string]float64)
 	elasticWidth = make(map[string]float64)
+	decideLatency = make(map[string]*histogram)
+	evaluateInputSize = 0
 }
 
 // Handler exposes the metrics using Prometheus' text exposition format.
@@ -464,6 +509,28 @@ func WritePrometheus(w io.Writer) {
 	for _, runKey := range sortedKeys(snap.ElasticWidth) {
 		writeSample(buf, "jobtree_elastic_width_current", map[string]string{"run": runKey}, formatFloat(snap.ElasticWidth[runKey]))
 	}
+
+	writeHeader(buf, "jobtree_plugin_decide_latency_seconds", "Time for the scheduler plugin's gang funding decision (world snapshot + admission.Feasible replay).", "histogram")
+	for _, result := range sortedKeys(snap.DecideLatency) {
+		hist := snap.DecideLatency[result]
+		cumulative := uint64(0)
+		for i, bound := range hist.Buckets {
+			cumulative = hist.Counts[i]
+			writeSample(buf, "jobtree_plugin_decide_latency_seconds_bucket", map[string]string{
+				"result": result,
+				"le":     formatFloat(bound),
+			}, strconv.FormatUint(cumulative, 10))
+		}
+		writeSample(buf, "jobtree_plugin_decide_latency_seconds_bucket", map[string]string{
+			"result": result,
+			"le":     "+Inf",
+		}, strconv.FormatUint(hist.Count, 10))
+		writeSample(buf, "jobtree_plugin_decide_latency_seconds_count", map[string]string{"result": result}, strconv.FormatUint(hist.Count, 10))
+		writeSample(buf, "jobtree_plugin_decide_latency_seconds_sum", map[string]string{"result": result}, formatFloat(hist.Sum))
+	}
+
+	writeHeader(buf, "jobtree_plugin_evaluate_input_leases", "Leases fed to the funding evaluation on the last gang decision (open ledger + folded phantoms); the O(history) replay cost R4 compaction targets.", "gauge")
+	writeSample(buf, "jobtree_plugin_evaluate_input_leases", nil, formatFloat(snap.EvaluateInputSize))
 
 	buf.Flush()
 }

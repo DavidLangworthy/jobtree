@@ -83,6 +83,11 @@ func New(ctx context.Context, _ apiruntime.Object, h fwk.Handle) (fwk.Plugin, er
 	if err != nil {
 		return nil, fmt.Errorf("jobtree plugin: build client: %w", err)
 	}
+	// Reads use the same direct, read-your-write client as writes. R4 pt1 landed
+	// only the hot-path observability metrics; the informer-cached reads it also
+	// proposed are deferred (R4 pt1b) because an eventually-consistent reader
+	// breaks the decide→mint fold's read-your-write invariant and can double-fund
+	// a gang — the fold and PostBind must be made staleness-robust first.
 	j := &JobTree{
 		handle: h,
 		client: c,

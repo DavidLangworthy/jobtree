@@ -15,6 +15,7 @@ import (
 	"github.com/davidlangworthy/jobtree/pkg/binder"
 	"github.com/davidlangworthy/jobtree/pkg/cover"
 	"github.com/davidlangworthy/jobtree/pkg/keys"
+	"github.com/davidlangworthy/jobtree/pkg/metrics"
 	"github.com/davidlangworthy/jobtree/pkg/topology"
 )
 
@@ -124,6 +125,7 @@ func podInt(pod *corev1.Pod, annotation string, def int) int {
 // waiting (including the caller), already confirmed >= expected width.
 func (m *gangManager) decide(ctx context.Context, pod *corev1.Pod) (fundable bool, reason string) {
 	key := gangKey(pod)
+	start := m.clock()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -139,9 +141,17 @@ func (m *gangManager) decide(ctx context.Context, pod *corev1.Pod) (fundable boo
 	g.lastTouched = m.clock()
 	g.gpusPerPod = podInt(pod, binder.AnnotationGPUs, 1)
 
+	// loadWorld and the pending fold below run UNDER m.mu, together and atomically:
+	// the fold retires another gang's phantom the instant its minted[i] flips, so
+	// the snapshot must reflect that gang's real lease at that same instant (the
+	// read-your-write the direct client gives). Reading a snapshot outside the lock
+	// — or from an eventually-consistent cache — breaks that invariant and can
+	// double-fund a gang; R4's cached/snapshot reads are therefore deferred to a
+	// part that first makes the fold + PostBind staleness-robust (see R4 spec pt1b).
 	world, run, err := m.loadWorld(ctx, pod)
 	if err != nil {
 		g.reason = fmt.Sprintf("load world: %v", err)
+		metrics.ObserveDecideLatency("error", m.clock().Sub(start))
 		return false, g.reason
 	}
 	// A grow cohort funds only its DELTA against the live ledger (which already
@@ -164,15 +174,20 @@ func (m *gangManager) decide(ctx context.Context, pod *corev1.Pod) (fundable boo
 			world.Leases = append(world.Leases, pl)
 		}
 	}
+	// The ledger size fed to the replay is the R4 hot-path cost signal (compaction
+	// pt2 will bound it to open leases).
+	metrics.SetEvaluateInputSize(float64(len(world.Leases)))
 
 	_, coverPlan, _, err := admission.Feasible(world)
 	if err != nil {
 		g.reason = err.Error()
+		metrics.ObserveDecideLatency("unfundable", m.clock().Sub(start))
 		return false, g.reason
 	}
 	payers, err := admission.PerPodPayer(coverPlan, g.gpusPerPod)
 	if err != nil {
 		g.reason = err.Error()
+		metrics.ObserveDecideLatency("unfundable", m.clock().Sub(start))
 		return false, g.reason
 	}
 	g.payers = payers
@@ -180,6 +195,7 @@ func (m *gangManager) decide(ctx context.Context, pod *corev1.Pod) (fundable boo
 	g.pending = pendingLeases(run, payers, g.gpusPerPod, m.clock())
 	g.minted = make([]bool, len(g.pending))
 	g.lastTouched = m.clock()
+	metrics.ObserveDecideLatency("fundable", m.clock().Sub(start))
 	return true, ""
 }
 

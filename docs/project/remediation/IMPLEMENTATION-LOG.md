@@ -26,6 +26,45 @@ The README compose note lists R5/R6 first. I moved the two P0 correctness bugs
 
 ## Decisions (chronological)
 
+### R4 — SPLIT; part 1 (observability) IMPLEMENTED, caching reverted (2026-07-08)
+R4's spec lists two "composable changes" (cached reads + snapshot; ledger
+compaction). I split them (as R2 was split; David confirmed the split when asked),
+then an adversarial review split pt1 again. Judgment calls:
+- **Split rationale.** The caching/mutex half looked small and safe; the compaction
+  half is a funding-engine-core change (new `Evaluate` accrual-summary input + a
+  budget-controller settlement store) needing a bench + the golden oracle as its
+  rail and touching the crown jewel. Landing them together would gate the cheap win
+  behind the hard one.
+- **The caching half was NOT actually safe — an adversarial review (workflow)
+  caught a critical double-fund, and I reverted it to a deferred pt1b.** My first
+  draft moved `loadWorld` before `m.mu` and backed `m.reader` with a controller-
+  runtime informer cache. The review proved (two independent findings) that this
+  breaks the cross-gang pending fold's **read-your-write** invariant: the fold
+  retires another gang's phantom the instant its `minted[i]` flips, *assuming* the
+  snapshot already shows that gang's real lease. (a) Taking the snapshot before the
+  lock lets `minted[i]` flip between snapshot and fold; (b) an eventually-consistent
+  cache lags the direct-client `Create`. Either way a gang can be funded against
+  capacity another already holds — an overspend by the sole committer. `PostBind`'s
+  GC leans on the same assumption. It also flagged a startup goroutine leak and that
+  the sync-wait raced the cache `Start`. **So pt1b (safe caching) must first make
+  the fold + PostBind staleness-robust (skip/fold by whether the real lease is
+  actually in the snapshot, not by the `minted` flag) and then get a kind live-proof
+  — reverted from pt1, tracked separately.** Lesson: the fold is load-bearing and
+  read-your-write is a real precondition; do not swap the reader under it casually.
+- **pt1 shipped = observability only.** `jobtree_plugin_decide_latency_seconds`
+  (histogram, fundable/unfundable/error) and `jobtree_plugin_evaluate_input_leases`
+  (gauge = ledger size fed to the replay) — measure-before-optimize, and the signal
+  that will show pt1b's caching / pt2's compaction actually working. Reads stay on
+  the direct, read-your-write client. Green under `-race`; antifake + helm OK.
+- **Why compaction (pt2) genuinely needs a maintained accrual store (not just "drop
+  old input leases").** Verified in `pkg/funding/evaluate.go` that the accrual
+  replay has **no rolling `Now-Period` lower clamp**: `eventTimes` starts at the
+  earliest lease event, and accrual is bounded only by an envelope's *explicit*
+  `Start` (`windowActive`) — a no-window envelope (the common case) accrues from the
+  first lease ever. So filtering ancient leases out of `Evaluate`'s input would
+  change classification → not golden-safe. pt2 must carry a per-envelope rolling
+  accrual the budget controller maintains. Deferred with this pinned.
+
 ### R5 + R6 — provenance trust anchor + mandatory scheduler (merged #TBD)
 - **VAP, not a webhook.** The mandatory-scheduler + controller-only-fields rules
   ship as one `ValidatingAdmissionPolicy` (CEL, GA in the cluster's 1.36) rather
