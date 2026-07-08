@@ -70,7 +70,14 @@ mechanical, no design needed (implement straight from the audit — Opus/Sonnet)
 | [R21](R21-cordon-not-failure.md) | Cordon treated as node failure → destructive swap | ✅ | ⏳ Opus | ⏳ Sonnet |
 | [R22](R22-reclaim-slot-granularity.md) | Swap reclaim closes co-located runs (node granularity) | ✅ | ⏳ Opus | ⏳ Sonnet |
 | [R23](R23-workload-observability.md) | No logs/pods/artifacts story | ✅ | ⏳ Opus | ⏳ Sonnet |
-| R24 | Doc-honesty leftovers (README/spares-and-fill/guide) | **mech** | ⏳ Sonnet | — |
+| R24 | Doc-honesty leftovers (README/spares-and-fill/guide) + funding-model doc fixes (see below) | **mech** | ⏳ Sonnet | — |
+
+**From the funding-model review** (`../funding-model-review.md`, 2026-07-08):
+
+| Spec | Finding | Design | Code | Verify |
+|---|---|---|---|---|
+| [R25](R25-spare-node-lease-leak.md) | Spare-only node deletion leaks an immortal spare lease | ✅ | ⏳ Opus (with R21/R22) | ⏳ Sonnet |
+| [R26](R26-ledger-auditor.md) | No runtime audit of leases vs pods/nodes — ledger integrity is unverified | ✅ | ⏳ Opus | ⏳ Sonnet |
 
 **Mechanical-only (R10, R15, R16, R17, R24):** no design decision — the audit's
 finding text is the spec. R10 = correct the false comment. R15 = build+push
@@ -78,7 +85,12 @@ images in `release.yaml`, fix helm repo + `image.tag`, default notifier off. R16
 fix the ServiceMonitor selector + make the Prometheus-Operator dep optional. R17 =
 enable leader election in prod, enable the scheduler in both overlays. R24 = fix
 the stale README claim, drop the `spares-and-fill.md` "opportunistic fill" fake,
-correct the researcher-guide `spares` field name.
+correct the researcher-guide `spares` field name, **plus the funding-model doc
+fixes** (funding-model-review §1/§3): index.md's budget-as-gate framing and its
+"sole committer" claim (false until R3 lands); `concepts/leases.md` dead `Fail`
+enum + role/class conflation (`Borrowed` as a role); `concepts/budgets.md` and
+`concepts/runs.md` pre-four-class models; add the explicit three-plane /
+quota-may-over-or-under-commit statement to fundamentals or quota-semantics.
 
 ## How the pieces compose (read before implementing any single one)
 
@@ -106,8 +118,12 @@ The P0 specs share machinery and must be implemented as a set, in this order:
   part of gang co-termination; Option B (direct-inject rendezvous) leaves R8
   separate. Decide R9's A/B before starting R8, since it determines whether R8 is
   its own change.
-- **R21 + R22 land together** — both are bugs in the one `HandleNodeFailure` swap
-  path; fixing one without the other re-touches the same code.
+- **R21 + R22 + R25 land together** — all three are bugs in the one
+  `HandleNodeFailure` swap path; fixing any without the others re-touches the
+  same code.
+- **R26 (ledger auditor) is independent** of everything except that its
+  swap-grace window must respect the swap flow R21/R22/R25 finalize; it can be
+  built in parallel and is the backstop for R8/R25-class leaks.
 - **R11 before R2/R8's status writes** — the condition taxonomy should exist so
   `Degraded` (R2) and `Failed` (R8) emit through it, not as ad-hoc strings.
 - **R12 shares R5's pod OwnerReference** — do that edge once.

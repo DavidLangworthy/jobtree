@@ -116,6 +116,18 @@ ever emitted that the gate is guaranteed to reject.
 4. **Golden.** Regenerate the golden oracle for the activation scenarios; audit
    the diff is exactly the mint-site move (no funding-class change).
 
+## Additional finding (funding-model review, 2026-07-08)
+
+The current opportunistic mint has a second incoherence beyond the gate refusal:
+the lease's `Spec.Slice.Nodes` is baked from `pack`'s placement **before** the
+pod is scheduled, but the rendered pod gets only a *soft*
+`preferredDuringScheduling` affinity toward that node (`bridge.go:378-380`;
+`nodeName` is cleared unconditionally). If the pod ultimately binds elsewhere,
+the ledger's node-capacity accounting diverges from physical placement. The
+Promise path fixes this automatically — the plugin mints at PreBind from the
+**actual** bind node, like every other lease. Verification should assert it: the
+Promise lease's `Slice.Nodes` must equal the bound node, not the pack plan.
+
 ## Interactions
 
 - **Hard-ordered after R5/R6** (authenticated marker) and **R2** (adopt at width).
