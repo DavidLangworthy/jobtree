@@ -21,6 +21,10 @@ func TestMetricsRecording(t *testing.T) {
 	IncElasticGrow("H100")
 	IncElasticShrink("H100")
 	SetElasticWidth("default/train", 128)
+	ObserveDecideLatency("fundable", 5*time.Millisecond)
+	ObserveDecideLatency("fundable", 7*time.Millisecond)
+	ObserveDecideLatency("unfundable", 2*time.Millisecond)
+	SetEvaluateInputSize(42)
 
 	snap := Snapshot()
 
@@ -73,6 +77,15 @@ func TestMetricsRecording(t *testing.T) {
 	if v := snap.ElasticWidth["default/train"]; v != 128 {
 		t.Fatalf("expected elastic width 128, got %f", v)
 	}
+	if h := snap.DecideLatency["fundable"]; h.Count != 2 || math.Abs(h.Sum-0.012) > 1e-6 {
+		t.Fatalf("expected 2 fundable decides summing to 0.012s, got count=%d sum=%f", h.Count, h.Sum)
+	}
+	if h := snap.DecideLatency["unfundable"]; h.Count != 1 {
+		t.Fatalf("expected 1 unfundable decide, got count=%d", h.Count)
+	}
+	if snap.EvaluateInputSize != 42 {
+		t.Fatalf("expected evaluate-input-size gauge 42, got %f", snap.EvaluateInputSize)
+	}
 
 	// Clearing removes the series entirely rather than zeroing it in place,
 	// so a completed reservation/run does not linger in the gauge forever.
@@ -84,6 +97,12 @@ func TestMetricsRecording(t *testing.T) {
 	}
 	if _, ok := snap.ElasticWidth["default/train"]; ok {
 		t.Fatalf("expected elastic width entry to be cleared")
+	}
+
+	// The R4 hot-path series clear on Reset like the rest.
+	Reset()
+	if empty := Snapshot(); len(empty.DecideLatency) != 0 || empty.EvaluateInputSize != 0 {
+		t.Fatalf("expected decide metrics cleared on Reset, got %d latencies / size %f", len(empty.DecideLatency), empty.EvaluateInputSize)
 	}
 }
 
@@ -99,6 +118,8 @@ func TestWritePrometheus(t *testing.T) {
 	IncElasticGrow("H100")
 	IncElasticShrink("H100")
 	SetElasticWidth("default/train", 64)
+	ObserveDecideLatency("fundable", 20*time.Millisecond)
+	SetEvaluateInputSize(7)
 
 	var buf bytes.Buffer
 	WritePrometheus(&buf)
@@ -118,6 +139,8 @@ func TestWritePrometheus(t *testing.T) {
 		"jobtree_elastic_grows_total{flavor=\"H100\"} 1",
 		"jobtree_elastic_shrinks_total{flavor=\"H100\"} 1",
 		"jobtree_elastic_width_current{run=\"default/train\"} 64",
+		"jobtree_plugin_decide_latency_seconds_count{result=\"fundable\"} 1",
+		"jobtree_plugin_evaluate_input_leases 7",
 	} {
 		if !strings.Contains(output, needle) {
 			t.Fatalf("expected output to contain %q, got:\n%s", needle, output)

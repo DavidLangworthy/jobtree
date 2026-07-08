@@ -1,7 +1,33 @@
 # R4 — Plugin hot path: cached reads + ledger compaction
 
-**Priority:** P0 (perf/scale; lowest of the P0s) · **Design:** complete (Fable) · **Next:** Opus implements, Sonnet verifies
+**Priority:** P0 (perf/scale; lowest of the P0s) · **Design:** complete (Fable) · **Status: SPLIT — pt1 IMPLEMENTED, pt2 pending**
 **Depends on:** land **after** R1 (which removes half the cost) and must not reopen R1's overspend window.
+
+> **Split into three (2026-07-08).** The spec's two "composable changes" split
+> further once an adversarial review found the caching unsafe as first drafted:
+> - **pt1 (DONE): hot-path observability only.** `jobtree_plugin_decide_latency_seconds`
+>   (histogram, fundable/unfundable/error) and `jobtree_plugin_evaluate_input_leases`
+>   (gauge = ledger size fed to the replay) — measure-before-optimize. Reads stay on
+>   the direct, read-your-write client. Unit + `-race`.
+> - **pt1b (DEFERRED — caching + snapshot).** The first draft moved `loadWorld`
+>   before `m.mu` and backed it with an informer cache. **An adversarial review
+>   (workflow) confirmed this can double-fund a gang (critical):** the cross-gang
+>   pending fold retires another gang's phantom the instant its `minted[i]` flips,
+>   assuming the snapshot already shows that gang's real lease — a **read-your-write**
+>   guarantee that (a) taking the snapshot before the lock and (b) an
+>   eventually-consistent cache both break, so a gang can be funded against capacity
+>   another already holds. `PostBind`'s GC relies on the same assumption. So safe
+>   caching first requires making the fold **and** PostBind staleness-robust
+>   (fold/skip by whether the real lease is actually in the snapshot, not by the
+>   `minted` flag), then a kind live-proof. Sized as its own careful pass; reverted
+>   from pt1.
+> - **pt2 (pending): ledger compaction** (spec option **a**). Genuinely needed: the
+>   accrual replay has **no rolling `Now-Period` lower clamp** (verified in
+>   `pkg/funding/evaluate.go` — old leases accrue, bounded only by an envelope's
+>   explicit `Start`), so "drop ancient input leases" is **not** golden-safe for the
+>   common no-window envelope. pt2 must add a maintained per-envelope accrual
+>   summary to `Evaluate` + a budget-controller settlement store, with the golden
+>   oracle + a bench as the safety rail. Its own careful pass.
 
 ## Problem (evidence)
 
