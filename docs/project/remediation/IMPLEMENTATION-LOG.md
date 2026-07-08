@@ -57,6 +57,32 @@ The README compose note lists R5/R6 first. I moved the two P0 correctness bugs
   forged victim envelope, rejects an Active lease); `buildPod` owner reference (+
   no-UID fallback). Green under `-race`; full suite + antifake + helm template OK.
 
+### R3 — refined scope (NOT yet implemented; recommendation logged)
+On starting R3 I found the spec under-framed it. The "opportunistic / promised-
+but-unfunded start" is **not** an incidental behavior to drop — it is a
+**documented quota semantic** (`quota-semantics.md`, the source of truth) with
+pure-engine tests that assert it: a shortfall run starts **Running, Unfunded**,
+and is **re-funded when quota returns**
+(`reservation_semantics_test.go:TestActivateReservationBudgetOnlyShortfallAdmitsOpportunistically`,
+`quota_semantics_test.go` window-close/coast cases). So:
+- **"Drop it" is OFF the table** — it would delete a documented semantic. My
+  spec's earlier "drop it" fallback is withdrawn now that this is clear.
+- **The fix is the `Promise` path** (spec's primary rec): the controller stops
+  Materializing the opportunistic lease and instead emits intent pods marked
+  `lease-reason=Promise` + payer provenance; the **plugin** mints the (naturally
+  Unfunded) lease from that provenance, skipping the funding gate like a swap.
+  The `Promise` marker is already forgery-protected — the R5/R6 VAP gates every
+  `rq.davidlangworthy.io/*` annotation (incl. `lease-reason`) to the controller
+  SA. Add a plugin owner cross-check (provenance owner == run owner) as
+  defense-in-depth for when the VAP is off.
+- **Why not rushed here:** this is a controller cutover of the opportunistic mint
+  that must **migrate the pure-engine quota-semantics tests** to the intent-pod +
+  simulated-plugin-mint pattern (as the PLUGIN-2 cutover did the others via
+  `seedRunning`) and regenerate the affected golden scenarios. It touches the
+  quota source-of-truth, so it deserves a careful, dedicated pass — not the tail
+  of a long batch under a token budget. Left as the next unit of work with this
+  design pinned. Nothing about it is blocked; it is scoped, not stuck.
+
 > **Sequencing note (after R2 part 1):** I proceeded to **R5/R6** rather than
 > immediately doing R2 part 2 (adopt-at-width). Rationale: part 1 already fixes the
 > actual wedge *mechanism* (a lost member re-assembles and recovers on its own), so

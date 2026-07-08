@@ -60,12 +60,26 @@ land after R5/R6, and its marker joins the controller-only annotation set.
   dual-authority fuzziness §9 removed; the `Promise` marker is narrow and
   authenticated, a flag is broad.
 
-### Decision for David (flagged)
+### Decision for David (flagged) — RESOLVED during implementation
 
-Does the promised-but-unfunded opportunistic start **survive** (recommended:
-yes, via the authenticated `Promise` path) or is it **dropped** (keep the run
-Reserved until funded)? Everything else in this spec assumes "survive"; the
-"drop" variant is strictly smaller (delete the mint, keep the run Reserved).
+Does the promised-but-unfunded opportunistic start **survive** or is it
+**dropped**? **Resolved: it survives (via the `Promise` path).** On starting the
+work I confirmed the opportunistic Unfunded-start is a *documented quota
+semantic* with pure-engine tests asserting it
+(`reservation_semantics_test.go:TestActivateReservationBudgetOnlyShortfallAdmitsOpportunistically`,
+`quota_semantics_test.go` window-close cases: the run coasts Running/Unfunded and
+is re-funded when quota returns). "Drop it" would delete that documented
+semantic, so it is withdrawn. Implement the `Promise` path below.
+
+**Implementation note (why this is its own careful pass):** cutting the
+controller's opportunistic mint over to intent-pods + a plugin `Promise` mint
+requires **migrating the pure-engine quota-semantics tests** to the intent-pod +
+simulated-plugin-mint pattern (as the PLUGIN-2 cutover migrated the normal path
+via `seedRunning`) and regenerating the affected golden scenarios. It touches the
+quota source-of-truth (`quota-semantics.md`), so it must be done deliberately. The
+`Promise` marker is already forgery-protected by the R5/R6 VAP (it gates every
+`rq.davidlangworthy.io/*` annotation to the controller SA); add a plugin owner
+cross-check (provenance owner == run owner) as defense-in-depth for VAP-off.
 
 ## Invariant
 
