@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
+	"github.com/davidlangworthy/jobtree/pkg/admission"
 	"github.com/davidlangworthy/jobtree/pkg/binder"
 	"github.com/davidlangworthy/jobtree/pkg/topology"
 )
@@ -262,5 +263,125 @@ func TestGangForget(t *testing.T) {
 	m.forget(pod)
 	if _, ok := m.gangs[gangKey(pod)]; !ok {
 		t.Errorf("forget dropped a gang with an outstanding claim")
+	}
+}
+
+func train2Run() *v1.Run {
+	return &v1.Run{
+		ObjectMeta: v1.ObjectMeta{Name: "train2", Namespace: "default"},
+		Spec:       v1.RunSpec{Owner: "org:ai:team", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4}},
+	}
+}
+
+// mintPodLease simulates what PreBind does for one pod: claim its payer, create
+// the REAL lease in the API, and notify the gang so its phantom is retired.
+func mintPodLease(t *testing.T, ctx context.Context, c client.Client, m *gangManager, pod *corev1.Pod, node string) {
+	t.Helper()
+	seg, gpus, ok := m.claimPayer(pod)
+	if !ok {
+		t.Fatalf("claimPayer !ok for %s", pod.Name)
+	}
+	run := &v1.Run{ObjectMeta: v1.ObjectMeta{Namespace: pod.Namespace, Name: pod.Labels[binder.LabelRunName]}}
+	role := pod.Labels[binder.LabelRunRole]
+	lease := admission.PodLeaseWithRole(run, seg, node, gpus, pod.Name+"-lease", m.clock(), "Start", role)
+	if err := c.Create(ctx, &lease); err != nil {
+		t.Fatalf("create real lease for %s: %v", pod.Name, err)
+	}
+	m.notifyMinted(pod)
+}
+
+// R1: once a gang's real leases exist, its phantom pending leases must be retired
+// so a later gang is not falsely rejected by the gang's own funding counted
+// twice. Two 4-GPU runs share an 8-GPU node + concurrency-8 envelope: after A
+// mints, B must fund against the free 4. Before R1, A counted 8 (real 4 +
+// phantom 4) and B was rejected "insufficient capacity".
+func TestGangNoDoubleCountAfterMint(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).
+		WithObjects(trainRun(), train2Run(), teamBudget(8), gpuNode("node-a", 8)).Build()
+	m := newGangManager(c, func() time.Time { return now })
+
+	podA := gangPod()
+	if fundable, reason := m.decide(ctx, podA); !fundable {
+		t.Fatalf("gang A should fund: %s", reason)
+	}
+	mintPodLease(t, ctx, c, m, podA, "node-a")
+
+	podB := gangPod()
+	podB.Labels[binder.LabelRunName] = "train2"
+	podB.Name = "train2-pod-0"
+	if fundable, reason := m.decide(ctx, podB); !fundable {
+		t.Fatalf("gang B should fund against the free 4 GPUs once A's phantom is retired; got: %q (R1 double-count regression)", reason)
+	}
+}
+
+// R1 guard intact: the phantom fold must still prevent overspend BEFORE the real
+// lease exists. With a concurrency-4 envelope (room for exactly one 4-GPU gang),
+// A's decide reserves the whole envelope via its phantom; B, deciding before A
+// mints, must be refused.
+func TestGangPhantomGuardsUntilMint(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).
+		WithObjects(trainRun(), train2Run(), teamBudget(4), gpuNode("node-a", 8)).Build()
+	m := newGangManager(c, func() time.Time { return now })
+
+	if fundable, reason := m.decide(ctx, gangPod()); !fundable {
+		t.Fatalf("gang A should fund: %s", reason)
+	}
+	// A has NOT minted; its phantom must still occupy the whole concurrency-4
+	// envelope so B cannot overspend it.
+	podB := gangPod()
+	podB.Labels[binder.LabelRunName] = "train2"
+	podB.Name = "train2-pod-0"
+	if fundable, _ := m.decide(ctx, podB); fundable {
+		t.Fatalf("gang B must be refused while A's phantom still guards the envelope (decide→mint window)")
+	}
+}
+
+// R1: PostBind GCs a gang only once all its pods have minted; until then (e.g. a
+// member still unbound) the commit survives for recovery.
+func TestGangPostBindGCsFullyMintedGang(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).
+		WithObjects(trainRun(), teamBudget(8), gpuNode("node-a", 4)).Build()
+	m := newGangManager(c, func() time.Time { return now })
+
+	pod := gangPod()
+	m.decide(ctx, pod)
+	mintPodLease(t, ctx, c, m, pod, "node-a")
+
+	// Minted but not yet PostBound: the commit must persist (R2 recovery needs it).
+	if _, ok := m.gangs[gangKey(pod)]; !ok {
+		t.Fatalf("gang dropped before PostBind")
+	}
+	m.postBind(pod)
+	if _, ok := m.gangs[gangKey(pod)]; ok {
+		t.Errorf("PostBind should GC a fully-minted 1-pod gang")
+	}
+}
+
+// R1: a gang with an unbound member is NOT GC'd by PostBind of the bound members
+// (it stays for recovery), and the TTL sweep is what eventually reclaims it if it
+// is abandoned. A fresh gang is never swept.
+func TestGangSweepDropsIdleGangOnly(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).
+		WithObjects(trainRun(), teamBudget(8), gpuNode("node-a", 4)).Build()
+	m := newGangManager(c, func() time.Time { return now })
+
+	key := gangKey(gangPod())
+	m.decide(ctx, gangPod())
+
+	m.sweep(now.Add(gangTTL - time.Minute)) // still fresh
+	if _, ok := m.gangs[key]; !ok {
+		t.Fatalf("sweep reaped a gang inside its TTL")
+	}
+	m.sweep(now.Add(gangTTL + time.Minute)) // idle past TTL
+	if _, ok := m.gangs[key]; ok {
+		t.Errorf("sweep should reap a gang idle past gangTTL")
 	}
 }

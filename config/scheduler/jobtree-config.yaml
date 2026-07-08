@@ -42,6 +42,13 @@ profiles:
       preBind:
         enabled:
           - name: jobtree
+      postBind:
+        # Enables the plugin's PostBind so a fully-bound gang's in-memory
+        # commit state (and its phantom pending-lease guards) is released once
+        # the real leases exist — otherwise committed gangs double-count funding
+        # forever (R1).
+        enabled:
+          - name: jobtree
       postFilter:
         # The jobtree plugin is appended after the default PostFilter plugins
         # (e.g. DefaultPreemption) rather than replacing them, so scaffold

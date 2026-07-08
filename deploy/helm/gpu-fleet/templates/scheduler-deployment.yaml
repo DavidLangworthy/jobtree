@@ -35,6 +35,11 @@ data:
           preBind:
             enabled:
               - name: jobtree
+          postBind:
+            # Releases a fully-bound gang's in-memory commit state + phantom
+            # pending-lease guards once the real leases exist (R1).
+            enabled:
+              - name: jobtree
           postFilter:
             enabled:
               - name: jobtree
