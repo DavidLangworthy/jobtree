@@ -62,13 +62,14 @@ var (
 	_ fwk.ReservePlugin    = (*JobTree)(nil)
 	_ fwk.PermitPlugin     = (*JobTree)(nil)
 	_ fwk.PreBindPlugin    = (*JobTree)(nil)
+	_ fwk.PostBindPlugin   = (*JobTree)(nil)
 	_ fwk.PostFilterPlugin = (*JobTree)(nil)
 )
 
 // New is the framework PluginFactory for the jobtree plugin. It builds a client
 // for the jobtree CRDs (Run/Budget/Lease) plus core Nodes from the framework's
 // kube config, and the gang manager that serializes funding commitment.
-func New(_ context.Context, _ apiruntime.Object, h fwk.Handle) (fwk.Plugin, error) {
+func New(ctx context.Context, _ apiruntime.Object, h fwk.Handle) (fwk.Plugin, error) {
 	scheme := apiruntime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(v1.AddToScheme(scheme))
@@ -82,11 +83,17 @@ func New(_ context.Context, _ apiruntime.Object, h fwk.Handle) (fwk.Plugin, erro
 	if err != nil {
 		return nil, fmt.Errorf("jobtree plugin: build client: %w", err)
 	}
-	return &JobTree{
+	j := &JobTree{
 		handle: h,
 		client: c,
 		gm:     newGangManager(c, func() time.Time { return time.Now().UTC() }),
-	}, nil
+	}
+	// Backstop the PostBind fast path: periodically drop gang commits abandoned
+	// mid-flight so their phantom pending leases cannot leak into future funding
+	// decisions and m.gangs cannot grow without bound (R1). Stops with the
+	// scheduler's context.
+	go j.gm.runSweep(ctx)
+	return j, nil
 }
 
 // Name returns the plugin name.
@@ -237,7 +244,21 @@ func (j *JobTree) PreBind(ctx context.Context, _ fwk.CycleState, pod *corev1.Pod
 	if err := j.client.Create(ctx, &lease); err != nil && !apierrors.IsAlreadyExists(err) {
 		return fwk.NewStatus(fwk.Error, fmt.Sprintf("jobtree: mint lease for %s: %v", pod.Name, err))
 	}
+	// The real lease now exists in the API (created here, or already present on a
+	// retry). Retire this pod's phantom pending lease so the gang stops folding it
+	// into other funding decisions — the real lease already counts (R1). A swap
+	// pod is not gang-tracked, so this is a no-op for it.
+	j.gm.notifyMinted(pod)
 	return nil
+}
+
+// PostBind releases a gang's in-memory commit once all its pods have minted and
+// bound: the API's real leases are then the sole source of truth, so keeping the
+// commit (and its phantom pending-lease guards) would double-count the gang's
+// funding forever and leak the gang map (R1). A gang with an unbound member is
+// left intact for recovery + the TTL sweep.
+func (j *JobTree) PostBind(_ context.Context, _ fwk.CycleState, pod *corev1.Pod, _ string) {
+	j.gm.postBind(pod)
 }
 
 // isSwapPod reports whether a pod is a node-failure swap re-placement (minted

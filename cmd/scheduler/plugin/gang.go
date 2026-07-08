@@ -22,6 +22,18 @@ import (
 // and each workload pod requests.
 const gpuResource = corev1.ResourceName("nvidia.com/gpu")
 
+const (
+	// gangTTL bounds how long an idle gang commit lingers before the sweep drops
+	// it. Kept well above the 2m Permit timeout so a slowly-forming or
+	// slowly-minting gang is never reaped mid-flight; its only job is to reclaim
+	// commits that were abandoned (a member that never bound, an unfundable gang
+	// nobody retried, a deleted run) so phantom pending leases cannot leak (R1).
+	gangTTL = 15 * time.Minute
+	// sweepInterval is how often the plugin runs the TTL sweep. The PostBind fast
+	// path reclaims the common case; this is only the backstop.
+	sweepInterval = 5 * time.Minute
+)
+
 // gangManager is the plugin's single committer. It serializes the funding
 // decision across gangs (one Run's Active pod set) and records per-pod payers
 // so PreBind can mint one Lease per pod against the node the scheduler actually
@@ -45,10 +57,34 @@ type gangCommit struct {
 	claimed    int             // distinct pods that have claimed a payer
 	assigned   map[string]int  // pod name -> payer index (idempotent across PreBind retries)
 	gpusPerPod int
-	// pending are the leases this gang will mint but has not yet; they are
-	// folded into other gangs' funding checks until the real leases appear in
-	// the API, closing the decide→mint overspend window.
+	// pending are the placeholder leases this gang has decided to mint but whose
+	// real leases may not yet be in the API; they are folded into other gangs'
+	// funding checks to close the decide→mint overspend window. minted[i] is set
+	// true once pod i's REAL lease has been created (in PreBind), at which point
+	// pending[i] is retired from the fold — the API's real lease now counts it,
+	// so folding the phantom too would double-count (R1).
 	pending []v1.Lease
+	minted  []bool
+	// lastTouched is the clock reading at the last decide/mint/postBind for this
+	// gang; the sweep drops a gang idle past gangTTL so an abandoned commit (a
+	// member that never bound, an unfundable gang) cannot leak its phantoms or
+	// its map entry forever (R1).
+	lastTouched time.Time
+}
+
+// fullyMinted reports whether every one of a fundable gang's pods has had its
+// real lease created — at which point the in-memory commit is redundant with the
+// API and may be garbage-collected.
+func (g *gangCommit) fullyMinted() bool {
+	if !g.fundable || len(g.minted) == 0 {
+		return false
+	}
+	for _, m := range g.minted {
+		if !m {
+			return false
+		}
+	}
+	return true
 }
 
 func newGangManager(reader client.Reader, clock func() time.Time) *gangManager {
@@ -100,6 +136,7 @@ func (m *gangManager) decide(ctx context.Context, pod *corev1.Pod) (fundable boo
 		return g.fundable, g.reason
 	}
 	g.decided = true
+	g.lastTouched = m.clock()
 	g.gpusPerPod = podInt(pod, binder.AnnotationGPUs, 1)
 
 	world, run, err := m.loadWorld(ctx, pod)
@@ -113,12 +150,19 @@ func (m *gangManager) decide(ctx context.Context, pod *corev1.Pod) (fundable boo
 		world.Quantity = int32(podInt(pod, binder.AnnotationExpectedWidth, 1) * g.gpusPerPod)
 	}
 	// Fold other gangs' not-yet-minted commitments into the ledger so two
-	// gangs cannot both fund against the same free capacity.
+	// gangs cannot both fund against the same free capacity. A phantom whose
+	// real lease already exists (minted[i]) is skipped: loadWorld's List already
+	// counts the real lease, so folding the phantom too would double-count (R1).
 	for k, other := range m.gangs {
 		if k == key {
 			continue
 		}
-		world.Leases = append(world.Leases, other.pending...)
+		for i, pl := range other.pending {
+			if i < len(other.minted) && other.minted[i] {
+				continue
+			}
+			world.Leases = append(world.Leases, pl)
+		}
 	}
 
 	_, coverPlan, _, err := admission.Feasible(world)
@@ -134,6 +178,8 @@ func (m *gangManager) decide(ctx context.Context, pod *corev1.Pod) (fundable boo
 	g.payers = payers
 	g.fundable = true
 	g.pending = pendingLeases(run, payers, g.gpusPerPod, m.clock())
+	g.minted = make([]bool, len(g.pending))
+	g.lastTouched = m.clock()
 	return true, ""
 }
 
@@ -149,6 +195,7 @@ func (m *gangManager) claimPayer(pod *corev1.Pod) (cover.Segment, int, bool) {
 	if g == nil || !g.fundable {
 		return cover.Segment{}, 0, false
 	}
+	g.lastTouched = m.clock()
 	if idx, ok := g.assigned[pod.Name]; ok {
 		return g.payers[idx], g.gpusPerPod, true
 	}
@@ -187,6 +234,76 @@ func (m *gangManager) forget(pod *corev1.Pod) {
 	key := gangKey(pod)
 	if g := m.gangs[key]; g != nil && g.claimed == 0 {
 		delete(m.gangs, key)
+	}
+}
+
+// notifyMinted retires a pod's phantom pending lease once its REAL lease has been
+// created (called from PreBind after a successful Create). From this point the
+// API's real lease is what other gangs' funding checks count, so the phantom must
+// no longer be folded — otherwise the gang double-counts itself forever (R1). It
+// does NOT delete the gang: the pod may still fail to bind, and R2's recovery
+// needs the commit state to survive until PostBind confirms the bind.
+func (m *gangManager) notifyMinted(pod *corev1.Pod) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	g := m.gangs[gangKey(pod)]
+	if g == nil {
+		return
+	}
+	g.lastTouched = m.clock()
+	if idx, ok := g.assigned[pod.Name]; ok && idx < len(g.minted) {
+		g.minted[idx] = true
+	}
+}
+
+// postBind garbage-collects a gang once all of its pods have both minted their
+// real leases and bound (PostBind fires only after a successful bind). At that
+// point the in-memory commit is fully redundant with the API, so dropping it
+// stops the phantom fold and the unbounded map growth (R1). A gang with an
+// unbound member is left intact for R2 recovery and the TTL sweep.
+func (m *gangManager) postBind(pod *corev1.Pod) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := gangKey(pod)
+	g := m.gangs[key]
+	if g == nil {
+		return
+	}
+	g.lastTouched = m.clock()
+	if g.fullyMinted() {
+		delete(m.gangs, key)
+	}
+}
+
+// sweep drops any gang idle past gangTTL: an abandoned commit (a member that
+// never bound, an unfundable gang whose pods never retried, a run deleted
+// mid-flight) would otherwise leak its phantom pending leases into every future
+// funding decision and grow m.gangs without bound. gangTTL is kept well above
+// permitTimeout so an actively-forming gang is never swept. Called on a ticker
+// from the plugin's New (backstop to the PostBind fast path).
+func (m *gangManager) sweep(now time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for key, g := range m.gangs {
+		if now.Sub(g.lastTouched) > gangTTL {
+			delete(m.gangs, key)
+		}
+	}
+}
+
+// runSweep drives sweep on a ticker until ctx is cancelled (the scheduler's
+// lifetime). Split from sweep so the reaping logic stays directly unit-testable
+// with an injected clock.
+func (m *gangManager) runSweep(ctx context.Context) {
+	t := time.NewTicker(sweepInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			m.sweep(m.clock())
+		}
 	}
 }
 
