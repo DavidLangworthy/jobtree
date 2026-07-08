@@ -1,0 +1,82 @@
+{{- if .Values.podPolicy.enabled }}
+# R5/R6 — make jobtree the mandatory, forgery-proof committer for GPU pods.
+#
+# A ValidatingAdmissionPolicy (CEL, GA since k8s 1.30; cluster is 1.36) enforces
+# two invariants the plugin alone cannot, because the plugin only ever sees pods
+# that already opted into schedulerName: jobtree and trusts their annotations:
+#
+#   1. (R6) Any pod requesting nvidia.com/gpu MUST use schedulerName: jobtree, so
+#      GPU consumption cannot bypass the budget by using the default scheduler.
+#   2. (R5) The jobtree-owned scheduling fields — schedulerName: jobtree, the
+#      rq.davidlangworthy.io/* annotations (payer provenance, lease-reason,
+#      cohort, swap-node, run-nonce, expected-width, gpus, flavor) and the role
+#      label — may be set ONLY by the jobtree controller's ServiceAccount. A
+#      tenant therefore cannot forge a swap pod that mints a Lease against another
+#      team's envelope.
+#
+# Left OFF by default (like the scheduler itself) so a bare install does not
+# suddenly gate every GPU pod in the cluster; enabling it is what actually closes
+# the opt-in-budget hole. See docs/operator-guide/admin-setup.md and R18.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ .Release.Name }}-jobtree-gpu-guard
+  labels: {{- include "gpu-fleet.labels" . | nindent 4 }}
+spec:
+  failurePolicy: {{ .Values.podPolicy.failurePolicy }}
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  variables:
+    - name: gpuRequested
+      expression: >-
+        (has(object.spec.containers) && object.spec.containers.exists(c,
+          (has(c.resources.requests) && 'nvidia.com/gpu' in c.resources.requests) ||
+          (has(c.resources.limits) && 'nvidia.com/gpu' in c.resources.limits)))
+        ||
+        (has(object.spec.initContainers) && object.spec.initContainers.exists(c,
+          (has(c.resources.requests) && 'nvidia.com/gpu' in c.resources.requests) ||
+          (has(c.resources.limits) && 'nvidia.com/gpu' in c.resources.limits)))
+    - name: usesJobtree
+      expression: "has(object.spec.schedulerName) && object.spec.schedulerName == '{{ .Values.scheduler.schedulerName }}'"
+    - name: setsJobtreeFields
+      expression: >-
+        variables.usesJobtree
+        || (has(object.metadata.annotations) && object.metadata.annotations.exists(k, k.startsWith('rq.davidlangworthy.io/')))
+        || (has(object.metadata.labels) && 'rq.davidlangworthy.io/role' in object.metadata.labels)
+    - name: isController
+      expression: "request.userInfo.username == 'system:serviceaccount:{{ .Release.Namespace }}:{{ .Values.controller.serviceAccount }}'"
+  validations:
+    - expression: "!variables.gpuRequested || variables.usesJobtree"
+      messageExpression: "'GPU pods must set schedulerName: {{ .Values.scheduler.schedulerName }} so their GPU use is funded by a jobtree budget'"
+      reason: Forbidden
+    - expression: "!variables.setsJobtreeFields || variables.isController"
+      messageExpression: "'jobtree-owned scheduling fields (schedulerName: {{ .Values.scheduler.schedulerName }}, rq.davidlangworthy.io/* annotations, role label) may be set only by the jobtree controller'"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ .Release.Name }}-jobtree-gpu-guard
+  labels: {{- include "gpu-fleet.labels" . | nindent 4 }}
+spec:
+  policyName: {{ .Release.Name }}-jobtree-gpu-guard
+  validationActions: ["Deny"]
+  matchResources:
+    # The control-plane namespace and any operator-declared infra namespaces
+    # (device-plugin DaemonSets, etc.) are exempt so cluster components with
+    # legitimate raw-GPU access are never blocked, and so jobtree itself can come
+    # up even under failurePolicy: Fail.
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            - {{ .Release.Namespace }}
+            {{- range .Values.podPolicy.exemptNamespaces }}
+            - {{ . | quote }}
+            {{- end }}
+{{- end }}

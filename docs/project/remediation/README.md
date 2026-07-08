@@ -31,8 +31,8 @@ mechanical, no design needed (implement straight from the audit — Opus/Sonnet)
 
 | Spec | Finding | Design | Code | Verify |
 |---|---|---|---|---|
-| [R5](R5-provenance-trust-anchor.md) | Forgeable funding provenance (swap mint) | ✅ | ⏳ Opus | ⏳ Sonnet |
-| [R6](R6-mandatory-scheduler.md) | Budget is opt-in for GPU pods | ✅ | ⏳ Opus | ⏳ Sonnet |
+| [R5](R5-provenance-trust-anchor.md) | Forgeable funding provenance (swap mint) | ✅ | ✅ plugin+VAP | ◐ unit; VAP CEL needs kind |
+| [R6](R6-mandatory-scheduler.md) | Budget is opt-in for GPU pods | ✅ | ✅ VAP (off by default) | ◐ VAP CEL needs kind |
 | [R7](R7-tenancy-envelope-namespace.md) | Namespaces are not a tenancy boundary | ✅ | ⏳ Opus | ⏳ Sonnet |
 
 **P2 — workload lifecycle (blocks "usable for ML")**

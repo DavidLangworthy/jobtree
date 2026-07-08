@@ -409,13 +409,34 @@ func buildPod(manifest binder.PodManifest, run *v1.Run) *corev1.Pod {
 
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace:   manifest.Namespace,
-			Name:        manifest.Name,
-			Labels:      manifest.Labels,
-			Annotations: annotations,
+			Namespace:       manifest.Namespace,
+			Name:            manifest.Name,
+			Labels:          manifest.Labels,
+			Annotations:     annotations,
+			OwnerReferences: runOwnerReferences(run),
 		},
 		Spec: spec,
 	}
+}
+
+// runOwnerReferences ties an emitted workload pod to its owning Run: it makes the
+// Run the provenance anchor for the pod (a hint the plugin can require, R5) and
+// lets the apiserver garbage-collect the pods when the Run is deleted instead of
+// the controller sweeping them by hand (R12). Requires the Run's UID, which the
+// real API path always has; pure-engine Runs without a UID get no reference.
+func runOwnerReferences(run *v1.Run) []metav1.OwnerReference {
+	if run == nil || run.UID == "" {
+		return nil
+	}
+	yes := true
+	return []metav1.OwnerReference{{
+		APIVersion:         v1.GroupVersion.String(),
+		Kind:               "Run",
+		Name:               run.Name,
+		UID:                run.UID,
+		Controller:         &yes,
+		BlockOwnerDeletion: &yes,
+	}}
 }
 
 // preferNode appends a soft (preferred) node-affinity toward node, an advisory

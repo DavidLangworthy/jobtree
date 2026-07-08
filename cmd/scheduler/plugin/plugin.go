@@ -237,6 +237,13 @@ func (j *JobTree) PreBind(ctx context.Context, _ fwk.CycleState, pod *corev1.Pod
 		if seg.Owner == "" || seg.EnvelopeName == "" {
 			return fwk.NewStatus(fwk.Error, fmt.Sprintf("jobtree: swap pod %s/%s missing funding provenance", pod.Namespace, pod.Name))
 		}
+		// Defense-in-depth (R5): the swap path trusts pod-carried provenance and
+		// skips the funding gate, so require that provenance to match a Spare lease
+		// the run actually held. A forged swap pod cannot then mint against an
+		// arbitrary victim envelope — only one for which a real spare exists.
+		if !j.gm.spareLeaseProvenanceValid(ctx, pod.Namespace, pod.Labels[binder.LabelRunName], seg) {
+			return fwk.NewStatus(fwk.Error, fmt.Sprintf("jobtree: swap pod %s/%s provenance (%s/%s/%s) matches no spare lease for its run", pod.Namespace, pod.Name, seg.Owner, seg.BudgetName, seg.EnvelopeName))
+		}
 	} else {
 		var ok bool
 		seg, gpusPerPod, ok = j.gm.claimPayer(pod)

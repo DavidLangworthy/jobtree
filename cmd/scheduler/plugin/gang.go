@@ -322,6 +322,35 @@ func (m *gangManager) runSweep(ctx context.Context) {
 	}
 }
 
+// spareLeaseProvenanceValid reports whether a real Spare lease for the run
+// carries the funding provenance seg. PreBind uses it as defense-in-depth before
+// minting a node-failure swap from pod-carried provenance: the swap path skips
+// the funding gate and trusts the pod's payer-* annotations, so without this a
+// hand-crafted pod stamped lease-reason=Swap could mint a Lease against ANY
+// envelope. Requiring a matching spare the run actually held means a forged swap
+// can only ever charge an envelope for which a real spare lease exists — which an
+// attacker cannot fabricate without lease-create RBAC. This backs up the
+// mandatory-scheduler policy (R5/R6); it holds even if that policy is absent.
+func (m *gangManager) spareLeaseProvenanceValid(ctx context.Context, ns, runName string, seg cover.Segment) bool {
+	var leaseList v1.LeaseList
+	if err := m.reader.List(ctx, &leaseList); err != nil {
+		return false
+	}
+	for i := range leaseList.Items {
+		l := &leaseList.Items[i]
+		if l.Spec.RunRef.Namespace != ns || l.Spec.RunRef.Name != runName {
+			continue
+		}
+		if l.Spec.Slice.Role != binder.RoleSpare {
+			continue
+		}
+		if l.Spec.Owner == seg.Owner && l.Spec.PaidByBudget == seg.BudgetName && l.Spec.PaidByEnvelope == seg.EnvelopeName {
+			return true
+		}
+	}
+	return false
+}
+
 // loadWorld reads the live cluster into an admission.Input for the pod's Run.
 func (m *gangManager) loadWorld(ctx context.Context, pod *corev1.Pod) (admission.Input, *v1.Run, error) {
 	// The run key is the run, without any cohort suffix gangKey adds — a grow
