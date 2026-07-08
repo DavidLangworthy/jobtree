@@ -54,3 +54,39 @@ spec, just the outstanding item.
 - **Tests:** double-count-after-mint (the headline, mirrors the live repro),
   guard-held-pre-mint (overspend still prevented before mint), PostBind-GC, and
   TTL-sweep. All green under `-race`; full suite + antifake + helm template green.
+
+### R2 — gang recovery: SPLIT into three increments
+R2's spec has four pieces; I split it so each lands small, green, and testable
+rather than as one large controller+plugin change.
+
+**R2 part 1 (this PR — pieces 1 + 4, plugin-side):**
+- **Piece 1 — Permit counts committed siblings.** The gate now passes when
+  `waiting + committedCount(gang) >= expected`, where `committedCount` = pods that
+  already claimed a payer (`g.claimed`). This de-wedges the *common* failure: a
+  member whose PreBind/bind fails transiently re-enters Permit alone; its bound
+  siblings are gone from the waiting set, so the old `waiting >= expected` gate
+  could never re-form and the gang looped to timeout forever at N-1 width.
+  `committed` is 0 until a gang funds, so the *first* funding decision is
+  unchanged (still needs the whole active set waiting).
+- **Piece 4 — ABA lease-name nonce.** `buildPod` stamps `run-nonce` (a 12-char
+  prefix of the Run UID); PreBind folds it into the lease name. A delete+resubmit
+  of a same-named Run (new UID) now mints a fresh OPEN lease instead of colliding
+  with the prior incarnation's closed lease and being swallowed by
+  `IsAlreadyExists`. Same-incarnation retries keep the same nonce → still
+  idempotent. No UID (pure-engine tests) → legacy name, backward compatible.
+- Tests: `committedCount` accounting; `buildPod` nonce stamp (+ empty-UID
+  fallback). Green under `-race`; full suite green.
+
+**R2 part 2 (next PR — piece 3, controller-side):** adopt-at-correct-width —
+the controller currently flips a run to Running on *any* open lease > 0
+(`run_controller.go:197`), so a partial gang reports healthy while charging
+budget. Will compare open leases to expected active width, mark Degraded + re-emit
+missing active pods when short. Deferred here because it needs golden regen and
+controller-test updates — kept as its own increment.
+
+**R2 part 3 / R2b (documented follow-up — piece 2):** full scheduler-restart
+reconstruction (rebuild gang commits from open leases on startup and delta-fund
+un-minted survivors). Rarer than the transient-failure wedge that part 1 already
+fixes, and the most complex sub-part (needs cohort-labelled leases + delta
+re-funding). Left as a precise design note in the R2 spec for a later pass;
+part 1's in-memory committed-count does NOT survive a process restart.

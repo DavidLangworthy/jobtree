@@ -64,6 +64,15 @@ const (
 	AnnotationPayerOwner    = "rq.davidlangworthy.io/payer-owner"
 	AnnotationPayerBudget   = "rq.davidlangworthy.io/payer-budget"
 	AnnotationPayerEnvelope = "rq.davidlangworthy.io/payer-envelope"
+	// AnnotationRunNonce carries a per-incarnation identifier of the owning Run
+	// (its UID) into the Lease name the plugin mints. Pod names are deterministic,
+	// so without it a delete+resubmit of a same-named Run would have PreBind's
+	// lease Create collide with the PRIOR incarnation's now-closed lease,
+	// IsAlreadyExists would be treated as success, and the new gang would run with
+	// no OPEN lease — unfunded work the controller never adopts (the ABA hazard,
+	// R2). A fresh UID per incarnation makes the lease name unique per incarnation
+	// while staying deterministic across PreBind retries of the same one.
+	AnnotationRunNonce = "rq.davidlangworthy.io/run-nonce"
 )
 
 // Request gathers the context required to materialize pods and leases for a Run.

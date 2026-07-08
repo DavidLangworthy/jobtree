@@ -181,8 +181,17 @@ func (j *JobTree) Permit(ctx context.Context, _ fwk.CycleState, pod *corev1.Pod,
 			waiting++
 		}
 	})
-	if waiting < expected {
-		return fwk.NewStatus(fwk.Wait, fmt.Sprintf("jobtree: gang %s forming (%d/%d)", key, waiting, expected)), permitTimeout
+	// Members that already committed (claimed a payer / minted) count toward the
+	// width even though they are no longer waiting: otherwise a lone member that
+	// re-enters Permit after a transient PreBind/bind failure — its siblings
+	// already bound and gone from the waiting set — could never re-assemble the
+	// full width, and would park→timeout→loop forever, wedging the gang at N-1
+	// while the run charges budget (R2). Once the gang has decided, decide()
+	// below returns the cached verdict, so this only relaxes re-assembly, never
+	// the first funding decision (committed is 0 until a gang funds).
+	committed := j.gm.committedCount(key)
+	if waiting+committed < expected {
+		return fwk.NewStatus(fwk.Wait, fmt.Sprintf("jobtree: gang %s forming (%d waiting + %d committed / %d)", key, waiting, committed, expected)), permitTimeout
 	}
 
 	fundable, reason := j.gm.decide(ctx, pod)
@@ -240,7 +249,16 @@ func (j *JobTree) PreBind(ctx context.Context, _ fwk.CycleState, pod *corev1.Pod
 	if role == "" {
 		role = binder.RoleActive
 	}
-	lease := admission.PodLeaseWithRole(run, seg, nodeName, gpusPerPod, pod.Name+"-lease", time.Now().UTC(), pod.Annotations[binder.AnnotationLeaseReason], role)
+	// Include the run's per-incarnation nonce in the lease name so a delete +
+	// resubmit of a same-named Run mints a fresh OPEN lease rather than colliding
+	// with the prior incarnation's closed lease (the ABA hazard, R2). A same-
+	// incarnation PreBind retry uses the same nonce, so it stays idempotent
+	// (IsAlreadyExists on its own open lease).
+	leaseName := pod.Name + "-lease"
+	if nonce := pod.Annotations[binder.AnnotationRunNonce]; nonce != "" {
+		leaseName = pod.Name + "-" + nonce + "-lease"
+	}
+	lease := admission.PodLeaseWithRole(run, seg, nodeName, gpusPerPod, leaseName, time.Now().UTC(), pod.Annotations[binder.AnnotationLeaseReason], role)
 	if err := j.client.Create(ctx, &lease); err != nil && !apierrors.IsAlreadyExists(err) {
 		return fwk.NewStatus(fwk.Error, fmt.Sprintf("jobtree: mint lease for %s: %v", pod.Name, err))
 	}
