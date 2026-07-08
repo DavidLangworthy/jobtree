@@ -133,8 +133,7 @@ func TestActivateReservationBudgetOnlyShortfallAdmitsOpportunistically(t *testin
 		t.Fatalf("activation returned error: %v", err)
 	}
 
-	// No funded work was cut (R7 upheld): nothing closed, no resolver
-	// actions. New leases DID appear — blocked started opportunistically.
+	// No funded work was cut (R7 upheld): nothing closed, no resolver actions.
 	for _, lease := range state.Leases {
 		if lease.Status.Closed {
 			t.Errorf("lease %s was closed (%s): budget shortfall must not preempt", lease.Name, lease.Status.ClosureReason)
@@ -143,26 +142,99 @@ func TestActivateReservationBudgetOnlyShortfallAdmitsOpportunistically(t *testin
 	if actions := metrics.Snapshot().ResolverActions; len(actions) != 0 {
 		t.Errorf("expected no resolver actions, got %v", actions)
 	}
-	if got := openLeaseCount(state); got != leasesBefore+1 {
-		t.Errorf("expected blocked to bind one opportunistic lease, had %d open, now %d", leasesBefore, got)
+
+	// R3: the controller is no longer the committer, so it mints NOTHING on the
+	// promise path. It pre-authorizes the start by emitting a promised intent
+	// gang (lease-reason=Promise) carrying the payer provenance the activation
+	// attributed the exhausted demand to; the jobtree scheduler binds and mints
+	// it (those pods skip its funding gate). So the open-lease count is
+	// unchanged, and blocked stays promised (Pending) until its leases land.
+	if got := openLeaseCount(state); got != leasesBefore {
+		t.Errorf("controller must mint no leases on the promise path: had %d open, now %d", leasesBefore, got)
 	}
 	blocked := state.Runs["default/blocked"]
-	if blocked.Status.Phase != RunPhaseRunning {
-		t.Errorf("expected blocked to start opportunistically (Running), got %s", blocked.Status.Phase)
+	if blocked.Status.Phase == RunPhaseRunning {
+		t.Errorf("expected blocked promised (not yet Running): the plugin binds its pods, got %s", blocked.Status.Phase)
 	}
-	// Its width is unfunded: org:team's envelope is exhausted, so the run
-	// coasts until quota returns.
-	if blocked.Status.Funding == nil || blocked.Status.Funding.UnfundedGPUs != 4 || blocked.Status.Funding.OwnedGPUs != 0 {
-		t.Errorf("expected blocked classed 4 unfunded / 0 owned, got %+v", blocked.Status.Funding)
+	if promise := promisePodsWithPayer(state, "default", "blocked", "org:team", "team", "west"); promise != 4 {
+		t.Errorf("expected 4 promise pods for blocked with payer org:team/team/west, got %d", promise)
 	}
-	// The reservation activated, not rescheduled: no Pending reservation for
-	// a now-Running run (invariant 8).
+	if all := intentPodsByRole(state, "default", "blocked", binder.RoleActive); all != 4 {
+		t.Errorf("expected 4 Active intent pods for blocked, got %d", all)
+	}
+	// The reservation activated (Released), not rescheduled.
 	for _, res := range state.Reservations {
 		if res.Status.State == "Pending" {
 			t.Errorf("expected reservation activated, found still-Pending %s", res.Name)
 		}
 	}
+
+	// The promise is idempotent: reconciling blocked while its pods await the
+	// scheduler must NOT plan a second reservation — its cover is expected to
+	// fail until quota returns, so the Promise guard short-circuits admission.
+	if err := controller.Reconcile("default", "blocked"); err != nil {
+		t.Fatalf("blocked promise-wait reconcile failed: %v", err)
+	}
+	if len(state.Reservations) != 1 {
+		t.Fatalf("promised blocked must not re-reserve: expected 1 reservation, got %d", len(state.Reservations))
+	}
+	if blocked.Status.Phase == RunPhaseRunning {
+		t.Errorf("blocked must stay promised until its leases land, got %s", blocked.Status.Phase)
+	}
+	if got := promisePodsWithPayer(state, "default", "blocked", "org:team", "team", "west"); got != 4 {
+		t.Errorf("promise gang must be idempotent, got %d pods after re-reconcile", got)
+	}
+
+	// The jobtree scheduler binds and mints the promised gang. Now the adoption
+	// path flips blocked Running, exactly as for any other activation.
+	if minted := seedPromiseLeases(t, state, "blocked", activation); minted != 4 {
+		t.Fatalf("expected the plugin to mint 4 promise leases, got %d", minted)
+	}
+	if err := controller.Reconcile("default", "blocked"); err != nil {
+		t.Fatalf("blocked adoption reconcile failed: %v", err)
+	}
+	if blocked.Status.Phase != RunPhaseRunning {
+		t.Errorf("expected blocked adopted Running once its leases landed, got %s", blocked.Status.Phase)
+	}
+	if got := openLeaseCount(state); got != leasesBefore+4 {
+		t.Errorf("expected 4 promise leases open (one per pod), had %d, now %d", leasesBefore, got)
+	}
+	// Its width is unfunded: org:team's envelope is exhausted by hog, so the run
+	// coasts until quota returns.
+	if blocked.Status.Funding == nil || blocked.Status.Funding.UnfundedGPUs != 4 || blocked.Status.Funding.OwnedGPUs != 0 {
+		t.Errorf("expected blocked classed 4 unfunded / 0 owned, got %+v", blocked.Status.Funding)
+	}
+	// The reservation activated, not rescheduled: no Pending reservation for a
+	// now-Running run (invariant 8).
 	assertInvariantNoPendingReservationForRunningRun(t, state)
+
+	// R14 demote-not-kill, the other half of the promise: when quota returns
+	// (hog completes, freeing org:team's envelope), blocked is re-funded by
+	// arithmetic — no new mint, the same open leases just re-class Owned.
+	later := activation.Add(time.Hour)
+	closed := v1.NewTime(later)
+	for i := range state.Leases {
+		l := &state.Leases[i]
+		if l.Labels[binder.LabelRunName] == "hog" && !l.Status.Closed {
+			l.Status.Closed = true
+			l.Status.Ended = &closed
+			l.Status.ClosureReason = "Completed"
+		}
+	}
+	controller.Clock = runClock{now: later}
+	// Measured after hog freed the envelope (its lease closed) but before blocked
+	// reconciles: re-funding must move nothing, only re-class blocked's existing
+	// open leases Unfunded → Owned.
+	openBeforeRefund := openLeaseCount(state)
+	if err := controller.Reconcile("default", "blocked"); err != nil {
+		t.Fatalf("blocked re-funding reconcile failed: %v", err)
+	}
+	if got := openLeaseCount(state); got != openBeforeRefund {
+		t.Errorf("re-funding must mint no new leases (arithmetic within the recorded envelope): had %d open, now %d", openBeforeRefund, got)
+	}
+	if blocked.Status.Funding == nil || blocked.Status.Funding.OwnedGPUs != 4 || blocked.Status.Funding.UnfundedGPUs != 0 {
+		t.Errorf("expected blocked re-funded 4 owned / 0 unfunded once hog freed the envelope, got %+v", blocked.Status.Funding)
+	}
 }
 
 // R7 companion: a genuine capacity deficit still clears through the resolver

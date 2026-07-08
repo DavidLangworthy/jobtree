@@ -145,10 +145,15 @@ func (j *JobTree) Unreserve(_ context.Context, _ fwk.CycleState, pod *corev1.Pod
 // the atomic funding check and either allows the gang or rejects it.
 func (j *JobTree) Permit(ctx context.Context, _ fwk.CycleState, pod *corev1.Pod, _ string) (*fwk.Status, time.Duration) {
 	// A node-failure swap re-places already-funded work onto capacity the
-	// controller reclaimed for it — it is not new demand, so it skips the gang
-	// and funding gate entirely and is allowed immediately. Its Lease is minted
-	// from the carried provenance at PreBind.
-	if isSwapPod(pod) {
+	// controller reclaimed for it, and a Promise pod is a promised-but-unfunded
+	// activation the controller pre-authorized when its reservation came due
+	// against an exhausted envelope (R3) — neither is new demand for the gate
+	// to judge (the gate would refuse a Promise gang; that refusal is why the
+	// marker exists), so both skip the gang and funding gate and are allowed
+	// immediately. Their Leases are minted from the carried provenance at
+	// PreBind; the evaluation classes a Promise lease — typically Unfunded,
+	// re-funded by arithmetic when quota returns (R14 demote-not-kill).
+	if isSwapPod(pod) || isPromisePod(pod) {
 		return nil, 0
 	}
 
@@ -226,23 +231,39 @@ func (j *JobTree) PreBind(ctx context.Context, _ fwk.CycleState, pod *corev1.Pod
 
 	var seg cover.Segment
 	gpusPerPod := podInt(pod, binder.AnnotationGPUs, 1)
-	if isSwapPod(pod) {
-		// The swap's payer is carried on the pod (the spare's provenance), not
-		// re-derived — so continued work keeps its original envelope.
+	if isSwapPod(pod) || isPromisePod(pod) {
+		// The pod's payer is carried on the pod (the consumed spare's provenance
+		// for a swap; the envelope its activation attributed the demand to for a
+		// Promise), not re-derived — continued/promised work keeps its
+		// attributed envelope.
 		seg = cover.Segment{
 			Owner:        pod.Annotations[binder.AnnotationPayerOwner],
 			BudgetName:   pod.Annotations[binder.AnnotationPayerBudget],
 			EnvelopeName: pod.Annotations[binder.AnnotationPayerEnvelope],
 		}
 		if seg.Owner == "" || seg.EnvelopeName == "" {
-			return fwk.NewStatus(fwk.Error, fmt.Sprintf("jobtree: swap pod %s/%s missing funding provenance", pod.Namespace, pod.Name))
+			return fwk.NewStatus(fwk.Error, fmt.Sprintf("jobtree: %s pod %s/%s missing funding provenance", pod.Annotations[binder.AnnotationLeaseReason], pod.Namespace, pod.Name))
 		}
-		// Defense-in-depth (R5): the swap path trusts pod-carried provenance and
-		// skips the funding gate, so require that provenance to match a Spare lease
-		// the run actually held. A forged swap pod cannot then mint against an
-		// arbitrary victim envelope — only one for which a real spare exists.
-		if !j.gm.spareLeaseProvenanceValid(ctx, pod.Namespace, pod.Labels[binder.LabelRunName], seg) {
-			return fwk.NewStatus(fwk.Error, fmt.Sprintf("jobtree: swap pod %s/%s provenance (%s/%s/%s) matches no spare lease for its run", pod.Namespace, pod.Name, seg.Owner, seg.BudgetName, seg.EnvelopeName))
+		if isSwapPod(pod) {
+			// Defense-in-depth (R5): the swap path trusts pod-carried provenance and
+			// skips the funding gate, so require that provenance to match a Spare lease
+			// the run actually held. A forged swap pod cannot then mint against an
+			// arbitrary victim envelope — only one for which a real spare exists.
+			if !j.gm.spareLeaseProvenanceValid(ctx, pod.Namespace, pod.Labels[binder.LabelRunName], seg) {
+				return fwk.NewStatus(fwk.Error, fmt.Sprintf("jobtree: swap pod %s/%s provenance (%s/%s/%s) matches no spare lease for its run", pod.Namespace, pod.Name, seg.Owner, seg.BudgetName, seg.EnvelopeName))
+			}
+		} else {
+			// Defense-in-depth (R3, mirrors R5): a Promise pod also skips the
+			// funding gate on carried provenance, so require the CHARGED envelope
+			// (payer-budget/envelope — the fields funding.Evaluate actually bills)
+			// to belong to the pod's own Run's owner, the only party the
+			// controller's opportunisticCoverPlan ever attributes a promise to. A
+			// forged Promise pod cannot then charge a victim's budget. The R5/R6
+			// policy already restricts these annotations to the controller
+			// ServiceAccount; this holds even where that policy is not enabled.
+			if !j.gm.promiseProvenanceValid(ctx, pod.Namespace, pod.Labels[binder.LabelRunName], seg) {
+				return fwk.NewStatus(fwk.Error, fmt.Sprintf("jobtree: promise pod %s/%s provenance (%s/%s/%s) does not name an envelope its run's owner owns", pod.Namespace, pod.Name, seg.Owner, seg.BudgetName, seg.EnvelopeName))
+			}
 		}
 	} else {
 		var ok bool
@@ -290,6 +311,15 @@ func (j *JobTree) PostBind(_ context.Context, _ fwk.CycleState, pod *corev1.Pod,
 // from carried provenance, funding-gate-exempt).
 func isSwapPod(pod *corev1.Pod) bool {
 	return pod.Annotations[binder.AnnotationLeaseReason] == "Swap"
+}
+
+// isPromisePod reports whether a pod is a promised-but-unfunded activation
+// (R3): pre-authorized by the controller when its reservation came due against
+// an exhausted envelope, minted from carried provenance, funding-gate-exempt.
+// The evaluation classes the minted lease — typically Unfunded until quota
+// returns.
+func isPromisePod(pod *corev1.Pod) bool {
+	return pod.Annotations[binder.AnnotationLeaseReason] == binder.LeaseReasonPromise
 }
 
 // isSparePod reports whether a pod is a held spare — funded by its gang's base

@@ -108,6 +108,57 @@ func seedSwapLease(t *testing.T, state *ClusterState, runName string, now time.T
 	return lease
 }
 
+// seedPromiseLeases mints the leases the scheduler plugin would create for a
+// run's promised-but-unfunded activation gang (R3): one per Promise intent pod,
+// from the payer provenance the controller stamped on it (the envelope its
+// activation attributed the demand to), on the pod's advisory node — the
+// test stand-in for the plugin's provenance-preserving PreBind now that a
+// budget-only reservation activation emits Promise pods instead of minting.
+// Numbered per-pod from 0 exactly like the plugin's PodLeaseWithRole. The
+// evaluation then classes these leases (typically Unfunded, re-funded by
+// arithmetic when quota returns; R14). Returns how many leases it minted.
+func seedPromiseLeases(t *testing.T, state *ClusterState, runName string, now time.Time) int {
+	t.Helper()
+	minted := 0
+	for i := range state.Pods {
+		p := &state.Pods[i]
+		if p.Labels[binder.LabelRunName] != runName ||
+			p.Annotations[binder.AnnotationLeaseReason] != binder.LeaseReasonPromise {
+			continue
+		}
+		if p.Annotations[binder.AnnotationPayerOwner] == "" {
+			t.Fatalf("seedPromiseLeases: promise pod %s missing payer provenance", p.Name)
+		}
+		node := p.NodeName
+		slots := make([]string, p.GPUs)
+		for j := range slots {
+			slots[j] = node + "#" + strconv.Itoa(j)
+		}
+		role := p.Labels[binder.LabelRunRole]
+		state.Leases = append(state.Leases, v1.Lease{
+			ObjectMeta: v1.ObjectMeta{
+				Namespace: p.Namespace,
+				Name:      p.Name + "-lease",
+				Labels:    map[string]string{binder.LabelRunName: runName, binder.LabelRunRole: role},
+			},
+			Spec: v1.LeaseSpec{
+				Owner:          p.Annotations[binder.AnnotationPayerOwner],
+				RunRef:         v1.RunReference{Name: runName, Namespace: p.Namespace},
+				Slice:          v1.LeaseSlice{Nodes: slots, Role: role},
+				Interval:       v1.LeaseInterval{Start: v1.NewTime(now)},
+				PaidByBudget:   p.Annotations[binder.AnnotationPayerBudget],
+				PaidByEnvelope: p.Annotations[binder.AnnotationPayerEnvelope],
+				Reason:         binder.LeaseReasonPromise,
+			},
+		})
+		minted++
+	}
+	if minted == 0 {
+		t.Fatalf("seedPromiseLeases: no promise pods found for run %s", runName)
+	}
+	return minted
+}
+
 // activeIntentPods counts the unscheduled Active workload pods Reconcile emitted
 // for a run (the width it is requesting from the scheduler).
 func activeIntentPods(state *ClusterState, namespace, runName string) int {
@@ -123,6 +174,24 @@ func intentPodsByRole(state *ClusterState, namespace, runName, role string) int 
 	for i := range state.Pods {
 		p := &state.Pods[i]
 		if p.Namespace == namespace && p.Labels[binder.LabelRunName] == runName && p.Labels[binder.LabelRunRole] == role {
+			n++
+		}
+	}
+	return n
+}
+
+// promisePodsWithPayer counts a run's Promise (R3) intent pods that carry the
+// expected payer provenance (owner/budget/envelope) — the demand attribution the
+// plugin will mint each Unfunded lease from.
+func promisePodsWithPayer(state *ClusterState, namespace, runName, owner, budget, envelope string) int {
+	n := 0
+	for i := range state.Pods {
+		p := &state.Pods[i]
+		if p.Namespace == namespace && p.Labels[binder.LabelRunName] == runName &&
+			p.Annotations[binder.AnnotationLeaseReason] == binder.LeaseReasonPromise &&
+			p.Annotations[binder.AnnotationPayerOwner] == owner &&
+			p.Annotations[binder.AnnotationPayerBudget] == budget &&
+			p.Annotations[binder.AnnotationPayerEnvelope] == envelope {
 			n++
 		}
 	}

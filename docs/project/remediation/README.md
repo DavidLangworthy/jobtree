@@ -24,7 +24,7 @@ mechanical, no design needed (implement straight from the audit — Opus/Sonnet)
 |---|---|---|---|---|
 | [R1](R1-phantom-lease-clear.md) | Phantom `pending` lease funding leak | ✅ | ✅ #46 | ✅ |
 | [R2](R2-gang-recovery.md) | Partial-gang wedge / restart / adopt-at-partial-width | ✅ | ◐ pt1 done; pt2/3 pending | ◐ |
-| [R3](R3-opportunistic-fork.md) | Opportunistic activation incoherent post-cutover | ✅ (refined) | ⏳ Opus — next; needs quota-semantics test migration | ⏳ Sonnet |
+| [R3](R3-opportunistic-fork.md) | Opportunistic activation incoherent post-cutover | ✅ (refined) | ✅ Promise path | ✅ engine + plugin |
 | [R4](R4-plugin-hotpath.md) | Permit hot-path relists + unbounded ledger replay | ✅ | ⏳ Opus | ⏳ Sonnet |
 
 **P1 — multi-tenant safety**
@@ -87,7 +87,8 @@ enable leader election in prod, enable the scheduler in both overlays. R24 = fix
 the stale README claim, drop the `spares-and-fill.md` "opportunistic fill" fake,
 correct the researcher-guide `spares` field name, **plus the funding-model doc
 fixes** (funding-model-review §1/§3): index.md's budget-as-gate framing and its
-"sole committer" claim (false until R3 lands); `concepts/leases.md` dead `Fail`
+"sole committer" claim (now TRUE — R3 landed 2026-07-08; just drop any hedge);
+`concepts/leases.md` dead `Fail`
 enum + role/class conflation (`Borrowed` as a role); `concepts/budgets.md` and
 `concepts/runs.md` pre-four-class models; add the explicit three-plane /
 quota-may-over-or-under-commit statement to fundamentals or quota-semantics.

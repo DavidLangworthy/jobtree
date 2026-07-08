@@ -351,6 +351,71 @@ func (m *gangManager) spareLeaseProvenanceValid(ctx context.Context, ns, runName
 	return false
 }
 
+// promiseProvenanceValid reports whether a Promise pod's carried provenance may
+// charge the envelope it names, for its own Run. PreBind uses it as
+// defense-in-depth before minting a promised activation from pod-carried
+// provenance: like the swap path, Promise skips the funding gate and trusts the
+// pod's payer-* annotations, so without this a hand-crafted pod stamped
+// lease-reason=Promise could mint a gate-free Lease charging a victim's budget.
+//
+// The load-bearing fields are the CHARGED ones — PaidByBudget/PaidByEnvelope
+// (seg.BudgetName/seg.EnvelopeName) — because funding.Evaluate resolves every
+// charge by EnvelopeKey{PaidByBudget, PaidByEnvelope} and derives the owner/tier
+// from the real Budget object, never from the lease's cosmetic Spec.Owner. So
+// pinning seg.Owner alone (which Evaluate ignores) would let a pod whose own run
+// it owns point payer-budget/envelope at another owner's envelope and mint a
+// gate-free charge there. We instead resolve the named Budget and require it to
+// be owned by the run's own owner and to carry the named envelope — the exact
+// invariant the controller's opportunisticCoverPlan upholds (it only ever
+// attributes a promise to an envelope the run's owner owns). This backs up the
+// mandatory-scheduler policy (R5/R6), which restricts the annotations themselves
+// to the controller ServiceAccount; it holds even if that policy is absent.
+func (m *gangManager) promiseProvenanceValid(ctx context.Context, ns, runName string, seg cover.Segment) bool {
+	var runList v1.RunList
+	if err := m.reader.List(ctx, &runList); err != nil {
+		return false
+	}
+	var run *v1.Run
+	for i := range runList.Items {
+		r := &runList.Items[i]
+		if r.Namespace == ns && r.Name == runName {
+			run = r
+			break
+		}
+	}
+	if run == nil {
+		return false
+	}
+	// seg.Owner is not what Evaluate charges, but a legitimate segment always has
+	// it equal to the run owner; keep it consistent so the minted lease's
+	// Spec.Owner is not misleading.
+	if seg.Owner != run.Spec.Owner {
+		return false
+	}
+	// The charge itself: the named budget must be owned by the run's owner and
+	// must actually carry the named envelope.
+	var budgetList v1.BudgetList
+	if err := m.reader.List(ctx, &budgetList); err != nil {
+		return false
+	}
+	for i := range budgetList.Items {
+		b := &budgetList.Items[i]
+		if b.Name != seg.BudgetName {
+			continue
+		}
+		if b.Spec.Owner != run.Spec.Owner {
+			return false
+		}
+		for _, env := range b.Spec.Envelopes {
+			if env.Name == seg.EnvelopeName {
+				return true
+			}
+		}
+		return false
+	}
+	return false
+}
+
 // loadWorld reads the live cluster into an admission.Input for the pod's Run.
 func (m *gangManager) loadWorld(ctx context.Context, pod *corev1.Pod) (admission.Input, *v1.Run, error) {
 	// The run key is the run, without any cohort suffix gangKey adds — a grow
