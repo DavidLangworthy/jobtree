@@ -67,7 +67,10 @@ e2e-image:
 	@set -a; . hack/e2e/versions.env; set +a; \
 	echo "Building $$E2E_IMAGE"; \
 	docker build -t "$$E2E_IMAGE" .; \
-	kind load docker-image "$$E2E_IMAGE" --name "$$KIND_CLUSTER_NAME"
+	echo "Building $$E2E_SCHEDULER_IMAGE"; \
+	docker build -f Dockerfile.scheduler -t "$$E2E_SCHEDULER_IMAGE" .; \
+	kind load docker-image "$$E2E_IMAGE" --name "$$KIND_CLUSTER_NAME"; \
+	kind load docker-image "$$E2E_SCHEDULER_IMAGE" --name "$$KIND_CLUSTER_NAME"
 
 e2e:
 	hack/e2e/run-e2e.sh
