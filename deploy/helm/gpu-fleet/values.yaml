@@ -45,6 +45,25 @@ monitoring:
   scrapeInterval: 30s
   serviceMonitorNamespace: ""
 
+# podPolicy installs the ValidatingAdmissionPolicy that makes jobtree the
+# mandatory, forgery-proof committer for GPU pods (R5/R6): GPU pods must use
+# schedulerName: jobtree, and jobtree-owned scheduling fields are settable only
+# by the controller ServiceAccount. Requires ValidatingAdmissionPolicy (GA in
+# k8s 1.30+). Left OFF by default so a bare install does not gate every GPU pod
+# in the cluster before the operator is ready — enabling it is what closes the
+# opt-in-budget hole (see docs/operator-guide/admin-setup.md, R18 break-glass).
+podPolicy:
+  enabled: false
+  # Fail (recommended): a policy/API outage blocks new GPU-pod creation rather
+  # than silently allowing an unbudgeted bypass. The release namespace is always
+  # exempt so the control plane can still come up. Set Ignore only if
+  # availability must win over budget integrity during an outage.
+  failurePolicy: Fail
+  # Namespaces exempt from the mandatory-scheduler rule (in addition to the
+  # always-exempt release namespace): device-plugin DaemonSets, other infra with
+  # legitimate raw-GPU access.
+  exemptNamespaces: []
+
 webhook:
   # enabled must match the manager's --enable-webhooks (default true). When
   # true the chart provisions serving certs, a webhook Service, and the

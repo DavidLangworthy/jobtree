@@ -26,6 +26,47 @@ The README compose note lists R5/R6 first. I moved the two P0 correctness bugs
 
 ## Decisions (chronological)
 
+### R5 + R6 — provenance trust anchor + mandatory scheduler (merged #TBD)
+- **VAP, not a webhook.** The mandatory-scheduler + controller-only-fields rules
+  ship as one `ValidatingAdmissionPolicy` (CEL, GA in the cluster's 1.36) rather
+  than a webhook server — less code, no serving cert, no availability tail.
+- **Two CEL rules, one binding.** (R6) a pod requesting `nvidia.com/gpu` must set
+  `schedulerName: jobtree`; (R5) any pod setting a jobtree-owned field
+  (`schedulerName: jobtree`, an `rq.davidlangworthy.io/*` annotation, or the role
+  label) must be created by the controller SA (`request.userInfo.username`). The
+  binding exempts the release namespace + operator-listed infra namespaces.
+- **Default OFF (`podPolicy.enabled: false`).** Mirrors `scheduler.enabled: false`
+  — a bare install must not suddenly gate every GPU pod in the cluster. Documented
+  that *enabling it is what closes the opt-in-budget hole*. This is the one place I
+  chose availability-of-the-default over closing-the-hole-by-default; flip the
+  value (and it's in the operator guide / R18 break-glass) when ready.
+- **failurePolicy `Fail`** (per the R6 recommendation), release namespace always
+  exempt so the control plane comes up even under Fail.
+- **Plugin defense-in-depth (the *tested* security win).** PreBind now refuses a
+  swap whose carried provenance matches no real Spare lease the run held
+  (`spareLeaseProvenanceValid`). This closes the sharpest exploit (mint against an
+  arbitrary victim envelope) at the plugin level *even if the VAP is not enabled*,
+  and it is unit-testable here; the VAP's CEL enforcement itself needs a kind
+  cluster to verify (templating is checked; enforcement is a Sonnet live-verify
+  follow-up).
+- **OwnerReference on emitted pods** (`buildPod`): the Run is now the pod's
+  controller owner — the provenance anchor R5 wants and the GC edge R12 needs
+  (done once, here). Requires the Run UID (real path always has it; pure-engine
+  Runs without a UID get none, backward compatible).
+- **Tests:** `spareLeaseProvenanceValid` (accepts a matching spare, refuses a
+  forged victim envelope, rejects an Active lease); `buildPod` owner reference (+
+  no-UID fallback). Green under `-race`; full suite + antifake + helm template OK.
+
+> **Sequencing note (after R2 part 1):** I proceeded to **R5/R6** rather than
+> immediately doing R2 part 2 (adopt-at-width). Rationale: part 1 already fixes the
+> actual wedge *mechanism* (a lost member re-assembles and recovers on its own), so
+> part 2's marginal value is honest-status + recovering *deleted* pod objects — and
+> its re-emit is a no-op in the common case (part 1 recovers the still-existing
+> pods). It also needs golden regen + a Degraded-status-clearing path. R5/R6 is a
+> live, exploitable cross-tenant billing bypass (P1), so it is the better next unit
+> of value. R2 parts 2 & 3 remain tracked follow-ups.
+
+
 ### Leftover test fix (before P0) — `make e2e-image` scheduler image
 Fixed the pickup-notes "Monday item #1": `e2e-image` now builds+loads the
 scheduler image too. Done by a Sonnet agent; merged as #45. Not a remediation

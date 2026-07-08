@@ -30,10 +30,27 @@ func TestBuildPodStampsRunNonce(t *testing.T) {
 		t.Errorf("run-nonce = %q, want the 12-char UID prefix %q", got, "0123456789ab")
 	}
 
-	// No UID → no nonce annotation (backward compatible).
+	// R5/R12: the pod is owned by its Run (controller ref) so the plugin can treat
+	// the Run as its provenance anchor and the apiserver garbage-collects it.
+	if len(pod.OwnerReferences) != 1 {
+		t.Fatalf("want 1 owner reference (the Run), got %d", len(pod.OwnerReferences))
+	}
+	owner := pod.OwnerReferences[0]
+	if owner.Kind != "Run" || owner.Name != "train" || string(owner.UID) != "0123456789abcdef-aaaa-bbbb" {
+		t.Errorf("owner ref = %+v, want Kind=Run Name=train UID=<run uid>", owner)
+	}
+	if owner.Controller == nil || !*owner.Controller {
+		t.Errorf("owner ref must be a controller reference")
+	}
+
+	// No UID → no nonce annotation and no owner reference (backward compatible).
 	run.UID = ""
-	if pod := buildPod(manifest, run); pod.Annotations[binder.AnnotationRunNonce] != "" {
-		t.Errorf("run-nonce = %q, want empty when the Run has no UID", pod.Annotations[binder.AnnotationRunNonce])
+	bare := buildPod(manifest, run)
+	if bare.Annotations[binder.AnnotationRunNonce] != "" {
+		t.Errorf("run-nonce = %q, want empty when the Run has no UID", bare.Annotations[binder.AnnotationRunNonce])
+	}
+	if len(bare.OwnerReferences) != 0 {
+		t.Errorf("want no owner reference when the Run has no UID, got %d", len(bare.OwnerReferences))
 	}
 }
 

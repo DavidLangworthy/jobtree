@@ -16,6 +16,7 @@ import (
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	"github.com/davidlangworthy/jobtree/pkg/admission"
 	"github.com/davidlangworthy/jobtree/pkg/binder"
+	"github.com/davidlangworthy/jobtree/pkg/cover"
 	"github.com/davidlangworthy/jobtree/pkg/topology"
 )
 
@@ -386,6 +387,44 @@ func TestGangCommittedCount(t *testing.T) {
 	m.claimPayer(twoWidePod("train-pod-1"))
 	if got := m.committedCount(key); got != 2 {
 		t.Errorf("committedCount after 2 claims = %d, want 2 (Permit: waiting+committed>=width de-wedges a lost member)", got)
+	}
+}
+
+// R5 defense-in-depth: a swap may only mint from provenance that matches a real
+// Spare lease the run held; a forged swap pod carrying a victim envelope it never
+// had a spare in is refused.
+func TestSpareLeaseProvenanceValid(t *testing.T) {
+	ctx := context.Background()
+	spare := &v1.Lease{
+		ObjectMeta: v1.ObjectMeta{Name: "train-spare-lease", Namespace: "default"},
+		Spec: v1.LeaseSpec{
+			Owner:          "org:ai:team",
+			RunRef:         v1.RunReference{Name: "train", Namespace: "default"},
+			Slice:          v1.LeaseSlice{Nodes: []string{"node-b#0"}, Role: binder.RoleSpare},
+			PaidByBudget:   "team",
+			PaidByEnvelope: "west",
+		},
+	}
+	m := newManager(t, trainRun(), spare)
+
+	good := cover.Segment{Owner: "org:ai:team", BudgetName: "team", EnvelopeName: "west"}
+	if !m.spareLeaseProvenanceValid(ctx, "default", "train", good) {
+		t.Errorf("provenance matching the run's real spare lease should be accepted")
+	}
+	// A forged provenance charging a different (victim) envelope has no matching
+	// spare for this run → refused.
+	forged := cover.Segment{Owner: "org:ai:team", BudgetName: "team", EnvelopeName: "victim-east"}
+	if m.spareLeaseProvenanceValid(ctx, "default", "train", forged) {
+		t.Errorf("provenance with no matching spare lease must be refused (forgery)")
+	}
+	// An ACTIVE lease with the right provenance does not count — only a held Spare
+	// is a legitimate swap target.
+	active := spare.DeepCopy()
+	active.Name = "train-active-lease"
+	active.Spec.Slice.Role = binder.RoleActive
+	m2 := newManager(t, trainRun(), active)
+	if m2.spareLeaseProvenanceValid(ctx, "default", "train", good) {
+		t.Errorf("an Active lease must not satisfy a swap provenance check")
 	}
 }
 
