@@ -15,18 +15,70 @@ agent should be able to pick one up cold, without re-deriving the design.
 
 ## Status board
 
-| Spec | Finding | Design | Code (Opus) | Verify (Sonnet) |
-|---|---|---|---|---|
-| [R1](R1-phantom-lease-clear.md) | Phantom `pending` lease funding leak | ✅ done | ⏳ pending | ⏳ pending |
-| [R2](R2-gang-recovery.md) | Partial-gang wedge / restart / adopt-at-partial-width | ✅ done | ⏳ pending | ⏳ pending |
-| [R3](R3-opportunistic-fork.md) | Opportunistic activation incoherent post-cutover | ✅ done | ⏳ pending | ⏳ pending |
-| [R4](R4-plugin-hotpath.md) | Permit hot-path relists + unbounded ledger replay | ✅ done | ⏳ pending | ⏳ pending |
-| [R5](R5-provenance-trust-anchor.md) | Forgeable funding provenance (swap mint) | ✅ done | ⏳ pending | ⏳ pending |
-| [R6](R6-mandatory-scheduler.md) | Budget is opt-in for GPU pods | ✅ done | ⏳ pending | ⏳ pending |
-| [R7](R7-tenancy-envelope-namespace.md) | Namespaces are not a tenancy boundary | ✅ done | ⏳ pending | ⏳ pending |
+Design = the Fable layer (this repo). ✅ = design spec written; **mech** = purely
+mechanical, no design needed (implement straight from the audit — Opus/Sonnet).
 
-R1–R4 are P0 (correctness at the new committer). R5–R7 are P1 (multi-tenant
-safety). P2–P5 from the audit are not yet designed.
+**P0 — correctness at the new committer**
+
+| Spec | Finding | Design | Code | Verify |
+|---|---|---|---|---|
+| [R1](R1-phantom-lease-clear.md) | Phantom `pending` lease funding leak | ✅ | ⏳ Opus | ⏳ Sonnet |
+| [R2](R2-gang-recovery.md) | Partial-gang wedge / restart / adopt-at-partial-width | ✅ | ⏳ Opus | ⏳ Sonnet |
+| [R3](R3-opportunistic-fork.md) | Opportunistic activation incoherent post-cutover | ✅ | ⏳ Opus | ⏳ Sonnet |
+| [R4](R4-plugin-hotpath.md) | Permit hot-path relists + unbounded ledger replay | ✅ | ⏳ Opus | ⏳ Sonnet |
+
+**P1 — multi-tenant safety**
+
+| Spec | Finding | Design | Code | Verify |
+|---|---|---|---|---|
+| [R5](R5-provenance-trust-anchor.md) | Forgeable funding provenance (swap mint) | ✅ | ⏳ Opus | ⏳ Sonnet |
+| [R6](R6-mandatory-scheduler.md) | Budget is opt-in for GPU pods | ✅ | ⏳ Opus | ⏳ Sonnet |
+| [R7](R7-tenancy-envelope-namespace.md) | Namespaces are not a tenancy boundary | ✅ | ⏳ Opus | ⏳ Sonnet |
+
+**P2 — workload lifecycle (blocks "usable for ML")**
+
+| Spec | Finding | Design | Code | Verify |
+|---|---|---|---|---|
+| [R8](R8-pod-failure-handling.md) | Failed pod = immortal budget-charging zombie | ✅ | ⏳ Opus | ⏳ Sonnet |
+| [R9](R9-rendezvous.md) | No distributed-training rendezvous on the live path | ✅ | ⏳ Opus | ⏳ Sonnet |
+| R10 | False rendezvous API comment (`run_types.go:67`) | **mech** | ⏳ Sonnet | — |
+
+**P3 — Kubernetes conventions & API hardening**
+
+| Spec | Finding | Design | Code | Verify |
+|---|---|---|---|---|
+| [R11](R11-status-conditions.md) | No `status.conditions` anywhere | ✅ | ⏳ Opus | ⏳ Sonnet |
+| [R12](R12-ownerrefs-finalizers.md) | Zero ownerRefs/finalizers; hand-rolled GC | ✅ | ⏳ Opus | ⏳ Sonnet |
+| [R13](R13-lease-rename.md) | `Lease` collides with `coordination.k8s.io/Lease` | ✅ | ⏳ Opus | ⏳ Sonnet |
+| [R14](R14-crd-validation.md) | Near-zero CRD validation; webhook-only immutability | ✅ | ⏳ Opus | ⏳ Sonnet |
+
+**P4 — admin, release & project hygiene**
+
+| Spec | Finding | Design | Code | Verify |
+|---|---|---|---|---|
+| R15 | Documented install can't work; phantom notifier | **mech** | ⏳ Sonnet | ⏳ Sonnet |
+| R16 | ServiceMonitor selector mismatch; Prom-Operator hard dep | **mech** | ⏳ Sonnet | ⏳ Sonnet |
+| R17 | Prod overlay: 3 replicas, leader-election off; scheduler off | **mech** | ⏳ Sonnet | ⏳ Sonnet |
+| [R18](R18-operator-runbook.md) | No break-glass / uninstall / CRD-upgrade story | ✅ | ⏳ Sonnet | ⏳ Sonnet |
+| [R19](R19-license-governance.md) | No LICENSE; fictional governance | ✅ | ⏳ Sonnet | ⏳ Sonnet |
+
+**P5 — observability & correctness papercuts**
+
+| Spec | Finding | Design | Code | Verify |
+|---|---|---|---|---|
+| [R20](R20-plugin-events.md) | Plugin scheduling refusals invisible to `explain` | ✅ | ⏳ Opus | ⏳ Sonnet |
+| [R21](R21-cordon-not-failure.md) | Cordon treated as node failure → destructive swap | ✅ | ⏳ Opus | ⏳ Sonnet |
+| [R22](R22-reclaim-slot-granularity.md) | Swap reclaim closes co-located runs (node granularity) | ✅ | ⏳ Opus | ⏳ Sonnet |
+| [R23](R23-workload-observability.md) | No logs/pods/artifacts story | ✅ | ⏳ Opus | ⏳ Sonnet |
+| R24 | Doc-honesty leftovers (README/spares-and-fill/guide) | **mech** | ⏳ Sonnet | — |
+
+**Mechanical-only (R10, R15, R16, R17, R24):** no design decision — the audit's
+finding text is the spec. R10 = correct the false comment. R15 = build+push
+images in `release.yaml`, fix helm repo + `image.tag`, default notifier off. R16 =
+fix the ServiceMonitor selector + make the Prometheus-Operator dep optional. R17 =
+enable leader election in prod, enable the scheduler in both overlays. R24 = fix
+the stale README claim, drop the `spares-and-fill.md` "opportunistic fill" fake,
+correct the researcher-guide `spares` field name.
 
 ## How the pieces compose (read before implementing any single one)
 
@@ -48,6 +100,22 @@ The P0 specs share machinery and must be implemented as a set, in this order:
    the hot-path cost, and R4's caching must not reintroduce the decide→mint
    overspend window R1 closes.
 
+## P2–P5 sequencing (roughly priority order, with the real couplings)
+
+- **R9 is the pivotal fork** — Option A (finish JobSet lowering) *subsumes* R8 and
+  part of gang co-termination; Option B (direct-inject rendezvous) leaves R8
+  separate. Decide R9's A/B before starting R8, since it determines whether R8 is
+  its own change.
+- **R21 + R22 land together** — both are bugs in the one `HandleNodeFailure` swap
+  path; fixing one without the other re-touches the same code.
+- **R11 before R2/R8's status writes** — the condition taxonomy should exist so
+  `Degraded` (R2) and `Failed` (R8) emit through it, not as ad-hoc strings.
+- **R12 shares R5's pod OwnerReference** — do that edge once.
+- **R18/R19 are cheap and unblock the OSS/admin story** — do them anytime; R19
+  (license) is a legal decision, so surface it early.
+- **R10, R15, R16, R17, R24 are mechanical** — parallelizable Sonnet work, no
+  dependency on the design specs.
+
 ## Decisions that are David's, not Fable's
 
 Collected here so they are not lost in the specs. Each is also flagged inline.
@@ -59,6 +127,16 @@ Collected here so they are not lost in the specs. Each is also flagged inline.
   policy/webhook outage blocks all GPU pods) vs `Ignore` (available, but a gap
   during outages). Recommendation inside: `Fail`, with the jobtree control-plane
   namespace exempted.
-- **R7**: whether budget family-sharing and sponsor lending may cross namespaces.
+- **R7**: whether budget family-sharing and sponsor lending may cross namespaces,
+  and whether the tenant is the namespace or an authenticated owner string.
   Recommendation inside: envelopes are namespace-scoped; cross-namespace funding
   only via an explicit sponsor ACL that names the lender namespace.
+- **R8**: default workload failure policy (`Fail` vs `Retry(n)`), per-role vs
+  per-run. Recommendation inside: per-role, default `Fail`.
+- **R9**: Option **A (finish JobSet lowering)** vs **B (direct-inject + headless
+  Service)** — the biggest fork in P2–P5. Recommendation inside: A long-term (it
+  also closes R8); B as a bridge if bandwidth is tight.
+- **R13**: new Lease kind name (`GPULease` recommended) and migration mode
+  (dual-read window vs hard pre-release rename).
+- **R19**: license choice (**Apache-2.0** recommended vs MIT) and whether
+  governance is made real now vs the claims trimmed.
