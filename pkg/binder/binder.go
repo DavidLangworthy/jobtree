@@ -57,13 +57,24 @@ const (
 	// the controller reclaimed for it (a required placement, not the soft
 	// advisory hint normal pods carry): a swap must land on that held capacity.
 	AnnotationSwapNode = "rq.davidlangworthy.io/swap-node"
-	// The AnnotationPayer* trio carries the funding provenance of a swap: the
-	// spare's payer (owner/budget/envelope). The plugin's PreBind mints the Swap
-	// lease from these instead of re-deriving a payer via cover, so continued
-	// work keeps its original envelope (sponsor caps, lender attribution — R15).
+	// The AnnotationPayer* trio carries a pod's funding provenance when the
+	// payer is decided by the controller rather than by the plugin's funding
+	// gate: a swap carries the consumed spare's payer, a Promise pod the
+	// envelope its activation attributed the demand to. The plugin's PreBind
+	// mints the lease from these instead of re-deriving a payer via cover, so
+	// continued/promised work keeps its attributed envelope (sponsor caps,
+	// lender attribution — R15).
 	AnnotationPayerOwner    = "rq.davidlangworthy.io/payer-owner"
 	AnnotationPayerBudget   = "rq.davidlangworthy.io/payer-budget"
 	AnnotationPayerEnvelope = "rq.davidlangworthy.io/payer-envelope"
+	// LeaseReasonPromise marks a promised-but-unfunded activation pod (R3): its
+	// reservation came due against an exhausted (but present) envelope, so the
+	// controller pre-authorized the start instead of minting — the plugin skips
+	// the funding gate for it (like a swap; it is not new demand for the gate to
+	// judge) and mints from the carried payer-* provenance at PreBind. The
+	// evaluation then classes the lease — typically Unfunded, re-funded by
+	// arithmetic when quota returns (quota-semantics.md, R14 demote-not-kill).
+	LeaseReasonPromise = "Promise"
 	// AnnotationRunNonce carries a per-incarnation identifier of the owning Run
 	// (its UID) into the Lease name the plugin mints. Pod names are deterministic,
 	// so without it a delete+resubmit of a same-named Run would have PreBind's

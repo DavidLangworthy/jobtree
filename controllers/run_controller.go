@@ -211,6 +211,18 @@ func (c *RunController) Reconcile(namespace, name string) error {
 		return nil
 	}
 
+	// A promised activation's pods are already out, pre-authorized (R3): its
+	// cover is EXPECTED to fail until quota returns (that is why the promise
+	// fired), so re-entering admission here would just plan a spurious second
+	// reservation every tick. Wait instead — the plugin binds the Promise pods
+	// (they skip its funding gate) and the adoption path above flips Running.
+	if runHasPromisePods(c.State.Pods, run) {
+		run.Status.Phase = RunPhasePending
+		run.Status.Message = fmt.Sprintf("promised start: scheduling %d GPUs (awaiting the jobtree scheduler)", run.Spec.Resources.TotalGPUs)
+		result = "scheduling"
+		return nil
+	}
+
 	reclaimed := false
 	for {
 		packPlan, err := planPlacement(run, snapshot)
@@ -954,16 +966,16 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 	activated := v1.NewTime(now)
 	if opportunistic {
 		// Promised-but-unfunded start: the plugin's Permit funding gate would
-		// refuse this gang, so honoring the earlier promise is the one narrow
-		// mint the controller still performs (cascade-plan.md §1). It attributes
-		// the demand to a real envelope (classed Unfunded now, re-funded by
-		// arithmetic when quota returns) — not a second funding authority.
-		result, err := binder.Materialize(binder.Request{Run: run.DeepCopy(), CoverPlan: coverPlan, PackPlan: plan, Now: now, NameSeed: leaseSeqBase(runKey, c.State.Leases)})
-		if err != nil {
-			return err
-		}
-		c.State.Pods = append(c.State.Pods, result.Pods...)
-		c.State.Leases = append(c.State.Leases, result.Leases...)
+		// refuse this gang, so the controller pre-authorizes it instead of
+		// minting — it emits intent pods marked lease-reason=Promise carrying
+		// the payer provenance opportunisticCoverPlan attributed the demand to
+		// (always exactly one segment). The plugin — still the sole committer —
+		// skips the funding gate for Promise pods, exactly as for a swap, and
+		// mints from that provenance at PreBind; the evaluation then classes
+		// the leases — typically Unfunded, re-funded by arithmetic when quota
+		// returns (R14 demote-not-kill). The run reaches Running when the
+		// adoption path picks the minted leases up, like any other activation.
+		c.emitPromisePods(run, plan, coverPlan.Segments[0])
 
 		reservation.Status.State = "Released"
 		reservation.Status.Reason = "Activated"
@@ -972,12 +984,10 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 		reservation.Status.CountdownSeconds = nil
 		metrics.ClearReservationBacklog(key)
 
-		run.Status.Phase = RunPhaseRunning
-		run.Status.Message = fmt.Sprintf("reservation %s activated (opportunistic)", reservation.Name)
 		run.Status.PendingReservation = nil
 		run.Status.EarliestStart = nil
-		run.Status.CheckpointDeadline = nil
-		run.Status.Funding = summarizeRunFunding(run, c.evaluate(now))
+		run.Status.Message = fmt.Sprintf("reservation %s activated (promised; awaiting the jobtree scheduler)", reservation.Name)
+		run.Status.Funding = summarizeRunFunding(run, ev)
 		c.emit(run, EventTypeNormal, "Activated", run.Status.Message)
 		return nil
 	}
@@ -1010,6 +1020,22 @@ func runHasActivePods(pods []binder.PodManifest, run *v1.Run) bool {
 	for i := range pods {
 		p := &pods[i]
 		if p.Namespace == run.Namespace && p.Labels[binder.LabelRunName] == run.Name && p.Labels[binder.LabelRunRole] == binder.RoleActive {
+			return true
+		}
+	}
+	return false
+}
+
+// runHasPromisePods reports whether the run's emitted intent pods are a
+// promised (pre-authorized, lease-reason=Promise) activation awaiting the
+// scheduler (R3). Such a run must not re-enter admission planning: its cover
+// is expected to fail until quota returns, and the plugin binds its pods
+// regardless (they skip the funding gate).
+func runHasPromisePods(pods []binder.PodManifest, run *v1.Run) bool {
+	for i := range pods {
+		p := &pods[i]
+		if p.Namespace == run.Namespace && p.Labels[binder.LabelRunName] == run.Name &&
+			p.Annotations[binder.AnnotationLeaseReason] == binder.LeaseReasonPromise {
 			return true
 		}
 	}
@@ -1395,20 +1421,6 @@ func activeGPUsForRun(runKey string, leases []v1.Lease) int {
 	return total
 }
 
-// leaseSeqBase returns the number of leases (open or closed) that exist for
-// the run, seeding the binder's name sequence so successive
-// materializations cannot collide.
-func leaseSeqBase(runKey string, leases []v1.Lease) int {
-	count := 0
-	for i := range leases {
-		lease := &leases[i]
-		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) == runKey {
-			count++
-		}
-	}
-	return count
-}
-
 func computeUsage(leases []v1.Lease, now time.Time) map[string]int {
 	usage := make(map[string]int)
 	for _, lease := range leases {
@@ -1490,8 +1502,26 @@ func expectedSpareTotal(run *v1.Run, plan *pack.Plan) int32 {
 // tops up the pods that do not yet exist.
 func (c *RunController) emitIntentPods(run *v1.Run, packPlan pack.Plan) int {
 	gpusPerPod, width := intentPodShape(run)
-	created := c.emitCohortPods(run, flattenPackNodes(packPlan), gpusPerPod, width, "0", "Start")
-	created += c.emitSparePods(run, packPlan, gpusPerPod)
+	created := c.emitCohortPods(run, flattenPackNodes(packPlan), gpusPerPod, width, "0", "Start", nil)
+	created += c.emitSparePods(run, packPlan, gpusPerPod, "Start", nil)
+	return created
+}
+
+// emitPromisePods emits a promised-but-unfunded activation's intent gang (R3):
+// identical to emitIntentPods, but every pod — actives and spares — is marked
+// lease-reason=Promise and carries the payer provenance the activation
+// attributed the demand to, so the plugin mints from it without the funding
+// gate (which would refuse this gang; that refusal is why the promise exists).
+// Idempotent like emitIntentPods: it only tops up to the declared widths.
+func (c *RunController) emitPromisePods(run *v1.Run, packPlan pack.Plan, payer cover.Segment) int {
+	extra := map[string]string{
+		binder.AnnotationPayerOwner:    payer.Owner,
+		binder.AnnotationPayerBudget:   payer.BudgetName,
+		binder.AnnotationPayerEnvelope: payer.EnvelopeName,
+	}
+	gpusPerPod, width := intentPodShape(run)
+	created := c.emitCohortPods(run, flattenPackNodes(packPlan), gpusPerPod, width, "0", binder.LeaseReasonPromise, extra)
+	created += c.emitSparePods(run, packPlan, gpusPerPod, binder.LeaseReasonPromise, extra)
 	return created
 }
 
@@ -1501,7 +1531,7 @@ func (c *RunController) emitIntentPods(run *v1.Run, packPlan pack.Plan) int {
 // and mints RoleSpare leases from the leftover payers — real, funded standby
 // capacity that sits out the active width and that a node-failure swap lands on.
 // Idempotent: only tops up to the declared spare-pod count.
-func (c *RunController) emitSparePods(run *v1.Run, packPlan pack.Plan, gpusPerPod int) int {
+func (c *RunController) emitSparePods(run *v1.Run, packPlan pack.Plan, gpusPerPod int, reason string, extra map[string]string) int {
 	if gpusPerPod <= 0 || packPlan.TotalSpares <= 0 || packPlan.TotalSpares%gpusPerPod != 0 {
 		return 0
 	}
@@ -1528,6 +1558,13 @@ func (c *RunController) emitSparePods(run *v1.Run, packPlan pack.Plan, gpusPerPo
 			node = advisory[i%len(advisory)]
 		}
 		created++
+		annotations := map[string]string{
+			binder.AnnotationExpectedWidth: strconv.Itoa(count),
+			binder.AnnotationLeaseReason:   reason,
+		}
+		for k, v := range extra {
+			annotations[k] = v
+		}
 		c.State.Pods = append(c.State.Pods, binder.PodManifest{
 			Namespace: run.Namespace,
 			Name:      fmt.Sprintf("%s-spare-%d", run.Name, i),
@@ -1538,10 +1575,7 @@ func (c *RunController) emitSparePods(run *v1.Run, packPlan pack.Plan, gpusPerPo
 				binder.LabelRunRole:    binder.RoleSpare,
 				binder.LabelGroupIndex: "0",
 			},
-			Annotations: map[string]string{
-				binder.AnnotationExpectedWidth: strconv.Itoa(count),
-				binder.AnnotationLeaseReason:   "Start",
-			},
+			Annotations: annotations,
 		})
 	}
 	return created
@@ -1600,8 +1634,10 @@ func flattenSpareNodes(plan pack.Plan) []string {
 // Active intent pods (gpusPerPod each) for the scheduler plugin to place and
 // fund. Cohort "0" is the base gang; each elastic-grow step uses "1","2",… so
 // the plugin gangs and funds that delta separately from the base. Idempotent per
-// cohort; returns how many pods it created this pass.
-func (c *RunController) emitCohortPods(run *v1.Run, advisory []string, gpusPerPod, count int, cohort, reason string) int {
+// cohort; returns how many pods it created this pass. extra (may be nil) adds
+// per-pod annotations beyond the standard set — the Promise path uses it to
+// carry the payer provenance (R3).
+func (c *RunController) emitCohortPods(run *v1.Run, advisory []string, gpusPerPod, count int, cohort, reason string, extra map[string]string) int {
 	if gpusPerPod <= 0 || count <= 0 {
 		return 0
 	}
@@ -1625,6 +1661,9 @@ func (c *RunController) emitCohortPods(run *v1.Run, advisory []string, gpusPerPo
 		annotations := map[string]string{
 			binder.AnnotationExpectedWidth: countStr,
 			binder.AnnotationLeaseReason:   reason,
+		}
+		for k, v := range extra {
+			annotations[k] = v
 		}
 		if cohort != "0" {
 			name = fmt.Sprintf("%s-c%s-active-%d", run.Name, cohort, i)
@@ -1822,7 +1861,7 @@ func (c *RunController) growRun(run *v1.Run, snapshot *topology.Snapshot, now ti
 	// ledger (which already holds the base leases) and mints "Grow" leases; the
 	// run's width grows from those leases. The controller mints nothing.
 	cohort := strconv.Itoa(nextCohortForRun(c.State.Pods, run))
-	c.emitCohortPods(run, flattenPackNodes(plan), gpusPerPod, add/gpusPerPod, cohort, "Grow")
+	c.emitCohortPods(run, flattenPackNodes(plan), gpusPerPod, add/gpusPerPod, cohort, "Grow", nil)
 	return nil
 }
 

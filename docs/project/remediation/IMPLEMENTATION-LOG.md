@@ -83,6 +83,65 @@ and is **re-funded when quota returns**
   of a long batch under a token budget. Left as the next unit of work with this
   design pinned. Nothing about it is blocked; it is scoped, not stuck.
 
+### R3 — Promise path IMPLEMENTED (2026-07-08)
+Executed the pinned design. The controller's opportunistic mint is gone; the
+budget-only activation now emits a promised intent gang and the plugin is the
+sole committer. Judgment calls made without interrupting, per standing
+instruction:
+
+1. **Promise branch keeps the run Pending; adoption flips Running.** The
+   opportunistic branch (`activateReservation`) emits Promise pods and releases
+   the reservation, but does **not** set `Phase=Running` and does **not** clear
+   `CheckpointDeadline` — exact parity with the *funded* activation path, which
+   also lets the plugin's leases land and the adoption block flip Running. Setting
+   Running here would resurrect the old "Running with zero bindable pods" lie.
+2. **New Reconcile guard `runHasPromisePods` short-circuits admission.** A
+   promised run's cover is *expected* to keep failing until quota returns (that is
+   why the promise fired), so re-entering `planPlacement`/`planReservation` would
+   plan a spurious **second** reservation on every tick. The guard parks it Pending
+   with a "promised start: scheduling N GPUs" message instead. It sits **after** the
+   open-lease adoption block, so once the plugin mints the leases the run adopts to
+   Running normally and never reaches the guard again.
+3. **Per-pod leases replace the old per-group `Materialize` lease** — a pure
+   mint-site move. The legacy Roles-less path emits one 1-GPU pod per requested GPU
+   (`intentPodShape`), so a 4-GPU run now yields four per-pod Promise leases where
+   the old `binder.Materialize` minted one 4-wide group lease. `funding.Evaluate`
+   classes by envelope quota, not lease count, so the classification is identical
+   (all Unfunded until quota returns); the golden oracle is unchanged.
+4. **`promiseProvenanceValid` charge validation (defense-in-depth for VAP-off).**
+   The plugin refuses to mint a Promise lease unless the **charged** envelope
+   belongs to the run's own owner. First cut of this check compared only
+   `seg.Owner == run.Spec.Owner` — an adversarial review (workflow, 2026-07-08)
+   caught that this pins the wrong field: `funding.Evaluate` resolves every charge
+   by `EnvelopeKey{PaidByBudget, PaidByEnvelope}` and takes the owner from the real
+   Budget object, never from the lease's cosmetic `Spec.Owner`. So a pod that owns
+   its own run could set `payer-owner` to itself (passing the naive check) while
+   pointing `payer-budget/envelope` at a **victim's** budget, minting a gate-free
+   cross-tenant charge. Fixed: resolve the named Budget, require `b.Spec.Owner ==
+   run.Spec.Owner` **and** that it carries the named envelope — the exact invariant
+   `opportunisticCoverPlan` upholds (it only attributes a promise to an envelope the
+   run's owner owns). This matches the rigor of the swap's `spareLeaseProvenanceValid`
+   (owner AND budget AND envelope); both flow through one PreBind carried-provenance
+   branch that picks the check by marker (`Swap` vs `Promise`). With the R5/R6 VAP
+   on, the payer annotations are already controller-only; this holds even with it off.
+5. **Deleted the controller's orphaned `leaseSeqBase` copy.** It was dead after the
+   mint-site move; the canonical copy stays in `pkg/admission/admission.go`.
+6. **Test-migration scope was far smaller than feared.** Only one pure-engine test
+   drives the controller's opportunistic mint
+   (`TestActivateReservationBudgetOnlyShortfallAdmitsOpportunistically`); migrated
+   it to the intent-pod + simulated-plugin-mint pattern with a new
+   `seedPromiseLeases` helper (mirrors `seedSwapLease`). It now asserts the full
+   promise lifecycle: controller mints nothing → 4 Promise pods carrying payer
+   provenance → run stays Pending → re-reconcile does **not** re-reserve (guards the
+   new guard) → plugin mints → adoption flips Running at 4 Unfunded → hog completes
+   → **re-funded to 4 Owned with no new mint** (R14). Added `TestPromiseProvenanceValid`
+   (plugin). **No golden scenario exercises opportunistic activation**, so the oracle
+   needed no regeneration — verified it passes unchanged. Full suite green under
+   `-race`; antifake + helm template OK.
+
+This makes index.md's "sole committer" claim TRUE — R24 should drop its "false
+until R3 lands" caveat when it does the doc-honesty pass.
+
 > **Sequencing note (after R2 part 1):** I proceeded to **R5/R6** rather than
 > immediately doing R2 part 2 (adopt-at-width). Rationale: part 1 already fixes the
 > actual wedge *mechanism* (a lost member re-assembles and recovers on its own), so

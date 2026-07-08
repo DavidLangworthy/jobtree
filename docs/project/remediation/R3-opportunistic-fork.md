@@ -1,7 +1,17 @@
 # R3 — Reconcile the opportunistic-activation fork with the cutover
 
-**Priority:** P0 · **Design:** complete (Fable), **one product decision for David** · **Next:** Opus implements, Sonnet verifies
+**Priority:** P0 · **Design:** complete (Fable) · **Status: IMPLEMENTED** (Promise path; David's decision resolved to "keep it")
 **Depends on:** R5/R6 (its pods must carry trusted provenance) and R2 (correct adoption width).
+
+> **Implemented 2026-07-08.** The controller no longer mints on the opportunistic
+> path: a budget-only reservation activation emits a *promised* intent gang
+> (`lease-reason=Promise` + payer provenance) and the plugin mints the (Unfunded)
+> leases at PreBind, skipping its funding gate like a swap. A new Reconcile guard
+> keeps the run Pending until those leases land and the adoption path flips it
+> Running. See the "Implementation spec" below (all points done) and the
+> IMPLEMENTATION-LOG R3 entry for the judgment calls. This makes index.md's
+> single-"sole committer" claim TRUE (R24 can drop its "false until R3 lands"
+> caveat).
 
 ## Problem (evidence)
 
@@ -78,8 +88,14 @@ simulated-plugin-mint pattern (as the PLUGIN-2 cutover migrated the normal path
 via `seedRunning`) and regenerating the affected golden scenarios. It touches the
 quota source-of-truth (`quota-semantics.md`), so it must be done deliberately. The
 `Promise` marker is already forgery-protected by the R5/R6 VAP (it gates every
-`rq.davidlangworthy.io/*` annotation to the controller SA); add a plugin owner
-cross-check (provenance owner == run owner) as defense-in-depth for VAP-off.
+`rq.davidlangworthy.io/*` annotation to the controller SA); add a plugin
+**charge cross-check** as defense-in-depth for VAP-off — resolve the carried
+`payer-budget/payer-envelope` (the fields `funding.Evaluate` actually charges) and
+require the named budget to be owned by the run's own owner and to carry the named
+envelope. (A naive `provenance.Owner == run owner` check is **insufficient**: the
+lease's `Spec.Owner` is cosmetic — Evaluate never reads it — so it would let a pod
+that owns its own run charge a victim's envelope. An adversarial review caught this;
+see IMPLEMENTATION-LOG R3 decision #4.)
 
 ## Invariant
 
