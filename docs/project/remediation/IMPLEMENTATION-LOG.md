@@ -93,6 +93,37 @@ and is **re-funded when quota returns**
 > of value. R2 parts 2 & 3 remain tracked follow-ups.
 
 
+### Funding-model review (2026-07-08) — David's design challenge
+
+David asked whether funding-class-on-the-GPU is the right design, whether the
+ledger's allocs/frees can be trusted, and pointed out quota and capacity are
+independently variable, reconciling only at scheduling instants. Ran a four-way
+evidence sweep (funding engine, ledger lifecycle, quota↔capacity coupling, doc
+claims); full analysis pinned in `../funding-model-review.md`. Outcomes:
+
+- **Class is derived, never stored — confirmed clean.** Exhaustive grep: status
+  class fields are write-only cache; no control path reads them back. The
+  design's Decision 3 holds in the code.
+- **Frozen-payer consequence documented** (re-funding is arithmetic within the
+  minted envelope only; no re-point path exists). Accepted as a feature
+  (predictable attribution); now written down instead of implicit.
+- **New bug → [R25](R25-spare-node-lease-leak.md):** deleting a node hosting
+  only a held spare leaks an open lease forever (`HandleNodeFailure` skips
+  spares before node-match; caller swallows the error). Lands with R21/R22.
+- **New structural item → [R26](R26-ledger-auditor.md):** runtime ledger
+  auditor (open lease ↔ live pod on live node; jobtree pod ↔ open lease;
+  `Orphaned` closure reason; violation metrics). Decision made without asking,
+  per standing instruction: destructive repair is limited to closing leases
+  (budget-safe direction); pod-without-lease only alarms.
+- **R20 gains `GangUnplaceable`:** Permit currently labels pure physical
+  failures "not fundable" (pack/cover errors collapsed to one string).
+- **R24 expanded:** index.md budget-as-gate framing + "sole committer" claim
+  (false until R3), dead `Fail` enum in leases.md, role/class conflation,
+  and an explicit three-plane / quota-may-over-or-under-commit statement.
+- **R3 spec note added:** opportunistic lease bakes `Slice.Nodes` from the pack
+  plan while the pod gets only soft affinity → ledger/placement divergence; the
+  Promise path fixes it by minting from the actual bind node — verify that.
+
 ### Leftover test fix (before P0) — `make e2e-image` scheduler image
 Fixed the pickup-notes "Monday item #1": `e2e-image` now builds+loads the
 scheduler image too. Done by a Sonnet agent; merged as #45. Not a remediation

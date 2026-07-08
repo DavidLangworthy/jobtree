@@ -25,6 +25,13 @@ them without pod spelunking):
 - `GangForming` (Normal) — waiting for siblings, `(k/N)`.
 - `GangUnfundable` (Warning) — the funding gate refused, with the deficit reason
   from `decide` (the researcher's "why isn't it starting" answer).
+- `GangUnplaceable` (Warning) — **distinct from unfundable**: `admission.Feasible`
+  failed at the `pack` step (physical capacity/topology), not the `cover` step
+  (quota). Today `decide` collapses both into one string and Permit labels every
+  rejection "not fundable" (`gang.go:168-176`, `plugin.go:198-206`) — misleading
+  for anyone debugging overcommit (funding-model review, 2026-07-08). Preserve
+  the typed `pack.PlanError` vs `cover.PlanError` distinction through `decide`
+  and emit the matching event.
 - `FlavorMismatch` (Warning) — Filter rejected all nodes of the wrong flavor.
 - `GangTimeout` (Warning) — Permit timed out; the gang will re-form.
 - `LeaseMinted` (Normal) — PreBind committed the lease (payer envelope), the
