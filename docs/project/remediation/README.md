@@ -47,8 +47,8 @@ mechanical, no design needed (implement straight from the audit — Opus/Sonnet)
 | Spec | Finding | Design | Code | Verify |
 |---|---|---|---|---|
 | [R8](R8-pod-failure-handling.md) | Failed pod = immortal budget-charging zombie | ✅ | ⏳ Opus | ⏳ Sonnet |
-| [R9](R9-rendezvous.md) | No distributed-training rendezvous on the live path | ✅ | ⏳ Opus | ⏳ Sonnet |
-| R10 | False rendezvous API comment (`run_types.go:67`) | **mech** | ⏳ Sonnet | — |
+| [R9](R9-rendezvous.md) | No distributed-training rendezvous on the live path | ✅ **amended** ([9A](R9-jobset-amendment.md)) | 9A-0 ✅ · 9A-1..4 ⏳ Opus | ⏳ Sonnet |
+| R10 | False rendezvous API comment (`run_types.go:67`) | **mech** | ✅ (in 9A-0) | — |
 
 **P3 — Kubernetes conventions & API hardening**
 
