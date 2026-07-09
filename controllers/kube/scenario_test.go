@@ -70,10 +70,6 @@ func cordonNode(t *testing.T, name string) {
 	}
 }
 
-// failNode makes a node genuinely failed: its kubelet has stopped reporting for
-// longer than jobtree's grace window. This is what these tests used to do with a
-// bare cordon — which is precisely the bug R21 fixes, so the test was asserting
-// the corruption. LastTransitionTime is wall-clock because node liveness is.
 // notReadyNode stops the node's kubelet from reporting. This is NOT a failure: the
 // control plane cannot hear the node, but its containers may still be running. A
 // swap here would duplicate a live rank.
