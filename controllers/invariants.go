@@ -14,11 +14,16 @@ import (
 // as importantly, for the four plausible invariants it deliberately does NOT
 // enforce because each is false in a state this engine legally produces.
 //
-// The projection below computes BaseGangGPUs and MinRunnableGPUs with the SAME
+// The projection below computes RunnableGPUs and MinRunnableGPUs with the SAME
 // helpers the controller uses to make its decisions. That is deliberate: a
 // checker with its own private notion of "width" is a second implementation of
 // the rule, and two implementations drift. The oracle's power comes from being
 // applied to states nobody wrote a test for, not from reasoning independently.
+//
+// Width is runnableGPUsForRun, NOT baseGangGPUsForRun. The two answer different
+// questions, and using the base gang here made the oracle a reaper: the resolver
+// may legally cut a malleable run's base group while its grow ranks still cover
+// the declared minimum, and the invariant would have panicked on that healthy run.
 
 // snapshotWorld projects the current ClusterState into the invariant package's
 // view. O(leases + runs + pods) and allocation-light; it runs on every engine
@@ -83,7 +88,7 @@ func (c *RunController) snapshotWorld() invariant.World {
 			Key:             key,
 			Phase:           run.Status.Phase,
 			Terminal:        run.Status.Phase == RunPhaseFailed || run.Status.Phase == RunPhaseComplete,
-			BaseGangGPUs:    baseGangGPUsForRun(key, c.State.Leases),
+			RunnableGPUs:    runnableGPUsForRun(key, c.State.Leases),
 			MinRunnableGPUs: minRunnableGPUs(run),
 			AwaitingMint:    activePods[key] > openActiveLeases[key],
 			KnownToLedger:   anyLease[key] || anyPod[key],

@@ -232,6 +232,60 @@ func TestResolverKeepsAMalleableRunRunningAtItsMinimum(t *testing.T) {
 	}
 }
 
+// The reaper regression. The lottery's own guard (pkg/resolver/resolver.go:503)
+// permits a cut while `Remaining - grp.GPUs >= MinTotalGPUs`, and `Remaining`
+// counts GROW leases. So the resolver may legitimately cut a malleable run's BASE
+// group while its grow ranks still cover the declared minimum.
+//
+// Judging the phase on baseGangGPUsForRun then failed that run and swept its
+// surviving leases — a healthy elastic run, killed by the gate meant to protect
+// gangs. Found by reading the resolver, not by any test, and it lived in the
+// invariant oracle too, where it would have panicked in CI.
+func TestResolverKeepsAMalleableRunRunningWhenGrowWidthCoversItsMinimum(t *testing.T) {
+	now := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
+	run := nfRun("run", "org:ai:team", 2, now)
+	run.Spec.Malleable = &v1.RunMalleability{MinTotalGPUs: 2, MaxTotalGPUs: 4, StepGPUs: 2}
+
+	base := nfLeaseGroup("base", "run", "org:ai:team", "team", "0", []string{"node-a#0", "node-a#1"}, binder.RoleActive, now)
+	grow := nfLeaseGroup("grow", "run", "org:ai:team", "team", "1", []string{"node-b#0", "node-b#1"}, binder.RoleActive, now)
+	grow.Spec.Reason = binder.LeaseReasonGrow
+
+	state := &ClusterState{
+		Nodes:   nodeFailureNodes(),
+		Budgets: []v1.Budget{nfBudget("team", "org:ai:team")},
+		Runs:    map[string]*v1.Run{"default/run": run},
+		Leases:  []v1.Lease{base, grow},
+	}
+	c := NewRunController(state, runClock{now: now})
+
+	if got := baseGangGPUsForRun("default/run", state.Leases); got != 2 {
+		t.Fatalf("setup: the base gang should be 2 GPUs, got %d", got)
+	}
+	if got := runnableGPUsForRun("default/run", state.Leases); got != 4 {
+		t.Fatalf("setup: total runnable width should be 4 GPUs (base + grow), got %d", got)
+	}
+
+	// Cut the BASE group. The lottery may do exactly this: 4 - 2 >= MinTotalGPUs.
+	c.applyResolution(resolver.Result{Seed: "0xtest", Actions: []resolver.Action{
+		{Kind: resolver.ActionLottery, Lease: &state.Leases[0], Run: run, GroupIndex: "0", GPUs: 2, Reason: "RandomPreempt(0xtest)"},
+	}}, now)
+
+	if run.Status.Phase == RunPhaseFailed {
+		t.Fatalf("a malleable run still holding %d GPUs — exactly its declared MinTotalGPUs of %d — was FAILED "+
+			"and swept. The gate counted base-gang GPUs against a TOTAL-GPU minimum.",
+			runnableGPUsForRun("default/run", state.Leases), run.Spec.Malleable.MinTotalGPUs)
+	}
+	if run.Status.Phase != RunPhaseRunning {
+		t.Fatalf("want Running, got %q (%s)", run.Status.Phase, run.Status.Message)
+	}
+	if closed, _ := closureOf(state, "grow"); closed {
+		t.Errorf("the surviving grow lease was swept out from under a run that is still running")
+	}
+	if got := baseGangGPUsForRun("default/run", state.Leases); got != 0 {
+		t.Errorf("setup: the base gang should be gone, got %d — the test is not exercising the split", got)
+	}
+}
+
 // Reclaiming an unfunded squatter is an eviction, and an eviction has to happen
 // in BOTH planes. Closing its lease alone left the victim's container running on
 // the exact node#ordinal the swap then targeted — the ledger said the slot was

@@ -68,42 +68,71 @@ func permutations(idx []int) [][]int {
 func TestNodeFailureOutcomeIsInvariantUnderLeaseOrder(t *testing.T) {
 	now := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
 
-	// The scenario must make the two groups DISAGREE about the run's phase, or the
-	// test cannot see an order-dependent fold at all: group 0 holds a spare and
-	// swaps (Running), group 1 has no cover and dies (Failed). Under a
-	// last-writer-wins fold the answer is whichever group the loop reached last.
+	// The scenario must make TWO WRITERS DISAGREE about one run's phase, or the test
+	// cannot see an order-dependent fold at all. Getting this fixture right took two
+	// attempts, and both failures are worth recording because both produced a
+	// PASSING test that proved nothing:
 	//
-	// An earlier version of this fixture put a FUNDED squatter on the spare's
-	// slots. That declined the swap, so both groups wrote Failed, no conflict ever
-	// arose, and the test passed against a deliberately reintroduced
-	// last-writer-wins bug. It was decorative. The squatter is unfunded now, so
-	// the swap proceeds and the disagreement is real.
+	//  1. The first version put a FUNDED squatter on the spare's slots. That declined
+	//     the swap, so both of `run`'s groups wrote Failed, no disagreement ever
+	//     arose, and the test passed against a deliberately reintroduced
+	//     last-writer-wins bug. Decorative.
+	//
+	//  2. The second version made the squatter unfunded — so the swap proceeded and
+	//     `run`'s two groups disagreed (Running vs Failed) — but gave the SQUATTER
+	//     only one lease. reclaimSquatter's untracked write to the squatter's phase
+	//     therefore never competed with anything, and the review found the defect
+	//     the test was standing right next to.
+	//
+	// So `filler` now holds TWO leases: one squatting the spare's exact slots
+	// (reclaimSquatter writes Pending) and one rank on the failing node with no
+	// cover of its own (failGroupWithoutSpare writes Failed). Both writers fire on
+	// `filler` in a single pass. Failed is terminal and Pending is not, so an
+	// order-dependent fold does not merely mislabel it — it permanently kills a run
+	// that quota-semantics R14 says must be demoted and requeued.
 	build := func(order []int) *ClusterState {
 		all := []v1.Lease{
 			nfLeaseGroup("active-0", "run", "org:ai:team", "team", "0", []string{"node-a#0"}, binder.RoleActive, now),
 			nfLeaseGroup("spare-0", "run", "org:ai:team", "team", "0", []string{"node-b#0"}, binder.RoleSpare, now),
 			nfLeaseGroup("active-1", "run", "org:ai:team", "team", "1", []string{"node-a#1"}, binder.RoleActive, now),
 			// No budget of its own -> derives Unfunded -> reclaimable.
+			// Squats the spare's exact slots: reclaimSquatter's victim.
 			nfLeaseGroup("squatter", "filler", "org:ai:nobody", "", "0", []string{"node-b#0"}, binder.RoleActive, now),
+			// ...and holds its own rank on the node that is about to fail, with no
+			// spare: failGroupWithoutSpare's victim, in the same pass.
+			nfLeaseGroup("filler-rank", "filler", "org:ai:nobody", "", "1", []string{"node-a#2"}, binder.RoleActive, now),
 		}
 		leases := make([]v1.Lease, 0, len(all))
 		for _, i := range order {
 			leases = append(leases, all[i])
+		}
+		pod := func(name, run, group, node string) binder.PodManifest {
+			return binder.PodManifest{Namespace: "default", Name: name, NodeName: node, GPUs: 1,
+				Labels: map[string]string{
+					binder.LabelRunName: run, binder.LabelGroupIndex: group, binder.LabelRunRole: binder.RoleActive,
+				}}
 		}
 		return &ClusterState{
 			Nodes:   nodeFailureNodes(),
 			Budgets: []v1.Budget{nfBudget("team", "org:ai:team")},
 			Runs: map[string]*v1.Run{
 				"default/run":    nfRun("run", "org:ai:team", 2, now),
-				"default/filler": nfRun("filler", "org:ai:nobody", 1, now),
+				"default/filler": nfRun("filler", "org:ai:nobody", 2, now),
 			},
 			Leases: leases,
+			// The pod plane is part of the outcome: an eviction that closes a lease
+			// and leaves the container running is a half-plane action, and the
+			// fingerprint must be able to see it.
+			Pods: []binder.PodManifest{
+				pod("filler-squat", "filler", "0", "node-b"),
+				pod("filler-rank", "filler", "1", "node-a"),
+			},
 		}
 	}
 
 	var canonical string
 	var canonicalOrder []int
-	for _, order := range permutations([]int{0, 1, 2, 3}) {
+	for _, order := range permutations([]int{0, 1, 2, 3, 4}) {
 		state := build(order)
 		c := NewRunController(state, runClock{now: now})
 		_ = c.HandleNodeFailure("node-a", now)
@@ -118,8 +147,24 @@ func TestNodeFailureOutcomeIsInvariantUnderLeaseOrder(t *testing.T) {
 				"specification.\norder %v:\n%s\n\norder %v:\n%s", canonicalOrder, canonical, order, got)
 		}
 	}
-	if !strings.Contains(canonical, "phase=Failed") {
-		t.Fatalf("setup: group 1 lost its rank with no cover, so the run is Failed in every order:\n%s", canonical)
+	// Guard the fixture itself. If either writer stops firing on `filler`, this test
+	// silently stops testing anything — which is exactly how its previous two
+	// versions passed against real bugs.
+	if !strings.Contains(canonical, `run default/run phase=Failed`) {
+		t.Fatalf("setup: group 1 lost its rank with no cover, so `run` is Failed in every order:\n%s", canonical)
+	}
+	if !strings.Contains(canonical, `run default/filler phase=Failed`) {
+		t.Fatalf("setup: `filler` lost its own uncovered rank, so the worst verdict is Failed. "+
+			"If it reads Pending here, reclaimSquatter's write beat failGroupWithoutSpare's and the "+
+			"severity lattice is not being applied:\n%s", canonical)
+	}
+	if !strings.Contains(canonical, "lease squatter closed=true reason=ReclaimedBySpare") {
+		t.Fatalf("setup: the unfunded squatter must actually be reclaimed, or reclaimSquatter never "+
+			"runs and the second writer never exists:\n%s", canonical)
+	}
+	// Both planes: the reclaimed squatter's container must be gone too.
+	if strings.Contains(canonical, "pod default/filler-squat") {
+		t.Errorf("the reclaimed squatter's container still occupies the spare's slots:\n%s", canonical)
 	}
 }
 
