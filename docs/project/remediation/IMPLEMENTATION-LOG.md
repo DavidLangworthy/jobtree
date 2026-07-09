@@ -26,6 +26,69 @@ The README compose note lists R5/R6 first. I moved the two P0 correctness bugs
 
 ## Decisions (chronological)
 
+### David's rulings: R9 = JobSet, and no side-by-side, ever (2026-07-09)
+- **R9 = Option A** — finish the JobSet lowering. It subsumes **R8** and retires the
+  **JOBSET** track. Sizing consequence in `SIZING.md`: Option B would have cost
+  R9-B + R8 + JOBSET ≈ 8 days; Option A ≈ 6–8 and closes all three.
+  **Flagged (disagreement over silence, not a veto):** the R9 spec **predates
+  CASCADE**. A JobSet `ReplicatedJob` has one pod template, but CASCADE's swap pods
+  carry *per-pod* payer provenance and a **required** node-affinity onto one
+  specific spare node — that does not fit a uniform template. Separately, R5's VAP
+  gates `payer-*` / `lease-reason` / `schedulerName=jobtree` to the controller's
+  ServiceAccount, and under Option A the *JobSet controller* creates the pods, so
+  `userInfo` is its SA and the policy would reject them. Both are settled by a short
+  design pass (**9A-0**) before any code; the likely answer is that swap remains a
+  directly-emitted pod as a documented exception.
+- **No side-by-side.** *"Never complicate the implementation to support side by side.
+  If there is a breaking change, we'll schedule it, stop the jobs, and restart.
+  Clean old, clean new."* This is a **project-wide policy**, not an R13 detail. It is
+  cheap to hold because R15 established that `release.yaml` builds no images at all —
+  there is no production install to migrate. Consequences:
+  - **R13**: hard rename `Lease` → `GPULease`. No dual-read window, no conversion
+    webhook, no migration Job. **L → M**, and it pairs with R14 in one pass.
+  - **R4 pt2b**: the persistence fork the design doc left open now resolves — the
+    settled summary lives in Budget `status`. A dedicated object existed only to keep
+    old summaries readable across a change; recompute from the ledger instead.
+  - **R2 pt3**: add the cohort label and pod-name annotation to minted Leases freely.
+    Reconstruction need not cope with unlabelled legacy leases.
+  - Generally: when a spec offers "dual-read window vs hard rename," take the hard
+    rename and record it here.
+
+### CI wall clock: measured, then fixed (2026-07-09)
+`ci` = 74s (`make verify` 57s) — **not worth splitting**; four parallel jobs would
+save ~30s of work and pay ~20s of runner setup each. `kind e2e` = 307s, of which
+**210s was one step**: two Dockerfiles each doing `FROM golang`, `go mod download`,
+and a full compile, for two binaries out of one module. Fixed with one builder stage
+and two `--target`s, `kind-up` run **concurrently** with the build, a BuildKit
+`type=gha` layer cache, and cached envtest binaries. **307s → 145s** for a
+docs/config PR (full cache hit; `.dockerignore` excludes `docs`/`*.md`), **~240s**
+for a Go source change (`COPY . .` invalidates the compile layer).
+
+Two measurement traps worth remembering:
+- GitHub Actions caches written on a **feature branch are not readable from `main`**
+  (a branch reads only its own and its base's). The first post-merge run on `main` is
+  therefore *cold*. I nearly concluded the layer cache did nothing.
+- The two binaries are **not** cheap to build together for the reason I first
+  assumed. Measured: manager 825 deps, scheduler 1444, sharing 774 — the scheduler
+  pulls 670 packages (the kube-scheduler framework) the manager never sees. A cold
+  `go build ./cmd/manager` is 88s and `./cmd/scheduler` is **91s even with the
+  manager's cache warm**. The consolidation's win came from layer reuse and from
+  overlapping `kind-up`, not from a shared dependency graph.
+
+**Not adopting Bazel.** The remaining lever is the ~180s compile, and Bazel + a
+remote action cache would attack it. But: one module, 21 packages, 108 Go files,
+27.5k LOC, one language. Warm `go test -race ./...` is **5.3s** — affected-target
+testing would be optimizing a five-second problem, and 13 of 21 packages transitively
+import `pkg/funding`, so the "affected set" is nearly everything anyway. Worse,
+affected-target testing is a **silent-pass generator**, which is exactly the class of
+bug this repo just spent a session eliminating; and the cross-cutting gates (golden
+oracle, antifake, `verify-generate`, helm assertions) are not file-affected. The
+non-hermetic parts (envtest downloads an apiserver; kind needs Docker; controller-gen;
+helm) are precisely what Bazel handles worst. The transferable idea is **phase 3, a
+persistent build cache** — obtainable with `actions/cache` + buildkit cache-dance, no
+new build system. Revisit Bazel if the repo gains a second module or language, or CI
+passes ~10 minutes.
+
 ### Closing the three silent passes (2026-07-09)
 R2 pt2 merged over a red CI check. Three separate mechanisms each turned an
 absence of evidence into evidence of absence. All three are now fixed.

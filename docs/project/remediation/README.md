@@ -142,9 +142,18 @@ The P0 specs share machinery and must be implemented as a set, in this order:
 
 Collected here so they are not lost in the specs. Each is also flagged inline.
 
+**Two are now decided (2026-07-09).** See [SIZING.md](SIZING.md) for what they cost:
+- ✅ **R9 = Option A** — finish the JobSet lowering. It subsumes R8 and the JOBSET track.
+- ✅ **R13 = clean break.** *"Never complicate the implementation to support side by
+  side. If there is a breaking change, we'll schedule it, stop the jobs, and
+  restart."* This is a **project-wide policy**, not an R13 detail: no dual-read
+  windows, no conversion webhooks, no migration Jobs. It also settles R4 pt2b's
+  persistence location (Budget `status`) and frees R2 pt3 to label leases freely.
+
 - **R3**: whether the "promised-but-unfunded opportunistic start" survives at all,
   or is dropped. Recommendation inside: keep it, but route it through the plugin
-  with an explicit authenticated `Promise` marker (no controller mint).
+  with an explicit authenticated `Promise` marker (no controller mint). **(Decided
+  + shipped 2026-07-08: kept, via the Promise path.)**
 - **R6**: `failurePolicy` for the mandatory-scheduler policy — `Fail` (safe, but a
   policy/webhook outage blocks all GPU pods) vs `Ignore` (available, but a gap
   during outages). Recommendation inside: `Fail`, with the jobtree control-plane
@@ -155,10 +164,15 @@ Collected here so they are not lost in the specs. Each is also flagged inline.
   only via an explicit sponsor ACL that names the lender namespace.
 - **R8**: default workload failure policy (`Fail` vs `Retry(n)`), per-role vs
   per-run. Recommendation inside: per-role, default `Fail`.
-- **R9**: Option **A (finish JobSet lowering)** vs **B (direct-inject + headless
-  Service)** — the biggest fork in P2–P5. Recommendation inside: A long-term (it
-  also closes R8); B as a bridge if bandwidth is tight.
-- **R13**: new Lease kind name (`GPULease` recommended) and migration mode
-  (dual-read window vs hard pre-release rename).
+- **R9**: ✅ **DECIDED — Option A (finish JobSet lowering).** It also closes R8 and
+  the JOBSET track. Note the R9 spec predates CASCADE: per-pod swap/Promise
+  provenance and required node-affinity do not fit a uniform JobSet pod template,
+  and R5's VAP gates `payer-*` to the controller's ServiceAccount while the JobSet
+  controller would be the pod creator. A short design pass (9A-0) settles both
+  before code — see SIZING.md.
+- **R13**: ✅ **DECIDED — hard rename, no side-by-side.** Kind name still open
+  (`GPULease` recommended). No dual-read window, no conversion webhook, no migration
+  Job; a breaking change is scheduled, jobs stopped, and restarted. R15 established
+  there is no production install to migrate.
 - **R19**: license choice (**Apache-2.0** recommended vs MIT) and whether
   governance is made real now vs the claims trimmed.
