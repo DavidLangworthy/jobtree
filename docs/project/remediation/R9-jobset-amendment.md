@@ -298,6 +298,10 @@ XL is *cancelled* rather than deferred, at the price of R8's L staying real.
 `Fail`, `Retry`/`Ignore` opt-in. Nothing else in this amendment needs a new ruling
 beyond ratifying the amendment itself.
 
+> ✅ **RULED 2026-07-09 (David): take the recommendation.** Per-role policy, default
+> `Fail`, `Retry(n, backoff)` / `Ignore` opt-in. 9A-3 implements it to
+> `R8-pod-failure-handling.md`'s spec. No decisions remain open on R9.
+
 ## 10. Clean-break compliance
 
 No side-by-side anywhere in this plan: the direct-emit path is the only path before

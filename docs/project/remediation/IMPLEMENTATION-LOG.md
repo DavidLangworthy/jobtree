@@ -26,6 +26,23 @@ The README compose note lists R5/R6 first. I moved the two P0 correctness bugs
 
 ## Decisions (chronological)
 
+### David's ruling: workload failure policy (2026-07-09)
+**Per-role, default `Fail`; `Retry(n, backoff)` and `Ignore` opt-in.** David took the
+standing recommendation (`R8-pod-failure-handling.md:56-59`, rationale at :32-48).
+`Fail` matches real distributed training — a lost rank hangs the collective, and the
+surviving members keep charging the budget until someone notices.
+
+Implemented as **phase 9A-3** of the amended R9. Two consequences worth stating:
+- The item is absorbed into R9; **the cost is not.** We build the failure edge
+  ourselves, to R8's own spec — it is *not* inherited from a JobSet `failurePolicy`,
+  because no JobSet will own our pods.
+- R8's provision "design the handler so it is a no-op when a JobSet owns the pods"
+  (`R8-pod-failure-handling.md:53-54,79`) is **deleted**.
+
+Two owner decisions now remain on the whole board: **R7**'s tenant identity (gates R7
+pt2 only) and **R19**'s license. Neither blocks the highest-severity work, which is
+still the `HandleNodeFailure` bundle (R21/R22/R25 + the stale-node event).
+
 ### R9 re-scoped by a Fable design pass: JobSet as reference, not as controller (2026-07-09)
 David, on reading my "Option A collides with CASCADE" note: *"Now I remember, losing
 swap was the cost of moving to JobSet. I think we decided to use JobSet as reference

@@ -96,7 +96,7 @@ Land R7's keying change **before** R4 pt1b/pt2b and R13 — all three touch the 
 
 | Item | Size | Why | Blocked on |
 |---|---|---|---|
-| **R9 = Option A**, amended | **~4–6d** | **Decided, then re-scoped** by [R9-jobset-amendment.md](R9-jobset-amendment.md): borrow JobSet's *design*, not its controller. Our controller stays the sole pod creator, so R5's trust anchor, the four CASCADE mint sites, and the clean-break rule all survive. Phased 9A-0…9A-4. **Cancels the JOBSET track's XL outright.** | 9A-3 wants the failure-policy default |
+| **R9 = Option A**, amended | **~4–6d** | **Decided, then re-scoped** by [R9-jobset-amendment.md](R9-jobset-amendment.md): borrow JobSet's *design*, not its controller. Our controller stays the sole pod creator, so R5's trust anchor, the four CASCADE mint sites, and the clean-break rule all survive. Phased 9A-0…9A-4. **Cancels the JOBSET track's XL outright.** | — (all decisions in) |
 | **R8** pod-failure zombie | **absorbed into 9A-3**, at its own **L** | Item folded into R9; **cost not eliminated**. We build the failure edge ourselves — JobSet's `failurePolicy` is no longer doing it for us. | — |
 | **R10** false rendezvous comment | **XS** | Two comment blocks. Patch truthfully *now* ("not yet implemented, see R9") — do not wait for 9A to land. | — |
 
@@ -253,15 +253,17 @@ the *size* of other items rather than just their start date:
 - ✅ **R13: clean break** — hard rename, scheduled outage, no side-by-side. Also
   resolves R4 pt2b's persistence fork by policy.
 
-Three remain, and none of them blocks the highest-severity work:
+- ✅ **R8 / 9A-3: workload failure policy** — **per-role, default `Fail`**, with
+  `Retry(n, backoff)` and `Ignore` as opt-ins. (`Fail` matches real distributed
+  training: a lost rank hangs the collective, and the survivors keep charging the
+  budget.) We build this edge ourselves in 9A-3; it is *not* a JobSet `failurePolicy`.
+
+Two remain, and neither blocks the highest-severity work:
 
 1. **R7: is the tenant a namespace or an authenticated owner string?** Gates R7
    **pt2 only**; pt1 (namespacing the `EnvelopeKey`) proceeds regardless, and pt1 is
    the piece that must land before R4 pt2b and R13.
-2. **R8/9A-2: default failure policy** (`Fail` vs `Retry(n)`, per-role vs per-run).
-   Now expressed as a JobSet `failurePolicy`, so the decision is smaller — but it is
-   still needed before 9A-2.
-3. **R19: license** (Apache-2.0 vs MIT) and whether governance becomes real. Legal,
+2. **R19: license** (Apache-2.0 vs MIT) and whether governance becomes real. Legal,
    so start it early even though the code is trivial.
 
 One implicit decision still stands, and I will surface it rather than silently pick
@@ -302,8 +304,8 @@ adversarial verification on every funding-path change.
 | Bucket | Items | Days |
 |---|---|---|
 | XS + S | R10, R16, R17, R24, R15, R19, 9A-0 | **~1.5** |
-| M | R12, R14, R18, R20, R23, R13, 9A-2, 9A-4 | **~4** |
-| L | R2 pt3, R4 pt1b, R4 pt2b, R7 pt1, R11, R21+R22+R25 bundle, R26, 9A-1, 9A-3 | **~11** |
+| M | R12, R14, R18, R20, R23, R13, 9A-1, 9A-2 | **~4** |
+| L | R2 pt3, R4 pt1b, R4 pt2b, R7 pt1, R11, R21+R22+R25 bundle, R26, 9A-3, 9A-4 | **~11** |
 | XL | ROLES | **~3** |
 
 **≈ 14–17 focused days.** With Lane 3 (the mechanical items) running concurrently

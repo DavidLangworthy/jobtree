@@ -53,10 +53,18 @@ finishes JobSet lowering, JobSet's own failurePolicy provides this; if R9 takes 
 direct-inject route, this controller-side handler is the implementation. Design the
 handler so it is a no-op when a JobSet owns the pods (avoid double-handling).
 
-### Decision for David (flagged)
+### Decision for David (flagged) — ✅ DECIDED 2026-07-09
 
 Default failure policy (`Fail` vs `Retry(n)`), and whether policy is per-role or
 per-run. Recommendation: per-role, default `Fail`, `Retry`/`Ignore` opt-in.
+
+> **David ruled: take the recommendation.** Policy is **per-role**; the default is
+> **`Fail`**; `Retry(n, backoff)` and `Ignore` are opt-in. Implemented as phase
+> **9A-3** of the amended R9 ([R9-jobset-amendment.md](R9-jobset-amendment.md)) — this
+> item is absorbed there, but at its own cost: we build the failure edge ourselves,
+> to this spec. Note the provision at :53-54 and :79 ("design the handler so it is a
+> no-op when a JobSet owns the pods") is **deleted** — no JobSet will ever own the
+> pods.
 
 ## Invariant
 

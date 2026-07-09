@@ -163,8 +163,9 @@ Collected here so they are not lost in the specs. Each is also flagged inline.
   and whether the tenant is the namespace or an authenticated owner string.
   Recommendation inside: envelopes are namespace-scoped; cross-namespace funding
   only via an explicit sponsor ACL that names the lender namespace.
-- **R8**: default workload failure policy (`Fail` vs `Retry(n)`), per-role vs
-  per-run. Recommendation inside: per-role, default `Fail`.
+- **R8**: ✅ **DECIDED — per-role, default `Fail`**, with `Retry(n, backoff)` and
+  `Ignore` opt-in. Implemented as phase 9A-3 of the amended R9; absorbed there but
+  built to R8's own spec, not inherited from a JobSet `failurePolicy`.
 - **R9**: ✅ **DECIDED — Option A**, then **re-scoped** by
   [R9-jobset-amendment.md](R9-jobset-amendment.md) (Fable, 2026-07-09): borrow
   JobSet's **design**, not its controller. A real JobSet creates **Jobs**, whose
