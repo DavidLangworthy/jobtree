@@ -117,6 +117,33 @@ Judgment calls:
   `TestMalleableRunBelowMinDoesNotAdopt`. The partial-branch message now names the
   deficit against the *runnable* width (`"assembling gang: 2/3"`), not the emitted
   one.
+- **PR #55's CI `build` job was RED when it merged, and that is a process failure worth naming.**
+  Branch protection does not require the CI checks, so `gh pr merge` succeeded over a failing
+  `build`. The failing step was **`make envtest`** (real API server) — which
+  `go test ./...` **silently skips** unless `KUBEBUILDER_ASSETS` is set (`controllers/kube`'s
+  `TestMain` skips the suite), so nothing in the verification sweep ever ran it. The full sweep must
+  be: `go build`, `gofmt -l`, `go vet`, `go test -race ./...`, **`make envtest`**,
+  `make verify-generate`, `make antifake`, `helm template`, golden + `git status` on the golden dir.
+  - **Diagnosis: pre-existing envtest race, not an R2 pt2 regression.** The three failing scenarios
+    (`train`, `finish`, `prep`) are exactly the three runs that received a
+    `NodeFailureNoSpare` warning ("node node-a failed without spare coverage"): `HandleNodeFailure`
+    closed their leases, active width fell to 0, and they fell back to re-admission
+    ("scheduling 4 GPUs") forever. `"adopted"` and `"assembling"` appear **zero** times in the log,
+    so the new partial-adoption branch never executed. Each of these is a 4-GPU run on one 4-GPU node
+    with exactly **one** seeded lease, so adoption is a single lease-create event under both the old
+    `open > 0` gate and the new width gate — there is no partial-width window for the new branch to
+    sit in, and with zero open leases the old gate would have failed identically. The same tree passes
+    `make envtest` locally (3×, including `GOMAXPROCS=2 -race`) and passed CI on `main`
+    (run 28988169284, envtest green in 26s).
+  - **Suspected mechanism (tracked, not reproduced):** `resetWorld` does `DeleteAllOf(&corev1.Node{})`
+    (a delete event → the `anyDelete` predicate) and the next test re-creates `node-a` with *no
+    status* — NotReady until a follow-up `Status().Update` → the `unusable` predicate. Both enqueue
+    `node-a`. `NodeReconciler.Reconcile` re-reads the node and returns early when `nodeUsable`
+    (`reconcilers.go:328`), so a stale enqueue is normally harmless — but under CI load one can be
+    processed in the window where `node-a` exists-but-is-NotReady while the current test's leases
+    already reference it, and `HandleNodeFailure` then closes leases for a node that is healthy *now*.
+    That is a **real robustness bug**, not merely a fixture bug, and it belongs with R21/R22/R25,
+    which all touch this same swap path.
 - **Process note: one review lens failed silently and its "green" was worthless.**
   It returned `summary: "test"` with a finding titled `"a"` and scenario `"b"` —
   pure schema-filling — and three skeptics then earnestly refuted the placeholder.
