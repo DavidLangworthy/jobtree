@@ -5,6 +5,11 @@ coexistence questions in §6, which need validation against current k8s. -->
 
 # Borrow vs Build: jobtree's workload + scheduler layer
 
+> **§5's Option C and §6.1's validation are SUPERSEDED** by
+> [`remediation/R9-jobset-amendment.md`](remediation/R9-jobset-amendment.md) (2026-07-09): we borrow
+> JobSet's *design*, not its controller. §11 below records the rule that decision produced, and why
+> §6.1 was right on the evidence it had and wrong by the time we acted on it. Read §11 first.
+
 ## 0. Decisions locked (owner, 2026-07-04)
 
 1. **jobtree becomes a Kubernetes scheduler-framework plugin**, not a `nodeName`-pinning binder. It
@@ -334,6 +339,120 @@ the one committer into the plugin:**
 **Net:** one pure function (`funding.Evaluate`), one committer (the plugin, via the Lease), one truth (the
 Lease ledger). No advisory-vs-authoritative split, no drift surface. This supersedes any "advisory cover /
 authoritative Permit" language in the PLUGIN track detail.
+
+## 11. When to borrow and when to build — the rule we actually used (2026-07-09)
+
+This doc opens with the principle *"don't reinvent things."* That is right, and taken naively it gives
+the **wrong** answer on R9. Two decisions made on the same day, in opposite directions, are what taught
+us the sharper rule.
+
+**Borrow the substrate. Build the moat.** The hard part is telling which is which *before* you are
+committed.
+
+### The two worked examples
+
+| | **R7 — tenancy** | **R9 — workload** |
+|---|---|---|
+| The offer | Kubernetes namespaces, ServiceAccounts, RBAC, impersonation | `sigs.k8s.io/jobset`: roles, headless DNS, rendezvous, failure policy |
+| We | **borrowed, hard** | **refused, reluctantly** |
+| Result | Deleted a CRD field (`Run.Spec.Owner`), deleted a whole forgery class, needed no new admission policy. Simpler code *and* simpler UX. | More work now, and we do not rise with SIG Batch's tide. |
+| Why | The primitive sits *beneath* the moat and constrains nothing about funding. | JobSet did not do what we needed. |
+
+David, on R7: *"going with the flow, rising with the tide."* On R9: *"we decided to build rather than
+borrow... more work now, and it gets off the rising tide of SIG Batch, which is a bummer. But the reason
+is pretty simple: JobSet did not do what we needed."*
+
+That last sentence is the whole answer, and the rest of this section is only an attempt to make it
+usable *before* the next decision rather than after it.
+
+### The test
+
+Three questions, in order. R7 passes all three; R9 fails all three.
+
+**1. Is it a noun or a verb?**
+Namespaces, ServiceAccounts, RBAC, impersonation are **nouns** — facts the platform maintains on your
+behalf. Borrow nouns freely; they cost nothing at runtime and take no actions. JobSet's controller is a
+**verb** — an actor that does things inside our domain: it creates pods, chooses when, and decides what
+identity they carry. Borrowing a verb seats an outside actor in your critical path.
+
+**2. Does it sit beneath the moat, or inside it?**
+Nothing about a namespace constrains the funding calculus; R7's borrow sits underneath and holds it up.
+JobSet's borrow sits *inside*: the pod's creator determines the `userInfo` our trust anchor checks
+(R5), and the pod template determines what provenance a lease can be minted from (CASCADE). A thing you
+borrow that sits inside the moat is not a dependency. It is a co-owner.
+
+**3. What invariant do you surrender?**
+Price a borrow in **invariants, not in lines of code avoided.** §7 scored Option C as saving "~1–2K LOC
++ maintenance" of rendezvous/DNS/failure machinery. The true price, invisible in that unit, was:
+- *"exactly one ServiceAccount creates every jobtree pod"* — R5's trust anchor, checked by one CEL
+  comparison. A real JobSet creates **Jobs**; the **batch Job controller** creates the pods, so the
+  policy would have to trust an identity that stamps out pods from every tenant's Job template.
+- the per-pod, per-incident provenance contract — a swap pod carries *its* spare's payer triple; a
+  `ReplicatedJob` has one immutable template.
+- the clean-break policy — spares, swap pods and Promise gangs can never be JobSet pods, so borrowing
+  would have meant **two pod creators, forever.**
+
+None of those are LOC. All three are the product.
+
+### Why "JobSet did not do what we needed" is sufficient
+
+Not features — **concepts**. JobSet has no way to express:
+- a funded, workload-less **spare** that holds a GPU slice and never completes;
+- **per-incident provenance** on one replacement pod;
+- **delta-funded** elastic growth;
+- a **promised-but-unfunded** start that the funding engine re-funds by arithmetic when quota returns.
+
+These are not accidental omissions upstream could fix. They are consequences of the funding model — and
+the funding model is the product. **You cannot borrow the part of the system that is your
+differentiator.** The moat is, by definition, the part nobody else has built.
+
+Feature gaps can be sent upstream. Conceptual gaps cannot.
+
+### The tide, taken literally
+
+A rising tide lifts you only if you are floating in the same water. SIG Batch's water: *a workload is a
+set of Jobs that complete, whose pods the batch controller creates.* jobtree's water: *a workload is a
+funded lease over a slice of GPUs, with held spares that never complete, committed by exactly one
+authenticated actor.* We are not in that water, and no adapter puts us there.
+
+**The bill, stated plainly**, because refusing a borrow is not free:
+- we do not get SIG Batch's improvements for nothing;
+- we own the rendezvous / DNS / failure surface forever;
+- a jobtree Run is not a JobSet, so Kueue/TrainJob tooling will not recognise it (§6.3's TrainJob→Run
+  adapter becomes migration surface, not architecture).
+
+We chose to pay that with our eyes open. That is different from not noticing it.
+
+### A borrow decision has a shelf life
+
+§6.1's validation (2026-07-04) was **right on the evidence it had.** It checked JobSet against upstream
+Kubernetes facts *in isolation* — before the plugin cutover made us the sole committer, before R5/R6
+established the trust anchor, and before CASCADE built the per-pod provenance contract. The decision did
+not become wrong. **The system moved underneath it.**
+
+So: **re-validate a borrow against what you have since built, not against what you knew when you chose
+it.** The trigger is not the calendar. It is shipping something that changes an invariant the borrow
+depends on. Every one of R5, the cutover, and CASCADE was such an event, and none of them prompted a
+re-read of this doc. That is the process failure worth fixing, more than the decision itself.
+
+### Checklist for the next actor you consider borrowing
+
+1. **Name the invariants it must preserve.** Write them down before you look at its docs.
+2. **Check them against its identity model and object lifecycle — not its feature list.** JobSet's
+   feature list had everything we wanted. Its identity model (JobSet → Job → pod, created by
+   kube-controller-manager) is what disqualified it, and no feature comparison would have surfaced that.
+3. **Ask what it cannot represent.** Not what it lacks — what it has no *concept* of.
+4. **Ask whether refusing forces a dual path, and whether accepting does.** If borrowing means two
+   creators and two identity schemes forever, the borrow is more expensive than the build.
+
+### What we did borrow (so this does not read as NIH)
+
+The scheduler framework. controller-runtime. CRDs and admission webhooks. ValidatingAdmissionPolicy and
+CEL. RBAC, namespaces, ServiceAccounts, impersonation. envtest, kind, distroless. And from JobSet
+itself: roles→replicatedJobs, headless-service DNS, index-stable identity, the rendezvous env names, and
+the failure-policy semantics — its **design**, which is the part that was actually good.
+
+We refused exactly one thing: **its controller.** The ratio is the point.
 
 ---
 
