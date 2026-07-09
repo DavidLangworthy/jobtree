@@ -56,6 +56,58 @@ func createH100Node(t *testing.T, name string, gpus int) {
 	}
 }
 
+// cordonNode marks a node unschedulable. This is NOT a failure: `kubectl cordon`
+// says "place nothing new here", and the work already running there is fine (R21).
+func cordonNode(t *testing.T, name string) {
+	t.Helper()
+	var node corev1.Node
+	if err := kubeClient.Get(suiteCtx, types.NamespacedName{Name: name}, &node); err != nil {
+		t.Fatalf("get %s: %v", name, err)
+	}
+	node.Spec.Unschedulable = true
+	if err := kubeClient.Update(suiteCtx, &node); err != nil {
+		t.Fatalf("cordon %s: %v", name, err)
+	}
+}
+
+// failNode makes a node genuinely failed: its kubelet has stopped reporting for
+// longer than jobtree's grace window. This is what these tests used to do with a
+// bare cordon — which is precisely the bug R21 fixes, so the test was asserting
+// the corruption. LastTransitionTime is wall-clock because node liveness is.
+func failNode(t *testing.T, name string) {
+	t.Helper()
+	var node corev1.Node
+	if err := kubeClient.Get(suiteCtx, types.NamespacedName{Name: name}, &node); err != nil {
+		t.Fatalf("get %s: %v", name, err)
+	}
+	node.Status.Conditions = []corev1.NodeCondition{{
+		Type:               corev1.NodeReady,
+		Status:             corev1.ConditionFalse,
+		LastTransitionTime: metav1.NewTime(time.Now().Add(-2 * nodeNotReadyGrace)),
+	}}
+	if err := kubeClient.Status().Update(suiteCtx, &node); err != nil {
+		t.Fatalf("fail %s: %v", name, err)
+	}
+}
+
+// assertNoSwap watches for a window and fails if anything reacted.
+func assertNoSwap(t *testing.T, runName string, window time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(window)
+	for time.Now().Before(deadline) {
+		r := getRun(t, runName)
+		if r.Status.Phase != "Running" {
+			t.Fatalf("run %s phase = %s (%q), want Running untouched", runName, r.Status.Phase, r.Status.Message)
+		}
+		for _, lease := range listRunLeases(t, runName) {
+			if lease.Status.Closed {
+				t.Fatalf("lease %s closed; nothing should have reacted", lease.Name)
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 func createBudget(t *testing.T, name, owner string, concurrency int32) {
 	t.Helper()
 	budget := &v1.Budget{
@@ -786,15 +838,14 @@ func TestNodeFailureSwapsToSpare(t *testing.T) {
 		t.Fatalf("spare slots = %v, want node-b#0,node-b#1", spare.Spec.Slice.Nodes)
 	}
 
-	// Fail the active node.
-	var node corev1.Node
-	if err := kubeClient.Get(suiteCtx, types.NamespacedName{Name: "node-a"}, &node); err != nil {
-		t.Fatalf("get node-a: %v", err)
-	}
-	node.Spec.Unschedulable = true
-	if err := kubeClient.Update(suiteCtx, &node); err != nil {
-		t.Fatalf("cordon node-a: %v", err)
-	}
+	// R21: a cordon is not a failure. This test used to cordon node-a and expect a
+	// swap — asserting the corruption, because the original pod keeps running on a
+	// cordoned node and the swap would start a second copy of the same rank.
+	cordonNode(t, "node-a")
+	assertNoSwap(t, "resilient", 2*time.Second)
+
+	// Now fail it for real: kubelet gone, past the grace window.
+	failNode(t, "node-a")
 
 	eventually(t, 30*time.Second, func() error {
 		var swapped v1.Run
@@ -870,9 +921,14 @@ func TestNodeFailureSwapsToSpare(t *testing.T) {
 	}
 }
 
-// TestSpareNodeFailureIsAbsorbed: losing a node that hosts only spare
-// capacity must not disturb the active lease — the reconciler swallows the
-// engine's "no active lease found".
+// TestSpareNodeFailureIsAbsorbed: losing a node that hosts only spare capacity
+// must close THAT SPARE'S LEASE and leave the active lease and the run alone.
+//
+// Before R25 the engine skipped every spare before it checked the node, so a
+// spare-only node matched nothing, returned "no active lease found", and the
+// reconciler swallowed that by string-match — leaving an open, budget-charging
+// lease pointed at a node that no longer existed. This test passed for the wrong
+// reason: it asserted "nothing changed", and nothing changing was the leak.
 func TestSpareNodeFailureIsAbsorbed(t *testing.T) {
 	requireEnv(t)
 	resetWorld(t)
@@ -898,31 +954,42 @@ func TestSpareNodeFailureIsAbsorbed(t *testing.T) {
 	seedPluginLeases(t, "steady")
 	waitForRunPhase(t, "steady", "Running")
 
-	// Fail the spare node (node-b holds only the spare lease).
-	var node corev1.Node
-	if err := kubeClient.Get(suiteCtx, types.NamespacedName{Name: "node-b"}, &node); err != nil {
-		t.Fatalf("get node-b: %v", err)
-	}
-	node.Spec.Unschedulable = true
-	if err := kubeClient.Update(suiteCtx, &node); err != nil {
-		t.Fatalf("cordon node-b: %v", err)
-	}
+	// A cordon on the spare node changes nothing at all (R21).
+	cordonNode(t, "node-b")
+	assertNoSwap(t, "steady", 2*time.Second)
 
-	// Nothing should change. Watch the state over a window rather than a
-	// single post-sleep check so a wrong closure is caught the moment it
-	// lands, and the window covers the watch-delivery latency.
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		steady := getRun(t, "steady")
-		if steady.Status.Phase != "Running" {
-			t.Fatalf("run phase = %s (message %q), want Running untouched", steady.Status.Phase, steady.Status.Message)
-		}
+	// Now really fail node-b, which holds only the spare lease.
+	failNode(t, "node-b")
+
+	// The spare's lease must close — it names a node that is gone. The active
+	// lease and the run are untouched: a lost spare is not a lost rank.
+	eventually(t, 30*time.Second, func() error {
+		var spareClosed, activeClosed bool
 		for _, lease := range listRunLeases(t, "steady") {
+			if lease.Spec.Slice.Role == binder.RoleSpare {
+				if lease.Status.Closed {
+					if lease.Status.ClosureReason != "NodeFailure" {
+						return fmt.Errorf("spare closed with %q, want NodeFailure", lease.Status.ClosureReason)
+					}
+					spareClosed = true
+				}
+				continue
+			}
 			if lease.Status.Closed {
-				t.Fatalf("lease %s closed after spare-node failure; expected no reaction", lease.Name)
+				activeClosed = true
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
+		if activeClosed {
+			return fmt.Errorf("an active lease closed; losing a spare must not disturb the rank")
+		}
+		if !spareClosed {
+			return fmt.Errorf("the spare lease on the failed node is still open — that is the R25 leak")
+		}
+		return nil
+	})
+
+	if steady := getRun(t, "steady"); steady.Status.Phase != "Running" {
+		t.Fatalf("run phase = %s (%q), want Running: a lost spare is not a lost rank", steady.Status.Phase, steady.Status.Message)
 	}
 }
 

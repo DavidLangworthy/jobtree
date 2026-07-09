@@ -1147,17 +1147,59 @@ func (c *RunController) failReservationNoEnvelope(reservation *v1.Reservation, r
 }
 
 // HandleNodeFailure performs a spare swap when a node fails.
+// ErrNoLeaseOnNode reports that no lease of any role named the node, so its
+// failure needs no response. Callers must test it with errors.Is — the reason it
+// is a typed sentinel is that the node reconciler used to string-match the old
+// message, and that swallow is what hid R25's leaked spare lease.
+var ErrNoLeaseOnNode = errors.New("jobtree: no lease found on node")
+
+// HandleNodeFailure closes every lease that names a failed node, and swaps each
+// affected active slice onto a held spare where one exists.
+//
+// The CALLER decides what "failed" means, and that is not incidental: ClusterState
+// carries topology.SourceNode{Name, Labels, GPUs}, and the bridge already drops
+// unusable nodes when it loads (nodeUsable, bridge.go:178), so the engine cannot
+// tell a cordoned node from a dead one. controllers/kube.nodeFailed makes that
+// judgement against the real corev1.Node. A bare `kubectl cordon` is not a failure
+// (R21) — acting on one starts a second copy of a rank that is still running.
 func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error {
 	if now.IsZero() {
 		now = c.Clock.Now()
 	}
 	handled := false
+
+	// Pass 1 — spare leases on the failed node (R25).
+	//
+	// A spare that sits ON the failed node is a casualty, not a swap target: its
+	// slots died with the node, and emitSwapPod targets the spare's own node, so
+	// swapping onto it would place the replacement on the corpse. Close it here,
+	// before pass 2, so findSpareLease cannot hand one back.
+	//
+	// The old loop skipped every spare BEFORE testing the node, so a node holding
+	// nothing but a spare matched nothing, returned "no active lease found", and
+	// the caller swallowed that by string-match — leaving an open, budget-charging
+	// lease pointed at a node that no longer exists.
 	for i := range c.State.Leases {
 		lease := &c.State.Leases[i]
-		if lease.Status.Closed {
+		if lease.Status.Closed || lease.Spec.Slice.Role != binder.RoleSpare {
 			continue
 		}
-		if lease.Spec.Slice.Role == binder.RoleSpare {
+		if !leaseContainsNode(lease, nodeName) {
+			continue
+		}
+		closeLease(lease, "NodeFailure", now)
+		handled = true
+	}
+
+	// The funding derivation, computed once: pass 2 needs it to decide whether an
+	// exact-slot conflict may be reclaimed. Class is derived, never stored
+	// (quota-semantics Decision 3), so this is the only way to know.
+	ev := c.evaluate(now)
+
+	// Pass 2 — active leases on the failed node.
+	for i := range c.State.Leases {
+		lease := &c.State.Leases[i]
+		if lease.Status.Closed || lease.Spec.Slice.Role == binder.RoleSpare {
 			continue
 		}
 		if !leaseContainsNode(lease, nodeName) {
@@ -1171,42 +1213,69 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 			closeLease(lease, "NodeFailure", now)
 			continue
 		}
+
 		spareLease, spareIdx := findSpareLease(c.State.Leases, runKey, groupIndex)
 		if spareLease == nil {
-			closeLease(lease, "NodeFailure", now)
-			if grace := checkpointGrace(run); grace > 0 {
-				// spec.runtime.checkpoint says the workload can be safely
-				// requeued: park the run Pending (it re-enters the normal
-				// cover/pack/bind or reservation path on the next reconcile)
-				// instead of failing immediately, but only for up to the
-				// checkpoint grace window (enforced in Reconcile).
-				deadline := v1.NewTime(now.Add(grace))
-				run.Status.Phase = RunPhasePending
-				run.Status.CheckpointDeadline = &deadline
-				run.Status.Message = fmt.Sprintf("node %s failed without spare coverage; checkpoint grace until %s", nodeName, deadline.Time.UTC().Format(time.RFC3339))
-				c.emit(run, EventTypeWarning, "NodeFailureCheckpointGrace", run.Status.Message)
-				continue
-			}
-			run.Status.Phase = RunPhaseFailed
-			run.Status.Message = fmt.Sprintf("node %s failed without spare coverage", nodeName)
-			c.emit(run, EventTypeWarning, "NodeFailureNoSpare", run.Status.Message)
+			c.failGroupWithoutSpare(run, lease, nodeName, now)
 			continue
 		}
-		spareNodes := leaseNodeNames(spareLease)
-		spareSet := buildNodeSet(spareNodes)
+
+		// R22 — reclaim at SLOT granularity, and never at another run's expense.
+		//
+		// The swap re-places onto the spare's own node#ordinal slots. Only a lease
+		// occupying those exact slots is a genuine conflict; a run merely sharing
+		// the node on different GPUs is not, and the old sweep closed it anyway
+		// because leasesOverlap compared nodeFromSlot and discarded the ordinal. In
+		// the correct common case this sweep now closes nothing.
+		//
+		// A surviving exact-slot conflict is either a bug or a deliberate
+		// oversubscription. Either way, evicting another run's funded work is the
+		// resolver's call — it knows the funding classes — not this function's. So
+		// we decline the spare rather than steal the slots, and fall through to the
+		// no-spare path. The run re-admits through the normal, funding-aware route.
+		spareSlots := buildSlotSet(spareLease.Spec.Slice.Nodes)
+		crossRunConflict := false
 		for j := range c.State.Leases {
 			if j == spareIdx || j == i {
 				continue
 			}
 			other := &c.State.Leases[j]
-			if other.Status.Closed {
+			if other.Status.Closed || !leaseOccupiesSlots(other, spareSlots) {
 				continue
 			}
-			if !leasesOverlap(other, spareSet) {
+			otherKey := keys.NamespacedKey(other.Spec.RunRef.Namespace, other.Spec.RunRef.Name)
+			if otherKey == runKey {
+				// Our own stale lease on the spare's slots: safe to clear.
+				closeLease(other, "ReclaimedBySpare", now)
 				continue
 			}
-			closeLease(other, "ReclaimedBySpare", now)
+			// Another run holds the exact slots the swap needs. Whether we may take
+			// them is a FUNDING question, and the derivation answers it: unfunded
+			// work is opportunistic and reclaimable by definition (quota-semantics:
+			// it runs on capacity nobody paid for). Anything else is somebody's
+			// funded capacity, and evicting it belongs to the resolver, which ranks
+			// by class — not to this function. Decline the swap instead, and let the
+			// run re-admit through the normal, funding-aware route.
+			//
+			// The old sweep closed the victim unconditionally, and compared NODES
+			// rather than slots, so a swap for run A silently killed run B's funded
+			// work merely for sharing a machine.
+			class, classified := ev.Class(other)
+			if classified && class == funding.ClassUnfunded {
+				closeLease(other, "ReclaimedBySpare", now)
+				continue
+			}
+			crossRunConflict = true
+			c.emit(run, EventTypeWarning, "SwapSlotConflict", fmt.Sprintf(
+				"spare slots for group %s are held by funded run %s; declining the swap rather than evicting it",
+				groupIndex, otherKey))
 		}
+		if crossRunConflict {
+			c.failGroupWithoutSpare(run, lease, nodeName, now)
+			continue
+		}
+
+		spareNodes := leaseNodeNames(spareLease)
 		closeLease(spareLease, "Swap", now)
 		closeLease(lease, "NodeFailure", now)
 		// Free the held spare's pod on the reclaimed node so the bridge deletes it
@@ -1221,10 +1290,34 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 		run.Status.Message = fmt.Sprintf("group %s swapping to spare after node %s failure", groupIndex, nodeName)
 		c.emit(run, EventTypeNormal, "NodeFailureSwap", run.Status.Message)
 	}
+
 	if !handled {
-		return fmt.Errorf("no active lease found on node %s", nodeName)
+		return fmt.Errorf("%w: %s", ErrNoLeaseOnNode, nodeName)
 	}
 	return nil
+}
+
+// failGroupWithoutSpare closes the failed slice and either parks the run inside
+// its checkpoint grace or fails it. Shared by the "no spare exists" and the "the
+// spare's slots belong to another run" paths, which want identical treatment: the
+// group lost its capacity and nothing safe can replace it.
+func (c *RunController) failGroupWithoutSpare(run *v1.Run, lease *v1.Lease, nodeName string, now time.Time) {
+	closeLease(lease, "NodeFailure", now)
+	if grace := checkpointGrace(run); grace > 0 {
+		// spec.runtime.checkpoint says the workload can be safely requeued: park
+		// the run Pending (it re-enters the normal cover/pack/bind or reservation
+		// path on the next reconcile) instead of failing immediately, but only for
+		// up to the checkpoint grace window (enforced in Reconcile).
+		deadline := v1.NewTime(now.Add(grace))
+		run.Status.Phase = RunPhasePending
+		run.Status.CheckpointDeadline = &deadline
+		run.Status.Message = fmt.Sprintf("node %s failed without spare coverage; checkpoint grace until %s", nodeName, deadline.Time.UTC().Format(time.RFC3339))
+		c.emit(run, EventTypeWarning, "NodeFailureCheckpointGrace", run.Status.Message)
+		return
+	}
+	run.Status.Phase = RunPhaseFailed
+	run.Status.Message = fmt.Sprintf("node %s failed without spare coverage", nodeName)
+	c.emit(run, EventTypeWarning, "NodeFailureNoSpare", run.Status.Message)
 }
 
 func ptrString(value string) *string { return &value }
@@ -2347,6 +2440,26 @@ func leaseNodeNames(lease *v1.Lease) []string {
 		result[i] = nodeFromSlot(slot)
 	}
 	return result
+}
+
+// buildSlotSet keys on the FULL node#ordinal slot, not the node. R22: a swap
+// reclaims only the exact GPUs it re-places onto.
+func buildSlotSet(slots []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(slots))
+	for _, slot := range slots {
+		set[slot] = struct{}{}
+	}
+	return set
+}
+
+// leaseOccupiesSlots reports whether the lease holds any of the exact slots.
+func leaseOccupiesSlots(lease *v1.Lease, slots map[string]struct{}) bool {
+	for _, slot := range lease.Spec.Slice.Nodes {
+		if _, ok := slots[slot]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func buildNodeSet(nodes []string) map[string]int {

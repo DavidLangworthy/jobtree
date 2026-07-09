@@ -2,7 +2,7 @@ package kube
 
 import (
 	"context"
-	"strings"
+	"errors"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -319,14 +319,32 @@ type NodeReconciler struct {
 
 func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var node corev1.Node
+	deleted := false
 	if err := r.Bridge.APIReader.Get(ctx, req.NamespacedName, &node); err != nil {
-		if apierrors.IsNotFound(err) {
-			node.Name = req.Name // a deleted node is a failed node
-		} else {
+		if !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, err
 		}
-	} else if nodeUsable(&node) {
-		return ctrl.Result{}, nil
+		deleted = true // a deleted node is a failed node
+	}
+
+	// R21 + the stale-event flake. Re-read decides, and it decides on FAILURE, not
+	// on schedulability.
+	//
+	// `nodeUsable` is false for a cordoned node, and driving HandleNodeFailure off
+	// it swapped a healthy rank onto a spare while the original pod kept running --
+	// two live copies of the same rank. A cordon means "place nothing new here",
+	// which Filter and the default scheduler already honour; jobtree needs to do
+	// nothing.
+	//
+	// It also re-checks at reconcile time rather than trusting the enqueue. A
+	// replayed delete event, or a node recreated with no status yet, can arrive
+	// after the leases that name it are healthy again; `nodeFailed` says no, and we
+	// return without touching the ledger.
+	if !deleted {
+		failed, retryAfter := nodeFailed(&node, time.Now())
+		if !failed {
+			return ctrl.Result{RequeueAfter: retryAfter}, nil
+		}
 	}
 
 	err := r.Bridge.WithWorld(ctx, func(state *controllers.ClusterState, now time.Time) error {
@@ -334,8 +352,11 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		rc.Period = r.Bridge.Period
 		rc.Recorder = r.Bridge.recorderFor()
 		if err := rc.HandleNodeFailure(req.Name, now); err != nil {
-			// Nothing was running there: the failure needs no response.
-			if strings.Contains(err.Error(), "no active lease found") {
+			// No lease of any role named the node: the failure needs no response.
+			// This used to be a string match on the message, which is how R25's
+			// leaked spare lease stayed invisible -- the spare-only node returned
+			// "no active lease found" and the swallow believed it.
+			if errors.Is(err, controllers.ErrNoLeaseOnNode) {
 				return nil
 			}
 			return err
@@ -343,6 +364,65 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return nil
 	})
 	return ctrl.Result{}, err
+}
+
+// nodeNotReadyGrace is how long a node may report NotReady/Unknown before jobtree
+// treats it as failed and starts closing its leases. A kubelet restart or a brief
+// network partition is not a node failure, and a swap is destructive: it closes
+// leases and re-places a rank. Kubernetes' own node-monitor grace period is of the
+// same order. A var, not a const, so tests can shrink it.
+var nodeNotReadyGrace = 2 * time.Minute
+
+// nodeReady reports whether the node's Ready condition is True. A node that has
+// not reported any Ready condition yet -- freshly created, kubelet not registered
+// -- is not Ready, and is also not failed. Those are different questions.
+func nodeReady(node *corev1.Node) bool {
+	for _, cond := range node.Status.Conditions {
+		if cond.Type == corev1.NodeReady {
+			return cond.Status == corev1.ConditionTrue
+		}
+	}
+	return false
+}
+
+// nodeFailed reports whether a node is FAILED -- gone, or its kubelet has stopped
+// reporting for longer than the grace window. It is deliberately not the negation
+// of nodeUsable:
+//
+//   - A CORDONED node is unusable but healthy. `kubectl cordon` says "place nothing
+//     new here", not "the work here is dead". Treating it as a failure ran a
+//     destructive swap while the original pod kept running, putting two live copies
+//     of the same distributed-training rank on the cluster (R21).
+//   - A node with NO Ready condition has not reported yet. It is not failed. This is
+//     also what makes a replayed create/delete event harmless.
+//
+// The second return is how long to wait before asking again, when the node is
+// NotReady but still inside its grace window.
+//
+// `now` is wall-clock on purpose: node conditions carry wall-clock timestamps, and
+// node liveness is a physical property, not an accounting one. The engine's clock
+// is a test fixture for the funding ledger and must not be used here.
+func nodeFailed(node *corev1.Node, now time.Time) (bool, time.Duration) {
+	for _, cond := range node.Status.Conditions {
+		if cond.Type != corev1.NodeReady {
+			continue
+		}
+		if cond.Status == corev1.ConditionTrue {
+			return false, 0
+		}
+		if cond.LastTransitionTime.IsZero() {
+			// No transition time to measure the grace against. Be conservative:
+			// wait, and re-check when the timer fires.
+			return false, nodeNotReadyGrace
+		}
+		if elapsed := now.Sub(cond.LastTransitionTime.Time); elapsed >= nodeNotReadyGrace {
+			return true, 0
+		} else {
+			return false, nodeNotReadyGrace - elapsed
+		}
+	}
+	// No Ready condition at all: the node has not reported. Not failed.
+	return false, nodeNotReadyGrace
 }
 
 func nodeUsable(node *corev1.Node) bool {
@@ -364,9 +444,12 @@ func nodeUsable(node *corev1.Node) bool {
 // delete event, since deleting a healthy node IS its failure (filtering
 // deletes through the last-known state would drop exactly those).
 func (r *NodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	unusable := predicate.NewPredicateFuncs(func(obj client.Object) bool {
+	// NOT `!nodeUsable` -- that enqueues on every cordon, and a cordon is not a
+	// failure (R21). Enqueue when the node is not Ready; Reconcile then re-reads and
+	// applies the grace window before it touches anything.
+	notReady := predicate.NewPredicateFuncs(func(obj client.Object) bool {
 		node, ok := obj.(*corev1.Node)
-		return ok && !nodeUsable(node)
+		return ok && !nodeReady(node)
 	})
 	anyDelete := predicate.Funcs{
 		CreateFunc:  func(event.CreateEvent) bool { return false },
@@ -376,7 +459,7 @@ func (r *NodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("node").
-		For(&corev1.Node{}, builder.WithPredicates(predicate.Or(unusable, anyDelete))).
+		For(&corev1.Node{}, builder.WithPredicates(predicate.Or(notReady, anyDelete))).
 		WithOptions(serialWorker).
 		Complete(r)
 }

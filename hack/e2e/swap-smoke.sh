@@ -8,7 +8,8 @@
 #     -> manager emits an Active intent pod AND a held RoleSpare intent pod
 #     -> plugin binds both and mints an Active lease (node X) + a RoleSpare lease
 #        (node Y) from the run's cover -> Running, spare HELD live
-#     -> cordon node X (the active node) => the manager's NodeReconciler runs
+#     -> cordon node X: assert NOTHING happens (a cordon is not a failure, R21)
+#     -> delete node X => the manager's NodeReconciler runs
 #        HandleNodeFailure: closes the active + spare leases, deletes the held
 #        spare pod on node Y, and emits a SWAP pod hard-targeted at node Y,
 #        stamped with the spare's funding provenance
@@ -153,8 +154,21 @@ want_owner="$(kubectl get leases.rq.davidlangworthy.io -n default \
 want_env="$(kubectl get leases.rq.davidlangworthy.io -n default \
   -o jsonpath='{range .items[?(@.spec.slice.role=="Spare")]}{.spec.paidByEnvelope}{"\n"}{end}' | head -1)"
 
-echo "==> failing the active node ($active_node): cordon => HandleNodeFailure => swap onto the spare"
+# A CORDON IS NOT A FAILURE (R21). This script used to cordon the active node and
+# expect a swap -- which is the corruption: the original pod keeps running on a
+# cordoned node, so the swap starts a SECOND live copy of the same rank. Prove the
+# no-op first, then fail the node for real by deleting it.
+echo "==> cordoning the active node ($active_node): this must NOT trigger a swap"
 kubectl cordon "$active_node" >/dev/null
+sleep 10
+if kubectl get leases.rq.davidlangworthy.io -n default \
+     -o jsonpath='{range .items[?(@.spec.reason=="Swap")]}{.metadata.name}{"\n"}{end}' | grep -q .; then
+  fail "a bare cordon triggered a swap -- R21 has regressed, and two copies of a rank may now be live"
+fi
+echo "    ok: cordon changed nothing"
+
+echo "==> failing the active node ($active_node) for real: delete the Node => HandleNodeFailure => swap onto the spare"
+kubectl delete node "$active_node" --wait=false >/dev/null
 
 echo "==> waiting for the plugin to mint the Swap lease on $spare_node (from the spare's provenance)"
 swap_name=""
