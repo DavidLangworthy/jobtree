@@ -90,7 +90,6 @@ func (r *RunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 // reservations that belonged to a Run that no longer exists; otherwise the
 // leases keep charging the budget and occupying nodes forever.
 func cleanupDeletedRun(state *controllers.ClusterState, runKey, namespace, name string, now time.Time) {
-	ended := v1.NewTime(now)
 	for i := range state.Leases {
 		lease := &state.Leases[i]
 		if lease.Status.Closed {
@@ -100,9 +99,10 @@ func cleanupDeletedRun(state *controllers.ClusterState, runKey, namespace, name 
 		if leaseRun != runKey {
 			continue
 		}
-		lease.Status.Closed = true
-		lease.Status.Ended = &ended
-		lease.Status.ClosureReason = "RunDeleted"
+		// The sole closer. This used to hand-roll the same three assignments,
+		// which is how a closure could be half-stamped and why nothing could be
+		// instrumented in one place. hack/antifake now forbids the clone.
+		controllers.CloseLease(lease, "RunDeleted", now)
 	}
 	kept := state.Pods[:0]
 	for _, pod := range state.Pods {
