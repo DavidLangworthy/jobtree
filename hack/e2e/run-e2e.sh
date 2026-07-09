@@ -36,11 +36,13 @@ trap cleanup EXIT
 
 "$ROOT/hack/e2e/kind-up.sh"
 
+# One Dockerfile, two targets sharing a builder stage: the scheduler build is a
+# cache hit on every layer the manager already built.
 echo "Building the manager image ($E2E_IMAGE)..."
-docker build -t "$E2E_IMAGE" "$ROOT"
+docker build --target manager -t "$E2E_IMAGE" "$ROOT"
 
 echo "Building the scheduler image ($E2E_SCHEDULER_IMAGE)..."
-docker build -f "$ROOT/Dockerfile.scheduler" -t "$E2E_SCHEDULER_IMAGE" "$ROOT"
+docker build --target scheduler -t "$E2E_SCHEDULER_IMAGE" "$ROOT"
 
 echo "Loading both images into kind cluster '$KIND_CLUSTER_NAME'..."
 kind load docker-image "$E2E_IMAGE" --name "$KIND_CLUSTER_NAME"

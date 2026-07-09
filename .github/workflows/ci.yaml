@@ -17,6 +17,14 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.x'
+      # `make envtest` shells out to setup-envtest, which downloads the
+      # kube-apiserver/etcd binaries on every cold run. They are pinned by
+      # ENVTEST_K8S_VERSION, so cache them on that key.
+      - name: Cache envtest binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/kubebuilder-envtest
+          key: envtest-${{ runner.os }}-1.36.2
       # ONE command. `make verify` is the single definition of the gate, so CI
       # and a developer's pre-push check cannot drift apart. That drift is how a
       # local sweep that never ran envtest looked green while CI was red.
