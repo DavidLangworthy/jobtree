@@ -1,5 +1,16 @@
 # Remediation sizing and schedule
 
+> **Updated 2026-07-09 with two decisions from David**, which move real weight:
+> - **R9 = Option A** — finish the JobSet lowering. Subsumes **R8** and the **JOBSET** track.
+> - **R13 = clean break.** *"Never complicate the implementation to support side by side.
+>   If there is a breaking change, we'll schedule it, stop the jobs, and restart."*
+>   No dual-read window, no conversion webhook, no migration Job.
+>
+> Net effect: **~20–23 focused days → ~14–17.** The clean-break rule is a project-wide
+> policy, not an R13 detail, and it shrinks R4 pt2b and R2 pt3 as well. See
+> "Impact of the two decisions" below — including a real problem with Option A that
+> its spec predates.
+
 Written 2026-07-09, after R1, R3, R5, R6 landed complete and R2 (2 of 3 parts) and
 R4 (2 of 4 sub-parts) landed partial. Every item below is work that **must be
 done** — nothing here is a proposal to skip anything. This is a planning
@@ -28,8 +39,8 @@ Three multipliers, learned the hard way:
 - **Kind live-proof required** ⇒ add half a day. Live proofs have caught bugs unit
   tests structurally cannot (the `buildPod` cohort drop, the `sparesPerGroup`
   field-name bug).
-- **Blocked on a decision** ⇒ the size is a lie until the decision lands. Five
-  decisions gate roughly a third of what is left.
+- **Blocked on a decision** ⇒ the size is a lie until the decision lands. Two of the
+  five have now been made (R9, R13); the three that remain block nothing high-severity.
 
 ## Where we actually are
 
@@ -60,9 +71,9 @@ its checkpoint grace (R2 pt2). The remaining set is, on average, materially easi
 
 | Item | Size | Why | Blocked on |
 |---|---|---|---|
-| **R2 pt3** restart reconstruction | **L** | Blocked on its own prerequisite: **a Lease records no cohort and no pod name**, so gang membership is only recoverable by string-parsing lease names. Needs durable identity at mint time, plus *delta* re-funding (surviving leases are already charged — funding full width again double-counts). Plugin path; kind live-proof. | — |
+| **R2 pt3** restart reconstruction | **L−** | Blocked on its own prerequisite: **a Lease records no cohort and no pod name**, so gang membership is only recoverable by string-parsing lease names. Needs durable identity at mint time, plus *delta* re-funding (surviving leases are already charged — funding full width again double-counts). Plugin path; kind live-proof. | — |
 | **R4 pt1b** safe cached reads | **L** | The original design was **proven unsafe and reverted**: caching breaks the cross-gang fold's read-your-write, and the sole committer overspends. The corrected approach (fold and PostBind key off *"is the real lease in the snapshot"*, not an in-memory flag) exists only as prose in the log — **no revised design doc**. Highest blast radius left. Kind live-proof. | needs a fresh design pass; staleness bound is David's |
-| **R4 pt2b** settlement store | **L** | Turns compaction on. Two caller contracts already written down (clamp `H = min(Now, …)`; add `WindowStart` and invalidate on window movement). Persistence location is an **undecided fork**: Budget `status` sub-resource vs a new kind. Extends the summary to aggregate caps. Kind live-proof. | persistence fork |
+| **R4 pt2b** settlement store | **L−** | Turns compaction on. Two caller contracts already written down (clamp `H = min(Now, …)`; add `WindowStart` and invalidate on window movement). Persistence location **settled by the clean-break rule**: Budget `status` sub-resource (a dedicated object existed only to keep old summaries readable). Extends the summary to aggregate caps. Kind live-proof. | — |
 
 R2 pt3 and R4 pt1b **share the same insight** — stop trusting in-memory `minted[]`,
 trust the leases actually present. Build them to share it; do pt3 first, since it
@@ -81,13 +92,12 @@ Land R7's keying change **before** R4 pt1b/pt2b and R13 — all three touch the 
 
 | Item | Size | Why | Blocked on |
 |---|---|---|---|
-| **R9** rendezvous | **XL** | The biggest fork in the project. **Option A** (finish JobSet lowering) gets the headless Service, stable hostnames, rendezvous env, *and* failure/restart semantics — it **subsumes R8 entirely** and closes the JOBSET track. **Option B** (direct-inject + Service) is ~half the work and leaves R8 fully separate. Real proof is a 2-node kind cluster running an actual `torch.distributed` all-reduce. | **David: A or B** |
-| **R8** pod-failure zombie | **L** | A crashed pod leaves the run Running forever, charging budget. New CRD fields, envtest ×4, a `failure-smoke.sh` that doesn't exist yet, and it edits the adoption path. **Its size is 0 under R9 Option A.** | **R9's fork**, and the default policy is David's |
-| **R10** false rendezvous comment | **XS** | Two comment blocks. Can be truthfully patched *now* ("not yet implemented, see R9") independent of the fork. | — |
+| **R9 = Option A** (JobSet lowering) | **XL** (~6–8d) | **Decided.** Gets the headless Service, stable hostnames, rendezvous env, *and* failure/restart semantics; **retires R8 and the JOBSET track**. Phased 9A-0…9A-4 — see "Impact of the two decisions", which flags a real collision with CASCADE's per-pod swap/Promise provenance and with R5's VAP. | 9A-2 wants the failure-policy default |
+| ~~**R8** pod-failure zombie~~ | **absorbed** | Becomes **9A-2**: JobSet's `failurePolicy`. No longer separate work. | — |
+| **R10** false rendezvous comment | **XS** | Two comment blocks. Patch truthfully *now* ("not yet implemented, see R9") — do not wait for 9A to land. | — |
 
-**R9 is the schedule's critical path.** Not because it is hard to start, but because
-Option A deletes R8 (an L) and the JOBSET track (an XL), while Option B keeps both.
-The decision is worth days.
+**R9 was the schedule's critical path, and Option A shortens it.** Option B would
+have cost R9-B (**L**) + R8 (**L**) + the JOBSET track still owed (**XL**) ≈ 8 days.
 
 ### P3 — Kubernetes conventions & API hardening
 
@@ -95,8 +105,8 @@ The decision is worth days.
 |---|---|---|---|
 | **R11** status conditions | **L** | Four CRDs gain `status.conditions`; every `Phase`/`Message` write in a 2400-line controller is replaced. Now a **retrofit rather than a blocker**: R2 pt2's "Degraded" was overruled, so nothing is currently waiting on the taxonomy. | — |
 | **R12** ownerRefs/finalizers | **M** | Smaller than the spec reads: the pod OwnerReference already landed with R5. Remaining is the Run finalizer that closes leases on delete (force-delete currently **leaks charging leases**) and the Reservation ownerRef. | — |
-| **R13** rename `Lease` | **L** | 37 files reference the type. Individually mechanical, but it touches `pkg/funding`, the plugin's PreBind mint, and the controller simultaneously. | **David: name + migration mode** |
-| **R14** CRD validation + CEL | **M** | Markers mirroring the existing `validate()`, plus CEL immutability on Lease. **Land in the same pass as R13** — the CEL rules attach to the very Kind R13 renames. | R13 |
+| **R13** rename `Lease` | **M** | **Decided: clean break.** 37 files reference the type; individually mechanical. No dual-read, no conversion webhook, no migration Job — that was the **L**. Still touches `pkg/funding`, the plugin's PreBind mint, and the controller at once. | name only (`GPULease` recommended) |
+| **R14** CRD validation + CEL | **M** | Markers mirroring the existing `validate()`, plus CEL immutability on Lease. **Land in the same pass as R13** — the CEL rules attach to the very Kind R13 renames. The pair is ~1 day, not 2–3. | R13 |
 
 R15's finding that the release pipeline never built an image means **no production
 install exists yet**, which makes R13's hard-rename-without-migration very plausible
@@ -136,26 +146,88 @@ corruption, not a crash. It should go first among the unblocked items.
 | **JOBSET** (#17) | **XL** | This *is* R9 Option A. Sized once, not twice. |
 | **ROLES** (#21) | **XL** | Only `Roles[0]` is honored today. Multi-role gangs touch the plugin's gang key, the cover, and the pack. |
 
+## Impact of the two decisions (2026-07-09)
+
+### R9 = Option A (finish the JobSet lowering)
+
+This is the right call on the numbers. Option B would have cost R9-B (**L**) + R8
+(**L**) + the JOBSET track still owed later (**XL**) ≈ **8 days**. Option A does all
+three at once.
+
+**But the R9 spec predates CASCADE, and Option A collides with it.** CASCADE built
+grow, swap, spares, and Promise on *directly emitted, individually annotated* pods.
+A JobSet `ReplicatedJob` has **one** pod template. Concretely:
+
+| Today, per-pod | Fits a uniform JobSet template? |
+|---|---|
+| `lease-reason` = Start / Grow / **Swap** / Promise | Start/Promise yes (uniform per gang); Grow needs a new ReplicatedJob per cohort |
+| `payer-owner/budget/envelope` (swap + promise provenance) | Promise yes (one segment). **Swap: no** — each swap pod carries *its* spare's provenance |
+| `swap-node` + **required** nodeAffinity | **No.** A swap pod hard-targets one specific node |
+| `role` = Active / Spare | Yes — a second ReplicatedJob |
+| advisory nodeAffinity per pod | Degrades to per-template; acceptable (it is advisory) |
+
+And a second interaction, with **R5's trust anchor**: the VAP makes `payer-*`,
+`lease-reason`, `cohort` and `schedulerName=jobtree` settable **only by the
+controller's ServiceAccount**. Under Option A the *JobSet controller* creates the
+pods, so `userInfo` is the JobSet controller's SA, and the policy would reject them.
+Allowing that SA widens the trust anchor and needs an explicit containment argument
+(creating a JobSet is itself RBAC-gated, and the template — not the pod — is what
+carries provenance).
+
+**Therefore R9-A needs a short design pass before code**, and phases:
+
+| Phase | What | Size |
+|---|---|---|
+| **9A-0** | Design: reconcile JobSet with CASCADE's per-pod provenance, and with R5's VAP. Decide whether **swap stays a directly-emitted pod** (an explicit, documented exception) or is modelled some other way. | **S** (design) |
+| **9A-1** | Base gang as a JobSet: `pkg/lowering` (drop `ErrNotImplemented`), headless Service + stable hostnames + rendezvous env for free, spares as a second ReplicatedJob, plugin gangs JobSet-created pods (`gangKey` from JobSet labels), install the JobSet controller in kind, RBAC, VAP allowance. | **L** |
+| **9A-2** | Failure policy through JobSet — **this is R8**, and it disappears as separate work. Still needs David's `Fail` vs `Retry(n)` default, now expressed as a JobSet `failurePolicy`. | **M** |
+| **9A-3** | Grow / swap / Promise reconciled with the JobSet path. The hard one. | **L** |
+| **9A-4** | Live proof: 2-node kind, real `torch.distributed` all-reduce to exit 0. | **M** |
+
+**R9-A total: XL, ~6–8 focused days** (vs the spec's implied 5, because 9A-0 and
+9A-3 are not in it). Still **~2–3 days cheaper than Option B**, and it retires R8
+and the JOBSET track outright.
+
+### R13 = clean break, and the rule generalizes
+
+*"Never complicate the implementation to support side by side."* No dual-read, no
+conversion webhook, no migration Job. This is a **project-wide policy**, and it is
+cheap to hold because R15 established that `release.yaml` builds **no images at
+all** — there is no production install to migrate.
+
+| Item | Was | Now | Why |
+|---|---|---|---|
+| **R13** rename `Lease`→`GPULease` | **L** | **M** | A mechanical rename across ~37 files + CRD + RBAC + docs + regen. The *migration* was the L. |
+| **R14** CRD validation + CEL | M | M | Unchanged — but lands in the same pass as R13, so the pair is ~1 day, not 2–3. |
+| **R4 pt2b** settlement store | **L** | **L−** | The undecided persistence fork **resolves**: put the summary in Budget `status`. A dedicated object existed only to make old summaries readable across a change — recompute from the ledger instead. |
+| **R2 pt3** restart reconstruction | **L** | **L−** | Freely add the cohort label + pod-name annotation to minted Leases. Reconstruction need not cope with unlabelled legacy leases. |
+
+When a spec offers "dual-read window vs hard rename," the answer is now always the
+hard rename, recorded in `IMPLEMENTATION-LOG.md`.
+
 ## Decisions on the critical path
 
-Five decisions gate roughly a third of what is left. They are worth more than any
-week of coding:
+Two of the five are now **made** (2026-07-09), and they were the two that changed
+the *size* of other items rather than just their start date:
 
-1. **R9: Option A (JobSet) or B (direct-inject)?** Option A subsumes **R8** (an L)
-   and the **JOBSET** track (an XL). This is the single highest-leverage decision.
-2. **R13: new Lease kind name + migration mode.** Since no production install
-   exists (see R15), a hard rename with no dual-read window is on the table, which
-   turns an **L** into an **M**.
-3. **R7: is the tenant a namespace or an authenticated owner string?** Gates R7 pt2.
-4. **R8: default failure policy** (`Fail` vs `Retry(n)`, per-role vs per-run).
-   Moot if R9 = A.
-5. **R19: license** (Apache-2.0 vs MIT) and whether governance becomes real.
-   Legal, so it should start early even though the code is trivial.
+- ✅ **R9: Option A** (finish the JobSet lowering). Retires R8 and the JOBSET track.
+- ✅ **R13: clean break** — hard rename, scheduled outage, no side-by-side. Also
+  resolves R4 pt2b's persistence fork by policy.
 
-There are also two decisions the specs left implicit that I will surface rather
-than silently pick: **R4 pt2b's persistence location** (Budget `status` vs a new
-kind — the latter is R13-sized), and **R4 pt1b's acceptable informer-staleness
-bound**.
+Three remain, and none of them blocks the highest-severity work:
+
+1. **R7: is the tenant a namespace or an authenticated owner string?** Gates R7
+   **pt2 only**; pt1 (namespacing the `EnvelopeKey`) proceeds regardless, and pt1 is
+   the piece that must land before R4 pt2b and R13.
+2. **R8/9A-2: default failure policy** (`Fail` vs `Retry(n)`, per-role vs per-run).
+   Now expressed as a JobSet `failurePolicy`, so the decision is smaller — but it is
+   still needed before 9A-2.
+3. **R19: license** (Apache-2.0 vs MIT) and whether governance becomes real. Legal,
+   so start it early even though the code is trivial.
+
+One implicit decision still stands, and I will surface it rather than silently pick
+it: **R4 pt1b's acceptable informer-staleness bound**. (R4 pt2b's persistence
+location is now settled by the clean-break rule: Budget `status`.)
 
 ## Suggested order, in parallel lanes
 
@@ -175,23 +247,42 @@ and disjoint files, so these can run concurrently with Lanes 1–2:
 - **R16** (XS), **R17** (XS), **R10** (XS), **R24** (S), **R15** (S).
 That is ~1 focused day for five real, confirmed bugs and the doc-honesty debt.
 
-**Lane 4 — after the decisions land.** R9 (→ R8, JOBSET), R13 + R14 together,
-R11, R19, R18, R20 + R23, ROLES.
+**Lane 4 — now unblocked by the two decisions.** **9A-0 design pass first**, then
+9A-1…9A-4 (retiring R8 and JOBSET); **R13 + R14 together** (clean break); R11, R19,
+R18, R20 + R23, ROLES.
 
 ## Honest schedule
 
 At the observed rate — roughly one **L** or two **M** per focused day, *with* full
-adversarial verification on every funding-path change — what remains is:
+adversarial verification on every funding-path change.
 
-- 3 XS + 3 S ≈ **1 day** (parallelizable onto Sonnet)
-- 5 M ≈ **3 days**
-- 9 L ≈ **12 days**
-- 2 XL ≈ **7 days** (one of which evaporates if R9 = Option A)
+**Before the two decisions:** ≈ 20–23 focused days.
 
-**≈ 20–23 focused days**, or roughly **3–4 weeks**, assuming the decisions land as
-they are needed rather than after. Lane 3 running concurrently, and Option A
-collapsing R8 + JOBSET, plausibly brings that to **15–18 days**.
+**After them:**
 
-The estimate's dominant risk is not any single item. It is that **five undecided
-forks sit upstream of about a third of the work**, and two of them (R9, R13)
-change the size of other items rather than just their start date.
+| Bucket | Items | Days |
+|---|---|---|
+| XS + S | R10, R16, R17, R24, R15, R19, 9A-0 | **~1.5** |
+| M | R12, R14, R18, R20, R23, R13, 9A-2, 9A-4 | **~4** |
+| L | R2 pt3, R4 pt1b, R4 pt2b, R7 pt1, R11, R21+R22+R25 bundle, R26, 9A-1, 9A-3 | **~11** |
+| XL | ROLES | **~3** |
+
+**≈ 14–17 focused days.** With Lane 3 (the mechanical items) running concurrently
+on Sonnet, **≈ 11–13**.
+
+Where the ~6 days went:
+
+- **R9 = A**: R9-B (L) + R8 (L) + JOBSET (XL) ≈ 8 days → R9-A ≈ 6–8 days, and the
+  JOBSET track and R8 are both *retired*. Net **−2 to −3**, plus one fewer owed track.
+- **R13 = clean break**: R13 **L → M**, and it pairs with R14 in one pass. Net **−1**.
+- **The clean-break rule**, applied beyond R13: R4 pt2b's persistence fork resolves
+  to Budget `status` (no dedicated object, no migration), and R2 pt3 may add lease
+  labels freely without coping with unlabelled legacy leases. Net **−0.5**.
+- Removing the two decision-wait risks from the critical path is worth more than the
+  raw days: **nothing that is now blocked is also high severity.**
+
+The dominant remaining risk is **9A-3** (grow / swap / Promise under JobSet). Swap
+hard-targets one node with one spare's provenance, and that does not fit a uniform
+pod template. If 9A-0's design pass concludes swap must stay a directly-emitted pod,
+that is a documented exception, not a failure — but it should be decided *before*
+9A-1 rather than discovered during it.
