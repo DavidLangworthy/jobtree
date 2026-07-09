@@ -3,14 +3,16 @@
 > **Mandatory reading for any agent reviewing a change to the funding engine, the
 > scheduler plugin, or another sole-committer path.** `.claude/workflows/adversarial-review.js`
 > injects a pointer to this file into every lens and every skeptic. Read it in full
-> before you begin. It is not background colour; it is the distilled record of six
+> before you begin. It is not background colour; it is the distilled record of seven
 > real defects found on this exact path, in a row, and it tells you where to look.
 
 ## Why this exists
 
-Adversarial review has caught a real, merge-blocking defect on **six consecutive
-changes** to the node-failure and funding paths. Not six sloppy changes — six careful
-ones, each written after reading the last one's post-mortem. That rate is not a
+Adversarial review has caught a real, merge-blocking defect on **seven consecutive
+changes** to the node-failure and funding paths. Not seven sloppy changes — seven careful
+ones, each written after reading the last one's post-mortem. The seventh was written by
+the author of this file, thirty-eight minutes after committing it, and it violated the
+rule on line 59 below. That rate is not a
 statement about the authors. It is a statement about the *shape of the system*: it
 has a small number of load-bearing invariants that the type system does not encode,
 the compiler does not check, and a passing test suite does not establish.
@@ -55,8 +57,8 @@ Ranked by defects-per-line historically. Start at the top and do not skip.
 | Rank | Location | Why |
 |---|---|---|
 | 1 | `controllers/run_controller.go` — `HandleNodeFailure`, `applyResolution`, `failGroupWithoutSpare`, `failRun`, `completeRun`, `shrinkRun` | Every one of the six specimens lived in this file. Multi-branch functions that close leases. |
-| 2 | Any function that writes `Lease.Status.Closed` | Only `closeLease` (`run_controller.go:2601`) may. Two sites still bypass it: `applyResolution:1566` and `controllers/kube/reconcilers.go:103`. A third would be a finding. |
-| 3 | Any function that writes `run.Status.Phase` | Phase is a lattice, not a variable. See class **LAST-WRITER-WINS**. |
+| 2 | Any function that writes `Lease.Status.Closed` | Only `controllers.CloseLease` may, and `hack/antifake/soleclose.go` fails the build otherwise. Zero allowlist. If you are here to add an exception, you are the finding. |
+| 3 | Any function that writes `run.Status.Phase` | Phase is a lattice **inside `HandleNodeFailure`** and a state machine everywhere else. That asymmetry has now produced the same bug seven times: see [history-run-phase-writers.md](history-run-phase-writers.md) and class **LAST-WRITER-WINS**. |
 | 4 | `controllers/kube/reconcilers.go` — `NodeReconciler` | Where a Kubernetes signal is translated into a claim about physical reality. See class **SIGNAL ≠ REALITY**. |
 | 5 | `pkg/resolver/` and its caller `applyResolution` | The resolver decides *who dies*. Its `Scope` filter means it sees a subset of leases; the caller then reasons about the whole run. |
 | 6 | The test that "proves" the change | See class **THE TEST ASSERTS THE BUG**. This is the one that gets everyone. |
@@ -72,7 +74,7 @@ Two structural facts make confirmation cheap, and you are expected to use them:
 
 ## The taxonomy
 
-Eight classes. For each: the **tell** (what you can mechanically scan for), **where**
+Nine classes. For each: the **tell** (what you can mechanically scan for), **where**
 it lives in this repo, **how to confirm** it, and the **specimen** that proves the
 class is real.
 
@@ -98,10 +100,11 @@ is still open, you have it — and note that *no test in the repo will have fail
 failed active lease and left the run's **own spare** open forever. Reproduced by a judge:
 20 reconciles, 20 simulated hours, still open, still deriving `Owned`.
 
-**Live suspects when this was written.** `applyResolution`'s terminal branch
-(`run_controller.go:1623`) sets `RunPhaseFailed` and never calls `closeRunLeases`.
-`activeGPUsForRun` (`:1685`) *skips spares*, so a run whose last open lease is a spare
-takes that branch. Confirm or refute it; do not assume someone else did.
+**The suspects named here when this file was written were both real.** `applyResolution`'s
+terminal branch set `RunPhaseFailed` and never called `closeRunLeases`; `activeGPUsForRun`
+skipped spares, so a run whose last open lease was a spare took that branch and left it
+open forever. Both fixed in `98b602d`. Neither had a test. *Write the suspect down, then
+go and settle it — the note is not the work.*
 
 ---
 
@@ -145,7 +148,10 @@ which is not part of its specification. This single test retires the whole class
 than one instance of it. For map iteration, run the same test 100 times in one process.
 
 **Specimen.** Run phase was assigned by whichever lease the loop visited last, so a run
-with a dead, uncovered rank could report `Running`. The fix was a severity-ranked
+with a dead, uncovered rank could report `Running`. It was then **reintroduced**, by the
+same author, in the very commit that added the permutation rail above — see
+[the full history of this one field](history-run-phase-writers.md), which is the best
+single argument in this repo that a convention is not a rail. The fix was a severity-ranked
 `runPhaseTracker` (`Running` < `Pending` < `Failed`) plus an order-independent post-loop
 sweep — i.e. make the fold **commutative** rather than make the order deterministic.
 Deterministic order would still have been a coincidence.
@@ -314,6 +320,49 @@ did not write**.
 
 ---
 
+---
+
+### 9. HALF-PLANE ACTION — an eviction, or a release, performed in one plane only
+
+**Tell.** Code that closes a Lease without deleting the Pod, or deletes a Pod without closing the
+Lease. More generally: any state change that has a representation in *two* places — the **ledger**
+(Leases, budgets, funding class) and the **workload** (Pods, containers, the kubelet's view of a GPU)
+— but is written to only one.
+
+Grep for `CloseLease(` and ask, at each site: *whose container is still running?* Grep for
+`State.Pods = ` and ask: *whose lease is still open?*
+
+**Where.** `HandleNodeFailure`'s reclaim of a squatter. `applyResolution`'s terminal branch (it drops
+the pods of `closedGroups`, but the sweep closes leases whose groups are not in that set).
+`failRun`. `closeRunLeases`. `removePodsForGroups`. `Bridge.apply`, which deletes exactly the Pods
+absent from `state.Pods` — that is the mechanism, and the reason forgetting is silent.
+
+**Why it is invisible.** Nothing crashes in either direction, and each direction lies in a different
+way:
+
+| Direction | The lie | The consequence |
+|---|---|---|
+| Lease open, pod gone | the ledger says a GPU is busy | an **immortal lease**: a budget is charged forever for nothing |
+| Pod running, lease closed | the ledger says a GPU is free | the engine plans new work onto an occupied GPU; kube-scheduler can never bind it, and the new gang wedges assembling forever while the old containers burn power |
+
+**How to confirm.** After the call, walk both planes for the affected run. The engine is pure, so:
+assert on `state.Leases` *and* `state.Pods`. A test that only checks closure reasons will pass through
+either lie. Every eviction test in this repo must assert on both.
+
+**Specimen.** `HandleNodeFailure` reclaimed an unfunded squatter with `closeLease(other,
+"ReclaimedBySpare", now)` and nothing else. Its container kept running on the exact `node#ordinal` that
+`emitSwapPod` targeted one line later. And a second, in the other direction: a terminally Failed run
+released every lease via `closeRunLeases` while `failRun` touched no pods at all, so its ranks kept
+holding GPUs the ledger had just handed back.
+
+**The legal exception, which you must not reap.** The checkpoint-grace window is a *deliberate*
+half-plane state: `failGroupWithoutSpare` closes the dead group's lease, parks the run `Pending` with
+a `CheckpointDeadline`, and leaves the surviving containers running **so they can write a checkpoint**.
+The run is paying nothing and holding GPUs, on purpose, for a bounded time. Any sweep that closes the
+gap between the planes must exempt it — and must key that exemption on the deadline, not on the phase.
+
+---
+
 ## Refutation rules
 
 The skeptic's job is to refute, and the default under uncertainty is `refuted=true`.
@@ -321,6 +370,11 @@ But the following are **not** valid refutations, and a skeptic offering one has 
 the task:
 
 - **"The test suite passes."** See class 8. The suite passed for all six specimens.
+- **"Pre-existing, therefore the change does not worsen it."** Valid for a *regression*
+  review; dangerous for a *correctness* review. On 2026-07-09 this refuted two true findings
+  while concealing that the fix under review was **inert in production** — it keyed on a
+  label the sole committer never sets. A change that fails to achieve its stated purpose is
+  a finding in its own right, whatever the code did before. Ask: *does this fix do anything?*
 - **"This is pre-existing."** Say so explicitly and *keep the finding on the table* as
   pre-existing. A defect the change did not introduce is still a defect. Only refute as
   pre-existing when the change also does not **worsen its consequences or reachability** —
@@ -348,6 +402,7 @@ above is therefore backed by something that **runs**:
 | 6 Guard before predicate | Typed sentinel + `errors.Is`; no `strings.Contains` on errors |
 | 7 Cloned obligation | The sole-closer AST lint in `hack/antifake/` |
 | 8 Test asserts the bug | The invariant oracle — an assertion the test author did not write |
+| 9 Half-plane action | Assert on BOTH `state.Leases` and `state.Pods` in every eviction test; R26's ledger auditor |
 
 If you find a defect whose class is not on this list, **add the class**. This file is
 append-only in spirit: the taxonomy grows by exactly one entry each time the system
