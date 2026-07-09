@@ -48,11 +48,16 @@ exactly what was merged and what was held, and why — no summaries that could b
 mistaken for a clean bill of health.
 
 **4. Distinguish a flake from a regression.** `envtest` is run three extra times and
-the failures are counted. It was added to measure a known intermittent failure — a
-stale node-failure reconcile closing a healthy node's leases (task #36). **That flake
-was fixed on 2026-07-09**: NotReady is no longer treated as a node failure at all. The
-probe stays, and now has no standing excuse. Any failure is a regression, and the
-report says so rather than reaching for the old explanation.
+the failures are counted. It was added to measure task #36 — a stale node-failure
+reconcile closing a healthy node's leases. **That mechanism was fixed on 2026-07-09**:
+NotReady is no longer treated as a node failure at all, so no node event can close a
+healthy node's leases.
+
+A *different* intermittent is open as **task #39** (`TestETAMirroredFromPodAnnotation`
+timed out once in CI, waiting 30s for a run to reach Running; it has not reproduced
+locally). Until that is understood, the probe's count is a measurement and nothing
+more. It is not evidence the suite is sound, and a failure is not evidence it is not.
+Read the log.
 
 **4b. Count what our code can reach, not what is in `go.sum`.** Dependabot raises an
 alert for every advisory anywhere in the dependency graph. Most are transitive and
@@ -96,8 +101,8 @@ The workflow does the mechanical part. These need judgment:
 - **A gate failure.** `make verify` failing on `main` is not a dependency problem.
   Something regressed, or a fixture drifted. The golden oracle is deliberately
   strict about this.
-- **Any envtest probe failure.** The flake it was built to measure is fixed. A
-  failure now is a regression, not a known bug.
+- **Any envtest probe failure.** The mechanism it was built to measure (#36) is
+  fixed and cannot be the cause. Check it against task #39 before calling it known.
 - **A reachable vulnerability.** Not the Dependabot number — the govulncheck one. It
   means our code can call the vulnerable function.
 - **A borrow decision whose premises moved.** Merging something that changes an

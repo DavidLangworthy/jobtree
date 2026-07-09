@@ -99,7 +99,7 @@ fi
 
 case "$ENVTEST_FLAKES" in
   0)       body+="**envtest stability probe:** 3/3 clean."$'\n' ;;
-  1|2|3)   body+="**envtest stability probe:** failed **${ENVTEST_FLAKES}/3** runs. The known stale-node-failure flake (task #36) was fixed on 2026-07-09, so this has no standing excuse — treat it as a regression."$'\n' ;;
+  1|2|3)   body+="**envtest stability probe:** failed **${ENVTEST_FLAKES}/3** runs. Task #36's mechanism (a stale node event closing a healthy node's leases) was fixed on 2026-07-09 and cannot be the cause. A separate intermittent is open as **task #39**. Read the log before calling this known."$'\n' ;;
   *)       body+="**envtest stability probe:** did not report (\`${ENVTEST_FLAKES}\`). Treat as unknown, not as clean."$'\n' ;;
 esac
 
