@@ -3,6 +3,12 @@ controller:
   replicas: 1
   resources: {}
   serviceAccount: jobtree-controller
+  # leaderElect MUST be true whenever replicas > 1. The engine serializes every
+  # admission decision on one worker (specs/BudgetConservation.tla); two active
+  # managers would each emit intent pods and write Run status against their own
+  # view of the ledger. `hack/ci/helm-assertions.sh` fails the build if any
+  # overlay sets replicas > 1 without it. A single replica needs neither.
+  leaderElect: false
   metricsPort: 8080
   # healthPort serves the manager's liveness/readiness probes (:8081 by
   # default in cmd/manager). webhookPort is controller-runtime's serving

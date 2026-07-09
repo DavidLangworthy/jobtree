@@ -1,5 +1,10 @@
 controller:
   replicas: 3
+  # R17: three replicas with leader election OFF ran three concurrent managers,
+  # each emitting intent pods and writing Run status against its own view of the
+  # ledger. The engine serializes admission on a single worker on purpose
+  # (specs/BudgetConservation.tla); concurrency across processes defeats it.
+  leaderElect: true
   resources:
     limits:
       cpu: 1
@@ -7,9 +12,21 @@ controller:
     requests:
       cpu: 250m
       memory: 512Mi
+
+# R17: the scheduler plugin is the sole committer of GPU funding (PLUGIN-2). A
+# production install without it has no committer at all — nothing mints leases, so
+# nothing is ever funded. It is off in the chart's defaults so that a bare
+# `helm install` does not begin gating every GPU pod in the cluster; a production
+# overlay is exactly where it must be on.
+scheduler:
+  enabled: true
+  replicas: 2
+  leaderElect: true
+
 notifier:
   enabled: true
   replicas: 2
+
 monitoring:
   enabled: true
   scrapeInterval: 15s

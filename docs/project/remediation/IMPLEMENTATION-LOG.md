@@ -801,3 +801,58 @@ un-minted survivors). Rarer than the transient-failure wedge that part 1 already
 fixes, and the most complex sub-part (needs cohort-labelled leases + delta
 re-funding). Left as a precise design note in the R2 spec for a later pass;
 part 1's in-memory committed-count does NOT survive a process restart.
+
+---
+
+## R16 + R17 — the deploy bundle (2026-07-09)
+
+Both were confirmed live bugs, both mechanical, both in files disjoint from the
+node-failure PR. Landed together.
+
+**R16 — the ServiceMonitor matched nothing.** It selected Services on
+`app.kubernetes.io/name`, and the `gpu-fleet.labels` helper never emits that key —
+only `instance`, `managed-by`, and `component`. So it selected zero Services and no
+jobtree metric was ever scraped. Nothing failed; a ServiceMonitor that matches
+nothing looks exactly like a healthy one until you go looking for a metric.
+
+Fixed by giving the Service the label. Two more found next to it:
+
+- A ServiceMonitor placed in `monitoring.serviceMonitorNamespace` selects Services in
+  **its own** namespace by default. Without a `namespaceSelector` it would find
+  nothing even after the label fix. Added.
+- The ServiceMonitor rendered unconditionally under `monitoring.enabled` (default
+  `true`), so a bare `helm install` on a cluster without the Prometheus Operator
+  failed outright: *no matches for kind "ServiceMonitor"*. Now gated on
+  `.Capabilities.APIVersions.Has "monitoring.coreos.com/v1"`. Monitoring is not a
+  hard dependency of a GPU scheduler.
+
+Silence is not consent, so `NOTES.txt` says out loud when the ServiceMonitor was
+skipped, rather than letting a quiet install read as a working one.
+
+**R17 — production ran three concurrent engines.** `values-prod.yaml` set
+`controller.replicas: 3`. There was **no `controller.leaderElect` key at all**, and
+`deployment.yaml` never passed `--leader-elect`, so `cmd/manager`'s default of
+`false` won. Three managers, each emitting intent pods and writing Run status against
+its own view of the ledger — while the engine serializes admission on a single worker
+on purpose (`specs/BudgetConservation.tla`). The RBAC already granted the
+`coordination.k8s.io` leases and `main.go` already set `LeaderElectionID`; only the
+flag and the value were missing.
+
+Also: the scheduler plugin was off in **both** overlays. It is the sole committer of
+GPU funding — with it off, nothing mints leases and no run is ever funded. On in both.
+
+**The ratchet matters more than the fix.** Both bugs are the kind that a rendered
+manifest would have caught instantly and a green test suite never will, so
+`hack/ci/helm-assertions.sh` now fails the build when:
+
+- the ServiceMonitor's selector and the Service's label disagree;
+- a ServiceMonitor lands in another namespace with no `namespaceSelector`;
+- the ServiceMonitor renders without the Prometheus Operator CRDs;
+- **any** overlay sets `replicas > 1` without `--leader-elect=true`;
+- the manager Deployment omits `--leader-elect` entirely (which is how R17 hid);
+- the prod overlay ships without the committer.
+
+Each assertion is mutation-tested. The first attempt at the R16 check **passed
+against the bug**: it read `spec.selector` (which carries the same label key, to find
+pods) instead of `metadata.labels`, so it compared the selector with itself and was
+true no matter how broken the chart was. Caught only by trying to make it fail.

@@ -1,6 +1,17 @@
 controller:
   replicas: 1
+  # One replica: leader election buys nothing and costs a coordination Lease.
+  leaderElect: false
+
+# R17: without the plugin nothing mints leases, so nothing is ever funded. Dev
+# should exercise the same committer production uses.
+scheduler:
+  enabled: true
+  replicas: 1
+  leaderElect: false
+
 notifier:
   enabled: false
+
 monitoring:
   enabled: true

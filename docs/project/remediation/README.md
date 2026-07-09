@@ -64,8 +64,8 @@ mechanical, no design needed (implement straight from the audit — Opus/Sonnet)
 | Spec | Finding | Design | Code | Verify |
 |---|---|---|---|---|
 | R15 | Documented install can't work; phantom notifier | **mech** | ⏳ Sonnet | ⏳ Sonnet |
-| R16 | ServiceMonitor selector mismatch; Prom-Operator hard dep | **mech** | ⏳ Sonnet | ⏳ Sonnet |
-| R17 | Prod overlay: 3 replicas, leader-election off; scheduler off | **mech** | ⏳ Sonnet | ⏳ Sonnet |
+| R16 | ServiceMonitor selector mismatch; Prom-Operator hard dep | **mech** | ✅ label + capability gate | ✅ helm-assertions |
+| R17 | Prod overlay: 3 replicas, leader-election off; scheduler off | **mech** | ✅ flag wired + overlays fixed | ✅ helm-assertions |
 | [R18](R18-operator-runbook.md) | No break-glass / uninstall / CRD-upgrade story | ✅ | ⏳ Sonnet | ⏳ Sonnet |
 | [R19](R19-license-governance.md) | No LICENSE; fictional governance | ✅ | ✅ all-rights-reserved + real MAINTAINERS/SECURITY | ✅ |
 
@@ -86,11 +86,12 @@ mechanical, no design needed (implement straight from the audit — Opus/Sonnet)
 | [R25](R25-spare-node-lease-leak.md) | Spare-only node deletion leaks an immortal spare lease | ✅ | ⏳ Opus (with R21/R22) | ⏳ Sonnet |
 | [R26](R26-ledger-auditor.md) | No runtime audit of leases vs pods/nodes — ledger integrity is unverified | ✅ | ⏳ Opus | ⏳ Sonnet |
 
-**Mechanical-only (R10, R15, R16, R17, R24):** no design decision — the audit's
-finding text is the spec. R10 = correct the false comment. R15 = build+push
-images in `release.yaml`, fix helm repo + `image.tag`, default notifier off. R16 =
-fix the ServiceMonitor selector + make the Prometheus-Operator dep optional. R17 =
-enable leader election in prod, enable the scheduler in both overlays. R24 = fix
+**Mechanical-only (R10, R15, R24; R16 + R17 landed 2026-07-09):** no design
+decision — the audit's finding text is the spec. R10 = correct the false comment.
+R15 = build+push images in `release.yaml`, fix helm repo + `image.tag`, default
+notifier off. ~~R16 = fix the ServiceMonitor selector + make the
+Prometheus-Operator dep optional.~~ ~~R17 = enable leader election in prod, enable
+the scheduler in both overlays.~~ R24 = fix
 the stale README claim, drop the `spares-and-fill.md` "opportunistic fill" fake,
 correct the researcher-guide `spares` field name, **plus the funding-model doc
 fixes** (funding-model-review §1/§3): index.md's budget-as-gate framing and its

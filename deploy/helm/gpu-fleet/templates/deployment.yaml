@@ -24,6 +24,7 @@ spec:
             - "--metrics-bind-address=:{{ .Values.controller.metricsPort }}"
             - "--health-probe-bind-address=:{{ .Values.controller.healthPort }}"
             - "--enable-webhooks={{ .Values.webhook.enabled }}"
+            - "--leader-elect={{ .Values.controller.leaderElect }}"
             {{- range $arg := .Values.controller.extraArgs }}
             - {{ $arg | quote }}
             {{- end }}
