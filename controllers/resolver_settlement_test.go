@@ -286,6 +286,69 @@ func TestResolverKeepsAMalleableRunRunningWhenGrowWidthCoversItsMinimum(t *testi
 	}
 }
 
+// prodLease builds a lease shaped like the ones the SOLE COMMITTER actually mints:
+// admission.PodLeaseWithRole stamps LabelRunName and LabelRunRole, and no
+// LabelGroupIndex. Every lease in a real cluster looks like this.
+//
+// The fixtures elsewhere in this package set the group label, which is why a test
+// asserting "the squatter's pods are evicted" passed while the production code
+// path evicted nothing: reclaimSquatter read the raw label ("") and the pods carry
+// "0". A test whose fixture is richer than reality proves nothing about reality.
+func prodLease(name, run, owner, budget string, slots []string, role string, now time.Time) v1.Lease {
+	l := nfLeaseGroup(name, run, owner, budget, "0", slots, role, now)
+	delete(l.Labels, binder.LabelGroupIndex)
+	return l
+}
+
+// The same eviction, driven by a lease the sole committer would really have minted.
+func TestReclaimedSquatterIsEvictedInBothPlanesWithAProductionShapedLease(t *testing.T) {
+	now := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
+	state := &ClusterState{
+		Nodes:   nodeFailureNodes(),
+		Budgets: []v1.Budget{nfBudget("team", "org:ai:team")},
+		Runs: map[string]*v1.Run{
+			"default/run":    nfRun("run", "org:ai:team", 2, now),
+			"default/filler": nfRun("filler", "org:ai:nobody", 2, now),
+		},
+		Leases: []v1.Lease{
+			prodLease("active", "run", "org:ai:team", "team", []string{"node-a#0", "node-a#1"}, binder.RoleActive, now),
+			prodLease("spare", "run", "org:ai:team", "team", []string{"node-b#0", "node-b#1"}, binder.RoleSpare, now),
+			prodLease("filler", "filler", "org:ai:nobody", "", []string{"node-b#0", "node-b#1"}, binder.RoleActive, now),
+		},
+		// ...and a pod shaped like the ones emitCohortPods really emits: group "0".
+		Pods: []binder.PodManifest{{
+			Namespace: "default", Name: "filler-active-0", NodeName: "node-b", GPUs: 2,
+			Labels: map[string]string{
+				binder.LabelRunName:    "filler",
+				binder.LabelGroupIndex: "0",
+				binder.LabelRunRole:    binder.RoleActive,
+			},
+		}},
+	}
+	c := NewRunController(state, runClock{now: now})
+
+	if got := leaseGroupIndex(&state.Leases[2]); got != "0" {
+		t.Fatalf("setup: a lease with no group label must read as group %q, got %q", "0", got)
+	}
+	if err := c.HandleNodeFailure("node-a", now); err != nil {
+		t.Fatalf("handle node failure: %v", err)
+	}
+	if closed, reason := closureOf(state, "filler"); !closed || reason != "ReclaimedBySpare" {
+		t.Fatalf("the squatter's lease must close: closed=%v reason=%q", closed, reason)
+	}
+	for _, pod := range state.Pods {
+		if pod.Labels[binder.LabelRunName] == "filler" {
+			t.Errorf("the squatter's container %s still holds the slots the swap targets. "+
+				"The lease says group %q and the pod says %q — the reclaim freed the ledger and nothing else.",
+				pod.Name, "<absent>", pod.Labels[binder.LabelGroupIndex])
+		}
+	}
+	// And the swap still proceeds onto the freed slots.
+	if closed, reason := closureOf(state, "spare"); !closed || reason != "Swap" {
+		t.Errorf("the swap proceeds: spare closed=%v reason=%q", closed, reason)
+	}
+}
+
 // Reclaiming an unfunded squatter is an eviction, and an eviction has to happen
 // in BOTH planes. Closing its lease alone left the victim's container running on
 // the exact node#ordinal the swap then targeted — the ledger said the slot was

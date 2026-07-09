@@ -1221,7 +1221,7 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 		if run := c.State.Runs[spareKey]; run != nil {
 			c.emit(run, EventTypeWarning, "SpareLostToNodeFailure", fmt.Sprintf(
 				"the spare held for group %s died with node %s; the group is no longer covered",
-				lease.Labels[binder.LabelGroupIndex], nodeName))
+				leaseGroupIndex(lease), nodeName))
 		}
 	}
 
@@ -1242,7 +1242,7 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 		handled = true
 		runKey := keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name)
 		run := c.State.Runs[runKey]
-		groupIndex := lease.Labels[binder.LabelGroupIndex]
+		groupIndex := leaseGroupIndex(lease)
 		if run == nil {
 			CloseLease(lease, "NodeFailure", now)
 			continue
@@ -1412,7 +1412,7 @@ func (c *RunController) failGroupWithoutSpare(run *v1.Run, runKey string, lease,
 		CloseLease(spareLease, "SwapDeclined", now)
 		c.emit(run, EventTypeWarning, "SpareReleased", fmt.Sprintf(
 			"released the spare held for group %s: the group lost node %s and cannot use it",
-			lease.Labels[binder.LabelGroupIndex], nodeName))
+			leaseGroupIndex(lease), nodeName))
 	}
 
 	if grace := checkpointGrace(run); grace > 0 {
@@ -1467,12 +1467,13 @@ func (c *RunController) failGroupWithoutSpare(run *v1.Run, runKey string, lease,
 // exact class on this path; see docs/project/history-run-phase-writers.md, which
 // is also the argument for why this parameter is passed rather than remembered.
 func (c *RunController) reclaimSquatter(lease *v1.Lease, victimKey string, now time.Time, phases runPhaseTracker) {
-	// No `if group != ""` guard. An empty group index is a legitimate KEY, not a
-	// missing value: removePodsForGroups matches pods by the same label, so pods
-	// carrying no group label are matched by the empty string. Guarding on
-	// non-emptiness silently skipped the pod plane instead — the very half-plane
-	// eviction this function exists to fix, reached by a new door.
-	group := lease.Labels[binder.LabelGroupIndex]
+	// leaseGroupIndex, not the raw label. The sole committer stamps no group index,
+	// so the raw read returns "" while the victim's PODS are labelled "0" — and the
+	// pod removal below then matched nothing. The eviction freed the ledger and left
+	// the container running on the exact slot the swap was about to take. Dead code
+	// in production, and a passing test, because the test fixture set the label the
+	// real system never sets.
+	group := leaseGroupIndex(lease)
 	CloseLease(lease, "ReclaimedBySpare", now)
 
 	victim := c.State.Runs[victimKey]
@@ -2100,6 +2101,39 @@ func minRunnableGPUs(run *v1.Run) int {
 	return expectedActiveGPUs(run)
 }
 
+// leaseGroupIndex is the ONE way to ask which placement group a Lease belongs to.
+//
+// The sole committer does not stamp the label. admission.PodLeaseWithRole — the
+// only production mint path — sets LabelRunName and LabelRunRole and nothing else,
+// so every Lease in a real cluster carries NO group index. Meanwhile every pod the
+// controller emits is labelled group "0" (emitCohortPods, emitSparePods hardcode
+// it).
+//
+// Three consumers already coped with that by defaulting a missing label to "0":
+// pkg/resolver's leaseGroupIndex, collectElasticGroups, and — implicitly — every
+// comparison between two leases that were both missing it. Two others read the raw
+// label and got "". The mismatch is invisible until a lease-derived group is used
+// to select PODS, whose label really is "0":
+//
+//	reclaimSquatter removed pods for group ""  ->  matched nothing
+//	                                          ->  the ledger freed the slot,
+//	                                              the container kept running.
+//
+// So this is the cloned-obligation class: three implementations of one question,
+// two of which defaulted and one of which did not. There is now one.
+//
+// It does NOT fix the deeper problem — that the packer's groups never reach the
+// ledger or the pods at all, so a multi-group run has no per-group identity to
+// address. That is R28b; see docs/project/remediation/R28-group-identity.md.
+func leaseGroupIndex(lease *v1.Lease) string {
+	if lease.Labels != nil {
+		if idx, ok := lease.Labels[binder.LabelGroupIndex]; ok && idx != "" {
+			return idx
+		}
+	}
+	return "0"
+}
+
 // runnableGPUsForRun is the run's TOTAL live width: every open, non-spare lease,
 // whatever minted it. It answers "how many ranks are running right now", which is
 // the question a run's PHASE turns on.
@@ -2563,13 +2597,7 @@ func collectElasticGroups(runKey string, leases []v1.Lease, ev *funding.Evaluati
 		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
 			continue
 		}
-		idxStr := "0"
-		if lease.Labels != nil {
-			if val, ok := lease.Labels[binder.LabelGroupIndex]; ok {
-				idxStr = val
-			}
-		}
-		idx, err := strconv.Atoi(idxStr)
+		idx, err := strconv.Atoi(leaseGroupIndex(lease))
 		if err != nil {
 			continue
 		}
@@ -2662,7 +2690,7 @@ func findSpareLease(leases []v1.Lease, runKey, group string) (*v1.Lease, int) {
 		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
 			continue
 		}
-		if lease.Labels[binder.LabelGroupIndex] != group {
+		if leaseGroupIndex(lease) != group {
 			continue
 		}
 		return lease, idx
