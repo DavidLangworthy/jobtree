@@ -30,12 +30,25 @@ its author had remembered to try.
 
 An adversarial review confirmed the consequence by running all 24 orderings of a four-lease node
 failure. An unfunded run that both squats on a funded run's spare slot and holds its own rank on the
-failing node ends `Failed` — permanently killed — in roughly half the orderings, and `Pending` —
-correctly demoted and requeued — in the other half. The difference is the storage order of
-`c.State.Leases`. This is playbook class 3, LAST-WRITER-WINS, reintroduced by a new writer in the very
-commit that shipped the 24-way permutation test meant to retire the class. The test missed it because
-its squatter fixture held only one lease, so the tracked writer and the untracked writer never touched
-the same run. **The rail was right; the fixture was too small.**
+failing node ends `Failed` in roughly half the orderings and `Pending` in the other half. The
+difference is the storage order of `c.State.Leases`.
+
+**Which one is right?** `Failed` — and the review's own prose got this backwards, as did the first
+version of this document. R14's *demote-not-kill* governs **reclamation**: unfunded work that lost
+capacity it never paid for should requeue. It does not govern **destruction**: a rank that died on a
+fenced node with no cover kills the gang whatever its funding class. A run that suffers both is dead
+for the reason that has nothing to do with the reclaim. (The correction came from Fable, writing the
+TLA+ brief, which could not state the phase-join invariant while two documents disagreed about what
+the join should produce. That is model-checking earning its keep before a single line of TLA+ was run.)
+
+So the defect is not "killed when it should have been demoted." It is that **the answer was
+nondeterministic**, and `Failed` is terminal while `Pending` is not. The fix restores the
+deterministic answer — which is also, exactly, what the code did before `reclaimSquatter` existed.
+
+This is playbook class 3, LAST-WRITER-WINS, reintroduced by a new writer in the very commit that
+shipped the 24-way permutation test meant to retire the class. The test missed it because its squatter
+fixture held only one lease, so the tracked writer and the untracked writer never touched the same run.
+**The rail was right; the fixture was too small.**
 
 ---
 

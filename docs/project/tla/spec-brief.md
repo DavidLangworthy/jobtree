@@ -772,3 +772,82 @@ honest-limits list and the §3 environment assumptions. The trace-validation har
    review's low-severity finding is adjudicated?
 4. **Trace validation (§7):** approve or defer the ~100-line reporter + trace-spec as a
    follow-up task.
+
+---
+
+## 10. Rulings on the open questions
+
+Answered by Claude (Opus) on 2026-07-09, acting on standing instruction to decide and record rather
+than block. **David: these are reversible; say so if you disagree.** Each is written so the
+engineer can proceed today.
+
+### (1) S9's contradiction — the verdict is `Failed`. The brief is right; the prose was wrong.
+
+A run that both loses an uncovered rank *and* is reclaimed as a squatter in one pass ends **`Failed`**,
+deterministically, by the lattice-join.
+
+The distinction the record had collapsed:
+
+- **R14's demote-not-kill governs RECLAMATION.** Unfunded work that lost capacity it never paid for
+  should requeue and re-admit when capacity returns. That is `reclaimSquatter`'s `Pending`.
+- **It does not govern DESTRUCTION.** A rank that died on a fenced node with no cover kills the gang
+  whatever its funding class. That is `failGroupWithoutSpare`'s `Failed`.
+
+A run that suffers both is dead for the reason that has nothing to do with the reclaim. Requeuing it
+would be requeuing a corpse.
+
+Two independent confirmations. A skeptic in the review reverted `reclaimSquatter` to its pre-change
+form and observed that both orderings then produced `filler.phase=Failed` — **deterministically**. So
+`Failed` is what the system did before the defect was introduced, and the lattice restores it.
+
+The consequence for the record: the review lens's phrase *"permanently killed instead of
+demoted-and-requeued"*, and the first version of `history-run-phase-writers.md` which repeated it,
+were **backwards**. The defect is the **nondeterminism**, not the verdict. Both documents are now
+corrected, and the code and its test already agreed on `Failed`.
+
+*This question is the single most valuable thing the TLA+ effort has produced so far, and not one line
+of TLA+ has been written. The spec could not state S9 while two documents disagreed about the join's
+value. Formal specification found a semantic contradiction in the prose before it found anything in the
+code.*
+
+### (2) Boundary of v1 — accept the resolver's exclusion, with one amendment.
+
+Exclude `applyResolution` and `pkg/resolver` from `NodeFailure.tla`. The boundary is right: the
+resolver's scope filter, lottery seeding, and per-class ranking would triple the state space to
+rediscover defects we already have compiled tests for.
+
+**But do not concede task #48.** The half-plane failure it names — *a terminal run releases every lease
+and keeps every container running* — is reachable through `HandleNodeFailure`'s own post-loop sweep
+(`closeRunLeases` closes leases; nothing removes pods), not only through `applyResolution`. It is
+therefore **in scope** for this spec, and the `PlanesAgree` invariant (§4) should catch it. If it does
+not, the invariant is too weak.
+
+A second tiny spec for `applyResolution`'s settlement is worth commissioning **after** this one ships,
+not instead of it.
+
+### (3) The stale-`ev` exploration — defer.
+
+Hold it until task #52 adjudicates whether the stale evaluation misclassifies at all. Writing an
+exploratory config for a mechanism nobody has confirmed is how a spec acquires a state variable it
+never needed. Note it in the spec header as a deliberate omission with the task number, so the next
+reader knows it was considered.
+
+### (4) Trace validation — approve as a task, do not build it yet.
+
+Filed. The reasoning in §7 is correct: a green TLC run proves the *design* is sound and says nothing
+about the Go code, and the honest bridge is to replay `snapshotWorld`'s projections against the spec's
+next-state relation. It is the right ~100 lines.
+
+It is also the second-cheapest thing on the list, and **R28 is the argument for it**: the sole
+committer never stamps `LabelGroupIndex`, so a lease-derived group never matched a pod-derived one, and
+the eviction that was supposed to free a GPU freed only a row in a ledger. **No design model would ever
+have seen that**, because in the model the label is a function of the group. Trace validation is
+exactly the instrument that would.
+
+Ship `NodeFailure.tla` first. Then decide.
+
+### A note on what this exercise has already returned
+
+Before any TLA+ exists: one semantic contradiction in the binding documents, found by trying to state
+an invariant. That is the case for the whole effort, and it should go in `specs/README.md` when the
+spec lands.
