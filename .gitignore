@@ -2,3 +2,8 @@ bin/
 dist/
 specs/.cache/
 specs/states/
+
+# Claude Code local state (workflows/ IS tracked and shared)
+.claude/settings.local.json
+.claude/worktrees/
+.claude/scheduled_tasks.lock
