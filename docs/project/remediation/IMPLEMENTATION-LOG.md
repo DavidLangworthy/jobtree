@@ -26,6 +26,57 @@ The README compose note lists R5/R6 first. I moved the two P0 correctness bugs
 
 ## Decisions (chronological)
 
+### Closing the three silent passes (2026-07-09)
+R2 pt2 merged over a red CI check. Three separate mechanisms each turned an
+absence of evidence into evidence of absence. All three are now fixed.
+
+- **1. The gate and the check had drifted.** CI ran a list of steps; a developer
+  ran `go test ./...`. Those are different lists, and only one of them included
+  envtest. **`make verify` is now THE gate, and `.github/workflows/ci.yaml` runs
+  exactly that one command.** A check cannot exist in CI without being runnable
+  locally, and vice versa. The two inline CI shell blocks (helm assertions, krew
+  manifest) moved to `hack/ci/*.sh` so both callers share them. `verify` also
+  gained a **`golden-clean`** step: the golden oracle is a fixture, and a plain
+  test run must never rewrite it — regenerating is a deliberate `UPDATE_GOLDEN=1`
+  act whose diff is the review artifact.
+- **2. envtest skipped silently and reported `ok`.** `controllers/kube`'s
+  `TestMain` skips the whole integration suite when `KUBEBUILDER_ASSETS` is unset,
+  so `go test ./...` prints `ok` for a package that ran nothing. `make envtest`
+  now sets `JOBTREE_REQUIRE_ENVTEST=1`, and `TestMain` **exits non-zero rather
+  than skipping** when that is set — turning the Makefile's own long-standing
+  warning comment ("the substitution's failure is discarded and the suite would
+  silently skip") from prose into an error. A banner also prints on skip, though
+  only under `-v`: `go test` discards a passing package's output, which is exactly
+  why the *structural* guard, not the banner, is the fix.
+- **3. Branch rules never required the checks.** The `Main` ruleset enforced
+  `deletion`, `non_fast_forward`, `pull_request`, and `copilot_code_review` — and
+  **no `required_status_checks` rule at all**, so `gh pr merge` succeeded over a
+  failing `build`. Requiring it was impossible as configured: the `CI` and `docs`
+  workflows *both* had a job named `build`, producing two status contexts with the
+  same name. Job names are now unique (`ci`, `docs`, `specs`, `kind e2e (real
+  cluster)`), which is the prerequisite for a `required_status_checks` rule. Note
+  `docs` and `specs` are path-filtered, so they must **not** be required — a
+  required check that never runs blocks the PR forever.
+
+**And the review harness itself: silence is not consent.** One adversarial lens
+returned `summary: "test"` with a finding titled `"a"` and scenario `"b"` — pure
+schema-filling, zero work — contributing no findings, which read as "clean". Three
+skeptics then refuted the placeholder, so the panel looked unanimous. The
+malleable-run regression it was assigned to find shipped. `.claude/workflows/
+adversarial-review.js` now encodes the fix as a reusable harness:
+- every lens must answer **every** assigned question and cite ≥N pieces of real
+  evidence (`file`, `line`, verbatim `quote`); output is **validated, not trusted**;
+- an independent agent **opens the files and checks each quote** — an agent can
+  claim it read the code, but it cannot fake a quote that is not there;
+- a lens that cannot produce valid output after retries **BLOCKS** the review; the
+  verdict can never be `GREEN` without it;
+- skeptics need a full **quorum**. A dead or degenerate skeptic is *not a vote*.
+  Under-quorum findings are surfaced as `UNRESOLVED`, never silently dropped —
+  otherwise two crashed agents bury a real bug. This direction of the failure was
+  latent in the old harness: `confirmed = confirms.length >= 2` let a dead skeptic
+  help *refute*.
+An honest "I found nothing" report still passes — it just has to show its work.
+
 ### R2 part 2 — adopt-at-width IMPLEMENTED; the spec's "Running + Degraded" OVERRULED (2026-07-08)
 The controller flipped a Run to `Running` on **any** open lease
 (`openLeaseCountForRun(...) > 0`, at *two* sites: `Reconcile` and

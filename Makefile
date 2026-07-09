@@ -1,4 +1,53 @@
-.PHONY: test envtest fmt generate manifests verify-generate spec-check spec-counterexamples helm-lint cli-build cli-test antifake kind-up kind-down e2e-image e2e
+.PHONY: verify fmt-check vet test-race golden-clean build-bins helm-assert krew-validate test envtest fmt generate manifests verify-generate spec-check spec-counterexamples helm-lint cli-build cli-test antifake kind-up kind-down e2e-image e2e
+
+# ---------------------------------------------------------------------------
+# `make verify` is THE gate. CI runs exactly this target and nothing else, so a
+# green `verify` locally means a green CI. Do not add a check to CI without
+# adding it here.
+#
+# This exists because the two lists drifted and a red CI merged: `go test ./...`
+# reports `ok` for controllers/kube while SKIPPING the whole envtest suite
+# (no KUBEBUILDER_ASSETS), so a sweep that looked green never ran the
+# integration tests at all. A gate you can't run before pushing is a gate that
+# catches things too late; a gate CI doesn't run is not a gate.
+verify: fmt-check vet verify-generate antifake test-race envtest golden-clean build-bins helm-lint helm-assert krew-validate
+	@echo "== make verify: all gates passed"
+
+fmt-check:
+	@out="$$(gofmt -l $$(find . -name '*.go' -not -path './vendor/*'))"; \
+	if [ -n "$$out" ]; then echo "::error::gofmt needed on:"; echo "$$out"; exit 1; fi
+
+vet:
+	go vet ./...
+
+test-race:
+	go test -race ./...
+
+# The golden oracle is a snapshot fixture: a test run must never rewrite it as a
+# side effect. Regenerating is a deliberate act (`UPDATE_GOLDEN=1`), and the diff
+# is the review artifact. NOTE the golden captures class WIDTHS and lenders, not
+# GPU-hour floats — it cannot catch an accrual regression on its own.
+golden-clean:
+	@go test ./controllers/ -run TestGoldenScenarios >/dev/null
+	@if ! git diff --quiet -- controllers/testdata/golden; then \
+		echo "::error::golden fixtures changed during a plain test run"; \
+		git --no-pager diff --stat -- controllers/testdata/golden; \
+		exit 1; \
+	fi
+	@echo "golden fixtures unchanged"
+
+# -o /dev/null: this gate only asks "does it link?", and a bare `go build` would
+# drop `manager` and `kubectl-runs` binaries into the repo root.
+build-bins:
+	go build -o /dev/null ./cmd/manager
+	go build -o /dev/null ./cmd/kubectl-runs
+
+helm-assert:
+	hack/ci/helm-assertions.sh
+
+krew-validate:
+	hack/ci/krew-validate.sh
+# ---------------------------------------------------------------------------
 
 # Regenerate deepcopy functions from the API types.
 generate:
@@ -28,13 +77,17 @@ test:
 # The assets are resolved as a separate set -e statement: in the
 # `VAR=$$(...) cmd` prefix form the substitution's failure is discarded and
 # the suite would silently skip.
+#
+# JOBTREE_REQUIRE_ENVTEST turns that last hazard from a comment into an error:
+# this target INTENDS to run the integration suite, so if the assets still fail
+# to resolve, TestMain exits non-zero instead of skipping to a green `ok`.
 ENVTEST_K8S_VERSION ?= 1.36.2
 SETUP_ENVTEST := go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.24.1
 
 envtest:
 	@set -e; \
 	assets="$$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)"; \
-	KUBEBUILDER_ASSETS="$$assets" go test -race -count=1 ./controllers/kube/...
+	KUBEBUILDER_ASSETS="$$assets" JOBTREE_REQUIRE_ENVTEST=1 go test -race -count=1 ./controllers/kube/...
 
 helm-lint:
 	helm lint deploy/helm/gpu-fleet

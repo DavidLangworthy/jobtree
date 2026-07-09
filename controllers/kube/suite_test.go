@@ -62,7 +62,24 @@ func (c *testClock) Set(t time.Time) {
 
 func TestMain(m *testing.M) {
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
+		// `make envtest` sets JOBTREE_REQUIRE_ENVTEST: that target INTENDS to
+		// run this suite, so a failure to resolve the assets must be an error,
+		// not a skip. Skipping here reports `ok` for a package that ran nothing
+		// — the silent pass that let a red CI merge (see IMPLEMENTATION-LOG).
+		if os.Getenv("JOBTREE_REQUIRE_ENVTEST") != "" {
+			fmt.Fprintln(os.Stderr, "envtest: JOBTREE_REQUIRE_ENVTEST is set but KUBEBUILDER_ASSETS is empty; refusing to skip")
+			os.Exit(1)
+		}
 		skipReason = "KUBEBUILDER_ASSETS not set; run via `make envtest`"
+		// Visible under `-v` and in CI logs. It cannot be made visible in a
+		// plain `go test ./...`, which discards a passing package's output —
+		// which is precisely why the real guard is `make verify` above, not
+		// this banner.
+		fmt.Fprintf(os.Stderr, "\n"+
+			"########################################################################\n"+
+			"# controllers/kube: INTEGRATION SUITE SKIPPED (%s)\n"+
+			"# `go test ./...` does NOT cover the real API server. Run `make verify`.\n"+
+			"########################################################################\n\n", skipReason)
 		os.Exit(m.Run())
 	}
 	code := runSuite(m)

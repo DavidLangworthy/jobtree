@@ -14,6 +14,8 @@ on:
 
 jobs:
   build:
+    # Unique status-check context (see ci.yaml): this must not be `build`.
+    name: docs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
