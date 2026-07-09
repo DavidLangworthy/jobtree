@@ -1,0 +1,69 @@
+# Dependabot — batched, weekly, on Tuesday.
+#
+# The goal is one review sitting per week, not a stream of notifications. Three
+# things control that, and only the last one lives in this file:
+#
+#   1. Whether an alert EXISTS          -> repo Settings > Advanced Security
+#   2. Whether it EMAILS you            -> https://github.com/settings/notifications
+#                                          (Dependabot alerts: choose the weekly
+#                                          email digest, or web-only)
+#   3. Whether it opens a PULL REQUEST  -> this file (version updates), plus the
+#                                          "Dependabot security updates" and
+#                                          "Grouped security updates" toggles
+#
+# Everything here is grouped, so each ecosystem produces ONE pull request per
+# week rather than one per dependency. This repo has ~177 Go modules in go.sum;
+# ungrouped updates would be unusable.
+#
+# Note: security updates (advisory-driven) are NOT scheduled — they fire when an
+# advisory is published, which is what you want. Only routine version bumps are
+# batched to Tuesday.
+
+version: 2
+updates:
+  # Go modules. Grouped into a single weekly PR; `make verify` gates it, so a
+  # breaking bump shows up as a red check rather than a surprise on main.
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+    open-pull-requests-limit: 3
+    labels: ["dependencies"]
+    groups:
+      go-modules:
+        patterns: ["*"]
+
+  # GitHub Actions (10 pinned actions across ci/e2e/docs/specs/release).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+    open-pull-requests-limit: 2
+    labels: ["dependencies"]
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  # Container base images.
+  #
+  # `golang` is DELIBERATELY IGNORED. The Go toolchain is pinned in three places
+  # that must move together — Dockerfile's `FROM golang:X.Y.Z` and the
+  # `go-version:` in every workflow — because the e2e fast path compiles binaries
+  # on the runner and wraps them in the production base image, and identical
+  # binaries require an identical toolchain. `hack/ci/assert-build-flags.sh`
+  # enforces that, so a lone base-image bump would open a RED pull request every
+  # time Go ships a patch release. Bump Go by hand, in all three places at once.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+    open-pull-requests-limit: 2
+    labels: ["dependencies"]
+    ignore:
+      - dependency-name: "golang"
+    groups:
+      base-images:
+        patterns: ["*"]
