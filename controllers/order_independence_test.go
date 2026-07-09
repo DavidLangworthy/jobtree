@@ -87,9 +87,20 @@ func TestNodeFailureOutcomeIsInvariantUnderLeaseOrder(t *testing.T) {
 	// So `filler` now holds TWO leases: one squatting the spare's exact slots
 	// (reclaimSquatter writes Pending) and one rank on the failing node with no
 	// cover of its own (failGroupWithoutSpare writes Failed). Both writers fire on
-	// `filler` in a single pass. Failed is terminal and Pending is not, so an
-	// order-dependent fold does not merely mislabel it — it permanently kills a run
-	// that quota-semantics R14 says must be demoted and requeued.
+	// `filler` in a single pass.
+	//
+	// The correct verdict is Failed, and it is worth being precise about why, because
+	// the first write-up of this defect got it backwards. R14's demote-not-kill
+	// governs RECLAMATION: unfunded work that lost capacity it never paid for should
+	// requeue. It does not govern DESTRUCTION: a rank that died on a fenced node with
+	// no cover kills the gang whatever its funding class. `filler` suffered both, and
+	// it is dead for the reason that has nothing to do with the reclaim.
+	//
+	// So the defect here is not "killed when it should have been demoted". It is that
+	// the answer was NONDETERMINISTIC — Failed or Pending depending on which lease
+	// c.State.Leases happened to store last — and Failed is terminal while Pending is
+	// not. The lattice restores the deterministic, correct answer, which is also what
+	// the code did before reclaimSquatter existed.
 	build := func(order []int) *ClusterState {
 		all := []v1.Lease{
 			nfLeaseGroup("active-0", "run", "org:ai:team", "team", "0", []string{"node-a#0"}, binder.RoleActive, now),

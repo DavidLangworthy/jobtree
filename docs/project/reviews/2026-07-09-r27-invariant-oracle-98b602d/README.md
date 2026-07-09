@@ -79,8 +79,17 @@ The mechanism, as the lens established it by running all 24 orderings across 5 p
 unfunded run can *both* squat on a funded run's spare slots *and* hold its own rank on the failing
 node. When that node fails, two writers touch its phase. `failGroupWithoutSpare` routes through
 `phases.apply(Failed)`; the new `reclaimSquatter` writes `Pending` directly. They never coordinate, so
-the last one wins. `Failed` is terminal, so in roughly half of orderings the reclaimed run is
-**permanently killed instead of demoted-and-requeued**, violating quota-semantics R14's demote-not-kill.
+the last one wins, and the run's terminal fate is decided by lease storage order.
+
+**Correction to the lens's framing.** The lens said this "permanently kills a run that R14 says must
+be demoted and requeued." That is backwards, and I repeated it before catching it. R14's
+demote-not-kill governs *reclamation*; it does not govern *destruction*. A rank that died on a fenced
+node with no cover kills the gang whatever its funding class. The correct verdict for a run that
+suffers both is `Failed`. The defect is the **nondeterminism**, not the verdict — and `Failed` is
+terminal while `Pending` is not, so the nondeterminism is not cosmetic. The lattice restores the
+deterministic answer, which is what the code did before `reclaimSquatter` existed. Caught by Fable
+while writing `docs/project/tla/spec-brief.md`: it could not state the phase-join invariant while two
+documents disagreed about the join's value.
 
 This is playbook class 3, reintroduced by a new writer that skips the very tracker built to kill it —
 in the same commit that added the permutation rail for class 3. The rail did not catch it because my
