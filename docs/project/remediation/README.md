@@ -13,7 +13,8 @@ agent should be able to pick one up cold, without re-deriving the design.
 - **Opus** — writes the code from the "Implementation spec" section.
 - **Sonnet** — mechanical debugging, repro harnesses, and the "Verification spec".
 
-**Sizing, sequencing, and the honest schedule: [SIZING.md](SIZING.md).** Every
+**Sizing, sequencing, and the honest schedule: [SIZING.md](SIZING.md).**
+R9's architecture was re-scoped after the decision: **[R9-jobset-amendment.md](R9-jobset-amendment.md)**. Every
 remaining item is sized (XS–XL), with its blast radius, test surface, and what
 blocks it. Read it before picking up work — five undecided forks sit upstream of
 about a third of what is left, and two of them change the *size* of other items.
@@ -164,12 +165,15 @@ Collected here so they are not lost in the specs. Each is also flagged inline.
   only via an explicit sponsor ACL that names the lender namespace.
 - **R8**: default workload failure policy (`Fail` vs `Retry(n)`), per-role vs
   per-run. Recommendation inside: per-role, default `Fail`.
-- **R9**: ✅ **DECIDED — Option A (finish JobSet lowering).** It also closes R8 and
-  the JOBSET track. Note the R9 spec predates CASCADE: per-pod swap/Promise
-  provenance and required node-affinity do not fit a uniform JobSet pod template,
-  and R5's VAP gates `payer-*` to the controller's ServiceAccount while the JobSet
-  controller would be the pod creator. A short design pass (9A-0) settles both
-  before code — see SIZING.md.
+- **R9**: ✅ **DECIDED — Option A**, then **re-scoped** by
+  [R9-jobset-amendment.md](R9-jobset-amendment.md) (Fable, 2026-07-09): borrow
+  JobSet's **design**, not its controller. A real JobSet creates **Jobs**, whose
+  pods the *batch Job controller* creates — so R5's VAP would have to trust an
+  identity that stamps out pods from every tenant's Job template, reopening the
+  cross-tenant charge with one hop. It would also force a *permanent* dual
+  pod-creation path (JobSet has no funded, workload-less spare). Our controller
+  stays the sole pod creator. Cancels the JOBSET track's XL. R8 is absorbed as
+  phase 9A-3 **at its own L cost** — we build the failure edge, not inherit it.
 - **R13**: ✅ **DECIDED — hard rename, no side-by-side.** Kind name still open
   (`GPULease` recommended). No dual-read window, no conversion webhook, no migration
   Job; a breaking change is scheduled, jobs stopped, and restarted. R15 established
