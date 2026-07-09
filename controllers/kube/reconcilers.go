@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -327,24 +328,29 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		deleted = true // a deleted node is a failed node
 	}
 
-	// R21 + the stale-event flake. Re-read decides, and it decides on FAILURE, not
-	// on schedulability.
+	// R21 + the stale-event flake (#36). Re-read decides, and it decides on FENCING,
+	// not on schedulability and not on a NotReady timer.
 	//
 	// `nodeUsable` is false for a cordoned node, and driving HandleNodeFailure off
 	// it swapped a healthy rank onto a spare while the original pod kept running --
 	// two live copies of the same rank. A cordon means "place nothing new here",
 	// which Filter and the default scheduler already honour; jobtree needs to do
-	// nothing.
+	// nothing. NotReady is likewise not a failure: it means we cannot HEAR the
+	// kubelet, not that its containers stopped. See nodeFailed.
 	//
-	// It also re-checks at reconcile time rather than trusting the enqueue. A
-	// replayed delete event, or a node recreated with no status yet, can arrive
-	// after the leases that name it are healthy again; `nodeFailed` says no, and we
-	// return without touching the ledger.
-	if !deleted {
-		failed, retryAfter := nodeFailed(&node, time.Now())
-		if !failed {
-			return ctrl.Result{RequeueAfter: retryAfter}, nil
+	// Re-checking here rather than trusting the enqueue is what makes a replayed
+	// event harmless: a stale NotReady is no longer a failure at all, and a stale
+	// delete is re-confirmed against the uncached APIReader above. That closes #36
+	// rather than narrowing it.
+	if !deleted && !nodeFailed(&node) {
+		if !nodeReady(&node) {
+			// Visible, and nothing else. An operator (or a fencing agent) decides
+			// whether the machine is dead by deleting the Node or tainting it
+			// out-of-service; only then does jobtree move the rank.
+			log.FromContext(ctx).Info("node is NotReady; taking no action (a swap needs a fencing assertion: delete the Node or taint it "+taintOutOfService+")",
+				"node", req.Name)
 		}
+		return ctrl.Result{}, nil
 	}
 
 	err := r.Bridge.WithWorld(ctx, func(state *controllers.ClusterState, now time.Time) error {
@@ -367,15 +373,18 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 }
 
 // nodeNotReadyGrace is how long a node may report NotReady/Unknown before jobtree
-// treats it as failed and starts closing its leases. A kubelet restart or a brief
-// network partition is not a node failure, and a swap is destructive: it closes
-// leases and re-places a rank. Kubernetes' own node-monitor grace period is of the
-// same order. A var, not a const, so tests can shrink it.
-var nodeNotReadyGrace = 2 * time.Minute
+// treats it as failed and starts closing its leases.
+//
+// taintOutOfService is Kubernetes' sanctioned "I assert this node is dead" channel
+// (`node.kubernetes.io/out-of-service`, non-graceful node shutdown, GA in 1.28). It
+// is applied by a human or a fencing agent, never by the control plane on its own,
+// and Pod GC's gcTerminating force-deletes the pods of a node carrying it.
+const taintOutOfService = "node.kubernetes.io/out-of-service"
 
 // nodeReady reports whether the node's Ready condition is True. A node that has
 // not reported any Ready condition yet -- freshly created, kubelet not registered
-// -- is not Ready, and is also not failed. Those are different questions.
+// -- is not Ready. It is also not failed. Those are different questions, and only
+// this one is about scheduling.
 func nodeReady(node *corev1.Node) bool {
 	for _, cond := range node.Status.Conditions {
 		if cond.Type == corev1.NodeReady {
@@ -385,44 +394,53 @@ func nodeReady(node *corev1.Node) bool {
 	return false
 }
 
-// nodeFailed reports whether a node is FAILED -- gone, or its kubelet has stopped
-// reporting for longer than the grace window. It is deliberately not the negation
-// of nodeUsable:
+// nodeFailed reports whether a node has been FENCED: something that can actually
+// know has asserted the machine is dead. It is deliberately neither the negation of
+// nodeUsable nor the negation of nodeReady.
 //
-//   - A CORDONED node is unusable but healthy. `kubectl cordon` says "place nothing
-//     new here", not "the work here is dead". Treating it as a failure ran a
-//     destructive swap while the original pod kept running, putting two live copies
-//     of the same distributed-training rank on the cluster (R21).
-//   - A node with NO Ready condition has not reported yet. It is not failed. This is
-//     also what makes a replayed create/delete event harmless.
+// The only safe trigger for a swap is a fencing assertion, because a swap starts a
+// second copy of a rank and jobtree cannot un-start the first one:
 //
-// The second return is how long to wait before asking again, when the node is
-// NotReady but still inside its grace window.
+//   - CORDONED is not failed. `kubectl cordon` says "place nothing new here", not
+//     "the work here is dead". Acting on one swapped a healthy rank onto a spare
+//     while its pod kept running -- two live copies of one distributed-training
+//     rank, which is silent corruption rather than a crash (R21).
 //
-// `now` is wall-clock on purpose: node conditions carry wall-clock timestamps, and
-// node liveness is a physical property, not an accounting one. The engine's clock
-// is a test fixture for the funding ledger and must not be used here.
-func nodeFailed(node *corev1.Node, now time.Time) (bool, time.Duration) {
-	for _, cond := range node.Status.Conditions {
-		if cond.Type != corev1.NodeReady {
-			continue
-		}
-		if cond.Status == corev1.ConditionTrue {
-			return false, 0
-		}
-		if cond.LastTransitionTime.IsZero() {
-			// No transition time to measure the grace against. Be conservative:
-			// wait, and re-check when the timer fires.
-			return false, nodeNotReadyGrace
-		}
-		if elapsed := now.Sub(cond.LastTransitionTime.Time); elapsed >= nodeNotReadyGrace {
-			return true, 0
-		} else {
-			return false, nodeNotReadyGrace - elapsed
+//   - NOTREADY IS NOT FAILED EITHER, for any duration. NotReady means the control
+//     plane cannot hear the kubelet; it does not mean the containers stopped. A
+//     partitioned kubelet keeps running them. Kubernetes marks a node NotReady
+//     after --node-monitor-grace-period (50s), then taint-eviction issues an
+//     ORDINARY GRACEFUL delete of its pods at tolerationSeconds (300s) -- a delete
+//     the unreachable kubelet never acts on, so the pod sits Terminating while its
+//     container runs. Upstream says so plainly, in "Force Delete StatefulSet Pods":
+//     force deletion "does not wait for confirmation from the kubelet", and doing
+//     it can "lead to the duplication of a still-running Pod". A NotReady timer,
+//     of any length, is a guess about a machine we cannot see.
+//
+// Two signals are not guesses. Both cause Pod GC to FORCE-delete (grace period 0),
+// in pkg/controller/podgc/gc_controller.go:
+//
+//   - The Node object is gone (gcOrphaned). Deletion is itself an assertion, by the
+//     cloud-controller-manager -- the instance is terminated -- or by an operator.
+//     The caller handles this case; a deleted node never reaches here.
+//   - The node carries `node.kubernetes.io/out-of-service` (gcTerminating).
+//
+// The cost of this is that a genuinely dead on-prem node whose object is never
+// deleted and never tainted will not swap: the run stalls rather than corrupting.
+// In cloud the CCM deletes the object automatically, which is the common path. For
+// a system whose worst outcome is two live copies of one rank, stalling is the
+// correct failure mode.
+//
+// Taking no timestamp is the point. There is no clock here, so the engine clock and
+// the wall clock never meet, and a compromised kubelet -- which writes its own node
+// status -- cannot backdate a LastTransitionTime to manufacture a failure.
+func nodeFailed(node *corev1.Node) bool {
+	for _, taint := range node.Spec.Taints {
+		if taint.Key == taintOutOfService {
+			return true
 		}
 	}
-	// No Ready condition at all: the node has not reported. Not failed.
-	return false, nodeNotReadyGrace
+	return false
 }
 
 func nodeUsable(node *corev1.Node) bool {
@@ -437,19 +455,22 @@ func nodeUsable(node *corev1.Node) bool {
 	return false
 }
 
-// SetupWithManager watches for nodes that need failure handling: any event
-// where the node is unusable — including create events, which is how the
-// watch replay after a manager restart reports failures that happened while
-// the manager was down, and how a node born broken surfaces — plus every
-// delete event, since deleting a healthy node IS its failure (filtering
+// SetupWithManager watches for nodes that might need failure handling — including
+// create events, which is how the watch replay after a manager restart reports what
+// happened while the manager was down, and how a node born broken surfaces — plus
+// every delete event, since deleting a node IS its fencing assertion (filtering
 // deletes through the last-known state would drop exactly those).
+//
+// A node DELETED while the manager was down produces no event at all, so its leases
+// are not closed by this watch. That is R26's job (the ledger auditor sweeps leases
+// against live nodes); it is not something a predicate can fix.
 func (r *NodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// NOT `!nodeUsable` -- that enqueues on every cordon, and a cordon is not a
-	// failure (R21). Enqueue when the node is not Ready; Reconcile then re-reads and
-	// applies the grace window before it touches anything.
-	notReady := predicate.NewPredicateFuncs(func(obj client.Object) bool {
+	// failure (R21). Enqueue on the fencing taint, and on NotReady so Reconcile can
+	// log it; Reconcile re-reads and only a fencing assertion moves anything.
+	interesting := predicate.NewPredicateFuncs(func(obj client.Object) bool {
 		node, ok := obj.(*corev1.Node)
-		return ok && !nodeReady(node)
+		return ok && (!nodeReady(node) || nodeFailed(node))
 	})
 	anyDelete := predicate.Funcs{
 		CreateFunc:  func(event.CreateEvent) bool { return false },
@@ -459,7 +480,7 @@ func (r *NodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("node").
-		For(&corev1.Node{}, builder.WithPredicates(predicate.Or(notReady, anyDelete))).
+		For(&corev1.Node{}, builder.WithPredicates(predicate.Or(interesting, anyDelete))).
 		WithOptions(serialWorker).
 		Complete(r)
 }

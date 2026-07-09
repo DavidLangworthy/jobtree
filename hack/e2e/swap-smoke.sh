@@ -154,20 +154,37 @@ want_owner="$(kubectl get leases.rq.davidlangworthy.io -n default \
 want_env="$(kubectl get leases.rq.davidlangworthy.io -n default \
   -o jsonpath='{range .items[?(@.spec.slice.role=="Spare")]}{.spec.paidByEnvelope}{"\n"}{end}' | head -1)"
 
-# A CORDON IS NOT A FAILURE (R21). This script used to cordon the active node and
-# expect a swap -- which is the corruption: the original pod keeps running on a
-# cordoned node, so the swap starts a SECOND live copy of the same rank. Prove the
-# no-op first, then fail the node for real by deleting it.
+# NEITHER A CORDON NOR A NOTREADY KUBELET IS A FAILURE (R21). This script used to
+# cordon the active node and expect a swap -- which is the corruption: the original
+# pod keeps running on a cordoned node, so the swap starts a SECOND live copy of the
+# same rank. Only a FENCING assertion (the Node object deleted, or the
+# node.kubernetes.io/out-of-service taint) licenses moving a rank.
+assert_no_swap() {
+  sleep 10
+  if kubectl get leases.rq.davidlangworthy.io -n default \
+       -o jsonpath='{range .items[?(@.spec.reason=="Swap")]}{.metadata.name}{"\n"}{end}' | grep -q .; then
+    fail "$1 triggered a swap -- R21 has regressed, and two copies of a rank may now be live"
+  fi
+}
+
 echo "==> cordoning the active node ($active_node): this must NOT trigger a swap"
 kubectl cordon "$active_node" >/dev/null
-sleep 10
-if kubectl get leases.rq.davidlangworthy.io -n default \
-     -o jsonpath='{range .items[?(@.spec.reason=="Swap")]}{.metadata.name}{"\n"}{end}' | grep -q .; then
-  fail "a bare cordon triggered a swap -- R21 has regressed, and two copies of a rank may now be live"
-fi
+assert_no_swap "a bare cordon"
 echo "    ok: cordon changed nothing"
 
-echo "==> failing the active node ($active_node) for real: delete the Node => HandleNodeFailure => swap onto the spare"
+# Make the kubelet stop reporting. Kubernetes will mark the node NotReady, then
+# (after tolerationSeconds) issue a GRACEFUL pod delete that the unreachable kubelet
+# never acts on -- the container keeps running. A swap here would duplicate the rank.
+echo "==> stopping the kubelet on $active_node: NotReady must NOT trigger a swap either"
+if docker exec "$active_node" systemctl stop kubelet >/dev/null 2>&1; then
+  kubectl wait --for=condition=Ready=false "node/$active_node" --timeout=120s >/dev/null
+  assert_no_swap "a NotReady node"
+  echo "    ok: NotReady changed nothing"
+else
+  echo "    skipped: could not stop the kubelet in this environment"
+fi
+
+echo "==> fencing the active node ($active_node): delete the Node => HandleNodeFailure => swap onto the spare"
 kubectl delete node "$active_node" --wait=false >/dev/null
 
 echo "==> waiting for the plugin to mint the Swap lease on $spare_node (from the spare's provenance)"

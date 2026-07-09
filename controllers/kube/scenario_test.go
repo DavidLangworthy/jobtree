@@ -74,7 +74,10 @@ func cordonNode(t *testing.T, name string) {
 // longer than jobtree's grace window. This is what these tests used to do with a
 // bare cordon — which is precisely the bug R21 fixes, so the test was asserting
 // the corruption. LastTransitionTime is wall-clock because node liveness is.
-func failNode(t *testing.T, name string) {
+// notReadyNode stops the node's kubelet from reporting. This is NOT a failure: the
+// control plane cannot hear the node, but its containers may still be running. A
+// swap here would duplicate a live rank.
+func notReadyNode(t *testing.T, name string) {
 	t.Helper()
 	var node corev1.Node
 	if err := kubeClient.Get(suiteCtx, types.NamespacedName{Name: name}, &node); err != nil {
@@ -82,11 +85,32 @@ func failNode(t *testing.T, name string) {
 	}
 	node.Status.Conditions = []corev1.NodeCondition{{
 		Type:               corev1.NodeReady,
-		Status:             corev1.ConditionFalse,
-		LastTransitionTime: metav1.NewTime(time.Now().Add(-2 * nodeNotReadyGrace)),
+		Status:             corev1.ConditionUnknown,
+		LastTransitionTime: metav1.NewTime(time.Now().Add(-time.Hour)),
 	}}
 	if err := kubeClient.Status().Update(suiteCtx, &node); err != nil {
-		t.Fatalf("fail %s: %v", name, err)
+		t.Fatalf("mark %s NotReady: %v", name, err)
+	}
+}
+
+// failNode fences a node: an operator (or a fencing agent) asserts the machine is
+// really dead by tainting it out-of-service, which is what makes Pod GC force-delete
+// its pods. Only a fencing assertion licenses a swap.
+//
+// These tests used to trigger the swap with a bare `kubectl cordon` — precisely the
+// bug R21 fixes, so the suite was asserting the corruption.
+func failNode(t *testing.T, name string) {
+	t.Helper()
+	var node corev1.Node
+	if err := kubeClient.Get(suiteCtx, types.NamespacedName{Name: name}, &node); err != nil {
+		t.Fatalf("get %s: %v", name, err)
+	}
+	node.Spec.Taints = append(node.Spec.Taints, corev1.Taint{
+		Key:    taintOutOfService,
+		Effect: corev1.TaintEffectNoExecute,
+	})
+	if err := kubeClient.Update(suiteCtx, &node); err != nil {
+		t.Fatalf("fence %s: %v", name, err)
 	}
 }
 
@@ -844,7 +868,14 @@ func TestNodeFailureSwapsToSpare(t *testing.T) {
 	cordonNode(t, "node-a")
 	assertNoSwap(t, "resilient", 2*time.Second)
 
-	// Now fail it for real: kubelet gone, past the grace window.
+	// Nor is NotReady, for any duration. It means the control plane cannot hear the
+	// kubelet — not that the rank stopped. Kubernetes' own eviction of these pods is
+	// a graceful delete the unreachable kubelet never acts on.
+	notReadyNode(t, "node-a")
+	assertNoSwap(t, "resilient", 2*time.Second)
+
+	// Fence it: an operator asserts the machine is dead. Now, and only now, may the
+	// rank move.
 	failNode(t, "node-a")
 
 	eventually(t, 30*time.Second, func() error {
@@ -954,11 +985,14 @@ func TestSpareNodeFailureIsAbsorbed(t *testing.T) {
 	seedPluginLeases(t, "steady")
 	waitForRunPhase(t, "steady", "Running")
 
-	// A cordon on the spare node changes nothing at all (R21).
+	// Neither a cordon nor a NotReady kubelet on the spare node changes anything
+	// (R21). Only a fencing assertion does.
 	cordonNode(t, "node-b")
 	assertNoSwap(t, "steady", 2*time.Second)
+	notReadyNode(t, "node-b")
+	assertNoSwap(t, "steady", 2*time.Second)
 
-	// Now really fail node-b, which holds only the spare lease.
+	// Now fence node-b, which holds only the spare lease.
 	failNode(t, "node-b")
 
 	// The spare's lease must close — it names a node that is gone. The active

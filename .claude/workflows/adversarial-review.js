@@ -32,7 +32,17 @@ export const meta = {
 //      — otherwise two crashed agents bury a real bug.
 // ---------------------------------------------------------------------------
 
-const A = args || {}
+// The Workflow tool sometimes delivers `args` as a JSON-encoded string rather
+// than a value. Accept both: rejecting the string form would make this harness
+// fail to RUN, which is the one failure mode it exists to prevent.
+let A = args || {}
+if (typeof A === 'string') {
+  try {
+    A = JSON.parse(A)
+  } catch (e) {
+    throw new Error(`adversarial-review: args is a string but not valid JSON: ${e.message}`)
+  }
+}
 if (!A.context || !Array.isArray(A.lenses) || A.lenses.length === 0) {
   throw new Error('adversarial-review requires args: {context, lenses:[{name,prompt,questions}]}')
 }
