@@ -705,7 +705,7 @@ func (c *RunController) failRun(run *v1.Run, msg string) {
 	run.Status.EarliestStart = nil
 	run.Status.FollowDeadline = nil
 	run.Status.CheckpointDeadline = nil
-	if closed := c.closeRunLeases(run, "RunFailed", c.Clock.Now()); closed > 0 {
+	if closed := c.releaseRun(run, "RunFailed", c.Clock.Now()); closed > 0 {
 		c.emit(run, EventTypeWarning, "LeasesReleased", fmt.Sprintf(
 			"released %d open lease(s) still held by the failed run", closed))
 	}
@@ -1300,7 +1300,18 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 				// same node failure, in which case failGroupWithoutSpare has its own
 				// verdict on its phase and the worst one must win, whatever order the
 				// leases happen to sit in.
-				c.reclaimSquatter(other, otherKey, now, phases)
+				//
+				// It can also REFUSE. Deleting the squatter's container means deleting
+				// every container it holds on that node — the pod plane cannot address
+				// a slot — and if one of those backs a FUNDED lease of the same run we
+				// would be evicting paid-for work. Decline, as for any funded conflict.
+				if c.reclaimSquatter(other, otherKey, now, phases, ev) {
+					continue
+				}
+				crossRunConflict = true
+				c.emit(run, EventTypeWarning, "SwapSlotConflict", fmt.Sprintf(
+					"spare slots for group %s are squatted by %s, whose funded work shares the node; "+
+						"declining the swap rather than evicting it", groupIndex, otherKey))
 				continue
 			}
 			crossRunConflict = true
@@ -1348,7 +1359,7 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 		if run == nil {
 			continue
 		}
-		if closed := c.closeRunLeases(run, "RunFailed", now); closed > 0 {
+		if closed := c.releaseRun(run, "RunFailed", now); closed > 0 {
 			c.emit(run, EventTypeWarning, "LeasesReleased", fmt.Sprintf(
 				"released %d open lease(s) held by the failed run", closed))
 		}
@@ -1466,31 +1477,72 @@ func (c *RunController) failGroupWithoutSpare(run *v1.Run, runKey string, lease,
 // the worst verdict wins, whatever the order. This is the SEVENTH defect of this
 // exact class on this path; see docs/project/history-run-phase-writers.md, which
 // is also the argument for why this parameter is passed rather than remembered.
-func (c *RunController) reclaimSquatter(lease *v1.Lease, victimKey string, now time.Time, phases runPhaseTracker) {
-	// leaseGroupIndex, not the raw label. The sole committer stamps no group index,
-	// so the raw read returns "" while the victim's PODS are labelled "0" — and the
-	// pod removal below then matched nothing. The eviction freed the ledger and left
-	// the container running on the exact slot the swap was about to take. Dead code
-	// in production, and a passing test, because the test fixture set the label the
-	// real system never sets.
-	group := leaseGroupIndex(lease)
-	CloseLease(lease, "ReclaimedBySpare", now)
+// It returns false when the eviction cannot be made two-plane-consistent without
+// touching FUNDED work. The caller must then decline the swap, exactly as it does
+// for a funded conflict: choosing between funded runs belongs to pkg/resolver,
+// which ranks by class.
+func (c *RunController) reclaimSquatter(lease *v1.Lease, victimKey string, now time.Time, phases runPhaseTracker, ev *funding.Evaluation) bool {
+	// THE POD PLANE CANNOT ADDRESS A SLOT.
+	//
+	// The conflict is detected at node#ordinal granularity (leaseOccupiesSlots), but
+	// binder.PodManifest carries NodeName and GPUs, not ordinals, and every pod the
+	// controller emits is labelled group "0" (emitCohortPods hardcodes it), while
+	// every lease the plugin mints has no group at all. So "delete the pods of this
+	// lease" is not expressible. See R28b.
+	//
+	// The previous shape asked removePodsForGroups for group "0" and got THE WHOLE
+	// RUN's pods, while closing exactly ONE lease. The victim was left holding open
+	// leases with no containers behind them — billing forever, invisible to the
+	// width invariant, which counts leases and not pods. Reproduced: an unfunded run
+	// Running with an open lease and zero pods, still open after 20 simulated hours.
+	//
+	// So evict at the finest granularity the pod plane CAN express — the node — and
+	// close exactly the leases whose containers are being deleted. Both planes drop
+	// together, or neither does.
+	nodes := nodesOfSlots(lease.Spec.Slice.Nodes)
+	doomed := c.openRunLeasesOnNodes(victimKey, nodes)
+
+	// FAIL CLOSED. A run's funding class is per-LEASE, not per-run: one run can hold
+	// an Owned lease and an Unfunded lease at once. Deleting the victim's pods on
+	// this node would kill the containers of every lease above — and if any of them
+	// is funded, that is somebody's paid-for work, and evicting it is the resolver's
+	// call, not this function's. Decline the swap instead.
+	//
+	// (ev is the derivation taken once before pass 2, and pass 2 closes leases as it
+	// runs, so a squatter this calls Unfunded may be funded in the post-closure world.
+	// That is a known low-severity staleness, tracked separately; it errs toward
+	// reclaiming, never toward evicting a lease this evaluation calls funded.)
+	for _, other := range doomed {
+		if other == lease {
+			continue
+		}
+		class, classified := ev.Class(other)
+		if !classified || class != funding.ClassUnfunded {
+			return false
+		}
+	}
+
+	for _, other := range doomed {
+		CloseLease(other, "ReclaimedBySpare", now)
+	}
 
 	victim := c.State.Runs[victimKey]
 	if victim == nil {
 		// The Run object is already gone; its leases are the only thing left, and
-		// the one we hold is now closed. cleanupDeletedRun sweeps the rest.
-		return
+		// they are now closed. cleanupDeletedRun sweeps its pods.
+		return true
 	}
-	c.removePodsForGroups(victimKey, map[string]struct{}{group: {}})
+	c.removeRunPodsOnNodes(victimKey, nodes)
 
-	if baseGangGPUsForRun(victimKey, c.State.Leases) >= minRunnableGPUs(victim) {
+	if runnableGPUsForRun(victimKey, c.State.Leases) >= minRunnableGPUs(victim) {
 		// Still wide enough to make progress: an unfunded malleable run that lost
-		// one group above its minimum keeps running. Nothing to record in the
-		// tracker — Running is the lattice's bottom, and a later Failed from the
-		// node-failure path must still be able to override it.
+		// one group above its minimum keeps running, and the leases it still holds
+		// still have their containers — we deleted only the pods on the nodes whose
+		// leases we closed. Nothing to record in the tracker: Running is the
+		// lattice's bottom, and a later Failed from the node-failure path must still
+		// be able to override it.
 		victim.Status.Width = summarizeRunWidth(victim, c.State.Leases)
-		return
+		return true
 	}
 
 	msg := "reclaimed by a node-failure swap; will re-admit when capacity allows"
@@ -1504,12 +1556,87 @@ func (c *RunController) reclaimSquatter(lease *v1.Lease, victimKey string, now t
 	victim.Status.Width = summarizeRunWidth(victim, c.State.Leases)
 	c.emit(victim, EventTypeWarning, "ReclaimedBySpare", fmt.Sprintf(
 		"unfunded work on slots %v was reclaimed to cover a node failure", lease.Spec.Slice.Nodes))
+	return true
 }
 
-// closeRunLeases closes every open lease the run still holds and reports how many.
-// A terminally failed run holding an open lease charges its budget forever and
-// keeps the ledger marking its GPUs occupied.
-func (c *RunController) closeRunLeases(run *v1.Run, reason string, now time.Time) int {
+// openRunLeasesOnNodes lists the run's OPEN leases — any role — holding at least one
+// slot on any of the given nodes. These are exactly the leases whose containers a
+// node-scoped pod removal would delete, which is why the two must move together.
+func (c *RunController) openRunLeasesOnNodes(runKey string, nodes map[string]int) []*v1.Lease {
+	var out []*v1.Lease
+	for i := range c.State.Leases {
+		lease := &c.State.Leases[i]
+		if lease.Status.Closed {
+			continue
+		}
+		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
+			continue
+		}
+		for _, slot := range lease.Spec.Slice.Nodes {
+			if nodes[nodeFromSlot(slot)] > 0 {
+				out = append(out, lease)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// removeRunPodsOnNodes deletes the run's pods on the given nodes. Node granularity is
+// forced: a PodManifest names a machine, not a node#ordinal, so a container cannot be
+// matched to the exact slot it occupies. R28b is what makes finer possible.
+func (c *RunController) removeRunPodsOnNodes(runKey string, nodes map[string]int) {
+	kept := c.State.Pods[:0]
+	for _, pod := range c.State.Pods {
+		sameRun := keys.NamespacedKey(pod.Namespace, pod.Labels[binder.LabelRunName]) == runKey
+		if sameRun && pod.NodeName != "" && nodes[pod.NodeName] > 0 {
+			continue
+		}
+		kept = append(kept, pod)
+	}
+	c.State.Pods = kept
+}
+
+// removeAllRunPods deletes every pod of the run. A TERMINAL run's containers must
+// stop: releaseRun hands its GPUs back to the ledger, and Bridge.apply deletes
+// exactly the pods absent from State.Pods — so a pod left behind keeps holding a GPU
+// the ledger now calls free. The engine then plans new work onto it and the
+// kube-scheduler can never bind it.
+//
+// This is completeRun's cull, which the success path has always done, applied to the
+// failure paths, which never did.
+func (c *RunController) removeAllRunPods(run *v1.Run) {
+	kept := c.State.Pods[:0]
+	for _, pod := range c.State.Pods {
+		if pod.Namespace == run.Namespace && pod.Labels[binder.LabelRunName] == run.Name {
+			continue
+		}
+		kept = append(kept, pod)
+	}
+	c.State.Pods = kept
+}
+
+// releaseRun retires a TERMINAL run in BOTH planes: it closes every lease the run
+// still holds, and deletes every pod. It reports how many leases it closed.
+//
+// Both, or neither. A terminal run holding an open lease charges its budget forever
+// and keeps the ledger marking its GPUs occupied — the immortal-lease class. And a
+// terminal run whose LEASES are closed but whose PODS survive is the same lie told
+// backwards: Bridge.apply deletes exactly the pods absent from State.Pods, so a pod
+// left behind keeps holding a GPU the ledger has just handed back. The engine then
+// plans new work onto that GPU and the kube-scheduler can never bind it.
+//
+// The success path has always done both (completeRun closes the leases and culls the
+// pods). Every failure path did only half, for as long as this file has existed. This
+// function is why a fourth caller cannot repeat that: the pod cull is not a step a
+// caller may forget, it is inside the only function that closes a terminal run's
+// leases.
+//
+// CALL IT ONLY ON A TERMINAL RUN. The checkpoint-grace window is a deliberate,
+// bounded half-plane state: failGroupWithoutSpare parks the run Pending with a
+// CheckpointDeadline and leaves its containers running SO THEY CAN WRITE A
+// CHECKPOINT. It closes the dead group's lease and calls nothing here.
+func (c *RunController) releaseRun(run *v1.Run, reason string, now time.Time) int {
 	runKey := keys.NamespacedKey(run.Namespace, run.Name)
 	closed := 0
 	for i := range c.State.Leases {
@@ -1523,6 +1650,8 @@ func (c *RunController) closeRunLeases(run *v1.Run, reason string, now time.Time
 		CloseLease(lease, reason, now)
 		closed++
 	}
+	// The other plane. Not optional, not a caller's responsibility.
+	c.removeAllRunPods(run)
 	return closed
 }
 
@@ -1742,7 +1871,7 @@ func (c *RunController) applyResolution(result resolver.Result, now time.Time) {
 			//
 			// Closing them here also returns the capacity the deficit was chasing:
 			// a dead gang's surviving ranks were still occupying the ledger.
-			if closed := c.closeRunLeases(run, "RunFailed", now); closed > 0 {
+			if closed := c.releaseRun(run, "RunFailed", now); closed > 0 {
 				c.emit(run, EventTypeWarning, "LeasesReleased", fmt.Sprintf(
 					"released %d open lease(s) still held by the failed run", closed))
 			}
@@ -2724,6 +2853,21 @@ func leaseOccupiesSlots(lease *v1.Lease, slots map[string]struct{}) bool {
 		}
 	}
 	return false
+}
+
+// nodesOfSlots maps node#ordinal SLOTS to the set of MACHINES they sit on.
+//
+// The conversion is explicit and named because the two are different keys and this
+// file has shipped a defect from confusing them (R22 compared machines where slots
+// were meant). buildNodeSet below takes machines already; handing it slots yields a
+// set that matches nothing, silently — which is exactly what the first draft of
+// reclaimSquatter's node-scoped eviction did, closing no lease at all.
+func nodesOfSlots(slots []string) map[string]int {
+	counts := make(map[string]int, len(slots))
+	for _, slot := range slots {
+		counts[nodeFromSlot(slot)]++
+	}
+	return counts
 }
 
 func buildNodeSet(nodes []string) map[string]int {
