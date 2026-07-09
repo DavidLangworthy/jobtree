@@ -74,8 +74,8 @@ mechanical, no design needed (implement straight from the audit — Opus/Sonnet)
 | Spec | Finding | Design | Code | Verify |
 |---|---|---|---|---|
 | [R20](R20-plugin-events.md) | Plugin scheduling refusals invisible to `explain` | ✅ | ⏳ Opus | ⏳ Sonnet |
-| [R21](R21-cordon-not-failure.md) | Cordon treated as node failure → destructive swap | ✅ | ⏳ Opus | ⏳ Sonnet |
-| [R22](R22-reclaim-slot-granularity.md) | Swap reclaim closes co-located runs (node granularity) | ✅ | ⏳ Opus | ⏳ Sonnet |
+| [R21](R21-cordon-not-failure.md) | Cordon treated as node failure → destructive swap | ✅ **amended** | ✅ fencing, not a NotReady timer | ✅ |
+| [R22](R22-reclaim-slot-granularity.md) | Swap reclaim closes co-located runs (node granularity) | ✅ | ✅ slot-exact, funding-aware decline | ✅ |
 | [R23](R23-workload-observability.md) | No logs/pods/artifacts story | ✅ | ⏳ Opus | ⏳ Sonnet |
 | R24 | Doc-honesty leftovers (README/spares-and-fill/guide) + funding-model doc fixes (see below) | **mech** | ⏳ Sonnet | — |
 
@@ -83,7 +83,7 @@ mechanical, no design needed (implement straight from the audit — Opus/Sonnet)
 
 | Spec | Finding | Design | Code | Verify |
 |---|---|---|---|---|
-| [R25](R25-spare-node-lease-leak.md) | Spare-only node deletion leaks an immortal spare lease | ✅ | ⏳ Opus (with R21/R22) | ⏳ Sonnet |
+| [R25](R25-spare-node-lease-leak.md) | Spare-only node deletion leaks an immortal spare lease | ✅ | ✅ (with R21/R22) | ✅ |
 | [R26](R26-ledger-auditor.md) | No runtime audit of leases vs pods/nodes — ledger integrity is unverified | ✅ | ⏳ Opus | ⏳ Sonnet |
 
 **Mechanical-only (R10, R15, R24; R16 + R17 landed 2026-07-09):** no design
