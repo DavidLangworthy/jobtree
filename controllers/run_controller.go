@@ -1296,7 +1296,11 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 			// work merely for sharing a machine.
 			class, classified := ev.Class(other)
 			if classified && class == funding.ClassUnfunded {
-				c.reclaimSquatter(other, otherKey, now)
+				// phases, not a bare write: this victim may ALSO be a casualty of the
+				// same node failure, in which case failGroupWithoutSpare has its own
+				// verdict on its phase and the worst one must win, whatever order the
+				// leases happen to sit in.
+				c.reclaimSquatter(other, otherKey, now, phases)
 				continue
 			}
 			crossRunConflict = true
@@ -1445,14 +1449,29 @@ func (c *RunController) failGroupWithoutSpare(run *v1.Run, runKey string, lease,
 // reporting Running forever, holding nothing, a zombie no reconcile would ever
 // visit. (Its phase was never touched, so the width invariant caught it.)
 //
-// The resolver's eviction path already did all three: it closes the lease, drops
-// the cut groups' pods, and demotes the run. This is the same obligation, and it
-// is now discharged the same way.
-//
 // Demote, do not kill: unfunded work is reclaimable by definition, and
 // quota-semantics R14 says it requeues and re-admits when capacity returns. A run
 // that keeps enough width to run stays Running.
-func (c *RunController) reclaimSquatter(lease *v1.Lease, victimKey string, now time.Time) {
+//
+// It takes the phases tracker, and that is not decoration. THE VICTIM MAY ALSO BE
+// A VICTIM OF THE NODE FAILURE ITSELF: an unfunded run can hold a rank on the
+// dead node AND squat on the spare's slots, an oversubscription the engine
+// explicitly tolerates (see the comment above buildSlotSet). Then two writers
+// reach for its phase in one pass — failGroupWithoutSpare writes Failed through
+// the tracker, this writes Pending — and without the fold the winner is whichever
+// lease `c.State.Leases` happened to store last. Failed is terminal, so in half
+// the orderings a reclaimable run was permanently killed instead of requeued.
+//
+// The tracker's lattice (Running < Pending < Failed) makes the fold commutative:
+// the worst verdict wins, whatever the order. This is the SEVENTH defect of this
+// exact class on this path; see docs/project/history-run-phase-writers.md, which
+// is also the argument for why this parameter is passed rather than remembered.
+func (c *RunController) reclaimSquatter(lease *v1.Lease, victimKey string, now time.Time, phases runPhaseTracker) {
+	// No `if group != ""` guard. An empty group index is a legitimate KEY, not a
+	// missing value: removePodsForGroups matches pods by the same label, so pods
+	// carrying no group label are matched by the empty string. Guarding on
+	// non-emptiness silently skipped the pod plane instead — the very half-plane
+	// eviction this function exists to fix, reached by a new door.
 	group := lease.Labels[binder.LabelGroupIndex]
 	CloseLease(lease, "ReclaimedBySpare", now)
 
@@ -1462,19 +1481,25 @@ func (c *RunController) reclaimSquatter(lease *v1.Lease, victimKey string, now t
 		// the one we hold is now closed. cleanupDeletedRun sweeps the rest.
 		return
 	}
-	if group != "" {
-		c.removePodsForGroups(victimKey, map[string]struct{}{group: {}})
-	}
+	c.removePodsForGroups(victimKey, map[string]struct{}{group: {}})
+
 	if baseGangGPUsForRun(victimKey, c.State.Leases) >= minRunnableGPUs(victim) {
 		// Still wide enough to make progress: an unfunded malleable run that lost
-		// one group above its minimum keeps running.
+		// one group above its minimum keeps running. Nothing to record in the
+		// tracker — Running is the lattice's bottom, and a later Failed from the
+		// node-failure path must still be able to override it.
 		victim.Status.Width = summarizeRunWidth(victim, c.State.Leases)
 		return
 	}
-	victim.Status.Phase = RunPhasePending
-	victim.Status.Message = "reclaimed by a node-failure swap; will re-admit when capacity allows"
-	victim.Status.PendingReservation = nil
-	victim.Status.EarliestStart = nil
+
+	msg := "reclaimed by a node-failure swap; will re-admit when capacity allows"
+	if phases.apply(victim, victimKey, RunPhasePending, msg) {
+		// Only clear the reservation pointers when this verdict actually stuck. If
+		// a worse verdict already landed for this run in this pass, the run is
+		// terminal and the sweep owns it.
+		victim.Status.PendingReservation = nil
+		victim.Status.EarliestStart = nil
+	}
 	victim.Status.Width = summarizeRunWidth(victim, c.State.Leases)
 	c.emit(victim, EventTypeWarning, "ReclaimedBySpare", fmt.Sprintf(
 		"unfunded work on slots %v was reclaimed to cover a node failure", lease.Spec.Slice.Nodes))
@@ -1666,22 +1691,31 @@ func (c *RunController) applyResolution(result resolver.Result, now time.Time) {
 		if run == nil {
 			continue
 		}
-		// Width is measured the way every other admission path measures it:
-		// baseGangGPUsForRun against minRunnableGPUs. The old test here was
-		// `activeGPUsForRun(...) > 0`, which said a fixed-width gang missing half
-		// its groups is "Running". It is not: "start together or not at all". The
-		// lottery cuts group-by-group (pkg/resolver: the guard at resolver.go:503
-		// protects only MALLEABLE runs from dropping below their minimum), so a
-		// deficit smaller than a fixed run's width cuts a strict subset of its
-		// groups — and the run then reported healthy while making no progress and
-		// charging a budget for its surviving ranks, forever. Nothing repairs a
-		// fixed-width Running run: reconcileElasticRun returns immediately for a
-		// non-malleable run, and topUpActiveGang is only reachable pre-Running.
+		// The old test here was `activeGPUsForRun(...) > 0`, which said a fixed-width
+		// gang missing half its groups is "Running". It is not: "start together or
+		// not at all". The lottery cuts group-by-group, so a deficit smaller than a
+		// fixed run's width cuts a strict subset of its groups — and the run then
+		// reported healthy while making no progress and charging a budget for its
+		// surviving ranks, forever. Nothing repairs a fixed-width Running run:
+		// reconcileElasticRun returns immediately for a non-malleable run, and
+		// topUpActiveGang is only reachable pre-Running.
 		//
-		// activeGPUsForRun also counted Grow leases, so a run whose base gang was
-		// cut could reach "width" on elastic width alone — the same trap
-		// baseGangGPUsForRun was introduced to close for adoption.
-		allocated := baseGangGPUsForRun(runKey, c.State.Leases)
+		// The width is TOTAL runnable width — base gang plus grow — not base-gang
+		// width. Measuring the base gang here was a reaper, and it was caught by
+		// reading the resolver rather than by any test: the lottery's own guard
+		// (pkg/resolver/resolver.go:503) permits a cut while `Remaining - grp.GPUs
+		// >= MinTotalGPUs`, and `Remaining` counts grow leases. So the resolver may
+		// legitimately cut a malleable run's BASE group while its grow ranks still
+		// cover the declared minimum. Comparing base width against a total-GPU
+		// minimum then failed a run that was, by the resolver's own reckoning, still
+		// runnable — and swept its surviving leases.
+		//
+		// baseGangGPUsForRun remains right for ADOPTION (run_controller.go:203),
+		// where a run reconstructing itself from leases after a restart must not
+		// reach "width" on grow leases alone. That is a different question: this run
+		// already assembled, and 96 live ranks are 96 live ranks whatever funding
+		// provenance minted them.
+		allocated := runnableGPUsForRun(runKey, c.State.Leases)
 		expected := minRunnableGPUs(run)
 		switch {
 		case allocated >= expected:
@@ -2064,6 +2098,36 @@ func minRunnableGPUs(run *v1.Run) int {
 		return int(run.Spec.Malleable.MinTotalGPUs)
 	}
 	return expectedActiveGPUs(run)
+}
+
+// runnableGPUsForRun is the run's TOTAL live width: every open, non-spare lease,
+// whatever minted it. It answers "how many ranks are running right now", which is
+// the question a run's PHASE turns on.
+//
+// This is not baseGangGPUsForRun, and confusing the two is a reaper in both
+// directions. Use this one to judge whether a run that has already assembled is
+// still runnable; use baseGangGPUsForRun to judge whether a run is assembling.
+//
+//	runnable  — phase decisions (applyResolution) and the width invariant
+//	base gang — adoption, which must not reach width on grow leases alone
+//
+// The resolver agrees with this one: its lottery guard (pkg/resolver/resolver.go:503)
+// permits a cut while `Remaining - grp.GPUs >= MinTotalGPUs`, and `Remaining`
+// counts grow leases. Judging the phase on base width alone therefore failed
+// malleable runs the resolver had deliberately left runnable.
+func runnableGPUsForRun(runKey string, leases []v1.Lease) int {
+	total := 0
+	for i := range leases {
+		lease := &leases[i]
+		if lease.Status.Closed || lease.Spec.Slice.Role == binder.RoleSpare {
+			continue
+		}
+		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
+			continue
+		}
+		total += len(lease.Spec.Slice.Nodes)
+	}
+	return total
 }
 
 // baseGangGPUsForRun is the run's BASE-gang active width: open, non-spare leases

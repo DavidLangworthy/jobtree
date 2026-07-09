@@ -74,9 +74,9 @@ const (
 	TerminalPresent = "INV-TERMINAL-PRESENT"
 
 	// WidthAssembled: an assembled Running run holds at least its minimum
-	// runnable width. "Start together or not at all" — a fixed-width gang missing
-	// a rank makes no progress while every one of its surviving containers
-	// charges a budget.
+	// runnable width, counting EVERY open non-spare lease. "Start together or not
+	// at all" — a fixed-width gang missing a rank makes no progress while every one
+	// of its surviving containers charges a budget.
 	//
 	// Gated on AwaitingMint. The controller is not the committer of leases: it
 	// emits a pod, and the scheduler plugin mints the lease at PreBind. Between
@@ -122,11 +122,21 @@ type Run struct {
 	Phase string
 	// Terminal is true for the phases from which a run never returns.
 	Terminal bool
-	// BaseGangGPUs is the run's open, non-spare, non-grow width. It is what the
-	// adoption path compares against MinRunnableGPUs, and the two must be
-	// computed by the SAME helpers the controller uses to decide — otherwise
-	// this package becomes a second implementation of the rule it is checking.
-	BaseGangGPUs    int
+	// RunnableGPUs is the run's TOTAL live width: every open, non-spare lease,
+	// whatever minted it — base gang and elastic grow alike. It is NOT the base
+	// gang width.
+	//
+	// That distinction is a reaper. The resolver's lottery guard permits cutting a
+	// malleable run's BASE group while its grow ranks still cover the declared
+	// minimum, so a run can legally be Running with zero base-gang GPUs. An
+	// invariant that compared base width against a total-GPU minimum would panic
+	// on it. (The narrower "a run must not ADOPT to Running on grow leases alone"
+	// rule is real, and it lives in the adoption path where it belongs.)
+	//
+	// Both fields must be computed by the SAME helpers the controller uses to
+	// decide, or this package becomes a second implementation of the rule it is
+	// checking.
+	RunnableGPUs    int
 	MinRunnableGPUs int
 	// AwaitingMint is true when the run has an intent pod with no matching open
 	// lease: the plugin has not committed it yet. Width invariants do not apply.
@@ -191,14 +201,14 @@ func CheckSteady(w World) []Violation {
 		if r.Phase != "Running" || r.AwaitingMint || !r.KnownToLedger {
 			continue
 		}
-		if r.BaseGangGPUs < r.MinRunnableGPUs {
+		if r.RunnableGPUs < r.MinRunnableGPUs {
 			out = append(out, Violation{
 				ID:      WidthAssembled,
 				Subject: "run " + r.Key,
 				Detail: fmt.Sprintf(
 					"reports Running while holding %d of %d minimum runnable GPUs, with no pod awaiting a mint — "+
 						"a gang missing a rank makes no progress while every surviving container charges a budget",
-					r.BaseGangGPUs, r.MinRunnableGPUs),
+					r.RunnableGPUs, r.MinRunnableGPUs),
 			})
 		}
 	}

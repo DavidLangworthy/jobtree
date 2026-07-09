@@ -66,7 +66,7 @@ func TestHalfClosedLeaseIsAViolation(t *testing.T) {
 func TestRunningRunBelowItsMinimumWidthIsAViolation(t *testing.T) {
 	w := World{Runs: []Run{{
 		Key: "default/train", Phase: "Running",
-		BaseGangGPUs: 2, MinRunnableGPUs: 4, KnownToLedger: true,
+		RunnableGPUs: 2, MinRunnableGPUs: 4, KnownToLedger: true,
 	}}}
 	got := CheckSteady(w)
 	if len(got) != 1 || got[0].ID != WidthAssembled {
@@ -81,7 +81,7 @@ func TestRunningRunBelowItsMinimumWidthIsAViolation(t *testing.T) {
 func TestRunningRunAwaitingAMintIsLegalEvenAtZeroWidth(t *testing.T) {
 	w := World{Runs: []Run{{
 		Key: "default/train", Phase: "Running",
-		BaseGangGPUs: 0, MinRunnableGPUs: 4, AwaitingMint: true, KnownToLedger: true,
+		RunnableGPUs: 0, MinRunnableGPUs: 4, AwaitingMint: true, KnownToLedger: true,
 	}}}
 	if got := CheckSteady(w); len(got) != 0 {
 		t.Fatalf("a run whose replacement pod has not been minted yet is legal, got [%s]", ids(got))
@@ -93,7 +93,7 @@ func TestRunningRunAwaitingAMintIsLegalEvenAtZeroWidth(t *testing.T) {
 func TestRunningRunUnknownToTheLedgerIsNotWidthChecked(t *testing.T) {
 	w := World{Runs: []Run{{
 		Key: "default/upstream", Phase: "Running",
-		BaseGangGPUs: 0, MinRunnableGPUs: 4, KnownToLedger: false,
+		RunnableGPUs: 0, MinRunnableGPUs: 4, KnownToLedger: false,
 	}}}
 	if got := CheckSteady(w); len(got) != 0 {
 		t.Fatalf("a run with no lease and no pod has not been placed, got [%s]", ids(got))
@@ -104,7 +104,7 @@ func TestRunningRunUnknownToTheLedgerIsNotWidthChecked(t *testing.T) {
 // checked. That is the case worth catching.
 func TestRunningRunThatLostItsWholeGangIsStillChecked(t *testing.T) {
 	w := World{
-		Runs:   []Run{{Key: "default/train", Phase: "Running", BaseGangGPUs: 0, MinRunnableGPUs: 4, KnownToLedger: true}},
+		Runs:   []Run{{Key: "default/train", Phase: "Running", RunnableGPUs: 0, MinRunnableGPUs: 4, KnownToLedger: true}},
 		Leases: []Lease{{Name: "l1", RunKey: "default/train", Closed: true, HasEnded: true, ClosureReason: "NodeFailure"}},
 	}
 	got := CheckSteady(w)
@@ -117,7 +117,7 @@ func TestPendingRunHoldingOpenLeasesIsLegal(t *testing.T) {
 	// The half-assembled gang: "start together or not at all" means the run parks
 	// Pending while it holds the leases it has and tops up the rest.
 	w := World{
-		Runs:   []Run{{Key: "default/train", Phase: "Pending", BaseGangGPUs: 2, MinRunnableGPUs: 4, KnownToLedger: true}},
+		Runs:   []Run{{Key: "default/train", Phase: "Pending", RunnableGPUs: 2, MinRunnableGPUs: 4, KnownToLedger: true}},
 		Leases: []Lease{{Name: "l1", RunKey: "default/train"}},
 	}
 	if got := CheckSteady(w); len(got) != 0 {
