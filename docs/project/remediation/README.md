@@ -13,6 +13,11 @@ agent should be able to pick one up cold, without re-deriving the design.
 - **Opus** — writes the code from the "Implementation spec" section.
 - **Sonnet** — mechanical debugging, repro harnesses, and the "Verification spec".
 
+**Sizing, sequencing, and the honest schedule: [SIZING.md](SIZING.md).** Every
+remaining item is sized (XS–XL), with its blast radius, test surface, and what
+blocks it. Read it before picking up work — five undecided forks sit upstream of
+about a third of what is left, and two of them change the *size* of other items.
+
 ## Status board
 
 Design = the Fable layer (this repo). ✅ = design spec written; **mech** = purely
