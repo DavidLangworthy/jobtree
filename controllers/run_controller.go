@@ -194,21 +194,58 @@ func (c *RunController) Reconcile(namespace, name string) error {
 		return nil
 	}
 
-	if open := openLeaseCountForRun(c.State.Leases, key); run.Status.Phase != RunPhaseFailed && open > 0 {
-		// Same half-applied-admission adoption as in activateReservation,
-		// reachable from any watch event (lease creates included), so the
-		// wedge heals without waiting for an activation tick. Failed runs
-		// are excluded: adoption must not resurrect them (ruling
-		// 2026-07-02).
-		run.Status.Phase = RunPhaseRunning
-		run.Status.Message = fmt.Sprintf("adopted %d open leases from an earlier admission", open)
-		c.releasePendingReservations(run, now)
-		run.Status.PendingReservation = nil
-		run.Status.EarliestStart = nil
-		run.Status.Width = summarizeRunWidth(run, c.State.Leases)
-		run.Status.Funding = summarizeRunFunding(run, ev)
-		result = "adopted"
-		return nil
+	// Adopt the plugin's leases — but only at the run's full active width (R2).
+	// Same half-applied-admission adoption as in activateReservation, reachable
+	// from any watch event (lease creates included), so the wedge heals without
+	// waiting for an activation tick. Terminal runs are excluded: adoption must
+	// not resurrect them (ruling 2026-07-02).
+	if run.Status.Phase != RunPhaseFailed && run.Status.Phase != RunPhaseComplete {
+		allocated := activeGPUsForRun(key, c.State.Leases)
+		expected := expectedActiveGPUs(run)
+		switch {
+		case allocated > 0 && allocated >= expected:
+			run.Status.Phase = RunPhaseRunning
+			run.Status.Message = fmt.Sprintf("adopted %d GPUs of open leases from an earlier admission", allocated)
+			c.releasePendingReservations(run, now)
+			run.Status.PendingReservation = nil
+			run.Status.EarliestStart = nil
+			// Whole again: the node-failure checkpoint grace no longer applies
+			// (activateReservation's adoption already clears it).
+			run.Status.CheckpointDeadline = nil
+			run.Status.Width = summarizeRunWidth(run, c.State.Leases)
+			run.Status.Funding = summarizeRunFunding(run, ev)
+			result = "adopted"
+			return nil
+		case allocated > 0:
+			// A partial gang has NOT started. "Start together or not at all"
+			// (docs/index.md): reporting Running here would hide N−1 containers
+			// charging budget behind a healthy phase, and every consumer that
+			// keys off Phase — runGangComplete, the elastic loop, the CLI —
+			// would read it as whole. Stay pre-Running, re-emit whatever pods
+			// went missing, and wait; this block re-runs on the next lease
+			// create and adopts the moment the last slice lands.
+			//
+			// Returning early is load-bearing: falling through to admission
+			// would re-plan the run against a snapshot its own leases already
+			// occupy, reporting them as a deficit and evicting other runs to
+			// cover capacity it is holding.
+			created := c.topUpActiveGang(run)
+			run.Status.Phase = RunPhasePending
+			run.Status.Message = fmt.Sprintf("assembling gang: %d/%d GPUs held (awaiting the jobtree scheduler)", allocated, expected)
+			run.Status.Width = summarizeRunWidth(run, c.State.Leases)
+			if run.Status.Width != nil {
+				run.Status.Width.Pending = fmt.Sprintf("Assemble to %d", expected)
+			}
+			run.Status.Funding = summarizeRunFunding(run, ev)
+			if created > 0 {
+				c.emit(run, EventTypeWarning, "GangIncomplete", run.Status.Message)
+			}
+			result = "assembling"
+			return nil
+		}
+		// allocated == 0: nothing active is running. A run whose only open lease
+		// is a leftover Spare falls through here rather than flipping Running on
+		// held standby capacity that does no work.
 	}
 
 	// A promised activation's pods are already out, pre-authorized (R3): its
@@ -763,12 +800,32 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 		return nil
 	}
 
-	if open := openLeaseCountForRun(c.State.Leases, runKey); open > 0 {
+	if allocated := activeGPUsForRun(runKey, c.State.Leases); allocated > 0 {
 		// Open leases for a run that never reached Running mean an earlier
 		// evaluation materialized them but its run-status write was lost
 		// (the bridge's apply is not atomic — R28). Finish that activation
 		// instead of planning again against the run's own capacity, which
 		// would report the run's own leases as a deficit forever.
+		expected := expectedActiveGPUs(run)
+		if allocated < expected {
+			// Half-applied and still short of the gang's width (R2): top the
+			// missing members back up and HOLD the reservation. Releasing it now
+			// would hand the reserved capacity to another run while this one is
+			// still assembling onto it. The run's own adoption path releases the
+			// reservation once the last lease lands.
+			created := c.topUpActiveGang(run)
+			run.Status.Phase = RunPhasePending
+			run.Status.Message = fmt.Sprintf("assembling gang: %d/%d GPUs held (awaiting the jobtree scheduler)", allocated, expected)
+			run.Status.Width = summarizeRunWidth(run, c.State.Leases)
+			if run.Status.Width != nil {
+				run.Status.Width.Pending = fmt.Sprintf("Assemble to %d", expected)
+			}
+			run.Status.Funding = summarizeRunFunding(run, c.evaluate(now))
+			if created > 0 {
+				c.emit(run, EventTypeWarning, "GangIncomplete", run.Status.Message)
+			}
+			return nil
+		}
 		activated := v1.NewTime(now)
 		reservation.Status.State = "Released"
 		reservation.Status.Reason = "Activated"
@@ -777,7 +834,7 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 		reservation.Status.CountdownSeconds = nil
 		metrics.ClearReservationBacklog(key)
 		run.Status.Phase = RunPhaseRunning
-		run.Status.Message = fmt.Sprintf("adopted %d open leases from an earlier activation", open)
+		run.Status.Message = fmt.Sprintf("adopted %d GPUs of open leases from an earlier activation", allocated)
 		run.Status.PendingReservation = nil
 		run.Status.EarliestStart = nil
 		run.Status.CheckpointDeadline = nil
@@ -1630,6 +1687,16 @@ func flattenSpareNodes(plan pack.Plan) []string {
 	return nodes
 }
 
+// cohortPodName is the deterministic name of a cohort's i-th Active intent pod.
+// The base gang ("0") carries no cohort marker, so its pods keep the original
+// name shape.
+func cohortPodName(run *v1.Run, cohort string, i int) string {
+	if cohort == "0" {
+		return fmt.Sprintf("%s-active-%d", run.Name, i)
+	}
+	return fmt.Sprintf("%s-c%s-active-%d", run.Name, cohort, i)
+}
+
 // emitCohortPods tops up one cohort of a run to `count` uniform, unscheduled
 // Active intent pods (gpusPerPod each) for the scheduler plugin to place and
 // fund. Cohort "0" is the base gang; each elastic-grow step uses "1","2",… so
@@ -1637,27 +1704,35 @@ func flattenSpareNodes(plan pack.Plan) []string {
 // cohort; returns how many pods it created this pass. extra (may be nil) adds
 // per-pod annotations beyond the standard set — the Promise path uses it to
 // carry the payer provenance (R3).
+//
+// Presence is keyed by pod NAME, not by a count of surviving pods: R2's gang
+// top-up re-emits a member that went missing from the MIDDLE of the cohort, and
+// a count-based scan would then rebuild the wrong index (creating a duplicate of
+// the last pod while the missing one never returns).
 func (c *RunController) emitCohortPods(run *v1.Run, advisory []string, gpusPerPod, count int, cohort, reason string, extra map[string]string) int {
 	if gpusPerPod <= 0 || count <= 0 {
 		return 0
 	}
-	existing := 0
+	present := make(map[string]bool, count)
 	for i := range c.State.Pods {
 		p := &c.State.Pods[i]
 		if p.Namespace == run.Namespace && p.Labels[binder.LabelRunName] == run.Name &&
 			p.Labels[binder.LabelRunRole] == binder.RoleActive && podCohort(p) == cohort {
-			existing++
+			present[p.Name] = true
 		}
 	}
 	countStr := strconv.Itoa(count)
 	created := 0
-	for i := existing; i < count; i++ {
+	for i := 0; i < count; i++ {
+		name := cohortPodName(run, cohort, i)
+		if present[name] {
+			continue
+		}
 		node := ""
 		if len(advisory) > 0 {
 			node = advisory[i%len(advisory)]
 		}
 		created++
-		name := fmt.Sprintf("%s-active-%d", run.Name, i)
 		annotations := map[string]string{
 			binder.AnnotationExpectedWidth: countStr,
 			binder.AnnotationLeaseReason:   reason,
@@ -1666,7 +1741,6 @@ func (c *RunController) emitCohortPods(run *v1.Run, advisory []string, gpusPerPo
 			annotations[k] = v
 		}
 		if cohort != "0" {
-			name = fmt.Sprintf("%s-c%s-active-%d", run.Name, cohort, i)
 			annotations[binder.AnnotationCohort] = cohort
 		}
 		c.State.Pods = append(c.State.Pods, binder.PodManifest{
@@ -1683,6 +1757,77 @@ func (c *RunController) emitCohortPods(run *v1.Run, advisory []string, gpusPerPo
 		})
 	}
 	return created
+}
+
+// expectedActiveGPUs is the active width, in GPUs, that the run's base intent
+// gang was emitted at. CRD validation pins Width×GPUsPerPod == TotalGPUs for a
+// roled run, so this is TotalGPUs either way — but it is derived from the same
+// shape emitCohortPods emits, so the two can never drift.
+func expectedActiveGPUs(run *v1.Run) int {
+	gpusPerPod, width := intentPodShape(run)
+	return gpusPerPod * width
+}
+
+// gangProvenance recovers the lease-reason and payer annotations the run's base
+// gang was emitted under, so a topped-up member is minted on the same terms as
+// its siblings. A Promise gang (R3) is pre-authorized and skips the plugin's
+// funding gate: re-emitting one of its members as a plain "Start" pod would send
+// it into a gate that is expected to refuse it, wedging the run for good.
+//
+// A surviving sibling pod is the authority; if every pod is gone, the open
+// leases the plugin already minted carry the same provenance durably.
+func (c *RunController) gangProvenance(run *v1.Run) (string, map[string]string) {
+	payer := func(owner, budget, envelope string) map[string]string {
+		if owner == "" || budget == "" || envelope == "" {
+			return nil
+		}
+		return map[string]string{
+			binder.AnnotationPayerOwner:    owner,
+			binder.AnnotationPayerBudget:   budget,
+			binder.AnnotationPayerEnvelope: envelope,
+		}
+	}
+	for i := range c.State.Pods {
+		p := &c.State.Pods[i]
+		if p.Namespace != run.Namespace || p.Labels[binder.LabelRunName] != run.Name {
+			continue
+		}
+		if p.Labels[binder.LabelRunRole] != binder.RoleActive || podCohort(p) != "0" {
+			continue
+		}
+		if p.Annotations[binder.AnnotationLeaseReason] == binder.LeaseReasonPromise {
+			return binder.LeaseReasonPromise, payer(
+				p.Annotations[binder.AnnotationPayerOwner],
+				p.Annotations[binder.AnnotationPayerBudget],
+				p.Annotations[binder.AnnotationPayerEnvelope],
+			)
+		}
+	}
+	runKey := keys.NamespacedKey(run.Namespace, run.Name)
+	for i := range c.State.Leases {
+		lease := &c.State.Leases[i]
+		if lease.Status.Closed || lease.Spec.Slice.Role == binder.RoleSpare {
+			continue
+		}
+		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
+			continue
+		}
+		if lease.Spec.Reason == binder.LeaseReasonPromise {
+			return binder.LeaseReasonPromise, payer(lease.Spec.Owner, lease.Spec.PaidByBudget, lease.Spec.PaidByEnvelope)
+		}
+	}
+	return "Start", nil
+}
+
+// topUpActiveGang re-creates whichever of the base gang's Active intent pods have
+// gone missing, on the same terms the gang was emitted under. Idempotent: it
+// creates nothing when every member's pod object is still present (the common
+// case — a member that is merely unbound still has its pod, and the plugin's
+// committed-count accounting re-admits it). Returns how many pods it created.
+func (c *RunController) topUpActiveGang(run *v1.Run) int {
+	gpusPerPod, width := intentPodShape(run)
+	reason, extra := c.gangProvenance(run)
+	return c.emitCohortPods(run, nil, gpusPerPod, width, "0", reason, extra)
 }
 
 // podCohort returns a pod manifest's cohort ("0" for the base gang).
