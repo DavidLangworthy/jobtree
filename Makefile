@@ -1,4 +1,4 @@
-.PHONY: verify fmt-check vet test-race golden-clean build-bins helm-assert krew-validate test envtest fmt generate manifests verify-generate spec-check spec-counterexamples helm-lint cli-build cli-test antifake kind-up kind-down e2e-image e2e
+.PHONY: verify fmt-check vet test-race golden-clean build-bins helm-assert krew-validate test envtest fmt generate manifests verify-generate spec-check spec-counterexamples helm-lint cli-build cli-test antifake kind-up kind-down e2e-build e2e-load e2e-image e2e
 
 # ---------------------------------------------------------------------------
 # `make verify` is THE gate. CI runs exactly this target and nothing else, so a
@@ -116,14 +116,29 @@ kind-up:
 kind-down:
 	hack/e2e/kind-down.sh
 
-e2e-image:
+# e2e-build and e2e-load are split so CI can run `kind-up` CONCURRENTLY with the
+# image build (the cluster is only needed to LOAD). `make e2e-image` keeps the
+# old, sequential meaning for local use.
+#
+# DOCKER_BUILD is overridable so CI can substitute `docker buildx build` with a
+# registry-backed layer cache without this target and CI drifting apart.
+DOCKER_BUILD ?= docker build
+
+e2e-build:
 	@set -a; . hack/e2e/versions.env; set +a; \
-	echo "Building $$E2E_IMAGE"; \
-	docker build -t "$$E2E_IMAGE" .; \
-	echo "Building $$E2E_SCHEDULER_IMAGE"; \
-	docker build -f Dockerfile.scheduler -t "$$E2E_SCHEDULER_IMAGE" .; \
+	set -e; \
+	echo "Building $$E2E_IMAGE (target manager)"; \
+	$(DOCKER_BUILD) --target manager -t "$$E2E_IMAGE" .; \
+	echo "Building $$E2E_SCHEDULER_IMAGE (target scheduler)"; \
+	$(DOCKER_BUILD) --target scheduler -t "$$E2E_SCHEDULER_IMAGE" .
+
+e2e-load:
+	@set -a; . hack/e2e/versions.env; set +a; \
+	set -e; \
 	kind load docker-image "$$E2E_IMAGE" --name "$$KIND_CLUSTER_NAME"; \
 	kind load docker-image "$$E2E_SCHEDULER_IMAGE" --name "$$KIND_CLUSTER_NAME"
+
+e2e-image: e2e-build e2e-load
 
 e2e:
 	hack/e2e/run-e2e.sh
