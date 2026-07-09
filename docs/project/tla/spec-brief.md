@@ -6,6 +6,24 @@ active edit for task #50 while this was researched; citations into that file nam
 rather than trusting line numbers to hold). This document tells you what to build, what not
 to build, and why — it contains no TLA+.*
 
+> **Reading this on `main`?** The brief is landed ahead of the work it describes, so that the
+> engineer writing the spec is not blocked on a code review. Three artifacts it cites are still
+> in flight on [PR #80](https://github.com/DavidLangworthy/jobtree/pull/80) and
+> [PR #79](https://github.com/DavidLangworthy/jobtree/pull/79):
+>
+> | Cited as | Where it is today |
+> |---|---|
+> | `pkg/invariant` — the four shipped invariants and, crucially for §5, the four **rejected** ones | PR #80 |
+> | `docs/project/adversarial-review-playbook.md` — the nine-class defect taxonomy | PR #79 |
+> | `docs/project/history-run-phase-writers.md` — one field, seven consecutive defects | PR #80 |
+> | `docs/project/reviews/2026-07-09-…/` — the review that confirmed specimen 7 | PR #80 |
+>
+> §5 (*the invariants that must NOT be written*) is the section that most depends on `pkg/invariant`'s
+> package doc. Read that PR before writing §5's witness configs. Everything else stands alone.
+>
+> Already on `main` and safe to read now: [`../formal-verification-survey.md`](../formal-verification-survey.md)
+> and the three existing specs under [`specs/`](../../../specs/).
+
 ## Where this sits
 
 Two pieces of prior art precede this brief, and it is downstream of both.
