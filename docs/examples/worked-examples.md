@@ -129,15 +129,26 @@ Unallocated root headroom: 16.
 
 ### Timeline
 
-- **T0 — Admit `J1`.** 4 spare Leases (discounted debit) accompany active ranks.
-- **T1 — Opportunistic fill.** `J2` places 4 shards (8 GPUs) on spares (`role=Borrowed`).
-- **T2 — Failure.** Node under `J1` fails → reclaim spares:
-  - end `J2` shards with `reason=ReclaimedBySpare`
-  - start `J1` active Leases on those spare nodes
-  - cordon failed node
-  - controller reports `group 0 swapped to spare after node failure`; spare lease closes with `reason=Swap`
+- **T0 — Admit `J1`.** 4 spare Leases accompany the active ranks, held live as real
+  pods. They are charged at the full rate; a spare you hold is a spare you pay for.
+- **T1 — Opportunistic fill.** `J2` places 4 shards (8 GPUs). Its leases are ordinary
+  `Active` leases; what makes them opportunistic is that they derive the funding class
+  `Unfunded` — nobody's envelope covers them. There is no `Borrowed` role.
+- **T2 — Failure.** A node under `J1` is **fenced** — deleted, or tainted
+  `node.kubernetes.io/out-of-service`. A `kubectl cordon` would do nothing here: it
+  means "place nothing new", not "the work here is dead", and swapping on a cordon
+  would leave two live copies of the same rank.
+  - `J2`'s shards hold the exact `node#ordinal` slots the swap needs, and derive
+    `Unfunded`, so they are reclaimed: `status.closureReason=ReclaimedBySpare`.
+    Had they derived a funded class, jobtree would have **declined the swap** instead
+    of evicting them.
+  - `J1`'s spare lease closes with `status.closureReason=Swap`, and the plugin mints a
+    new lease with `spec.reason=Swap` on the spare's node, carrying the spare's funding
+    provenance.
+  - The controller reports `group 0 swapping to spare after node node-X failure`.
 
-Training continues without resharding; ledger shows deterministic Start/End/Swap ordering.
+Training continues without resharding; the ledger shows a deterministic Start/End/Swap
+ordering.
 
 ---
 

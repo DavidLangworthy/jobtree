@@ -8,7 +8,7 @@ Kubernetes-native gang scheduling for **job forests** that need to honor **time-
   (`spec.roles[].template`) and request real `nvidia.com/gpu`. The **jobtree scheduler
   plugin** — a kube-scheduler-framework plugin (`schedulerName: jobtree`) — places every pod
   and is the sole committer of GPU funding: it mints the pod's Lease at bind time.
-- **Budget-aware orchestration** – Tracks spend commitments for labs, projects, and teams, ensuring scheduled work stays inside each budget window.
+- **Budget-aware orchestration** – Tracks spend commitments for labs, projects, and teams. A Budget is not a gate that blocks work: it is what *funds* work. Every running GPU is classified — `owned`, `shared`, `borrowed`, or `unfunded` — and the class is derived from the leases and the clock, never stored. Work nobody's envelope covers still runs, as `unfunded`, and is the first thing reclaimed when a funded run needs the capacity.
 - **Gang scheduling with dependencies** – A *run* is a set of pods that start together or not at all; runs chain into workflows with `follow` (start after the runs it follows complete), and are funded by a hierarchy of budgets.
 - **Smart packing and borrowing** – Packs workloads onto heterogeneous clusters, supports short-term borrowing across orgs, and gracefully shrinks elastic runs when pressure rises.
 - **Fast starts and reservations** – The scheduler plugin binds and funds work the moment it's feasible; forecasted Reservations keep long queues predictable when it isn't.
