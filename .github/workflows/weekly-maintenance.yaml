@@ -1,0 +1,91 @@
+name: weekly maintenance
+
+# The Tuesday fix-up. Runs on GitHub's infrastructure, so it does not depend on
+# anyone's laptop being on, and it does not expire.
+#
+# It exists so that dependency hygiene costs one review sitting per week instead
+# of a stream of notifications. It abides by the rules in
+# docs/project/weekly-maintenance.md, of which the load-bearing ones are:
+#
+#   * FAIL CLOSED. The gate is `make verify` -- the same single definition CI
+#     uses. If it fails, nothing is merged and this run goes red.
+#   * NEVER auto-merge a Go module bump. It can change funding behaviour, and the
+#     golden oracle captures class widths and lenders, not GPU-hour floats: green
+#     is not the same as correct. Those get a `needs-human` label.
+#   * ALWAYS report, even when everything is green. A week with no comment means
+#     the workflow did not run, and that must be visible. Silence is not consent.
+
+on:
+  schedule:
+    # Tuesdays, 13:17 UTC. Deliberately off the hour: every repo that asks for
+    # "Tuesday" gets `0 13`, and they all land on the API at the same instant.
+    - cron: '17 13 * * 2'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: weekly-maintenance
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: gate
+    runs-on: ubuntu-latest
+    outputs:
+      flakes: ${{ steps.flake.outputs.failures }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+      - name: Cache envtest binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/kubebuilder-envtest
+          key: envtest-${{ runner.os }}-1.36.2
+
+      # The single definition of the gate. Not a bespoke list of checks that
+      # could drift from what a developer runs.
+      - name: make verify
+        run: make verify
+
+      # A flake probe, not a gate. envtest has a known intermittent failure
+      # (task #36: a stale node-failure reconcile can close a healthy node's
+      # leases). Run it three more times and count, so a real regression is
+      # distinguishable from that flake instead of being explained away as one.
+      - name: envtest flake probe (3x)
+        id: flake
+        if: always()
+        run: |
+          set +e
+          fails=0
+          for i in 1 2 3; do
+            if ! make envtest > "/tmp/envtest-$i.log" 2>&1; then
+              fails=$((fails + 1))
+              echo "--- envtest run $i FAILED (tail) ---"
+              tail -30 "/tmp/envtest-$i.log"
+            fi
+          done
+          echo "failures=$fails" >> "$GITHUB_OUTPUT"
+          if [ "$fails" -gt 0 ]; then
+            echo "::warning::envtest failed ${fails}/3 probe runs (see task #36)"
+          fi
+
+  triage:
+    name: triage and report
+    needs: gate
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Merge what is safe, hold what is not, and say so
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_RESULT: ${{ needs.gate.result }}
+          ENVTEST_FLAKES: ${{ needs.gate.outputs.flakes }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: .github/scripts/weekly-maintenance.sh
