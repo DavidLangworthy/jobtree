@@ -324,6 +324,46 @@ func (b *Bridge) apply(ctx context.Context, snap *worldSnapshot) error {
 // signal. Everything else in the template (image, command, env, volumes) is the
 // researcher's, preserved verbatim. A Roles-less legacy Run gets a real
 // terminating default container instead of the old pause mannequin.
+//
+// # THE ROLE→POD MAPPING CONTRACT
+//
+// jobtree owns its pods. JobSet was evaluated as the substrate and rejected: it
+// cannot express the spare swap (a rank moves to a pre-funded slot on another
+// node, preserving funding provenance) or delta-funded elastic width (funding
+// needs a distinct admission unit per delta, which resizing parallelism cannot
+// express). See docs/project/remediation/R9-jobset-amendment.md. We keep JobSet's
+// SHAPE as a reference contract so researcher workloads behave as if it were the
+// substrate, and this function is where that contract is honoured. It was carried
+// here verbatim from pkg/lowering, which is now deleted (R9 phase 9A-0); the
+// seam it described never existed, and a skeleton that returns ErrNotImplemented
+// is a claim, not a contract.
+//
+// Each RunRole becomes one cohort of pods:
+//
+//   - pod count      = role.Width (the gang)
+//   - pod template   = deep copy of role.Template, with only these overlaid:
+//   - spec.schedulerName  = "jobtree"     (the plugin places and funds it)
+//   - spec.nodeName       left UNSET       (never pin; the plugin binds)
+//   - spec.restartPolicy  = Never          (Succeeded is the gang signal)
+//   - labels: LabelRunName / LabelGroupIndex / LabelRunRole merged in
+//     (see pkg/binder); researcher labels preserved
+//   - resources.limits["nvidia.com/gpu"] == requests == role.GPUsPerPod, on
+//     the GPU-target container (v1.GPUTargetContainerName, else index 0)
+//
+// Not yet honoured, and deliberately not claimed anywhere a user can read:
+//
+//   - stable rendezvous identity (headless Service, hostname/subdomain, and a
+//     swap pod inheriting the replaced member's ordinal) — R9 phase 9A-1
+//   - rendezvous env (MASTER_ADDR via that DNS name, MASTER_PORT, WORLD_SIZE,
+//     NNODES, NODE_RANK), injected only when role.Width > 1; never RANK or
+//     LOCAL_RANK, which are per-process and torchrun's job — R9 phase 9A-2
+//   - the failure edge: JobSet's successPolicy{All}/failurePolicy become a
+//     per-role FailurePolicy, gang co-termination, and lease closure with
+//     reason WorkloadFailed, so a Failed pod is terminal rather than hanging
+//     the Run forever and charging its budget — R9 phase 9A-3 (absorbs R8)
+//
+// v1 admits exactly one role (webhook-validated), so today this renders a
+// single-role Run; multi-role RL gangs extend it additively.
 func buildPod(manifest binder.PodManifest, run *v1.Run) *corev1.Pod {
 	var spec corev1.PodSpec
 	targetIdx := 0

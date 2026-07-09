@@ -951,3 +951,38 @@ leases had been minted. Nothing corrects it, because a fencing taint is not
 transient — it outlives the failure it reports, until an operator removes it.
 
 One line, one test, mutation-tested.
+## R9 phase 9A-0 + R10 — retire the JobSet seam (2026-07-09)
+
+No behavior change. `make verify` green; the only code motion is a deleted package
+and comments, but the comments were the point: they described a system that does not
+exist.
+
+**`pkg/lowering` is deleted.** It had **zero Go importers** — a skeleton whose one
+function returned `ErrNotImplemented`, guarded by a TODO blocked on `JOBSET-3` and
+`JOBSET-4`, tasks that the R9 amendment retired. The package existed to hold a seam
+for a substrate we decided not to use. A skeleton that returns `ErrNotImplemented` is
+a claim, not a contract.
+
+**The mapping contract it carried is preserved**, moved onto the path that actually
+renders pods (`controllers/kube.buildPod`), and split honestly into two lists: what
+is honoured today (schedulerName, never pinning `nodeName`, `restartPolicy=Never`,
+gang labels, the `nvidia.com/gpu` request==limit on the GPU-target container), and
+what is not (stable rendezvous identity → 9A-1; rendezvous env → 9A-2; the failure
+edge → 9A-3). That is the JobSet shape kept as a reference contract, without the
+dependency.
+
+**R10 was larger than its one-line finding.** The audit named
+`api/v1/run_types.go:67` — a comment claiming `buildPod` overlays "rendezvous env",
+which it does not. Five more false claims sat next to it, all of them rendered into
+the **CRD's OpenAPI descriptions**, which means `kubectl explain run.spec.roles`
+was telling researchers that a role "lowers to a single JobSet ReplicatedJob" and
+that its width is "the JobSet parallelism/completions". None of that is true, and it
+is the sort of thing a user reads and believes.
+
+Fixed all six, regenerated the CRDs, and stated the negative explicitly where it
+matters: a role with `width > 1` **cannot form a process group yet**, and the comment
+now says so and names the phase that will fix it.
+
+`hack/e2e/versions.env` said installing JobSet was "Track B's prerequisite to add …
+once a Run actually lowers to a JobSet". It never will. The note now says the
+prerequisite is permanently retired, and why.

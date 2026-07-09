@@ -25,15 +25,20 @@ type RunSpec struct {
 	Owner     string       `json:"owner"`
 	Resources RunResources `json:"resources"`
 	// Roles is the researcher's real workload: one homogeneous pod pool per
-	// role, each lowering to a single JobSet ReplicatedJob (see pkg/lowering
-	// and Option C in docs/project/borrow-vs-build.md). v1 admits exactly one
-	// role; the field is a list so heterogeneous multi-role Runs (RL
-	// gang-of-gangs: trainer/sampler/grader) land later as a purely additive,
-	// non-breaking change (borrow-vs-build.md §2.2, growth path Option A).
+	// role, materialized directly as a cohort of pods that the jobtree
+	// scheduler plugin binds and funds. JobSet was evaluated as the substrate
+	// and rejected — it cannot express the spare swap or delta-funded elastic
+	// width (docs/project/remediation/R9-jobset-amendment.md); we keep its
+	// shape as a reference contract and own the pods.
 	//
-	// Roles is optional during the JOBSET-1..JOBSET-9 transition: a Run with no
-	// role still follows the legacy pause-pod materialization path. It becomes
-	// the sole workload surface once the pause path is retired (JOBSET-9).
+	// v1 admits exactly one role; the field is a list so heterogeneous
+	// multi-role Runs (RL gang-of-gangs: trainer/sampler/grader) land later as
+	// a purely additive, non-breaking change (borrow-vs-build.md §2.2).
+	//
+	// Roles is optional: a Run with no role still materializes, but with a
+	// default terminating container rather than the researcher's workload. That
+	// legacy path exists for the engine's own tests and for Runs written before
+	// roles landed; it is not a workload surface anyone should target.
 	Roles     []RunRole        `json:"roles,omitempty"`
 	Locality  *RunLocality     `json:"locality,omitempty"`
 	Runtime   *RunRuntime      `json:"runtime,omitempty"`
@@ -44,29 +49,35 @@ type RunSpec struct {
 }
 
 // GPUTargetContainerName is the convention for the container that receives the
-// injected nvidia.com/gpu request/limit and the rendezvous env. A role's
-// template should name its workload container this; if none matches, the first
-// container is the target. Kept here (not in a controller package) so the
-// webhook validation and the lowering both agree on one definition.
+// injected nvidia.com/gpu request/limit — and, once R9 phase 9A-2 lands, the
+// rendezvous env. A role's template should name its workload container this; if
+// none matches, the first container is the target. Kept here (not in a
+// controller package) so the webhook validation and the pod-emit path agree on
+// one definition.
 const GPUTargetContainerName = "workload"
 
-// RunRole is one homogeneous pool of pods within a Run — the unit that lowers
-// to a single JobSet ReplicatedJob (roles → replicatedJobs). It carries the
-// per-role workload template plus the width/topology/spare knobs that were
-// previously spread across RunSpec, so a future multi-role Run can size each
-// role independently.
+// RunRole is one homogeneous pool of pods within a Run — the unit jobtree
+// materializes as a cohort of pods it owns. (JobSet calls the same shape a
+// ReplicatedJob; we keep the shape as a reference contract and not as a
+// dependency — see controllers/kube.buildPod.) It carries the per-role workload
+// template plus the width/topology/spare knobs that were previously spread
+// across RunSpec, so a future multi-role Run can size each role independently.
 type RunRole struct {
-	// Name identifies the role (e.g. "trainer"). It becomes the JobSet
-	// ReplicatedJob name and the gang-role label value, so it must be a
-	// non-empty DNS label.
+	// Name identifies the role (e.g. "trainer"). It becomes the gang-role label
+	// value and the pod-name prefix, so it must be a non-empty DNS label.
 	Name string `json:"name"`
 
 	// Template is the researcher's workload pod. jobtree deep-copies it per
 	// materialized slice and overlays only the scheduling-owned fields
-	// (schedulerName, nodeName is never set — Track A places it; the
-	// nvidia.com/gpu limit; gang labels; rendezvous env; restartPolicy=Never).
-	// Everything else — image, command, env, volumes, resources — is the
-	// researcher's and is preserved verbatim.
+	// (schedulerName; nodeName is never set — the plugin binds it; the
+	// nvidia.com/gpu limit; gang labels; restartPolicy=Never). Everything else
+	// — image, command, env, volumes, resources — is the researcher's and is
+	// preserved verbatim.
+	//
+	// Rendezvous env (MASTER_ADDR/MASTER_PORT/WORLD_SIZE/NNODES/NODE_RANK) is
+	// NOT injected yet: it lands with R9 phase 9A-2, and until then a role with
+	// width > 1 cannot form a process group. Saying otherwise here is what R10
+	// was raised to fix.
 	//
 	// The field is marked PreserveUnknownFields so controller-gen does NOT
 	// inline the (hundreds-of-KB) PodTemplateSpec OpenAPI schema into the CRD —
@@ -79,9 +90,9 @@ type RunRole struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	Template corev1.PodTemplateSpec `json:"template"`
 
-	// Width is the number of pods in this role's gang — the JobSet
-	// parallelism/completions. Must be positive. Width*GPUsPerPod must equal
-	// the Run's Resources.TotalGPUs in v1 (single role).
+	// Width is the number of pods in this role's gang: all of them run, or none
+	// does. Must be positive. Width*GPUsPerPod must equal the Run's
+	// Resources.TotalGPUs in v1 (single role).
 	Width int32 `json:"width"`
 
 	// GPUsPerPod is the nvidia.com/gpu request (== limit, extended resources
@@ -101,8 +112,8 @@ type RunRole struct {
 // GPUTargetContainerIndex returns the index of the container that receives the
 // injected nvidia.com/gpu request: the one named GPUTargetContainerName by
 // convention, otherwise the first container. Returns -1 when the template has
-// no containers. The webhook and the lowering both use this so a template can
-// never silently produce a zero-GPU pod.
+// no containers. The webhook and the pod-emit path both use this so a template
+// can never silently produce a zero-GPU pod.
 func (r *RunRole) GPUTargetContainerIndex() int {
 	containers := r.Template.Spec.Containers
 	if len(containers) == 0 {
