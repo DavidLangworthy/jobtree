@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26.x'
+          go-version: '1.26.5'
 
       # BuildKit with a cross-run layer cache. The image build was 210s of a
       # 307s job: two Dockerfiles each re-downloaded the modules and recompiled
@@ -56,7 +56,27 @@ jobs:
       # The cluster is needed only to LOAD the images, so stand it up WHILE they
       # build. `wait` propagates kind-up's exit status, so a broken cluster still
       # fails the job rather than surfacing later as a confusing load error.
-      - name: kind-up and image build (concurrent)
+      #
+      # ON PULL REQUESTS we compile on the runner, where setup-go has ALREADY
+      # restored the Go build cache, and wrap the binaries in the same distroless
+      # base (Dockerfile.fast). The production Dockerfile's golang stage cannot see
+      # that cache, and its ~180s compile is ~97% vendored deps that never change.
+      # `make verify` runs build-flags-agree, which fails if the two paths could
+      # produce different binaries (same flags, same pinned Go toolchain).
+      - name: kind-up and image build (concurrent, prebuilt binaries)
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          make kind-up & kind_pid=$!
+          make e2e-build-fast
+          wait "$kind_pid"
+
+      # ON PUSH TO MAIN we build the real Dockerfile end to end. Today e2e is the
+      # ONLY thing that ever builds it (release.yaml builds no images — that is
+      # R15), so this path must not be dropped: a Dockerfile break has to fail
+      # something.
+      - name: kind-up and image build (concurrent, production Dockerfile)
+        if: github.event_name != 'pull_request'
         env:
           DOCKER_BUILD: >-
             docker buildx build --load

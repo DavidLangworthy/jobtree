@@ -1,4 +1,4 @@
-.PHONY: verify fmt-check vet test-race golden-clean build-bins helm-assert krew-validate test envtest fmt generate manifests verify-generate spec-check spec-counterexamples helm-lint cli-build cli-test antifake kind-up kind-down e2e-build e2e-load e2e-image e2e
+.PHONY: verify fmt-check vet test-race golden-clean build-bins helm-assert krew-validate test envtest fmt generate manifests verify-generate spec-check spec-counterexamples helm-lint cli-build cli-test antifake kind-up kind-down e2e-build e2e-load e2e-image e2e-bins e2e-build-fast build-flags-agree e2e
 
 # ---------------------------------------------------------------------------
 # `make verify` is THE gate. CI runs exactly this target and nothing else, so a
@@ -10,7 +10,7 @@
 # (no KUBEBUILDER_ASSETS), so a sweep that looked green never ran the
 # integration tests at all. A gate you can't run before pushing is a gate that
 # catches things too late; a gate CI doesn't run is not a gate.
-verify: fmt-check vet verify-generate antifake test-race envtest golden-clean build-bins helm-lint helm-assert krew-validate
+verify: fmt-check vet verify-generate antifake test-race envtest golden-clean build-bins helm-lint helm-assert krew-validate build-flags-agree
 	@echo "== make verify: all gates passed"
 
 fmt-check:
@@ -47,7 +47,18 @@ helm-assert:
 
 krew-validate:
 	hack/ci/krew-validate.sh
+
+# The PR-time e2e image wraps binaries built here rather than inside the
+# Dockerfile's golang stage. That is only honest if both compile identically.
+build-flags-agree:
+	hack/ci/assert-build-flags.sh
 # ---------------------------------------------------------------------------
+
+# The one definition of how the shipped binaries are built. The Dockerfile must
+# use the same flags; `make build-flags-agree` (part of `verify`) enforces it.
+GO_BUILD_ENV := CGO_ENABLED=0 GOOS=linux
+GO_LDFLAGS := -s -w
+GO_BUILD_FLAGS := -trimpath -ldflags="$(GO_LDFLAGS)"
 
 # Regenerate deepcopy functions from the API types.
 generate:
@@ -139,6 +150,25 @@ e2e-load:
 	kind load docker-image "$$E2E_SCHEDULER_IMAGE" --name "$$KIND_CLUSTER_NAME"
 
 e2e-image: e2e-build e2e-load
+
+# --- the fast path (PR-time e2e) ------------------------------------------
+# Compile on THIS machine, where the Go build cache lives, then wrap the binaries
+# in the same distroless base. The Dockerfile's golang stage cannot see that
+# cache, and its ~180s compile is ~97% vendored deps that never change: with a
+# warm cache, touching pkg/funding/evaluate.go rebuilds the scheduler in 4.3s.
+# `make verify` runs build-flags-agree so the binary is the one we ship.
+e2e-bins:
+	@mkdir -p bin
+	$(GO_BUILD_ENV) go build $(GO_BUILD_FLAGS) -o bin/manager ./cmd/manager
+	$(GO_BUILD_ENV) go build $(GO_BUILD_FLAGS) -o bin/scheduler ./cmd/scheduler
+
+# Context is ./bin, so the repo-root .dockerignore (which excludes bin) does not
+# apply and the context is two files instead of the whole tree.
+e2e-build-fast: e2e-bins
+	@set -a; . hack/e2e/versions.env; set +a; \
+	set -e; \
+	docker build -f Dockerfile.fast --target manager   -t "$$E2E_IMAGE"           ./bin; \
+	docker build -f Dockerfile.fast --target scheduler -t "$$E2E_SCHEDULER_IMAGE" ./bin
 
 e2e:
 	hack/e2e/run-e2e.sh

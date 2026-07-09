@@ -18,7 +18,7 @@
 # Multi-stage: build with the full Go toolchain, ship static binaries on a
 # distroless base with no shell — matches the "no wildcard RBAC / minimal attack
 # surface" discipline the rest of the chart already holds to (R22).
-FROM golang:1.26 AS build
+FROM golang:1.26.5 AS build
 WORKDIR /src
 
 COPY go.mod go.sum ./

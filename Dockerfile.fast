@@ -1,0 +1,33 @@
+# PR-time e2e images: wrap ALREADY-BUILT binaries in the same distroless base the
+# production Dockerfile ships. Build context is ./bin, not the repo root.
+#
+# WHY THIS EXISTS. The production Dockerfile compiles inside `golang:1.26`, where
+# the runner's Go build cache cannot reach it. That compile is ~180s in CI — and
+# it is ~97% vendored dependencies that never change: with a warm cache, touching
+# `pkg/funding/evaluate.go` rebuilds the scheduler in 4.3s and the manager in 2.0s.
+# Meanwhile `actions/setup-go` ALREADY restores that cache in the e2e job; it was
+# simply unusable from inside the container. So the e2e job now runs `go build` on
+# the runner (cache hit) and copies the binaries in here.
+#
+# WHAT THIS COSTS, STATED PLAINLY. On pull requests, e2e no longer exercises the
+# production Dockerfile's build path. Two things keep that honest:
+#   1. `make verify` runs hack/ci/assert-build-flags.sh, which fails if this
+#      image's binaries were not built with the exact flags the real Dockerfile
+#      uses. The binary is identical; only the machine that compiled it differs.
+#   2. e2e on `push: main` still builds the real Dockerfile end to end, and R15
+#      will add an image build to the release pipeline. Today e2e is the ONLY
+#      thing that builds it, which is why we do not drop that path entirely.
+#
+# Stage order mirrors Dockerfile: manager last, so a bare build yields the manager.
+
+FROM gcr.io/distroless/static-debian12:nonroot AS scheduler
+WORKDIR /
+COPY scheduler /scheduler
+USER 65532:65532
+ENTRYPOINT ["/scheduler"]
+
+FROM gcr.io/distroless/static-debian12:nonroot AS manager
+WORKDIR /
+COPY manager /manager
+USER 65532:65532
+ENTRYPOINT ["/manager"]
