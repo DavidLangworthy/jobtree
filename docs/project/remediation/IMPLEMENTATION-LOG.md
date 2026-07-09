@@ -930,3 +930,24 @@ Each assertion is mutation-tested. The first attempt at the R16 check **passed
 against the bug**: it read `spec.selector` (which carries the same label key, to find
 pods) instead of `metadata.labels`, so it compared the selector with itself and was
 true no matter how broken the chart was. Caught only by trying to make it fail.
+
+---
+
+## Follow-up to R21: a fenced node was still capacity (2026-07-09)
+
+Found by reading, while diagnosing an unrelated CI failure. Shipped in PR #72; fixed
+before anyone ran it.
+
+`nodeFailed` (has something asserted this machine is dead?) and `nodeUsable` (may we
+place work here?) are deliberately different questions. But a fence answers both, and
+`nodeUsable` only ever looked at `spec.unschedulable` and the Ready condition. So a
+node tainted `node.kubernetes.io/out-of-service` whose last heartbeat still said
+`Ready=True` stayed in the capacity pool.
+
+The consequence is a funding error, not just a scheduling one. The engine would admit
+a run against those GPUs and **charge its budget**, the `NoExecute` taint would stop
+anything from actually running there, and the next node event would close whatever
+leases had been minted. Nothing corrects it, because a fencing taint is not
+transient — it outlives the failure it reports, until an operator removes it.
+
+One line, one test, mutation-tested.
