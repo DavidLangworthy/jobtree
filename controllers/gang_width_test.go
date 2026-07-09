@@ -244,6 +244,56 @@ func TestSwapLeasesCountTowardGangWidth(t *testing.T) {
 	}
 }
 
+// A MALLEABLE run may legitimately run anywhere in [Min, Max] — quota-semantics'
+// demote-not-kill. A malleable run that lost a group to node failure is parked
+// Pending with a checkpoint deadline while it still holds a valid width; holding
+// it to TotalGPUs would leave it "assembling" until the grace expired and then
+// TERMINALLY FAIL a run that was happily continuing at reduced width.
+func TestMalleableRunAdoptsAtMinWidth(t *testing.T) {
+	now := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
+	state := gangWidthState()
+	run := state.Runs["default/gang"]
+	run.Spec.Malleable = &v1.RunMalleability{MinTotalGPUs: 2, MaxTotalGPUs: 4, StepGPUs: 1}
+	// Node failure took two of the four slices; two remain, at the minimum width.
+	for i := 0; i < 2; i++ {
+		state.Leases = append(state.Leases, memberLease(i, binder.RoleActive, "Start", now))
+	}
+	deadline := v1.NewTime(now.Add(time.Hour))
+	run.Status.CheckpointDeadline = &deadline
+
+	controller := NewRunController(state, runClock{now: now})
+	if err := controller.Reconcile("default", "gang"); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	if run.Status.Phase != RunPhaseRunning {
+		t.Fatalf("a malleable run at its minimum width is running, not broken: %s (%s)", run.Status.Phase, run.Status.Message)
+	}
+	if run.Status.CheckpointDeadline != nil {
+		t.Errorf("the run recovered to a runnable width; the node-failure grace must not still be counting down")
+	}
+}
+
+// ...but below its minimum a malleable run is a broken gang like any other.
+func TestMalleableRunBelowMinDoesNotAdopt(t *testing.T) {
+	now := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
+	state := gangWidthState()
+	run := state.Runs["default/gang"]
+	run.Spec.Malleable = &v1.RunMalleability{MinTotalGPUs: 3, MaxTotalGPUs: 4, StepGPUs: 1}
+	state.Leases = append(state.Leases, memberLease(0, binder.RoleActive, "Start", now))
+	state.Leases = append(state.Leases, memberLease(1, binder.RoleActive, "Start", now))
+
+	controller := NewRunController(state, runClock{now: now})
+	if err := controller.Reconcile("default", "gang"); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	if run.Status.Phase == RunPhaseRunning {
+		t.Fatalf("2 GPUs is below the run's 3-GPU minimum; it must not report Running: %s", run.Status.Message)
+	}
+	if !strings.Contains(run.Status.Message, "assembling gang: 2/3") {
+		t.Errorf("the deficit must be named against the minimum runnable width, got %q", run.Status.Message)
+	}
+}
+
 // The top-up keys presence by pod NAME. A member lost from the MIDDLE of the
 // cohort must come back as itself; a count-based scan would instead rebuild the
 // last index, duplicating one pod while the missing one never returns.

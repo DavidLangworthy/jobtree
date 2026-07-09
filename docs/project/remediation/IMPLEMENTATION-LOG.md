@@ -101,6 +101,30 @@ Judgment calls:
   *do* count: each stands in for a real base-gang member. Regressions:
   `TestReconcileDoesNotAdoptOnGrowLeasesAlone`, `TestSwapLeasesCountTowardGangWidth`.
   `activeGPUsForRun` stays on the resolver path, which *should* see total width.
+- **Adversarial review caught a real regression I introduced: malleable runs were
+  being killed at their checkpoint grace.** Gating adoption on `expectedActiveGPUs`
+  (= `TotalGPUs`) is right for a fixed-width gang and *wrong* for a malleable run,
+  which may legitimately run anywhere in `[MinTotalGPUs, MaxTotalGPUs]` —
+  quota-semantics' **demote-not-kill**. Scenario: a malleable run (Min 4, Total 8,
+  `checkpoint: 10m`) loses a node with no spare; `HandleNodeFailure` parks it
+  `Pending` with a `CheckpointDeadline` while it still holds 6 GPUs. Pre-fix, the
+  `open > 0` gate adopted it straight back to `Running` and the elastic loop regrew
+  it. Post-fix it sat in the partial branch (6 < 8) until the grace expired and
+  `failRun` (`:161`) **terminally failed a run that was running fine at a valid
+  width**. Fixed with `minRunnableGPUs(run)`: `Malleable.MinTotalGPUs` when set,
+  else the full emitted width. Regressions: `TestMalleableRunAdoptsAtMinWidth`
+  (verified to FAIL against the `TotalGPUs` gate) and
+  `TestMalleableRunBelowMinDoesNotAdopt`. The partial-branch message now names the
+  deficit against the *runnable* width (`"assembling gang: 2/3"`), not the emitted
+  one.
+- **Process note: one review lens failed silently and its "green" was worthless.**
+  It returned `summary: "test"` with a finding titled `"a"` and scenario `"b"` —
+  pure schema-filling — and three skeptics then earnestly refuted the placeholder.
+  The panel looked unanimous because a member never showed up. The malleable-run
+  regression above is exactly what that lens was assigned to find, and it surfaced
+  only on a re-run with an explicit output contract plus a degenerate-output
+  detector in the workflow. **Never read an agent panel's consensus without
+  checking that every agent actually produced work.**
 - **Known, tracked, NOT fixed here: `runGangComplete` is width-blind** (`:460-481`).
   It requires only that every *existing* active pod has Succeeded, with no
   comparison against expected width, so a run with fewer pod objects than its true

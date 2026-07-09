@@ -201,7 +201,7 @@ func (c *RunController) Reconcile(namespace, name string) error {
 	// not resurrect them (ruling 2026-07-02).
 	if run.Status.Phase != RunPhaseFailed && run.Status.Phase != RunPhaseComplete {
 		allocated := baseGangGPUsForRun(key, c.State.Leases)
-		expected := expectedActiveGPUs(run)
+		expected := minRunnableGPUs(run)
 		switch {
 		case allocated > 0 && allocated >= expected:
 			run.Status.Phase = RunPhaseRunning
@@ -806,7 +806,7 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 		// (the bridge's apply is not atomic — R28). Finish that activation
 		// instead of planning again against the run's own capacity, which
 		// would report the run's own leases as a deficit forever.
-		expected := expectedActiveGPUs(run)
+		expected := minRunnableGPUs(run)
 		if allocated < expected {
 			// Half-applied and still short of the gang's width (R2): top the
 			// missing members back up and HOLD the reservation. Releasing it now
@@ -1766,6 +1766,23 @@ func (c *RunController) emitCohortPods(run *v1.Run, advisory []string, gpusPerPo
 func expectedActiveGPUs(run *v1.Run) int {
 	gpusPerPod, width := intentPodShape(run)
 	return gpusPerPod * width
+}
+
+// minRunnableGPUs is the smallest active width at which the run is a real,
+// running gang rather than a half-assembled one.
+//
+// A fixed-width run must hold all of it: "start together or not at all". A
+// MALLEABLE run may legitimately run anywhere in [MinTotalGPUs, MaxTotalGPUs] —
+// that is quota-semantics' demote-not-kill — so a malleable run that shrank to a
+// width at or above its minimum is running, not broken, and the elastic loop
+// grows it back. Holding malleable runs to TotalGPUs here would terminally fail
+// (via the node-failure checkpoint grace) a run that merely lost a group and was
+// happily continuing at reduced width.
+func minRunnableGPUs(run *v1.Run) int {
+	if run.Spec.Malleable != nil && run.Spec.Malleable.MinTotalGPUs > 0 {
+		return int(run.Spec.Malleable.MinTotalGPUs)
+	}
+	return expectedActiveGPUs(run)
 }
 
 // baseGangGPUsForRun is the run's BASE-gang active width: open, non-spare leases
