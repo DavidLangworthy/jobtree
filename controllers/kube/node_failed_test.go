@@ -130,3 +130,35 @@ func TestCordonStillRemovesTheNodeFromCapacity(t *testing.T) {
 		t.Errorf("bridge.load must keep excluding a cordoned node's GPUs from capacity")
 	}
 }
+
+// A fenced node's GPUs do not exist, whatever its Ready condition still says.
+//
+// `nodeFailed` and `nodeUsable` answer different questions, but a fence answers
+// both. Counting a fenced node's GPUs let the engine admit and CHARGE a run for
+// capacity on a machine jobtree had just declared dead: the ledger says the GPUs
+// are there, the NoExecute taint says nothing may run on them, and the next node
+// event closes whatever was minted. A fencing taint is not transient — it outlives
+// the failure it reports — so nothing corrects this on its own.
+func TestFencedNodeIsNotCapacity(t *testing.T) {
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+
+	// The dangerous shape: the kubelet's last heartbeat still says Ready, and an
+	// operator has fenced the machine.
+	fenced := fence(nodeWithReady(corev1.ConditionTrue, now.Add(-time.Hour)))
+	if !nodeFailed(fenced) {
+		t.Fatalf("setup: an out-of-service node is fenced")
+	}
+	if nodeUsable(fenced) {
+		t.Errorf("a fenced node's GPUs must leave the capacity pool; otherwise a run is charged for capacity that cannot run it")
+	}
+
+	// A NotReady node is NOT usable either — but for the ordinary reason, and
+	// without being treated as failed.
+	notReady := nodeWithReady(corev1.ConditionUnknown, now.Add(-time.Hour))
+	if nodeUsable(notReady) {
+		t.Errorf("a NotReady node is not schedulable")
+	}
+	if nodeFailed(notReady) {
+		t.Errorf("...but it is still not failed: only a fencing assertion is")
+	}
+}

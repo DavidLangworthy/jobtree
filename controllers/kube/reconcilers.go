@@ -443,8 +443,20 @@ func nodeFailed(node *corev1.Node) bool {
 	return false
 }
 
+// nodeUsable reports whether a node's GPUs may be counted as capacity and placed
+// on. It is about SCHEDULABILITY, which is a different question from nodeFailed's
+// (has something asserted the machine is dead) — but a fenced node answers both.
 func nodeUsable(node *corev1.Node) bool {
 	if node.Spec.Unschedulable {
+		return false
+	}
+	// A fenced node's GPUs do not exist. Leaving them in the pool let the engine
+	// admit and CHARGE a run for capacity on a machine jobtree had just declared
+	// dead and closed the leases of: the ledger says the GPUs are there, the
+	// NoExecute taint says nothing may run on them, and the next node event closes
+	// whatever was minted. The fencing taint outlives the failure it reports, so
+	// this is not self-correcting.
+	if nodeFailed(node) {
 		return false
 	}
 	for _, cond := range node.Status.Conditions {
