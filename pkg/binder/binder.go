@@ -75,6 +75,12 @@ const (
 	// evaluation then classes the lease — typically Unfunded, re-funded by
 	// arithmetic when quota returns (quota-semantics.md, R14 demote-not-kill).
 	LeaseReasonPromise = "Promise"
+	// LeaseReasonGrow marks a lease minted for an elastic-grow cohort — width the
+	// run added ON TOP OF its base gang. It is the only durable way to tell a grow
+	// lease from a base-gang one (a Lease records no cohort), so the controller's
+	// adopt-at-width check must exclude it: grow width can otherwise stand in for
+	// missing base-gang width and adopt a run whose gang never assembled (R2).
+	LeaseReasonGrow = "Grow"
 	// AnnotationRunNonce carries a per-incarnation identifier of the owning Run
 	// (its UID) into the Lease name the plugin mints. Pod names are deterministic,
 	// so without it a delete+resubmit of a same-named Run would have PreBind's

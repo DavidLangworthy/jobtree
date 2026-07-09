@@ -8,8 +8,10 @@
 >   (`committedCount`) so a transient-failure partial gang re-assembles instead of
 >   wedging; ABA lease-name nonce (`run-nonce`) so delete+resubmit mints a fresh
 >   open lease. Plugin-side, fully unit-tested.
-> - ⏳ **Part 2 (piece 3, next):** controller adopts at correct width (Degraded +
->   re-emit missing) instead of flipping Running on any open lease.
+> - ✅ **Part 2 (piece 3, merged):** controller adopts only at the full active
+>   width; a partial gang stays pre-Running, re-emits its missing members, and
+>   adopts when the last lease lands. Spare leases no longer count as "started".
+>   (The spec's "Running + Degraded" was overruled — see the amendment in step 3.)
 > - ⏳ **Part 3 / R2b (piece 2, follow-up):** full scheduler-restart reconstruction
 >   from open leases + delta re-funding of un-minted survivors. Part 1's
 >   committed-count is in-memory and does NOT survive a process restart, so a
@@ -73,9 +75,25 @@ the controller's adoption, and give the gang a recovery path instead of a wedge.
 3. **Controller adopts at correct width.** In the adoption path
    (`run_controller.go:197-212`), compare open leases (or minted active pods) to
    the run's expected active width (`intentPodShape`). If `open < expected`, do
-   **not** report healthy Running: set Running but with a `Degraded` condition/
-   message and re-emit the missing active pods (reuse `emitCohortPods`' top-up so
-   only absent pod objects are created). If `open == expected`, adopt as today.
+   **not** report healthy Running, and re-emit the missing active pods (reuse
+   `emitCohortPods`' top-up so only absent pod objects are created). If
+   `open == expected`, adopt as today.
+
+   > **Amended during implementation (2026-07-08; see IMPLEMENTATION-LOG.md).**
+   > This step originally read *"set Running but with a `Degraded`
+   > condition/message"*. That contradicts this spec's own invariant below
+   > (healthy-Running **iff** full width), and `RunStatus` has no `Conditions`
+   > array (R11 adds one), so "Degraded" could only ever be free-text — while
+   > every control-path consumer keys off `Phase`. A `Degraded`-Running run is
+   > byte-for-byte indistinguishable from a healthy one to `runGangComplete`
+   > (which would **complete** the partial gang), to `reconcileElasticRun`, and
+   > to the CLI. **Implemented instead:** a partial gang stays pre-Running
+   > (`Pending`) with the deficit in `Status.Message` and `Status.Width.Pending`,
+   > a `GangIncomplete` warning event, an idempotent top-up, and an early return
+   > (no admission, no reservation, no resolver eviction). `Status.Width.Allocated`
+   > and `Status.Funding` already report the capacity actually held and what it
+   > charges, so `Pending` hides nothing. Convergence is free: the adoption block
+   > re-runs on every watch event while the run is not Running.
 4. **Kill the ABA.** PreBind must treat `IsAlreadyExists` as success **only** if
    the existing lease is *open and owned by this gang*; if it is closed/foreign,
    mint under a fresh name. Simplest robust fix: include a per-incarnation nonce

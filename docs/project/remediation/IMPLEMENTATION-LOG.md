@@ -26,6 +26,119 @@ The README compose note lists R5/R6 first. I moved the two P0 correctness bugs
 
 ## Decisions (chronological)
 
+### R2 part 2 — adopt-at-width IMPLEMENTED; the spec's "Running + Degraded" OVERRULED (2026-07-08)
+The controller flipped a Run to `Running` on **any** open lease
+(`openLeaseCountForRun(...) > 0`, at *two* sites: `Reconcile` and
+`activateReservation`), and that count included Spare, Swap, Promise and
+grow-cohort leases indiscriminately. So an N-wide run holding N−1 slices reported
+healthy Running while N−1 containers charged budget forever — and a run whose only
+open lease was a leftover **Spare** (held standby capacity that does no work) also
+reported Running. Now both sites compare `activeGPUsForRun` (GPU-sum of open,
+non-spare leases) against `expectedActiveGPUs` (`intentPodShape`'s
+`gpusPerPod × width`, which CRD validation pins to `TotalGPUs`).
+
+Judgment calls:
+- **OVERRULED the spec's decision item 3** ("set Running but with a `Degraded`
+  condition/message"). It contradicts the **same spec's invariant** — "a run is
+  reported healthy-Running **iff** it holds open leases for its full active
+  width" — and when a doc's decision prose fights its own invariant, the
+  invariant wins, because the invariant is the operator-facing promise. Three
+  independent judges (honesty / blast-radius / liveness lenses) reached this
+  unanimously. Concretely: `RunStatus` has **no `Conditions` array** (R11 adds
+  one), so "Degraded" could only be free text, while every control-path consumer
+  keys off `Phase`. A Degraded-Running run is indistinguishable from a healthy one
+  to `runGangComplete` (`:140`, which would then **complete a partial gang**), to
+  `reconcileElasticRun` (`:185`), to the resolver, and to the CLI — reintroducing
+  the exact width-blindness the fix removes.
+- **Implemented instead: a partial gang never enters Running.** It stays `Pending`
+  with `Status.Message` = `"assembling gang: k/N GPUs held"`, `Status.Width.Pending`
+  = `"Assemble to N"` (the same channel `reconcileElasticRun` already uses to signal
+  in-flight convergence), and a `GangIncomplete` warning event emitted only when a
+  pod is actually created (no event storm). `Pending` hides nothing: `Width.Allocated`
+  reports the GPUs actually held and `Status.Funding` reports what they charge, and
+  both are already written on this path. Convergence is free — the adoption block
+  re-runs on every watch event while the run is not Running, so the run adopts the
+  instant the last lease lands, with nothing added to the Running path (which has
+  *legitimate* partial-width states: the resolver's demote-not-kill shrink at
+  `:1345`, and the elastic grow/shrink loop).
+- **The partial branch returns early.** Falling through to admission would re-plan
+  the run against a snapshot its own leases already occupy, report them as a
+  deficit, and evict other runs to cover capacity it is already holding (the R28
+  double-count the adoption block exists to prevent). At `activateReservation` the
+  partial branch additionally **holds** the reservation — releasing it would hand
+  the reserved capacity to another run mid-assembly.
+- **`emitCohortPods` was count-based, not name-based** — a latent bug the top-up
+  would have hit immediately. It counted surviving pods and created indices from
+  that count, so a member lost from the *middle* of a cohort (`0,1,3` present)
+  would rebuild index `3` (a duplicate) while index `2` never returned. Now keyed
+  by pod name. Regression: `TestTopUpRecreatesTheMissingMember`.
+- **The top-up must preserve gang provenance.** A Promise gang (R3) is
+  pre-authorized and *skips* the plugin's funding gate — which is expected to
+  refuse it until quota returns. Re-emitting one of its members as a plain `Start`
+  pod would send it into that gate and wedge the run for good. `gangProvenance`
+  recovers the reason + payer triple from a surviving sibling pod, or, if every pod
+  is gone, from the open leases — the durable record. Regression:
+  `TestTopUpPreservesPromiseProvenance`.
+- **Full-width adoption now clears `CheckpointDeadline`** in `Reconcile`, matching
+  what `activateReservation`'s adoption already did: capacity is whole again, so
+  the node-failure grace no longer applies. The *partial* branch deliberately does
+  **not** clear it — that deadline is what bounds how long a broken run may sit
+  assembling before it fails.
+- **Adversarial review caught a false-Running the width check itself could be
+  spoofed by: elastic-GROW leases.** `activeGPUsForRun` sums every open non-spare
+  lease, but grow leases are width added *on top of* the base gang, while
+  `expectedActiveGPUs` is the base width. A malleable run that grew, then lost all
+  its base nodes to failure, keeps its grow leases open — `allocated (4 grow) >=
+  expected (4 base)` — so it adopts to `Running` holding **zero** base-gang GPUs,
+  and (because full-width adoption clears it) loses the `CheckpointDeadline` that
+  was supposed to bound its recovery. The pre-fix `open > 0` gate had the same
+  hole, so three skeptics refuted the finding as "not introduced here" — correct,
+  but shipping a width check a grow cohort can spoof would have missed the point of
+  the fix. **Fixed:** adoption now uses `baseGangGPUsForRun`, which additionally
+  skips `Spec.Reason == "Grow"`. A Lease records **no cohort**, so `Spec.Reason` is
+  the only durable signal separating grow width from base width — the same missing
+  lease identity that blocks pt3's restart reconstruction. Swap and Promise leases
+  *do* count: each stands in for a real base-gang member. Regressions:
+  `TestReconcileDoesNotAdoptOnGrowLeasesAlone`, `TestSwapLeasesCountTowardGangWidth`.
+  `activeGPUsForRun` stays on the resolver path, which *should* see total width.
+- **Adversarial review caught a real regression I introduced: malleable runs were
+  being killed at their checkpoint grace.** Gating adoption on `expectedActiveGPUs`
+  (= `TotalGPUs`) is right for a fixed-width gang and *wrong* for a malleable run,
+  which may legitimately run anywhere in `[MinTotalGPUs, MaxTotalGPUs]` —
+  quota-semantics' **demote-not-kill**. Scenario: a malleable run (Min 4, Total 8,
+  `checkpoint: 10m`) loses a node with no spare; `HandleNodeFailure` parks it
+  `Pending` with a `CheckpointDeadline` while it still holds 6 GPUs. Pre-fix, the
+  `open > 0` gate adopted it straight back to `Running` and the elastic loop regrew
+  it. Post-fix it sat in the partial branch (6 < 8) until the grace expired and
+  `failRun` (`:161`) **terminally failed a run that was running fine at a valid
+  width**. Fixed with `minRunnableGPUs(run)`: `Malleable.MinTotalGPUs` when set,
+  else the full emitted width. Regressions: `TestMalleableRunAdoptsAtMinWidth`
+  (verified to FAIL against the `TotalGPUs` gate) and
+  `TestMalleableRunBelowMinDoesNotAdopt`. The partial-branch message now names the
+  deficit against the *runnable* width (`"assembling gang: 2/3"`), not the emitted
+  one.
+- **Process note: one review lens failed silently and its "green" was worthless.**
+  It returned `summary: "test"` with a finding titled `"a"` and scenario `"b"` —
+  pure schema-filling — and three skeptics then earnestly refuted the placeholder.
+  The panel looked unanimous because a member never showed up. The malleable-run
+  regression above is exactly what that lens was assigned to find, and it surfaced
+  only on a re-run with an explicit output contract plus a degenerate-output
+  detector in the workflow. **Never read an agent panel's consensus without
+  checking that every agent actually produced work.**
+- **Known, tracked, NOT fixed here: `runGangComplete` is width-blind** (`:460-481`).
+  It requires only that every *existing* active pod has Succeeded, with no
+  comparison against expected width, so a run with fewer pod objects than its true
+  width can be reported `Completed` at partial width. This is reachable
+  **independently of adoption** — the resolver's `applyResolution` closes a locality
+  group and removes its pods (`:1323-1335`) for any run, malleable or not. Option B
+  does not create partial-width Running states, so it neither causes nor worsens
+  this; but it is a real honesty bug of the same family and belongs with R8's
+  failure semantics.
+- **Not in scope: spare top-up.** `topUpActiveGang` refills Active members only.
+  `emitSparePods`' count-based scan is self-consistent today (a swap-consumed spare
+  decrements both `existing` and `count`), and spares do not gate the
+  start-together promise. Tracked with R25.
+
 ### R4 pt2a — ledger-compaction primitive IMPLEMENTED (2026-07-08)
 Design first (`R4-pt2-ledger-compaction.md`, merged #53), because the investigation
 showed the spec's option (a) is subtler than an input filter. Then landed the

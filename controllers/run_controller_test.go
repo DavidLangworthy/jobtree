@@ -980,7 +980,10 @@ func TestReconcileAdoptsHalfAppliedAdmission(t *testing.T) {
 	if run.Status.Phase != RunPhaseRunning {
 		t.Fatalf("expected adoption to Running, got %s (%s)", run.Status.Phase, run.Status.Message)
 	}
-	if !strings.Contains(run.Status.Message, "adopted 1 open leases") {
+	// The seeded lease is a single object covering the run's full 4-GPU width, so
+	// adoption reports the adopted GPU width (R2 adopts at width, not at lease
+	// count — one lease object may cover many GPUs).
+	if !strings.Contains(run.Status.Message, "adopted 4 GPUs") {
 		t.Errorf("unexpected message: %s", run.Status.Message)
 	}
 	if len(state.Leases) != 1 {
