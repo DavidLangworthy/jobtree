@@ -163,6 +163,14 @@ func getRun(t *testing.T, name string) *v1.Run {
 func waitForRunPhase(t *testing.T, name, phase string) *v1.Run {
 	t.Helper()
 	var run v1.Run
+	// A phase that never arrives says nothing about why. Dump the ledger on the way
+	// out, so the next occurrence of task #39 is evidence rather than a timeout.
+	reached := false
+	defer func() {
+		if !reached {
+			dumpRunLedger(t, name)
+		}
+	}()
 	eventually(t, 30*time.Second, func() error {
 		if err := kubeClient.Get(suiteCtx, types.NamespacedName{Namespace: "default", Name: name}, &run); err != nil {
 			return err
@@ -172,6 +180,7 @@ func waitForRunPhase(t *testing.T, name, phase string) *v1.Run {
 		}
 		return nil
 	})
+	reached = true
 	return &run
 }
 
@@ -297,6 +306,14 @@ func seedPluginLeases(t *testing.T, runName string) []v1.Lease {
 	if err != nil {
 		t.Fatalf("seedPluginLeases plan %s: %v", runName, err)
 	}
+	// Every caller uses this to drive a run to Running. Planning zero leases means
+	// no run will ever adopt, and the caller then waits out its whole timeout on a
+	// condition that can never become true — a 30s mystery instead of a failure
+	// with a name. Say it here, where the cause is still in hand.
+	if len(res.Leases) == 0 {
+		t.Fatalf("seedPluginLeases %s: planned ZERO leases from %d nodes, %d budgets — the run can never reach Running",
+			runName, len(nodes), len(budgetList.Items))
+	}
 	// Freshly planned leases carry no status, so a bare Create is faithful to
 	// the plugin's PreBind mint (an open lease).
 	for i := range res.Leases {
@@ -307,6 +324,45 @@ func seedPluginLeases(t *testing.T, runName string) []v1.Lease {
 		}
 	}
 	return res.Leases
+}
+
+// dumpRunLedger prints what a run actually holds. A phase assertion that times out
+// says only that the phase is wrong; the ledger says why. Task #39 cost a CI run
+// that reported "Pending" and nothing else.
+//
+// Nothing here may call t.Fatalf: this runs from a defer, after `eventually` has
+// already failed the test and started unwinding via runtime.Goexit. A second Goexit
+// from inside that unwind would replace the real failure with a confusing one.
+func dumpRunLedger(t *testing.T, runName string) {
+	t.Helper()
+
+	var leases v1.LeaseList
+	if err := kubeClient.List(suiteCtx, &leases, client.MatchingLabels{binder.LabelRunName: runName}); err != nil {
+		t.Logf("ledger for %s: cannot list leases: %v", runName, err)
+		return
+	}
+	t.Logf("ledger for %s: %d lease(s)", runName, len(leases.Items))
+	for _, l := range leases.Items {
+		t.Logf("  lease %-28s role=%-6s nodes=%v closed=%v reason=%q closureReason=%q",
+			l.Name, l.Spec.Slice.Role, l.Spec.Slice.Nodes, l.Status.Closed, l.Spec.Reason, l.Status.ClosureReason)
+	}
+
+	var pods corev1.PodList
+	if err := kubeClient.List(suiteCtx, &pods, client.MatchingLabels{binder.LabelRunName: runName}); err != nil {
+		t.Logf("  cannot list pods: %v", err)
+		return
+	}
+	for _, p := range pods.Items {
+		t.Logf("  pod   %-28s node=%-10q phase=%s", p.Name, p.Spec.NodeName, p.Status.Phase)
+	}
+
+	var nodes corev1.NodeList
+	if err := kubeClient.List(suiteCtx, &nodes); err == nil {
+		for i := range nodes.Items {
+			n := &nodes.Items[i]
+			t.Logf("  node  %-28s usable=%v failed=%v ready=%v", n.Name, nodeUsable(n), nodeFailed(n), nodeReady(n))
+		}
+	}
 }
 
 // assertIntentPod checks one UNSCHEDULED workload pod against the new
