@@ -8,7 +8,8 @@
 #     -> manager emits an Active intent pod AND a held RoleSpare intent pod
 #     -> plugin binds both and mints an Active lease (node X) + a RoleSpare lease
 #        (node Y) from the run's cover -> Running, spare HELD live
-#     -> cordon node X (the active node) => the manager's NodeReconciler runs
+#     -> cordon node X: assert NOTHING happens (a cordon is not a failure, R21)
+#     -> delete node X => the manager's NodeReconciler runs
 #        HandleNodeFailure: closes the active + spare leases, deletes the held
 #        spare pod on node Y, and emits a SWAP pod hard-targeted at node Y,
 #        stamped with the spare's funding provenance
@@ -153,8 +154,38 @@ want_owner="$(kubectl get leases.rq.davidlangworthy.io -n default \
 want_env="$(kubectl get leases.rq.davidlangworthy.io -n default \
   -o jsonpath='{range .items[?(@.spec.slice.role=="Spare")]}{.spec.paidByEnvelope}{"\n"}{end}' | head -1)"
 
-echo "==> failing the active node ($active_node): cordon => HandleNodeFailure => swap onto the spare"
+# NEITHER A CORDON NOR A NOTREADY KUBELET IS A FAILURE (R21). This script used to
+# cordon the active node and expect a swap -- which is the corruption: the original
+# pod keeps running on a cordoned node, so the swap starts a SECOND live copy of the
+# same rank. Only a FENCING assertion (the Node object deleted, or the
+# node.kubernetes.io/out-of-service taint) licenses moving a rank.
+assert_no_swap() {
+  sleep 10
+  if kubectl get leases.rq.davidlangworthy.io -n default \
+       -o jsonpath='{range .items[?(@.spec.reason=="Swap")]}{.metadata.name}{"\n"}{end}' | grep -q .; then
+    fail "$1 triggered a swap -- R21 has regressed, and two copies of a rank may now be live"
+  fi
+}
+
+echo "==> cordoning the active node ($active_node): this must NOT trigger a swap"
 kubectl cordon "$active_node" >/dev/null
+assert_no_swap "a bare cordon"
+echo "    ok: cordon changed nothing"
+
+# Make the kubelet stop reporting. Kubernetes will mark the node NotReady, then
+# (after tolerationSeconds) issue a GRACEFUL pod delete that the unreachable kubelet
+# never acts on -- the container keeps running. A swap here would duplicate the rank.
+echo "==> stopping the kubelet on $active_node: NotReady must NOT trigger a swap either"
+if docker exec "$active_node" systemctl stop kubelet >/dev/null 2>&1; then
+  kubectl wait --for=condition=Ready=false "node/$active_node" --timeout=120s >/dev/null
+  assert_no_swap "a NotReady node"
+  echo "    ok: NotReady changed nothing"
+else
+  echo "    skipped: could not stop the kubelet in this environment"
+fi
+
+echo "==> fencing the active node ($active_node): delete the Node => HandleNodeFailure => swap onto the spare"
+kubectl delete node "$active_node" --wait=false >/dev/null
 
 echo "==> waiting for the plugin to mint the Swap lease on $spare_node (from the spare's provenance)"
 swap_name=""
