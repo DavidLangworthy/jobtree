@@ -29,12 +29,36 @@ references (`aggregateCaps[].envelopes`) resolve within their own Budget and are
 validated against its declared envelope names. Leases written before `paidByBudget`
 existed fall back to owner+envelope attribution.
 
+## Funding classes
+
+Every GPU-second a Run consumes belongs to exactly one of **four** classes:
+
+| Class | Who paid |
+|---|---|
+| `Owned` | the run's own budget, within its own envelope |
+| `Shared` | a budget elsewhere in the run's family (the "family sharing" tier) |
+| `Borrowed` | a sponsor outside the family, via an envelope's `lending` policy |
+| `Unfunded` | nobody. The work runs opportunistically, and it is reclaimed first. |
+
+The class is **derived, never stored**. It is a function of the leases, the budgets, and
+the clock, recomputed on every evaluation — so a lease does not *become* borrowed, it *is*
+borrowed for exactly as long as the arithmetic says so. There is no `class` field on a
+Lease to set, and nothing to keep in sync.
+
+`Unfunded` is deliberate, not an error state. A Budget is not a gate that blocks work; it
+is what funds work. Unfunded work runs on capacity nobody paid for, and a funded run
+needing that capacity reclaims it.
+
+A **spare** spans the classes: it is charged at the full rate, and reported separately
+(`SpareWidth`, `SpareGPUs`), which is not the same as discounted.
+
 ## Metrics
 
-The controller records per-envelope usage snapshots—current concurrency, cumulative
-GPU-hours, and borrowed consumption. These values power dashboards and alerts for
-approaching concurrency or integral limits and provide inputs for future Prometheus
-exporters.
+The controller records per-envelope usage snapshots. `jobtree_budgets_concurrency_gpus`
+carries a `class` label — `owned`, `shared`, `borrowed`, `unfunded` — plus the spare-role
+width, so a dashboard can show who is paying for what right now, not just how much is
+running. Cumulative GPU-hours are recorded alongside. These power alerts for approaching
+concurrency or integral limits.
 
 ## Lending and ACLs
 

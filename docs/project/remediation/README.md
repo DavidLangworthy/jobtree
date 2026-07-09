@@ -77,7 +77,7 @@ mechanical, no design needed (implement straight from the audit — Opus/Sonnet)
 | [R21](R21-cordon-not-failure.md) | Cordon treated as node failure → destructive swap | ✅ **amended** | ✅ fencing, not a NotReady timer | ✅ |
 | [R22](R22-reclaim-slot-granularity.md) | Swap reclaim closes co-located runs (node granularity) | ✅ | ✅ slot-exact, funding-aware decline | ✅ |
 | [R23](R23-workload-observability.md) | No logs/pods/artifacts story | ✅ | ⏳ Opus | ⏳ Sonnet |
-| R24 | Doc-honesty leftovers (README/spares-and-fill/guide) + funding-model doc fixes (see below) | **mech** | 🟡 partial — see below | — |
+| R24 | Doc-honesty leftovers (README/spares-and-fill/guide) + funding-model doc fixes (see below) | **mech** | ✅ | — |
 
 **From the funding-model review** (`../funding-model-review.md`, 2026-07-08):
 
@@ -101,18 +101,15 @@ enum + role/class conflation (`Borrowed` as a role); `concepts/budgets.md` and
 `concepts/runs.md` pre-four-class models; add the explicit three-plane /
 quota-may-over-or-under-commit statement to fundamentals or quota-semantics.
 
-**R24 progress (2026-07-09).** Done: `concepts/leases.md` (the role/class conflation,
-the dead `Fail` and `RandomPreempt` mint reasons, `endTime`→`ended`, the two reason
-enums separated and each value checked against the code); `user-guide/spares-and-fill.md`
-(the `role=Borrowed` fake, the "discounted" spare); `examples/worked-examples.md` (same,
-plus "cordon failed node", which R21 made a no-op); `roadmap/design/M6` (banner naming
-both divergences); `concepts/runs.md` (two-class → four-class, derived-not-stored);
-`index.md` (budget-as-gate framing). `index.md`'s "sole committer" claim needed no
-change — it is true and already unhedged since R3.
-
-Still open: `concepts/budgets.md`'s pre-four-class model, and the explicit
-three-plane / quota-may-over-or-under-commit statement in fundamentals or
-quota-semantics.
+**R24 done (2026-07-09).** `concepts/leases.md` (the role/class conflation, the dead
+`Fail` and `RandomPreempt` mint reasons, `endTime`→`ended`, the two reason enums separated
+and every value checked against the code); `user-guide/spares-and-fill.md` (the
+`role=Borrowed` fake, the "discounted" spare); `examples/worked-examples.md` (same, plus
+"cordon failed node", which R21 made a no-op); `roadmap/design/M6` (banner naming both
+divergences); `concepts/runs.md` and `concepts/budgets.md` (two-class → four-class,
+derived-not-stored); `concepts/overview.md` (the three planes, and that quota may over- or
+under-commit the hardware); `index.md` (budget-as-gate framing). `index.md`'s "sole
+committer" claim needed no change — it is true and already unhedged since R3.
 
 ## How the pieces compose (read before implementing any single one)
 
