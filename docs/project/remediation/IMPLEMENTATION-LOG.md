@@ -801,3 +801,80 @@ un-minted survivors). Rarer than the transient-failure wedge that part 1 already
 fixes, and the most complex sub-part (needs cohort-labelled leases + delta
 re-funding). Left as a precise design note in the R2 spec for a later pass;
 part 1's in-memory committed-count does NOT survive a process restart.
+
+---
+
+## R21 + R22 + R25 + #36 — node failure (2026-07-09)
+
+Landed as one PR, because all four are bugs in `HandleNodeFailure` and its caller.
+Five judgment calls worth explaining.
+
+**1. The R21 spec's own premise was wrong, so the spec was amended.**
+It called a node failed when "deleted, or NotReady past a grace window (kubelet
+gone)". NotReady does not mean the kubelet is gone — it means the control plane
+cannot hear it, and a partitioned kubelet keeps its containers running. Kubernetes
+marks a node NotReady at 50s, then taint-eviction issues a *graceful* pod delete at
++300s that the unreachable kubelet never acts on. Implementing the spec literally (a
+2-minute grace) swapped a rank onto a spare **before Kubernetes had begun to evict**,
+while the original was almost certainly alive — reintroducing R21's own two-live-ranks
+corruption through a different door.
+
+`nodeFailed` now requires a **fencing assertion**: the Node object is gone, or it
+carries `node.kubernetes.io/out-of-service`. Both make Pod GC force-delete the pods.
+A NotReady node is logged and nothing else. The full argument, the upstream citations,
+and the peer comparison are in the [R21 amendment](R21-cordon-not-failure.md#amendment-notready-is-not-a-failure-signal-fencing-is).
+
+Cost: a dead on-prem node whose object is never deleted and never tainted stalls its
+run instead of losing data. In cloud the CCM deletes the object automatically. For a
+system whose worst outcome is two live copies of one rank, stalling is correct.
+
+Two things fall out for free: `nodeFailed` takes no clock, so the engine clock and the
+wall clock never meet; and it no longer trusts `LastTransitionTime`, which kubelets
+write themselves and a compromised one could backdate to manufacture a failure.
+
+**2. The adversarial review caught a high-severity defect I introduced.** Sixth
+consecutive catch on this path. Declining the swap (because a *funded* run held the
+spare's exact slots) closed the failed active lease but left the run's **own spare
+lease open forever** — charging its budget, keeping healthy GPUs marked occupied.
+Precisely the immortal-lease class R25 exists to kill. Nothing downstream closes a
+terminal run's leases. A judge reproduced it: twenty reconciles over twenty hours,
+still open, still deriving `Owned`.
+
+Worse, `node_failure_test.go` **asserted** it — "the spare must not be consumed" —
+which is how it would have shipped past a green suite. The assertion is inverted now,
+and the test names why.
+
+**3. `failRun`'s comment was an assertion nothing enforced.** It read "It never holds
+leases at this point, so there is nothing to close." A run parked in checkpoint grace
+still holds its other groups' leases on healthy nodes. Made true rather than deleted:
+`failRun` sweeps them, and `HandleNodeFailure` sweeps any run it drove to Failed —
+*after* the lease loop, so the outcome cannot depend on slice order.
+
+**4. Run phase was last-writer-wins (pre-existing).** Each group wrote
+`run.Status.Phase` directly, so the last group in `c.State.Leases` won: a run with one
+group swapping and another dead without coverage reported whichever came last. A run
+with a dead, uncovered rank could report `Running`. The review's judges found this,
+reproduced it against *both* old and new code, and correctly refuted it as a
+regression — it is not one. Fixed anyway (`runPhaseTracker` keeps the worst outcome);
+a status field that lies is exactly what this backlog exists to remove.
+
+**5. The test suite encoded the R21 bug as its own mechanism.** The envtest scenarios
+and `swap-smoke.sh` both triggered the swap by `kubectl cordon`. A green suite was
+proof the corruption worked. They now assert cordon *and* NotReady are no-ops, and
+fence the node to trigger the swap.
+
+Every fix is mutation-tested: reverting each one individually makes its test fail.
+
+**#36 is now closed, not narrowed.** A replayed NotReady event is no longer a failure
+at all, and a replayed delete is re-confirmed against the uncached `APIReader`. The
+weekly workflow's 3× envtest probe keeps measuring it.
+
+**Residual, owned by R26:** a node deleted while the manager is down produces no watch
+event, so its leases are not closed. No predicate can fix that; it is the ledger
+auditor's job. Noted in `SetupWithManager`.
+
+**Follow-up not taken:** when a multi-group run fails, `emitSwapPod` may already have
+emitted a swap pod for a group that swapped before a sibling group failed. The lease
+ledger is correct (the sweep closes everything), but the orphaned pod is cleaned up
+only when the Run object is deleted. Pod-lifecycle cleanup for terminal runs belongs
+with R8's pod watch, not here.
