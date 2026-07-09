@@ -7,9 +7,13 @@
 >   No dual-read window, no conversion webhook, no migration Job.
 >
 > Net effect: **~20–23 focused days → ~14–17.** The clean-break rule is a project-wide
-> policy, not an R13 detail, and it shrinks R4 pt2b and R2 pt3 as well. See
-> "Impact of the two decisions" below — including a real problem with Option A that
-> its spec predates.
+> policy, not an R13 detail, and it shrinks R4 pt2b and R2 pt3 as well.
+>
+> **R9's shape then changed under a Fable design pass** — see
+> [R9-jobset-amendment.md](R9-jobset-amendment.md). We borrow JobSet's *design*, not its
+> controller: a real JobSet would break R5's trust anchor (its pods are created by the
+> **batch Job controller**, not us) and force a permanent dual pod-creation path. The day
+> count is unchanged; the architecture is not.
 
 Written 2026-07-09, after R1, R3, R5, R6 landed complete and R2 (2 of 3 parts) and
 R4 (2 of 4 sub-parts) landed partial. Every item below is work that **must be
@@ -92,12 +96,15 @@ Land R7's keying change **before** R4 pt1b/pt2b and R13 — all three touch the 
 
 | Item | Size | Why | Blocked on |
 |---|---|---|---|
-| **R9 = Option A** (JobSet lowering) | **XL** (~6–8d) | **Decided.** Gets the headless Service, stable hostnames, rendezvous env, *and* failure/restart semantics; **retires R8 and the JOBSET track**. Phased 9A-0…9A-4 — see "Impact of the two decisions", which flags a real collision with CASCADE's per-pod swap/Promise provenance and with R5's VAP. | 9A-2 wants the failure-policy default |
-| ~~**R8** pod-failure zombie~~ | **absorbed** | Becomes **9A-2**: JobSet's `failurePolicy`. No longer separate work. | — |
+| **R9 = Option A**, amended | **~4–6d** | **Decided, then re-scoped** by [R9-jobset-amendment.md](R9-jobset-amendment.md): borrow JobSet's *design*, not its controller. Our controller stays the sole pod creator, so R5's trust anchor, the four CASCADE mint sites, and the clean-break rule all survive. Phased 9A-0…9A-4. **Cancels the JOBSET track's XL outright.** | — (all decisions in) |
+| **R8** pod-failure zombie | **absorbed into 9A-3**, at its own **L** | Item folded into R9; **cost not eliminated**. We build the failure edge ourselves — JobSet's `failurePolicy` is no longer doing it for us. | — |
 | **R10** false rendezvous comment | **XS** | Two comment blocks. Patch truthfully *now* ("not yet implemented, see R9") — do not wait for 9A to land. | — |
 
-**R9 was the schedule's critical path, and Option A shortens it.** Option B would
-have cost R9-B (**L**) + R8 (**L**) + the JOBSET track still owed (**XL**) ≈ 8 days.
+**R9 was the schedule's critical path, and the amended Option A shortens it.** Option B
+would have cost R9-B (**L**) + R8 (**L**) + the JOBSET track still owed (**XL**) ≈ 8 days.
+The amended plan is ≈ 4–6 and cancels the track. Note this is **not** a further speedup
+over the previous revision: the phases are the same shape (S + 2M + 2L). What changed is
+that the architecture is now compatible with what we have already shipped.
 
 ### P3 — Kubernetes conventions & API hardening
 
@@ -148,45 +155,77 @@ corruption, not a crash. It should go first among the unblocked items.
 
 ## Impact of the two decisions (2026-07-09)
 
-### R9 = Option A (finish the JobSet lowering)
+### R9 = Option A, **amended**: JobSet as reference, our own primitive
 
-This is the right call on the numbers. Option B would have cost R9-B (**L**) + R8
-(**L**) + the JOBSET track still owed later (**XL**) ≈ **8 days**. Option A does all
-three at once.
+> Superseded in detail by **[R9-jobset-amendment.md](R9-jobset-amendment.md)** (Fable,
+> 2026-07-09). Read that; this is the summary.
 
-**But the R9 spec predates CASCADE, and Option A collides with it.** CASCADE built
-grow, swap, spares, and Promise on *directly emitted, individually annotated* pods.
-A JobSet `ReplicatedJob` has **one** pod template. Concretely:
+David's decision stands — *finish the lowering* — but a Fable design pass changed what
+"lowering" means. **Do not borrow the `sigs.k8s.io/jobset` controller.** Borrow JobSet's
+*design* (roles→replicatedJobs, headless-service DNS, index-stable identity, rendezvous
+env names, failure-policy semantics) and keep jobtree's own controller as the sole
+creator of every pod. This is David's own recollection — *"JobSet as reference, implement
+our own primitive"* — which **no doc had recorded**, and which the code has been *de facto*
+building since the plugin cutover.
 
-| Today, per-pod | Fits a uniform JobSet template? |
-|---|---|
-| `lease-reason` = Start / Grow / **Swap** / Promise | Start/Promise yes (uniform per gang); Grow needs a new ReplicatedJob per cohort |
-| `payer-owner/budget/envelope` (swap + promise provenance) | Promise yes (one segment). **Swap: no** — each swap pod carries *its* spare's provenance |
-| `swap-node` + **required** nodeAffinity | **No.** A swap pod hard-targets one specific node |
-| `role` = Active / Spare | Yes — a second ReplicatedJob |
-| advisory nodeAffinity per pod | Degrades to per-template; acceptable (it is advisory) |
+Three structural reasons the real-controller borrow now fails, none of which existed when
+`borrow-vs-build.md` chose it:
 
-And a second interaction, with **R5's trust anchor**: the VAP makes `payer-*`,
-`lease-reason`, `cohort` and `schedulerName=jobtree` settable **only by the
-controller's ServiceAccount**. Under Option A the *JobSet controller* creates the
-pods, so `userInfo` is the JobSet controller's SA, and the policy would reject them.
-Allowing that SA widens the trust anchor and needs an explicit containment argument
-(creating a JobSet is itself RBAC-gated, and the template — not the pod — is what
-carries provenance).
+1. **The trust anchor does not survive, and widening it is a laundering hole.** JobSet
+   creates **Jobs**, not pods; the **batch Job controller** in kube-controller-manager
+   creates the pods. So the VAP's `isController` check
+   (`validating-admission-policy.yaml:50-51`) would have to trust an identity that stamps
+   out pods from *every tenant's Job templates*. Anyone with ordinary `create jobs.batch`
+   writes a Job whose template carries `payer-*` + `lease-reason=Swap`, and the trusted
+   controller creates the forged pod for them — **R5's cross-tenant charge, reopened with
+   one extra hop**. Containing it needs two more VAPs, a `--use-service-account-credentials`
+   assumption about kube-controller-manager, and giving up the rule that *one* SA creates
+   every jobtree pod. The plugin's `spareLeaseProvenanceValid` / `promiseProvenanceValid`
+   would be demoted from defense-in-depth to *the* boundary.
+2. **Immutable shared templates vs a per-pod, per-incident annotation contract.** A
+   `ReplicatedJob` has one template, frozen at creation. Swap, grow, and expected-width all
+   need annotations that differ per emission or per incident. Every workaround moves
+   information off the pod into plugin-side lookups — un-shipping the self-describing-pod
+   contract the plugin is built on.
+3. **It forces a *permanent* dual pod-creation path.** JobSet has no concept of a funded,
+   held, workload-less spare: a sleep-forever holder pod is not a Job that completes, and
+   would wreck `successPolicy{All}`. Spares, swap pods, and Promise gangs stay
+   controller-emitted **forever**, beside JobSet-created active pods — two creators, two
+   identity schemes, two security postures. That is not a migration window. It is exactly
+   what the clean-break policy forbids.
 
-**Therefore R9-A needs a short design pass before code**, and phases:
+**On swap, David was right and the doc was wrong.** `borrow-vs-build.md:118-120` claimed
+"JobSet FailurePolicy recreates a failed pod → jobtree's scheduler places the replacement
+onto a held spare slot." That was written for a *lookup-steered* swap. What shipped
+(CASCADE-3) is a **pod-carried** swap: `emitSwapPod` stamps the consumed spare's payer
+provenance and a required nodeAffinity onto one specific pod. A pod recreated from a
+shared, immutable Job template structurally cannot carry a per-incident payer triple. The
+docs record the opposite of his memory; **the code proves his memory right.** (And my own
+earlier framing of this as "a required node-affinity doesn't fit a uniform template" was
+the shallow version of the argument — the deep one is the trust anchor.)
 
-| Phase | What | Size |
+The one thing JobSet genuinely does better — a replacement pod keeps the failed member's
+completion index, i.e. **rank-stable replacement** — we copy, in 9A-1.
+
+**Re-phased (supersedes the phases in the previous revision):**
+
+| Phase | Content | Size |
 |---|---|---|
-| **9A-0** | Design: reconcile JobSet with CASCADE's per-pod provenance, and with R5's VAP. Decide whether **swap stays a directly-emitted pod** (an explicit, documented exception) or is modelled some other way. | **S** (design) |
-| **9A-1** | Base gang as a JobSet: `pkg/lowering` (drop `ErrNotImplemented`), headless Service + stable hostnames + rendezvous env for free, spares as a second ReplicatedJob, plugin gangs JobSet-created pods (`gangKey` from JobSet labels), install the JobSet controller in kind, RBAC, VAP allowance. | **L** |
-| **9A-2** | Failure policy through JobSet — **this is R8**, and it disappears as separate work. Still needs David's `Fail` vs `Retry(n)` default, now expressed as a JobSet `failurePolicy`. | **M** |
-| **9A-3** | Grow / swap / Promise reconciled with the JobSet path. The hard one. | **L** |
-| **9A-4** | Live proof: 2-node kind, real `torch.distributed` all-reduce to exit 0. | **M** |
+| **9A-0** | Ratify the amendment; delete `pkg/lowering`, retire JOBSET-3/4/5; move its mapping contract onto the emit-path docs; fix the false rendezvous comments (**this is R10**); correct `hack/e2e/versions.env`. No behavior change. | **S** |
+| **9A-1** | Stable rendezvous identity: per-run headless Service (Run ownerRef), `hostname`/`subdomain` on emitted pods, and the swap pod **inherits the replaced member's ordinal** instead of a `unixnano` name. Sole-committer path ⇒ adversarial review. | **M** |
+| **9A-2** | Rendezvous env when `width>1`: `MASTER_ADDR`/`MASTER_PORT`/`WORLD_SIZE`/`NNODES`/`NODE_RANK`; webhook rejects researcher-set reserved names; nothing injected at `width==1`. | **M** |
+| **9A-3** | The failure edge — **absorbs R8, to R8's own spec**: `RunRole.FailurePolicy`, PodFailed watch, `handleWorkloadFailure` closing leases `WorkloadFailed`, gang co-termination, follow unblock. CRD change + envtest + review. Coordinate its failure detector with the R21/R22/R25 bundle. | **L** |
+| **9A-4** | Live proof: `rendezvous-smoke.sh` (2-node kind, real `torch.distributed` all-reduce) and `failure-smoke.sh` (`exit 1` → Failed, leases closed — pre-R8 it hangs). Plus an R5 forgery re-verify with the rendezvous fields. | **L** |
 
-**R9-A total: XL, ~6–8 focused days** (vs the spec's implied 5, because 9A-0 and
-9A-3 are not in it). Still **~2–3 days cheaper than Option B**, and it retires R8
-and the JOBSET track outright.
+**≈ 4–6 focused days.** The **JOBSET track's XL is cancelled outright**, not deferred —
+along with the JobSet cluster prerequisite and the VAP rework a real borrow would have
+needed. **R8's item is absorbed; its cost is not.** My earlier "its size is 0 under Option
+A" assumed JobSet's `failurePolicy` did the work; we now build that edge ourselves, at R8's
+own **L**. Corrected below.
+
+A sequencing constraint falls out: **9A-1 defines the pod ordinal, and R2 pt3 must record
+it on the minted Lease.** Rank-stable replacement and scheduler-restart reconstruction want
+the same identity. Do 9A-1 before R2 pt3 starts, or design them together.
 
 ### R13 = clean break, and the rule generalizes
 
@@ -214,15 +253,17 @@ the *size* of other items rather than just their start date:
 - ✅ **R13: clean break** — hard rename, scheduled outage, no side-by-side. Also
   resolves R4 pt2b's persistence fork by policy.
 
-Three remain, and none of them blocks the highest-severity work:
+- ✅ **R8 / 9A-3: workload failure policy** — **per-role, default `Fail`**, with
+  `Retry(n, backoff)` and `Ignore` as opt-ins. (`Fail` matches real distributed
+  training: a lost rank hangs the collective, and the survivors keep charging the
+  budget.) We build this edge ourselves in 9A-3; it is *not* a JobSet `failurePolicy`.
+
+Two remain, and neither blocks the highest-severity work:
 
 1. **R7: is the tenant a namespace or an authenticated owner string?** Gates R7
    **pt2 only**; pt1 (namespacing the `EnvelopeKey`) proceeds regardless, and pt1 is
    the piece that must land before R4 pt2b and R13.
-2. **R8/9A-2: default failure policy** (`Fail` vs `Retry(n)`, per-role vs per-run).
-   Now expressed as a JobSet `failurePolicy`, so the decision is smaller — but it is
-   still needed before 9A-2.
-3. **R19: license** (Apache-2.0 vs MIT) and whether governance becomes real. Legal,
+2. **R19: license** (Apache-2.0 vs MIT) and whether governance becomes real. Legal,
    so start it early even though the code is trivial.
 
 One implicit decision still stands, and I will surface it rather than silently pick
@@ -263,8 +304,8 @@ adversarial verification on every funding-path change.
 | Bucket | Items | Days |
 |---|---|---|
 | XS + S | R10, R16, R17, R24, R15, R19, 9A-0 | **~1.5** |
-| M | R12, R14, R18, R20, R23, R13, 9A-2, 9A-4 | **~4** |
-| L | R2 pt3, R4 pt1b, R4 pt2b, R7 pt1, R11, R21+R22+R25 bundle, R26, 9A-1, 9A-3 | **~11** |
+| M | R12, R14, R18, R20, R23, R13, 9A-1, 9A-2 | **~4** |
+| L | R2 pt3, R4 pt1b, R4 pt2b, R7 pt1, R11, R21+R22+R25 bundle, R26, 9A-3, 9A-4 | **~11** |
 | XL | ROLES | **~3** |
 
 **≈ 14–17 focused days.** With Lane 3 (the mechanical items) running concurrently
@@ -272,8 +313,9 @@ on Sonnet, **≈ 11–13**.
 
 Where the ~6 days went:
 
-- **R9 = A**: R9-B (L) + R8 (L) + JOBSET (XL) ≈ 8 days → R9-A ≈ 6–8 days, and the
-  JOBSET track and R8 are both *retired*. Net **−2 to −3**, plus one fewer owed track.
+- **R9 = A (amended)**: R9-B (L) + R8 (L) + JOBSET (XL) ≈ 8 days → 9A-0…9A-4 ≈ 4–6 days.
+  The **JOBSET track's XL is cancelled**, not deferred. R8's *item* is absorbed as 9A-3;
+  its **L cost is not** — we build the failure edge rather than inheriting JobSet's.
 - **R13 = clean break**: R13 **L → M**, and it pairs with R14 in one pass. Net **−1**.
 - **The clean-break rule**, applied beyond R13: R4 pt2b's persistence fork resolves
   to Budget `status` (no dedicated object, no migration), and R2 pt3 may add lease

@@ -26,6 +26,81 @@ The README compose note lists R5/R6 first. I moved the two P0 correctness bugs
 
 ## Decisions (chronological)
 
+### David's ruling: workload failure policy (2026-07-09)
+**Per-role, default `Fail`; `Retry(n, backoff)` and `Ignore` opt-in.** David took the
+standing recommendation (`R8-pod-failure-handling.md:56-59`, rationale at :32-48).
+`Fail` matches real distributed training — a lost rank hangs the collective, and the
+surviving members keep charging the budget until someone notices.
+
+Implemented as **phase 9A-3** of the amended R9. Two consequences worth stating:
+- The item is absorbed into R9; **the cost is not.** We build the failure edge
+  ourselves, to R8's own spec — it is *not* inherited from a JobSet `failurePolicy`,
+  because no JobSet will own our pods.
+- R8's provision "design the handler so it is a no-op when a JobSet owns the pods"
+  (`R8-pod-failure-handling.md:53-54,79`) is **deleted**.
+
+Two owner decisions now remain on the whole board: **R7**'s tenant identity (gates R7
+pt2 only) and **R19**'s license. Neither blocks the highest-severity work, which is
+still the `HandleNodeFailure` bundle (R21/R22/R25 + the stale-node event).
+
+### R9 re-scoped by a Fable design pass: JobSet as reference, not as controller (2026-07-09)
+David, on reading my "Option A collides with CASCADE" note: *"Now I remember, losing
+swap was the cost of moving to JobSet. I think we decided to use JobSet as reference
+and implement our own primitive."* He asked whether there was new data Fable should
+weigh. There was. Fable's amendment: `R9-jobset-amendment.md`.
+
+**Verdict: borrow JobSet's design; do NOT borrow its controller.** Our controller
+stays the sole creator of every pod. Everything R9 Option A promised (rendezvous,
+stable identity, the failure edge, gang co-termination) is delivered on the emit path
+we already own.
+
+- **David's memory was right and the docs were wrong.** No "reference, own primitive"
+  decision was ever recorded — `borrow-vs-build.md:164-166` recorded the *opposite*
+  (borrow the real controller; fork it if lacking), and `pkg/lowering` encodes it
+  (JOBSET-3 vendors `sigs.k8s.io/jobset`). But on **swap** he is right and the doc is
+  wrong: `borrow-vs-build.md:118-120`'s "swap survives, the scheduler places the
+  recreated pod onto a held spare" was written for a *lookup-steered* swap. What
+  shipped (CASCADE-3) is a **pod-carried** swap — `emitSwapPod` stamps the consumed
+  spare's payer triple and a required nodeAffinity onto one specific pod. A pod
+  recreated from a shared, **immutable** Job template cannot carry a per-incident
+  payer triple. The docs record the opposite of his memory; the code proves his
+  memory right.
+- **The decisive argument is one I had only half-found.** I flagged "a required
+  node-affinity doesn't fit a uniform pod template." The deep version: **JobSet
+  creates Jobs, not pods.** The *batch Job controller* creates the pods, so the VAP's
+  `isController` check (`validating-admission-policy.yaml:50-51`) would have to trust
+  an identity that stamps out pods from **every tenant's Job templates**. Any user
+  with ordinary `create jobs.batch` writes a Job whose template carries `payer-*` +
+  `lease-reason=Swap`, and the trusted controller creates the forged pod for them —
+  **R5's cross-tenant charge, reopened with one extra hop.** Containing it needs two
+  more VAPs, a `--use-service-account-credentials` assumption about
+  kube-controller-manager, and abandoning the rule that *one* SA creates every jobtree
+  pod. `spareLeaseProvenanceValid`/`promiseProvenanceValid` would drop from
+  defense-in-depth to *the* boundary.
+- **And it would force a permanent dual pod-creation path.** JobSet has no funded,
+  held, workload-less spare: a sleep-forever holder pod is not a Job that completes,
+  and would wreck `successPolicy{All}`. Spares, swap pods, and Promise gangs stay
+  controller-emitted *forever*, beside JobSet-created active pods — two creators, two
+  identity schemes, two security postures. That is not a migration window; it is the
+  clean-break policy's clearest violation, and the rejected alternative was the one
+  violating it.
+- **Corrected accounting, against my own SIZING text.** R8's *item* is absorbed as
+  phase 9A-3; its **L cost is not eliminated** — "its size is 0 under Option A"
+  assumed JobSet's `failurePolicy` did the work, and now we build that edge to R8's
+  own spec. What *is* cancelled outright is the **JOBSET track's XL**, plus the JobSet
+  cluster prerequisite and the VAP rework a real borrow would have needed. Phases
+  9A-0 (S) → 9A-1 (M) → 9A-2 (M) → 9A-3 (L) → 9A-4 (L) ≈ **4–6 focused days**.
+- **`pkg/lowering` is deleted** in 9A-0 and JOBSET-3/4/5 retired; its documented
+  mapping contract survives as the emit-path spec. 9A-0 also fixes R10's false
+  rendezvous comments. One thing JobSet does genuinely better — a replacement pod
+  keeps the failed member's completion index (**rank-stable replacement**) — we copy
+  in 9A-1.
+- **Sequencing constraint:** 9A-1 defines the pod ordinal, and **R2 pt3 must record it
+  on the minted Lease**. Rank-stable replacement and scheduler-restart reconstruction
+  want the same identity. Do 9A-1 first, or design them together.
+- **One small ruling still owed:** 9A-3's default failure policy. Recommendation stands
+  — per-role, default `Fail`, with `Retry(n)`/`Ignore` opt-in.
+
 ### David's rulings: R9 = JobSet, and no side-by-side, ever (2026-07-09)
 - **R9 = Option A** — finish the JobSet lowering. It subsumes **R8** and retires the
   **JOBSET** track. Sizing consequence in `SIZING.md`: Option B would have cost
