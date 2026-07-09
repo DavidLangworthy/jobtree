@@ -14,7 +14,8 @@ agent should be able to pick one up cold, without re-deriving the design.
 - **Sonnet** — mechanical debugging, repro harnesses, and the "Verification spec".
 
 **Sizing, sequencing, and the honest schedule: [SIZING.md](SIZING.md).**
-R9's architecture was re-scoped after the decision: **[R9-jobset-amendment.md](R9-jobset-amendment.md)**. Every
+R9's architecture was re-scoped after the decision: **[R9-jobset-amendment.md](R9-jobset-amendment.md)**.
+R7's tenancy model is settled in **[R7-tenancy-amendment.md](R7-tenancy-amendment.md)**. Every
 remaining item is sized (XS–XL), with its blast radius, test surface, and what
 blocks it. Read it before picking up work — five undecided forks sit upstream of
 about a third of what is left, and two of them change the *size* of other items.
@@ -159,10 +160,13 @@ Collected here so they are not lost in the specs. Each is also flagged inline.
   policy/webhook outage blocks all GPU pods) vs `Ignore` (available, but a gap
   during outages). Recommendation inside: `Fail`, with the jobtree control-plane
   namespace exempted.
-- **R7**: whether budget family-sharing and sponsor lending may cross namespaces,
-  and whether the tenant is the namespace or an authenticated owner string.
-  Recommendation inside: envelopes are namespace-scoped; cross-namespace funding
-  only via an explicit sponsor ACL that names the lender namespace.
+- **R7**: ✅ **DECIDED — the tenant is the NAMESPACE.** One kind of principal (a
+  project is a principal like a user); a team is a *group*, not a principal;
+  *"permissions flow with accountability"*; **the namespace pays**; the
+  namespace→tier binding is admin-set. Family sharing and sponsor lending **do**
+  cross namespaces, along admin-declared edges only — overruling the original
+  recommendation. `Run.Spec.Owner` is **deleted**, and R7 needs no new admission
+  machinery. See [R7-tenancy-amendment.md](R7-tenancy-amendment.md).
 - **R8**: ✅ **DECIDED — per-role, default `Fail`**, with `Retry(n, backoff)` and
   `Ignore` opt-in. Implemented as phase 9A-3 of the amended R9; absorbed there but
   built to R8's own spec, not inherited from a JobSet `failurePolicy`.
