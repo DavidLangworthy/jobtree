@@ -8,6 +8,7 @@
 | **Harness** | `.claude/workflows/adversarial-review.js` |
 | **Run ID** | `wf_fa18f69e-b2a` |
 | **Verdict** | **DEFECTS CONFIRMED** — and **INCOMPLETE**: see below |
+| **Follow-up** | `cdcf6f7` fixes the confirmed finding and one refuted-but-real reaper. #48 and #49 remain open. |
 | **Cost** | 73 agents, 3.01M subagent tokens, 798 tool calls, ~1h57m wall clock |
 
 ## Status: PAUSED, NOT FINISHED
@@ -72,7 +73,7 @@ This is the exact failure the harness was built to prevent, and it fired on its 
 |---|---|---|---|
 | 1 | **high** | 3 — last-writer-wins | `reclaimSquatter` writes `victim.Status.Phase` outside `runPhaseTracker`, so a reclaimed unfunded run's terminal fate depends on `state.Leases` order |
 
-**Disposition: open → task #50.**
+**Disposition: FIXED in `cdcf6f7`.** `reclaimSquatter` now takes `runPhaseTracker` as a parameter, so the call site was a compile error until it was passed. The permutation fixture was widened to give the squatter two leases (one squatting, one uncovered rank on the failing node); it now runs 120 orderings and asserts on the pod plane. Mutation-tested: reverting the tracker call turns the test red.
 
 The mechanism, as the lens established it by running all 24 orderings across 5 process repeats: an
 unfunded run can *both* squat on a funded run's spare slots *and* hold its own rank on the failing
@@ -94,13 +95,13 @@ These are **not cleared.** Each needs a skeptic quorum before it can be dismisse
 |---|---|---|---|
 | **critical** | `reclaimSquatter`'s pod eviction is **dead code in production**: plugin-minted leases carry no group-index label | 0/3 | **Confirmed by hand → task #49 (R28).** Verified directly: `pkg/admission/admission.go:216-224`, `PodLeaseWithRole` — the sole production mint path — stamps only `LabelRunName` and `LabelRunRole`. `binder.buildLease`, which *does* stamp `LabelGroupIndex`, is dead post-cutover. |
 | **high** | Terminal branch closes a failed run's out-of-scope and surviving-group leases but leaves their pods running (half-plane double-allocation) | 0/3 | **Confirmed by hand → task #48.** Reproduced with a scratch probe: run Failed, every lease released, both containers still in `State.Pods`. |
-| **high** | `reclaimSquatter` closes one lease but deletes the whole group's pods, over-evicting and orphaning sibling leases | 0/3 | Open → task #50. Needs a ruling: is group-granular pod eviction correct when the conflict is slot-granular? |
-| medium | `reclaimSquatter` demotes to Pending but only closes the one conflicting lease, stranding the victim's other-group open leases on a non-terminal run | 2/3 | Open → task #50 |
-| medium | Malleable-above-min victim left Running with open leases whose pods were deleted — a two-plane split invisible to the oracle | 0/3 | Open → task #50 |
-| medium | Malleable run at its declared minimum is failed and swept because the gate counts **base-gang** GPUs but compares against a **total-GPU** minimum | 0/3 | Open → task #51. **This is the reaper risk in my own fix.** Must be settled before merge. |
-| low | `reclaimSquatter` skips pod removal entirely on an empty group label | 0/3 | Subsumed by R28 (task #49) |
-| low | `reclaimSquatter` widens the blast radius of the pre-existing stale-`ev` misclassification in `HandleNodeFailure` pass 2 | 0/3 | Open → task #50 |
-| low | New resolver-settlement tests omit the pod plane and grow leases | 0/3 | Open → task #50 |
+| **high** | `reclaimSquatter` closes one lease but deletes the whole group's pods, over-evicting and orphaning sibling leases | 0/3 | Open → task #52. Needs a ruling: is group-granular pod eviction correct when the conflict is slot-granular? |
+| medium | `reclaimSquatter` demotes to Pending but only closes the one conflicting lease, stranding the victim's other-group open leases on a non-terminal run | 2/3 | Open → task #52 |
+| medium | Malleable-above-min victim left Running with open leases whose pods were deleted — a two-plane split invisible to the oracle | 0/3 | Open → task #52 |
+| medium | Malleable run at its declared minimum is failed and swept because the gate counts **base-gang** GPUs but compares against a **total-GPU** minimum | 0/3 | **CONFIRMED and FIXED in `cdcf6f7`.** Settled by reading `pkg/resolver/resolver.go:503`, not by vote: the lottery guard permits a cut while `Remaining - grp.GPUs >= MinTotalGPUs`, and `Remaining` counts grow leases. Reproduced, then fixed with a new `runnableGPUsForRun`. **The same reaper was in `pkg/invariant`, where it would have panicked in CI on a healthy run.** The lens that refuted the sibling finding was wrong. |
+| low | `reclaimSquatter` skips pod removal entirely on an empty group label | 0/3 | **Guard removed in `cdcf6f7`** (an empty group is a legitimate key, not a missing value). The root cause — the sole committer never stamps the label — is R28, task #49, still open. |
+| low | `reclaimSquatter` widens the blast radius of the pre-existing stale-`ev` misclassification in `HandleNodeFailure` pass 2 | 0/3 | Open → task #52 |
+| low | New resolver-settlement tests omit the pod plane and grow leases | 0/3 | **Partly fixed in `cdcf6f7`**: the permutation fixture now asserts on the pod plane, and a grow-lease regression test was added. The remaining coverage gaps stay open → task #52. |
 
 ### REFUTED
 
@@ -128,9 +129,17 @@ Other refutations worth keeping:
   standalone reproduction of controller-runtime v0.24.1's recover block: the full `INVARIANT VIOLATION`
   banner reaches stderr on **every** requeue pass before the panic is recovered, so a violation is loud,
   not silent. Good news, and it means the oracle does not create task #39's shape.
-- *"`INV-WIDTH-ASSEMBLED` reaps a malleable run that shed its borrowed base gang"* — refuted, but see
-  the closely-related **unresolved** medium finding about base-gang vs total-GPU minimum. These two
-  disagree. **Do not treat the refutation as settling the reaper question.**
+- *"`INV-WIDTH-ASSEMBLED` reaps a malleable run that shed its borrowed base gang"* — **refuted, and the
+  refutation was WRONG.** The closely-related unresolved finding said the same thing from another angle
+  and never reached quorum. I settled it by reading `pkg/resolver/resolver.go:503` and reproducing it:
+  the invariant *was* a reaper, and would have panicked in CI on a run the resolver had deliberately
+  left runnable. Fixed in `cdcf6f7`.
+
+  **This is the most important line in this record.** A quorum of skeptics refuted a true finding.
+  Two lenses independently raised it; one panel killed it and the other panel died. The harness's
+  fail-closed machinery is what kept the second one visible as `UNRESOLVED` rather than letting the
+  refutation stand for both. *A refuted finding is not a settled one when a sibling finding says the
+  same thing and never got a vote.*
 
 ## What the review found that I did not
 
