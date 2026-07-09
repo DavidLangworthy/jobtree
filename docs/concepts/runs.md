@@ -63,8 +63,15 @@ Runs can optionally describe how additional GPUs should be funded:
   `lending.to`.
 
 Every Lease records the paying envelope's owner, and `Run.status.funding`
-summarises the live split between owned and borrowed GPUs/GPU-hours so chargeback
-and dashboards remain accurate.
+summarises the live split across all **four** funding classes — `owned`, `shared`,
+`borrowed`, and `unfunded` — in both GPUs and GPU-hours, plus the lenders behind the
+shared and borrowed shares, so chargeback and dashboards remain accurate.
+
+The class is **derived**, never stored: it is a function of the leases, the budgets,
+and the clock, recomputed on every evaluation. A lease does not "become" borrowed; it
+is borrowed for as long as the arithmetic says so. `unfunded` is the honest name for
+work nobody's envelope covers — it runs opportunistically, and it is the first thing
+reclaimed.
 
 ## Pack-to-empty heuristics
 

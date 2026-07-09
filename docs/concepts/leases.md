@@ -13,29 +13,85 @@ metadata:
 spec:
   owner: org:ai:rai:sys
   runRef:
+    namespace: default
     name: train-128
   compPath: ["SHARD[1]", "D"]
   slice:
-    nodes: [n17-04]
-    role: Active        # or Spare/Borrowed
+    nodes: [n17-04#0, n17-04#1]   # node#ordinal — a slot, not a machine
+    role: Active                  # Active | Spare
   interval:
     start: "2025-11-01T00:00:10Z"
+  paidByBudget: rai-sys          # scopes the envelope name below
   paidByEnvelope: west-h100
-  reason: Start         # Start | Swap | Shrink | RandomPreempt | ReclaimedBySpare | Fail
+  reason: Start                  # why it was MINTED, below
 status:
   closed: true
-  endTime: "2025-11-01T03:33:29Z"
+  ended: "2025-11-01T03:33:29Z"
+  closureReason: Completed       # why it was CLOSED, below
 ```
 
 Key rules:
 
-* A Lease never changes once written. Ending it appends `status.endTime` and `closed=true`.
-* Each Lease lists exactly one payer (`paidByEnvelope`). Budgets are debited from there.
-* `slice.role` communicates how the GPU was used:
-  - `Active`: contributes to the Run’s desired width.
-  - `Spare`: hot standby reserved for failover.
-  - `Borrowed`: opportunistic workload temporarily occupying a spare.
-* `reason` tells you why this Lease exists (start, swap, shrink, lottery, etc.).
+* A Lease never changes once written. Ending it sets `status.closed=true`, `status.ended`,
+  and `status.closureReason`.
+* `slice.nodes` holds **slots**, not machines: `node#ordinal` names one GPU. Two runs may
+  share a node and never share a slot.
+* Each Lease lists exactly one payer. `paidByEnvelope` names the envelope;
+  `paidByBudget` scopes it, because envelope names are unique only within a Budget and
+  one owner may hold several.
+
+`slice.role` says how the GPU is used. There are exactly two:
+
+| Role | Meaning |
+|---|---|
+| `Active` | contributes to the Run's desired width |
+| `Spare` | hot standby, held live, reserved for a node-failure swap |
+
+**`Borrowed` is not a role.** It is a *funding class* — derived, never stored — and it
+describes who paid, not what the GPU does. An `Active` lease can be `Borrowed`. See
+[budgets](budgets.md) for the four classes (`Owned`, `Shared`, `Borrowed`, `Unfunded`).
+
+## 1a. The two reason fields
+
+They are different questions, and conflating them is how the old version of this page
+listed lottery seeds as mint reasons.
+
+`spec.reason` — **why this Lease was minted**. The scheduler plugin writes it once, from
+the `rq.davidlangworthy.io/lease-reason` annotation the controller stamped on the pod.
+There are four:
+
+| Value | Meaning |
+|---|---|
+| `Start` | the run's initial gang (the default when no annotation is set) |
+| `Grow` | an elastic widening, funded as its own delta |
+| `Swap` | a rank re-placed onto a spare after its node was fenced |
+| `Promise` | a promised-but-not-yet-funded opportunistic activation |
+
+`status.closureReason` — **why it ended**:
+
+| Value | Meaning |
+|---|---|
+| `Completed` | the gang finished |
+| `NodeFailure` | its node was fenced (deleted, or tainted out-of-service) |
+| `Swap` | a spare, consumed to cover a failed rank |
+| `SwapDeclined` | a spare, released because the swap it was held for could not proceed |
+| `ReclaimedBySpare` | it held the exact slots a swap needed, and was `Unfunded` |
+| `RunFailed` | the run went terminal; a failed run holds no open leases |
+| `Shrink` | given up by an elastic narrowing |
+| `DropSpare` | the resolver converted this spare into active capacity |
+| `RandomPreempt(0x…)` | the resolver's lottery chose it; the seed is the attestation |
+
+Note `Swap`, `Shrink`, and `DropSpare` are not symmetric across the two fields. `Swap` is
+both: the *new* lease is minted `Swap`, and the *spare* it consumed is closed `Swap`.
+`Shrink` and `DropSpare` only ever close a lease — the resolver writes them as it gives
+capacity up.
+
+There is no `Fail` reason, and `RandomPreempt` is a closure reason, never a mint reason.
+Both were listed as mint reasons in an earlier version of this page; neither has ever
+existed in the code as one.
+
+You will not see `Hypothetical` on a real Lease. The engine builds such leases in memory
+to ask the funding derivation a what-if question, and never writes them.
 
 ## 2. Derived views
 

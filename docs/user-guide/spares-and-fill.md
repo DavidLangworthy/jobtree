@@ -27,11 +27,34 @@ The packer allocates those four extra GPUs alongside each 32-GPU group. The cove
 - a regular `Active` lease and pod for the group, and
 - a `Spare` lease and pod anchored to the reserved nodes.
 
-Budget accounting records spare concurrency and GPU-hours separately so future finance policies can discount or report them differently.
+A spare is **charged at the full rate**, like any other GPU: the funding derivation
+attributes every GPU-hour to a class, spares included. It is reported separately
+(`SpareWidth`, `SpareGPUs`) so a future finance policy could discount it, but no such
+policy exists today. A spare you hold is a spare you pay for.
 
 ## Opportunistic fill
 
-Spare pods are labelled `rq.davidlangworthy.io/role=Spare`. Opportunistic workloads may target those nodes (typically with a `Borrowed` lease) knowing they can be reclaimed at any time. When the spare is reclaimed, the filler lease closes with `closureReason=ReclaimedBySpare`.
+Spare pods are labelled `rq.davidlangworthy.io/role=Spare`, and they are **held live** —
+a real pod occupying the reserved slots. Nothing else can be scheduled onto them.
+
+There is no `Borrowed` *role*. `Borrowed` is one of the four funding **classes**
+(`Owned`, `Shared`, `Borrowed`, `Unfunded`), derived from budgets and leases, never
+stored. It says who paid, not what the GPU is doing.
+
+So "opportunistic fill" is not a special kind of lease. It is ordinary work whose lease
+derives the class `Unfunded`: nobody's envelope covers it. That is what makes it
+reclaimable, and the funding derivation — not a label — is what decides.
+
+When a node-failure swap needs the exact `node#ordinal` slots some other run occupies:
+
+* if that run's lease derives `Unfunded`, it is reclaimed, closing with
+  `closureReason=ReclaimedBySpare`;
+* if it derives **any funded class**, jobtree **declines the swap** rather than evict
+  it. Choosing between funded runs is the resolver's job, and the resolver ranks by
+  class. A failure in one run is not a licence to kill another's funded work.
+
+Sharing a machine is not sharing a slot: only a lease holding the same `node#ordinal`
+is a conflict at all.
 
 ## Failure swap lifecycle
 

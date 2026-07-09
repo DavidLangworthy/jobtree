@@ -3,6 +3,18 @@
 ## Summary
 Enable resilient execution by provisioning per-group spares, running opportunistic filler work on those spares, and performing deterministic swaps when nodes fail. This milestone ensures failures do not interrupt fixed-size gangs while preserving auditability of spare usage.
 
+> **This is the original design, not the shipped behaviour.** Two things diverged:
+>
+> * There is no `role=Borrowed` lease. `Borrowed` is a funding **class**, derived and
+>   never stored; opportunistic work is ordinary `Active` work whose lease derives
+>   `Unfunded`. See [leases](../../concepts/leases.md).
+> * The swap does **not** trigger on a node condition. `NotReady` means the control
+>   plane cannot hear the kubelet, not that its containers stopped, so it triggers on a
+>   *fencing assertion* — the Node deleted, or tainted `out-of-service`. See
+>   [R21's amendment](https://github.com/DavidLangworthy/jobtree/blob/main/docs/project/remediation/R21-cordon-not-failure.md).
+>
+> No spare "discount" was implemented either: a spare is charged at the full rate.
+
 ## Goals
 - Extend Run admission to allocate spare leases per group when requested.
 - Allow opportunistic jobs to temporarily consume spare capacity, knowing it may be reclaimed instantly.
