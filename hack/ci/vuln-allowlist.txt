@@ -1,0 +1,13 @@
+# Reachable vulnerabilities that are deliberately NOT acted on, with the reason.
+#
+# `hack/ci/govulncheck.sh` reports every vulnerability govulncheck finds to be
+# REACHABLE from jobtree's code. Anything reachable and not listed here is new,
+# and the Tuesday report says so. An entry here is a claim someone made and can
+# be held to, not a way to make the number go down.
+#
+# Format: <GO-ID> <one-line reason>
+# Re-check every entry when the dependency moves. Delete an entry the moment a
+# fix exists — a stale allowlist is how a real advisory hides.
+
+GO-2025-3547 k8s.io/kubernetes: no fixed version exists. The advisory is against cluster components (kubelet/apiserver), not library use. govulncheck reaches it only through in-tree scheduler-framework plugins (volumebinding, volumezone) that cmd/scheduler links but jobtree never invokes: our profile enables only the `jobtree` plugin. Re-check on every k8s.io/* bump.
+GO-2025-3521 k8s.io/kubernetes: same module, same reasoning, same trace shape (in-tree plugin init reached via app.init). No fixed version exists.

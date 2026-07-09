@@ -47,11 +47,29 @@ did not run, and that must be visible. **Silence is not consent.** The report sa
 exactly what was merged and what was held, and why — no summaries that could be
 mistaken for a clean bill of health.
 
-**4. Distinguish a flake from a regression.** `envtest` is run three extra times
-and the failures are counted. There is a known intermittent failure — a stale
-node-failure reconcile closing a healthy node's leases (task #36). Counting means a
-real regression cannot be waved away as "that flake again," and a worsening flake
-is visible as a number that climbs.
+**4. Distinguish a flake from a regression.** `envtest` is run three extra times and
+the failures are counted. It was added to measure task #36 — a stale node-failure
+reconcile closing a healthy node's leases. **That mechanism was fixed on 2026-07-09**:
+NotReady is no longer treated as a node failure at all, so no node event can close a
+healthy node's leases.
+
+A *different* intermittent is open as **task #39** (`TestETAMirroredFromPodAnnotation`
+timed out once in CI, waiting 30s for a run to reach Running; it has not reproduced
+locally). Until that is understood, the probe's count is a measurement and nothing
+more. It is not evidence the suite is sound, and a failure is not evidence it is not.
+Read the log.
+
+**4b. Count what our code can reach, not what is in `go.sum`.** Dependabot raises an
+alert for every advisory anywhere in the dependency graph. Most are transitive and
+unreachable; on this repo the raw count and the reachable count have differed by an
+order of magnitude. `hack/ci/govulncheck.sh` reports the ones jobtree's code can
+actually **call**. Anything reachable and not in
+[`hack/ci/vuln-allowlist.txt`](../../hack/ci/vuln-allowlist.txt) — an allowlist where
+every entry carries a written reason — is held for a human.
+
+It is a probe, never a gate: an advisory published on a Sunday must not redden an
+unrelated Monday pull request. Batching it to Tuesday is the entire point. A scan
+that fails to report is recorded as *unknown*, never as clean.
 
 **5. Never bump Go automatically.** The toolchain is pinned in **three** places
 that must move together — `Dockerfile`'s `FROM golang:X.Y.Z` and the `go-version:`
@@ -79,12 +97,14 @@ The workflow does the mechanical part. These need judgment:
   (`pkg/funding`, `cmd/scheduler/plugin`, or `run_controller.go`'s adoption / mint /
   swap), run the adversarial-review harness at
   `.claude/workflows/adversarial-review.js` before merging. It has found a real,
-  merge-blocking defect on four consecutive changes to that path.
+  merge-blocking defect on six consecutive changes to that path.
 - **A gate failure.** `make verify` failing on `main` is not a dependency problem.
   Something regressed, or a fixture drifted. The golden oracle is deliberately
   strict about this.
-- **A climbing flake count.** Two of three is the known bug. Three of three,
-  repeatedly, is a new one.
+- **Any envtest probe failure.** The mechanism it was built to measure (#36) is
+  fixed and cannot be the cause. Check it against task #39 before calling it known.
+- **A reachable vulnerability.** Not the Dependabot number — the govulncheck one. It
+  means our code can call the vulnerable function.
 - **A borrow decision whose premises moved.** Merging something that changes an
   invariant an earlier decision rested on is the trigger to re-read
   [`borrow-vs-build.md`](borrow-vs-build.md) §11. Not the calendar. That is how the
