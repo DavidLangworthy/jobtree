@@ -1,0 +1,46 @@
+Copyright (c) 2026 David Langworthy. All rights reserved.
+
+NO LICENSE IS GRANTED.
+
+This source code is published so that it can be read, reviewed, and discussed.
+It is not open source, and it is not free software.
+
+You may not use, copy, modify, merge, publish, distribute, sublicense, or sell
+any part of this software, in source or binary form, except:
+
+  * as expressly permitted by GitHub's Terms of Service, which allow other
+    GitHub users to view and fork this repository within GitHub; and
+
+  * as permitted by applicable law without a licence (for example, fair use,
+    fair dealing, or equivalent statutory exceptions in your jurisdiction).
+
+Forking this repository on GitHub does not grant you a licence to use its
+contents outside of GitHub.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+--------------------------------------------------------------------------------
+
+Why this file exists, and what it is not
+----------------------------------------
+
+An absent LICENSE file is ambiguous: a reader cannot tell whether the author
+forgot, or intended to reserve all rights. This file removes the ambiguity.
+Under default copyright, the effect is the same either way -- all rights are
+reserved -- but saying so plainly is the honest thing to do, and this project
+holds itself to the rule that its stated posture must match its real one.
+
+A permissive or source-available licence may be granted in the future. If and
+when that happens, it will appear here.
+
+This notice is a statement of intent by the copyright holder. It is not legal
+advice, and it has not been reviewed by a lawyer.
+
+Dependencies retain their own licences. jobtree depends on Kubernetes,
+controller-runtime, and other components that are separately licensed
+(predominantly Apache-2.0); nothing here alters those terms.

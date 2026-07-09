@@ -44,7 +44,7 @@ Three multipliers, learned the hard way:
   tests structurally cannot (the `buildPod` cohort drop, the `sparesPerGroup`
   field-name bug).
 - **Blocked on a decision** ⇒ the size is a lie until the decision lands. Two of the
-  five have now been made (R9, R13, R8, R7); the one that remains blocks nothing.
+  all five have now been made (R9, R13, R8, R7, R19). None remain.
 
 ## Where we actually are
 
@@ -134,7 +134,7 @@ install exists yet**, which makes R13's hard-rename-without-migration very plaus
 | **R16** ServiceMonitor selector | **XS** | Confirmed live bug: the Service never carries the label the ServiceMonitor selects on, so it matches nothing. One label + a Chart.yaml dependency gate. | — |
 | **R17** prod overlay | **XS** | Confirmed live bug: `controller.leaderElect` **does not exist as a key**, so 3 prod replicas write concurrently. Scheduler is off in both overlays. 3–4 files. | — |
 | **R18** operator runbook | **M** | Docs plus two scripts that don't exist (`break-glass.sh`, `uninstall.sh`), and a live kind test of wedge-and-recover. | describes R6/R12/R13, so write it after |
-| **R19** LICENSE + governance | **S** / **M** | XS if MIT or headerless. **M** if Apache-2.0 with headers across 107 Go files. | **David: license + governance** |
+| **R19** LICENSE + governance | ✅ **done** | All-rights-reserved `LICENSE`; truthful `MAINTAINERS.md` (the old one invented four people, a pager and a vote); `SECURITY.md` via GitHub private vulnerability reporting. No headers needed. | — |
 
 R16 and R17 are each **under an hour** and are *real, confirmed bugs in what we
 ship*. They are the best ratio on the board.
@@ -272,10 +272,13 @@ the *size* of other items rather than just their start date:
   is admin-set. Family sharing and sponsor lending **do** cross namespaces, along
   admin-declared edges only. See [R7-tenancy-amendment.md](R7-tenancy-amendment.md).
 
-**One remains**, and it does not block the highest-severity work:
+- ✅ **R19: no licence yet.** *"I'm not ready to give this away yet, but I want to be
+  able to talk about it."* An explicit `LICENSE` reserves all rights; the source is
+  public to read and discuss. Governance made real and minimal — a truthful one-person
+  `MAINTAINERS.md`, and a `SECURITY.md` routed through GitHub private vulnerability
+  reporting, publishing **no email address**.
 
-1. **R19: license** (Apache-2.0 vs MIT) and whether governance becomes real. Legal,
-   so start it early even though the code is trivial.
+**No owner decisions remain.** Every fork the remediation flagged is now closed.
 
 One implicit decision still stands, and I will surface it rather than silently pick
 it: **R4 pt1b's acceptable informer-staleness bound**. (R4 pt2b's persistence

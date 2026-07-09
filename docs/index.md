@@ -34,7 +34,7 @@ Kubernetes-native gang scheduling for **job forests** that need to honor **time-
 - Start with the [overview](concepts/overview.md) for goals, architecture, and terminology.
 - Learn how researchers submit and track work in the [researcher guide](user-guide/researcher-guide.md).
 - See how operators install and tune clusters in the [operator setup guide](operator-guide/admin-setup.md).
-- Explore [roadmap milestones](roadmap/milestones.md) and [maintainers](MAINTAINERS.md) to understand ownership.
+- Read the [roadmap milestones](roadmap/milestones.md) — noting the status banner at the top — and [maintainers](MAINTAINERS.md) to see who owns this and how to report a security issue.
 - Dive into the [RQΛ fundamentals](fundamentals.md) for the quota- and topology-aware calculus behind the control plane.
 
 ## How it is different
