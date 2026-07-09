@@ -9,6 +9,8 @@ set -euo pipefail
 REPO="${GITHUB_REPOSITORY:-DavidLangworthy/jobtree}"
 GATE_RESULT="${GATE_RESULT:-failure}"
 ENVTEST_FLAKES="${ENVTEST_FLAKES:-unknown}"
+VULN_NEW="${VULN_NEW:-unknown}"
+VULN_ALLOWLISTED="${VULN_ALLOWLISTED:-unknown}"
 RUN_URL="${RUN_URL:-}"
 LOG_ISSUE_TITLE="Weekly maintenance log"
 
@@ -96,9 +98,21 @@ else
 fi
 
 case "$ENVTEST_FLAKES" in
-  0)       body+="**envtest flake probe:** 3/3 clean."$'\n' ;;
-  1|2|3)   body+="**envtest flake probe:** failed **${ENVTEST_FLAKES}/3** runs — consistent with the known stale-node-failure flake (task #36). If this climbs, it is no longer a flake."$'\n' ;;
-  *)       body+="**envtest flake probe:** did not report (\`${ENVTEST_FLAKES}\`). Treat as unknown, not as clean."$'\n' ;;
+  0)       body+="**envtest stability probe:** 3/3 clean."$'\n' ;;
+  1|2|3)   body+="**envtest stability probe:** failed **${ENVTEST_FLAKES}/3** runs. The known stale-node-failure flake (task #36) was fixed on 2026-07-09, so this has no standing excuse — treat it as a regression."$'\n' ;;
+  *)       body+="**envtest stability probe:** did not report (\`${ENVTEST_FLAKES}\`). Treat as unknown, not as clean."$'\n' ;;
+esac
+
+# Reachable vulnerabilities, not advisory counts. See hack/ci/govulncheck.sh.
+case "$VULN_NEW" in
+  0)  body+="**Reachable vulnerabilities:** none outside the allowlist (${VULN_ALLOWLISTED} allowlisted, with reasons, in \`hack/ci/vuln-allowlist.txt\`)."$'\n' ;;
+  ''|unknown)
+      body+="**Reachable vulnerabilities:** the scan did not report. Treat as unknown, not as clean."$'\n' ;;
+  *)  # NB: `[ x ] && verb=y` exits under `set -e` when the test is false — the same
+      # trap that would have silently skipped the whole report. Use an explicit if.
+      if [ "$VULN_NEW" = "1" ]; then verb="needs"; else verb="need"; fi
+      body+="**Reachable vulnerabilities: ${VULN_NEW} ${verb} a decision** (${VULN_ALLOWLISTED} allowlisted). These are advisories jobtree's code can actually reach — see the run log. Fix, or add to \`hack/ci/vuln-allowlist.txt\` with a reason."$'\n'
+      held+=("Reachable vulnerabilities: **${VULN_NEW}** outside the allowlist. Dependabot's raw count is not this number; this one is the one that matters.") ;;
 esac
 
 body+=$'\n'

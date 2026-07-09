@@ -37,6 +37,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       flakes: ${{ steps.flake.outputs.failures }}
+      vuln_new: ${{ steps.vuln.outputs.new }}
+      vuln_allowlisted: ${{ steps.vuln.outputs.allowlisted }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
@@ -53,11 +55,12 @@ jobs:
       - name: make verify
         run: make verify
 
-      # A flake probe, not a gate. envtest has a known intermittent failure
-      # (task #36: a stale node-failure reconcile can close a healthy node's
-      # leases). Run it three more times and count, so a real regression is
-      # distinguishable from that flake instead of being explained away as one.
-      - name: envtest flake probe (3x)
+      # A stability probe, not a gate. It was added to measure a known flake
+      # (task #36: a stale node-failure reconcile closing a healthy node's leases).
+      # That flake was FIXED on 2026-07-09 -- NotReady is no longer a failure at
+      # all -- so the probe now has no known excuse. Any failure here is a real
+      # regression, and the report must not explain it away as one.
+      - name: envtest stability probe (3x)
         id: flake
         if: always()
         run: |
@@ -72,8 +75,23 @@ jobs:
           done
           echo "failures=$fails" >> "$GITHUB_OUTPUT"
           if [ "$fails" -gt 0 ]; then
-            echo "::warning::envtest failed ${fails}/3 probe runs (see task #36)"
+            echo "::warning::envtest failed ${fails}/3 probe runs — the #36 flake is fixed, so this is a regression"
           fi
+
+      # Which advisories can our code actually CALL. Dependabot counts everything
+      # in go.sum; on this repo the two numbers have differed by an order of
+      # magnitude. Reporting the reachable set is the difference between "14 alerts"
+      # and "one thing to do". Never a gate: a Sunday advisory must not redden an
+      # unrelated Monday pull request. That is what batching is for.
+      - name: reachable vulnerabilities (govulncheck)
+        id: vuln
+        if: always()
+        run: |
+          set +e
+          hack/ci/govulncheck.sh | tee /tmp/vuln.txt
+          summary="$(grep '^SUMMARY ' /tmp/vuln.txt | tail -1)"
+          echo "new=$(awk '{print $2}' <<<"$summary")"          >> "$GITHUB_OUTPUT"
+          echo "allowlisted=$(awk '{print $3}' <<<"$summary")"  >> "$GITHUB_OUTPUT"
 
   triage:
     name: triage and report
@@ -87,5 +105,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GATE_RESULT: ${{ needs.gate.result }}
           ENVTEST_FLAKES: ${{ needs.gate.outputs.flakes }}
+          VULN_NEW: ${{ needs.gate.outputs.vuln_new }}
+          VULN_ALLOWLISTED: ${{ needs.gate.outputs.vuln_allowlisted }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: .github/scripts/weekly-maintenance.sh
