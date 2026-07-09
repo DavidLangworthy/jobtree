@@ -2,7 +2,13 @@ apiVersion: v1
 kind: Service
 metadata:
   name: {{ include "gpu-fleet.controllerName" . }}
-  labels: {{- include "gpu-fleet.labels" . | nindent 4 }}
+  labels:
+    # R16: the ServiceMonitor below selects Services on this label. `gpu-fleet.labels`
+    # does not emit app.kubernetes.io/name, so without this line the ServiceMonitor
+    # matched nothing and no jobtree metric was ever scraped. It must stay in sync
+    # with the ServiceMonitor's matchLabels; hack/ci/helm-assertions.sh checks that.
+    app.kubernetes.io/name: {{ include "gpu-fleet.controllerName" . }}
+    {{- include "gpu-fleet.labels" . | nindent 4 }}
 spec:
   selector:
     app.kubernetes.io/name: {{ include "gpu-fleet.controllerName" . }}
@@ -10,8 +16,13 @@ spec:
     - name: metrics
       port: {{ .Values.controller.metricsPort }}
       targetPort: metrics
-{{- if .Values.monitoring.enabled }}
+{{- if and .Values.monitoring.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") }}
 ---
+# Rendered only when the Prometheus Operator's CRDs are present. A bare
+# `helm install` on a cluster without them used to fail outright ("no matches for
+# kind ServiceMonitor"); monitoring is not a hard dependency of a GPU scheduler.
+# NOTES.txt says out loud when this was skipped, so the silence is not mistaken
+# for success.
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
@@ -24,6 +35,13 @@ spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ include "gpu-fleet.controllerName" . }}
+  {{- if .Values.monitoring.serviceMonitorNamespace }}
+  # A ServiceMonitor selects Services in its OWN namespace unless told otherwise.
+  # Parked in a central monitoring namespace, it would find nothing.
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  {{- end }}
   endpoints:
     # controller-runtime serves its own metrics on /metrics; the engine's
     # hand-rolled exposition (admission latency, resolver actions, budget

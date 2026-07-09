@@ -1,8 +1,24 @@
 Thank you for installing gpu-fleet!
 
 Metrics are exposed on the service {{ include "gpu-fleet.controllerName" . }} port {{ .Values.controller.metricsPort }}.
-
-If monitoring.enabled=true, a ServiceMonitor has been created for Prometheus Operator.
+{{ if .Values.monitoring.enabled }}
+{{- if .Capabilities.APIVersions.Has "monitoring.coreos.com/v1" }}
+A ServiceMonitor was created; Prometheus will scrape /metrics and /jobtree.
+{{- else }}
+NOTE: monitoring.enabled=true, but this cluster has no monitoring.coreos.com/v1 CRDs,
+so NO ServiceMonitor was created and nothing is scraping jobtree. Install the
+Prometheus Operator and upgrade, or scrape port {{ .Values.controller.metricsPort }} directly.
+{{- end }}
+{{- end }}
+{{ if and (gt (int .Values.controller.replicas) 1) (not .Values.controller.leaderElect) }}
+WARNING: controller.replicas={{ .Values.controller.replicas }} with controller.leaderElect=false.
+Every replica will run the engine and race on the ledger. Set controller.leaderElect=true.
+{{- end }}
+{{- if not .Values.scheduler.enabled }}
+NOTE: the jobtree scheduler plugin is DISABLED. It is the sole committer of GPU
+funding: with it off, nothing mints leases and no run is ever funded. Set
+scheduler.enabled=true once the workload pods set schedulerName: {{ .Values.scheduler.schedulerName }}.
+{{- end }}
 
 Use the kubectl plugin installed via krew to interact with runs. By default it talks to this
 live cluster via your kubeconfig (no --state file needed — that flag only applies to its
