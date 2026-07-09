@@ -200,7 +200,7 @@ func (c *RunController) Reconcile(namespace, name string) error {
 	// waiting for an activation tick. Terminal runs are excluded: adoption must
 	// not resurrect them (ruling 2026-07-02).
 	if run.Status.Phase != RunPhaseFailed && run.Status.Phase != RunPhaseComplete {
-		allocated := activeGPUsForRun(key, c.State.Leases)
+		allocated := baseGangGPUsForRun(key, c.State.Leases)
 		expected := expectedActiveGPUs(run)
 		switch {
 		case allocated > 0 && allocated >= expected:
@@ -800,7 +800,7 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 		return nil
 	}
 
-	if allocated := activeGPUsForRun(runKey, c.State.Leases); allocated > 0 {
+	if allocated := baseGangGPUsForRun(runKey, c.State.Leases); allocated > 0 {
 		// Open leases for a run that never reached Running mean an earlier
 		// evaluation materialized them but its run-status write was lost
 		// (the bridge's apply is not atomic — R28). Finish that activation
@@ -1768,6 +1768,34 @@ func expectedActiveGPUs(run *v1.Run) int {
 	return gpusPerPod * width
 }
 
+// baseGangGPUsForRun is the run's BASE-gang active width: open, non-spare leases
+// that are not elastic-grow width. It is what adoption compares against
+// expectedActiveGPUs, and the distinction is load-bearing: grow leases are width
+// added on top of the base gang, so counting them lets a run whose base gang
+// never assembled (or whose base nodes all failed) reach full "width" on grow
+// leases alone and adopt to Running holding zero base-gang GPUs.
+//
+// A Lease records no cohort — Spec.Reason is the only durable signal separating a
+// grow lease from a base one. Swap and Promise leases DO count: each stands in for
+// a base-gang member. (Reconstructing the cohort itself is R2 pt3's job.)
+func baseGangGPUsForRun(runKey string, leases []v1.Lease) int {
+	total := 0
+	for i := range leases {
+		lease := &leases[i]
+		if lease.Status.Closed || lease.Spec.Slice.Role == binder.RoleSpare {
+			continue
+		}
+		if lease.Spec.Reason == binder.LeaseReasonGrow {
+			continue
+		}
+		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
+			continue
+		}
+		total += len(lease.Spec.Slice.Nodes)
+	}
+	return total
+}
+
 // gangProvenance recovers the lease-reason and payer annotations the run's base
 // gang was emitted under, so a topped-up member is minted on the same terms as
 // its siblings. A Promise gang (R3) is pre-authorized and skips the plugin's
@@ -2006,7 +2034,7 @@ func (c *RunController) growRun(run *v1.Run, snapshot *topology.Snapshot, now ti
 	// ledger (which already holds the base leases) and mints "Grow" leases; the
 	// run's width grows from those leases. The controller mints nothing.
 	cohort := strconv.Itoa(nextCohortForRun(c.State.Pods, run))
-	c.emitCohortPods(run, flattenPackNodes(plan), gpusPerPod, add/gpusPerPod, cohort, "Grow", nil)
+	c.emitCohortPods(run, flattenPackNodes(plan), gpusPerPod, add/gpusPerPod, cohort, binder.LeaseReasonGrow, nil)
 	return nil
 }
 

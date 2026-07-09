@@ -84,6 +84,23 @@ Judgment calls:
   the node-failure grace no longer applies. The *partial* branch deliberately does
   **not** clear it — that deadline is what bounds how long a broken run may sit
   assembling before it fails.
+- **Adversarial review caught a false-Running the width check itself could be
+  spoofed by: elastic-GROW leases.** `activeGPUsForRun` sums every open non-spare
+  lease, but grow leases are width added *on top of* the base gang, while
+  `expectedActiveGPUs` is the base width. A malleable run that grew, then lost all
+  its base nodes to failure, keeps its grow leases open — `allocated (4 grow) >=
+  expected (4 base)` — so it adopts to `Running` holding **zero** base-gang GPUs,
+  and (because full-width adoption clears it) loses the `CheckpointDeadline` that
+  was supposed to bound its recovery. The pre-fix `open > 0` gate had the same
+  hole, so three skeptics refuted the finding as "not introduced here" — correct,
+  but shipping a width check a grow cohort can spoof would have missed the point of
+  the fix. **Fixed:** adoption now uses `baseGangGPUsForRun`, which additionally
+  skips `Spec.Reason == "Grow"`. A Lease records **no cohort**, so `Spec.Reason` is
+  the only durable signal separating grow width from base width — the same missing
+  lease identity that blocks pt3's restart reconstruction. Swap and Promise leases
+  *do* count: each stands in for a real base-gang member. Regressions:
+  `TestReconcileDoesNotAdoptOnGrowLeasesAlone`, `TestSwapLeasesCountTowardGangWidth`.
+  `activeGPUsForRun` stays on the resolver path, which *should* see total width.
 - **Known, tracked, NOT fixed here: `runGangComplete` is width-blind** (`:460-481`).
   It requires only that every *existing* active pod has Succeeded, with no
   comparison against expected width, so a run with fewer pod objects than its true

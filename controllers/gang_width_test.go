@@ -191,6 +191,59 @@ func TestReconcileDoesNotAdoptSpareOnlyLeases(t *testing.T) {
 	}
 }
 
+// Elastic-grow leases are width added ON TOP OF the base gang, so they must not
+// stand in for missing base-gang width. A malleable run whose base nodes all
+// failed keeps its grow leases open; counting those would let it adopt to
+// Running at "full width" while holding zero base-gang GPUs — and, worse, clear
+// the checkpoint grace that is supposed to bound its recovery.
+//
+// A Lease records no cohort, so Spec.Reason is the only durable thing separating
+// a grow lease from a base one.
+func TestReconcileDoesNotAdoptOnGrowLeasesAlone(t *testing.T) {
+	now := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
+	state := gangWidthState()
+	// Base gang gone (its nodes failed); 4 GPUs of grow width survive.
+	for i := 0; i < 4; i++ {
+		state.Leases = append(state.Leases, memberLease(i, binder.RoleActive, binder.LeaseReasonGrow, now))
+	}
+	deadline := v1.NewTime(now.Add(time.Hour))
+	run := state.Runs["default/gang"]
+	run.Status.CheckpointDeadline = &deadline
+
+	controller := NewRunController(state, runClock{now: now})
+	if err := controller.Reconcile("default", "gang"); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	if run.Status.Phase == RunPhaseRunning {
+		t.Fatalf("grow width must not stand in for a missing base gang: %s", run.Status.Message)
+	}
+	if run.Status.CheckpointDeadline == nil {
+		t.Errorf("the node-failure grace must survive: nothing recovered the base gang")
+	}
+}
+
+// Swap and Promise leases each stand in for a real base-gang member, so unlike
+// grow leases they DO count toward the adopted width.
+func TestSwapLeasesCountTowardGangWidth(t *testing.T) {
+	now := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
+	state := gangWidthState()
+	for i := 0; i < 3; i++ {
+		state.Leases = append(state.Leases, memberLease(i, binder.RoleActive, "Start", now))
+	}
+	// The fourth member was swapped onto a spare after its node failed.
+	state.Leases = append(state.Leases, memberLease(3, binder.RoleActive, "Swap", now))
+
+	controller := NewRunController(state, runClock{now: now})
+	if err := controller.Reconcile("default", "gang"); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+	run := state.Runs["default/gang"]
+	if run.Status.Phase != RunPhaseRunning {
+		t.Fatalf("a gang made whole by a swap must adopt to Running, got %s (%s)", run.Status.Phase, run.Status.Message)
+	}
+}
+
 // The top-up keys presence by pod NAME. A member lost from the MIDDLE of the
 // cohort must come back as itself; a count-based scan would instead rebuild the
 // last index, duplicating one pod while the missing one never returns.
