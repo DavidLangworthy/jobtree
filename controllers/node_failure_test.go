@@ -80,7 +80,10 @@ func TestNodeFailureClosesASpareOnlyNode(t *testing.T) {
 	state := &ClusterState{
 		Nodes:   nodeFailureNodes(),
 		Budgets: []v1.Budget{nfBudget("team", "org:ai:team")},
-		Runs:    map[string]*v1.Run{"default/run": nfRun("run", "org:ai:team", 4, now)},
+		// 2 GPUs, and the active lease holds exactly 2. A fixture whose Run asks
+		// for more width than its leases hold is a Running run below its minimum:
+		// an illegal state pkg/invariant rejects, and one the engine never builds.
+		Runs: map[string]*v1.Run{"default/run": nfRun("run", "org:ai:team", 2, now)},
 		Leases: []v1.Lease{
 			nfLease("active", "run", "org:ai:team", "team", []string{"node-a#0", "node-a#1"}, binder.RoleActive, now),
 			nfLease("spare", "run", "org:ai:team", "team", []string{"node-b#0", "node-b#1"}, binder.RoleSpare, now),
@@ -111,8 +114,10 @@ func TestNodeFailureReturnsTypedSentinelWhenNoLeaseNamesTheNode(t *testing.T) {
 	state := &ClusterState{
 		Nodes:   nodeFailureNodes(),
 		Budgets: []v1.Budget{nfBudget("team", "org:ai:team")},
-		Runs:    map[string]*v1.Run{"default/run": nfRun("run", "org:ai:team", 4, now)},
-		Leases:  []v1.Lease{nfLease("active", "run", "org:ai:team", "team", []string{"node-a#0"}, binder.RoleActive, now)},
+		// 1 GPU, held by the one 1-slot active lease: see the note in
+		// TestNodeFailureClosesASpareOnlyNode on why the widths must agree.
+		Runs:   map[string]*v1.Run{"default/run": nfRun("run", "org:ai:team", 1, now)},
+		Leases: []v1.Lease{nfLease("active", "run", "org:ai:team", "team", []string{"node-a#0"}, binder.RoleActive, now)},
 	}
 	c := NewRunController(state, runClock{now: now})
 
@@ -376,7 +381,7 @@ func TestFailingARunReleasesEveryLeaseItStillHolds(t *testing.T) {
 			// group 0 already lost node-a and was closed by HandleNodeFailure.
 			func() v1.Lease {
 				l := nfLeaseGroup("active-0", "run", "org:ai:team", "team", "0", []string{"node-a#0"}, binder.RoleActive, now)
-				closeLease(&l, "NodeFailure", now)
+				CloseLease(&l, "NodeFailure", now)
 				return l
 			}(),
 			// group 1 is still running on a healthy node, holding a live lease.

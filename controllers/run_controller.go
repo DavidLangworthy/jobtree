@@ -120,6 +120,12 @@ func (c *RunController) Reconcile(namespace, name string) error {
 		return fmt.Errorf("run %s/%s not found", namespace, name)
 	}
 
+	// The oracle. Deferred so it runs on EVERY return, including the error
+	// returns: Bridge.WithWorld applies the state diff even when the engine
+	// fails, so a half-applied admission is still a state someone must live in.
+	before := c.snapshotWorld()
+	defer c.checkInvariants("RunController.Reconcile", before)
+
 	flavor := run.Spec.Resources.GPUType
 	start := time.Now()
 	result := "noop"
@@ -530,7 +536,7 @@ func (c *RunController) completeRun(run *v1.Run, now time.Time) {
 		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
 			continue
 		}
-		closeLease(lease, "Completed", now)
+		CloseLease(lease, "Completed", now)
 	}
 	kept := c.State.Pods[:0]
 	for _, pod := range c.State.Pods {
@@ -739,6 +745,9 @@ func (c *RunController) releasePendingReservations(run *v1.Run, now time.Time) {
 // that fails to activate is recorded on its status and does not block later
 // reservations; the collected errors are returned as an aggregate.
 func (c *RunController) ActivateReservations(now time.Time) error {
+	before := c.snapshotWorld()
+	defer c.checkInvariants("RunController.ActivateReservations", before)
+
 	dueKeys := make([]string, 0, len(c.State.Reservations))
 	for key := range c.State.Reservations {
 		dueKeys = append(dueKeys, key)
@@ -1174,6 +1183,14 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 	if now.IsZero() {
 		now = c.Clock.Now()
 	}
+
+	// Deferred, so the oracle sees the state only on RETURN. Mid-method this
+	// function legitimately violates INV-TERMINAL-PRESENT: it marks a run Failed
+	// inside the lease loop and sweeps that run's remaining leases only after the
+	// loop, precisely so the outcome cannot depend on lease order.
+	before := c.snapshotWorld()
+	defer c.checkInvariants("RunController.HandleNodeFailure", before)
+
 	handled := false
 	phases := runPhaseTracker{}
 
@@ -1196,7 +1213,7 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 		if !leaseContainsNode(lease, nodeName) {
 			continue
 		}
-		closeLease(lease, "NodeFailure", now)
+		CloseLease(lease, "NodeFailure", now)
 		handled = true
 		// A run whose only stake on the node was a held spare loses its fault
 		// tolerance here, silently, without any change to its phase. Say so.
@@ -1227,7 +1244,7 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 		run := c.State.Runs[runKey]
 		groupIndex := lease.Labels[binder.LabelGroupIndex]
 		if run == nil {
-			closeLease(lease, "NodeFailure", now)
+			CloseLease(lease, "NodeFailure", now)
 			continue
 		}
 
@@ -1263,7 +1280,7 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 			otherKey := keys.NamespacedKey(other.Spec.RunRef.Namespace, other.Spec.RunRef.Name)
 			if otherKey == runKey {
 				// Our own stale lease on the spare's slots: safe to clear.
-				closeLease(other, "ReclaimedBySpare", now)
+				CloseLease(other, "ReclaimedBySpare", now)
 				continue
 			}
 			// Another run holds the exact slots the swap needs. Whether we may take
@@ -1279,7 +1296,7 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 			// work merely for sharing a machine.
 			class, classified := ev.Class(other)
 			if classified && class == funding.ClassUnfunded {
-				closeLease(other, "ReclaimedBySpare", now)
+				c.reclaimSquatter(other, otherKey, now)
 				continue
 			}
 			crossRunConflict = true
@@ -1297,8 +1314,8 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 		}
 
 		spareNodes := leaseNodeNames(spareLease)
-		closeLease(spareLease, "Swap", now)
-		closeLease(lease, "NodeFailure", now)
+		CloseLease(spareLease, "Swap", now)
+		CloseLease(lease, "NodeFailure", now)
 		// Free the held spare's pod on the reclaimed node so the bridge deletes it
 		// and the swap pod (which hard-targets that node) can bind there.
 		c.removeSparePodOnNodes(run, spareNodes)
@@ -1379,7 +1396,7 @@ func (t runPhaseTracker) apply(run *v1.Run, runKey, phase, msg string) bool {
 // no-spare path, non-nil when the swap was declined because another funded run
 // holds the spare's exact slots.
 func (c *RunController) failGroupWithoutSpare(run *v1.Run, runKey string, lease, spareLease *v1.Lease, nodeName string, now time.Time, phases runPhaseTracker) {
-	closeLease(lease, "NodeFailure", now)
+	CloseLease(lease, "NodeFailure", now)
 
 	// The group is not runnable, so the spare it was holding can never cover it.
 	// Leaving that lease open charges the run's budget for GPUs it will never use
@@ -1388,7 +1405,7 @@ func (c *RunController) failGroupWithoutSpare(run *v1.Run, runKey string, lease,
 	// closes it: failRun only edited status, completeRun runs on success, and
 	// adoption skips terminal runs.
 	if spareLease != nil {
-		closeLease(spareLease, "SwapDeclined", now)
+		CloseLease(spareLease, "SwapDeclined", now)
 		c.emit(run, EventTypeWarning, "SpareReleased", fmt.Sprintf(
 			"released the spare held for group %s: the group lost node %s and cannot use it",
 			lease.Labels[binder.LabelGroupIndex], nodeName))
@@ -1419,6 +1436,50 @@ func (c *RunController) failGroupWithoutSpare(run *v1.Run, runKey string, lease,
 	c.emit(run, EventTypeWarning, "NodeFailureNoSpare", msg)
 }
 
+// reclaimSquatter evicts an unfunded run from the slots a swap needs — in BOTH
+// planes, because a lease and a pod are two different claims on one GPU.
+//
+// Closing the lease alone was a ledger-only eviction. The victim's container kept
+// running on the exact node#ordinal the swap then targeted, so the ledger said
+// the slot was free while the kubelet disagreed; and the victim itself went on
+// reporting Running forever, holding nothing, a zombie no reconcile would ever
+// visit. (Its phase was never touched, so the width invariant caught it.)
+//
+// The resolver's eviction path already did all three: it closes the lease, drops
+// the cut groups' pods, and demotes the run. This is the same obligation, and it
+// is now discharged the same way.
+//
+// Demote, do not kill: unfunded work is reclaimable by definition, and
+// quota-semantics R14 says it requeues and re-admits when capacity returns. A run
+// that keeps enough width to run stays Running.
+func (c *RunController) reclaimSquatter(lease *v1.Lease, victimKey string, now time.Time) {
+	group := lease.Labels[binder.LabelGroupIndex]
+	CloseLease(lease, "ReclaimedBySpare", now)
+
+	victim := c.State.Runs[victimKey]
+	if victim == nil {
+		// The Run object is already gone; its leases are the only thing left, and
+		// the one we hold is now closed. cleanupDeletedRun sweeps the rest.
+		return
+	}
+	if group != "" {
+		c.removePodsForGroups(victimKey, map[string]struct{}{group: {}})
+	}
+	if baseGangGPUsForRun(victimKey, c.State.Leases) >= minRunnableGPUs(victim) {
+		// Still wide enough to make progress: an unfunded malleable run that lost
+		// one group above its minimum keeps running.
+		victim.Status.Width = summarizeRunWidth(victim, c.State.Leases)
+		return
+	}
+	victim.Status.Phase = RunPhasePending
+	victim.Status.Message = "reclaimed by a node-failure swap; will re-admit when capacity allows"
+	victim.Status.PendingReservation = nil
+	victim.Status.EarliestStart = nil
+	victim.Status.Width = summarizeRunWidth(victim, c.State.Leases)
+	c.emit(victim, EventTypeWarning, "ReclaimedBySpare", fmt.Sprintf(
+		"unfunded work on slots %v was reclaimed to cover a node failure", lease.Spec.Slice.Nodes))
+}
+
 // closeRunLeases closes every open lease the run still holds and reports how many.
 // A terminally failed run holding an open lease charges its budget forever and
 // keeps the ledger marking its GPUs occupied.
@@ -1433,7 +1494,7 @@ func (c *RunController) closeRunLeases(run *v1.Run, reason string, now time.Time
 		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
 			continue
 		}
-		closeLease(lease, reason, now)
+		CloseLease(lease, reason, now)
 		closed++
 	}
 	return closed
@@ -1562,10 +1623,7 @@ func (c *RunController) applyResolution(result resolver.Result, now time.Time) {
 		if lease == nil || lease.Status.Closed {
 			continue
 		}
-		ended := v1.NewTime(now)
-		lease.Status.Closed = true
-		lease.Status.Ended = &ended
-		lease.Status.ClosureReason = action.Reason
+		CloseLease(lease, action.Reason, now)
 		// Counted here, not during planning: a resolver result can be
 		// discarded (e.g. the lottery errors), and only applied actions
 		// should show up in metrics.
@@ -1608,9 +1666,25 @@ func (c *RunController) applyResolution(result resolver.Result, now time.Time) {
 		if run == nil {
 			continue
 		}
-		active := activeGPUsForRun(runKey, c.State.Leases)
+		// Width is measured the way every other admission path measures it:
+		// baseGangGPUsForRun against minRunnableGPUs. The old test here was
+		// `activeGPUsForRun(...) > 0`, which said a fixed-width gang missing half
+		// its groups is "Running". It is not: "start together or not at all". The
+		// lottery cuts group-by-group (pkg/resolver: the guard at resolver.go:503
+		// protects only MALLEABLE runs from dropping below their minimum), so a
+		// deficit smaller than a fixed run's width cuts a strict subset of its
+		// groups — and the run then reported healthy while making no progress and
+		// charging a budget for its surviving ranks, forever. Nothing repairs a
+		// fixed-width Running run: reconcileElasticRun returns immediately for a
+		// non-malleable run, and topUpActiveGang is only reachable pre-Running.
+		//
+		// activeGPUsForRun also counted Grow leases, so a run whose base gang was
+		// cut could reach "width" on elastic width alone — the same trap
+		// baseGangGPUsForRun was introduced to close for adoption.
+		allocated := baseGangGPUsForRun(runKey, c.State.Leases)
+		expected := minRunnableGPUs(run)
 		switch {
-		case active > 0:
+		case allocated >= expected:
 			run.Status.Phase = RunPhaseRunning
 			run.Status.Message = "shrunk by resolver"
 			c.emit(run, EventTypeWarning, "ResolverShrink", run.Status.Message)
@@ -1623,6 +1697,20 @@ func (c *RunController) applyResolution(result resolver.Result, now time.Time) {
 		default:
 			run.Status.Phase = RunPhaseFailed
 			run.Status.Message = "ended by resolver"
+			// A terminal run holds no open lease. This was the one terminal-failing
+			// path that never swept: failRun and HandleNodeFailure both close what
+			// the run still holds, and this branch did not. The resolver only sees
+			// leases inside the reservation's scope, and a run's spare can lie
+			// outside it — so a scoped cut could end a run while its out-of-scope
+			// spare stayed open forever, charging its budget and holding healthy
+			// GPUs. The immortal-lease class, reached by a third door.
+			//
+			// Closing them here also returns the capacity the deficit was chasing:
+			// a dead gang's surviving ranks were still occupying the ledger.
+			if closed := c.closeRunLeases(run, "RunFailed", now); closed > 0 {
+				c.emit(run, EventTypeWarning, "LeasesReleased", fmt.Sprintf(
+					"released %d open lease(s) still held by the failed run", closed))
+			}
 			c.emit(run, EventTypeWarning, "ResolverEnded", run.Status.Message)
 		}
 		run.Status.Width = summarizeRunWidth(run, c.State.Leases)
@@ -1667,25 +1755,6 @@ func totalFreeInScope(snapshot *topology.Snapshot, scope map[string]string) int 
 			continue
 		}
 		total += dom.FreeGPUs()
-	}
-	return total
-}
-
-func activeGPUsForRun(runKey string, leases []v1.Lease) int {
-	total := 0
-	for i := range leases {
-		lease := leases[i]
-		if lease.Status.Closed {
-			continue
-		}
-		key := keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name)
-		if key != runKey {
-			continue
-		}
-		if lease.Spec.Slice.Role == binder.RoleSpare {
-			continue
-		}
-		total += len(lease.Spec.Slice.Nodes)
 	}
 	return total
 }
@@ -2308,10 +2377,10 @@ func (c *RunController) shrinkRun(run *v1.Run, target int32, ev *funding.Evaluat
 			continue
 		}
 		for _, lease := range grp.Active {
-			closeLease(lease, "Shrink", now)
+			CloseLease(lease, "Shrink", now)
 		}
 		for _, lease := range grp.Spares {
-			closeLease(lease, "Shrink", now)
+			CloseLease(lease, "Shrink", now)
 		}
 		freed += int32(grp.ActiveGPUs)
 		removed[strconv.Itoa(grp.Index)] = struct{}{}
@@ -2475,22 +2544,6 @@ func borrowedGPUsForRun(ev *funding.Evaluation, run *v1.Run) int32 {
 	return acct.GPUs[funding.ClassBorrowed]
 }
 
-func leaseActive(lease *v1.Lease, now time.Time) bool {
-	if lease.Status.Closed {
-		return false
-	}
-	if now.Before(lease.Spec.Interval.Start.Time) {
-		return false
-	}
-	if lease.Spec.Interval.End != nil && !now.Before(lease.Spec.Interval.End.Time) {
-		return false
-	}
-	if lease.Status.Ended != nil && !now.Before(lease.Status.Ended.Time) {
-		return false
-	}
-	return true
-}
-
 func (c *RunController) removePodsForGroups(runKey string, groups map[string]struct{}) {
 	if len(groups) == 0 {
 		return
@@ -2589,16 +2642,21 @@ func buildNodeSet(nodes []string) map[string]int {
 	return counts
 }
 
-func leasesOverlap(lease *v1.Lease, nodes map[string]int) bool {
-	for _, slot := range lease.Spec.Slice.Nodes {
-		if _, ok := nodes[nodeFromSlot(slot)]; ok {
-			return true
-		}
-	}
-	return false
-}
-
-func closeLease(lease *v1.Lease, reason string, now time.Time) {
+// CloseLease is the SOLE CLOSER. Every transition of a Lease from open to closed
+// in this repository goes through this function, and hack/antifake enforces that
+// mechanically: no other non-test file may assign Lease.Status.Closed, .Ended, or
+// .ClosureReason.
+//
+// The rule exists because closure used to be cloned. applyResolution and
+// cleanupDeletedRun each hand-rolled the same three assignments, so a closure
+// could be half-stamped — Closed without Ended, which makes funding.effectiveEnd
+// bill the lease to its START instant so it accrues nothing for its entire life —
+// and no single place could be instrumented, metered, or fixed. Three
+// implementations of one obligation is three chances to drift.
+//
+// Closing is idempotent: a lease already closed keeps its original ending and
+// reason. A Lease is an immutable fact, and the first closure is the true one.
+func CloseLease(lease *v1.Lease, reason string, now time.Time) {
 	if lease.Status.Closed {
 		return
 	}
