@@ -318,42 +318,78 @@ type NodeReconciler struct {
 	Bridge *Bridge
 }
 
-func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+// fenced re-reads the Node from the UNCACHED APIReader and reports whether jobtree
+// may move a rank off it. It answers only on a FENCING ASSERTION: the Node object is
+// gone, or it carries the out-of-service taint. Both make Pod GC force-delete the
+// containers, so the rank is provably stopped.
+//
+// A cordon is not a failure — it means "place nothing new here", which Filter and the
+// default scheduler already honour. NotReady is not a failure either: it means we
+// cannot HEAR the kubelet, not that its containers stopped. Acting on either starts a
+// second live copy of a rank that is still running (R21).
+func (r *NodeReconciler) fenced(ctx context.Context, name types.NamespacedName) (bool, error) {
 	var node corev1.Node
-	deleted := false
-	if err := r.Bridge.APIReader.Get(ctx, req.NamespacedName, &node); err != nil {
+	if err := r.Bridge.APIReader.Get(ctx, name, &node); err != nil {
 		if !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, err
+			return false, err
 		}
-		deleted = true // a deleted node is a failed node
+		return true, nil // a deleted node is a fenced node
 	}
+	if nodeFailed(&node) {
+		return true, nil
+	}
+	if !nodeReady(&node) {
+		// Visible, and nothing else. An operator (or a fencing agent) decides whether
+		// the machine is dead by deleting the Node or tainting it out-of-service.
+		log.FromContext(ctx).Info("node is NotReady; taking no action (a swap needs a fencing assertion: delete the Node or taint it "+taintOutOfService+")",
+			"node", name.Name)
+	}
+	return false, nil
+}
 
-	// R21 + the stale-event flake (#36). Re-read decides, and it decides on FENCING,
-	// not on schedulability and not on a NotReady timer.
+func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	// Cheap filter, outside the lock: most node events are cordons, NotReady flaps
+	// and status heartbeats, and none of those is a fencing assertion. Skipping them
+	// here keeps the bridge mutex — which serializes every engine decision in the
+	// process — free for work that matters.
 	//
-	// `nodeUsable` is false for a cordoned node, and driving HandleNodeFailure off
-	// it swapped a healthy rank onto a spare while the original pod kept running --
-	// two live copies of the same rank. A cordon means "place nothing new here",
-	// which Filter and the default scheduler already honour; jobtree needs to do
-	// nothing. NotReady is likewise not a failure: it means we cannot HEAR the
-	// kubelet, not that its containers stopped. See nodeFailed.
-	//
-	// Re-checking here rather than trusting the enqueue is what makes a replayed
-	// event harmless: a stale NotReady is no longer a failure at all, and a stale
-	// delete is re-confirmed against the uncached APIReader above. That closes #36
-	// rather than narrowing it.
-	if !deleted && !nodeFailed(&node) {
-		if !nodeReady(&node) {
-			// Visible, and nothing else. An operator (or a fencing agent) decides
-			// whether the machine is dead by deleting the Node or tainting it
-			// out-of-service; only then does jobtree move the rank.
-			log.FromContext(ctx).Info("node is NotReady; taking no action (a swap needs a fencing assertion: delete the Node or taint it "+taintOutOfService+")",
-				"node", req.Name)
-		}
-		return ctrl.Result{}, nil
+	// This read decides NOTHING. It is a filter, not a verdict.
+	if ok, err := r.fenced(ctx, req.NamespacedName); err != nil || !ok {
+		return ctrl.Result{}, err
 	}
 
 	err := r.Bridge.WithWorld(ctx, func(state *controllers.ClusterState, now time.Time) error {
+		// THE VERDICT, RE-TAKEN UNDER THE LOCK. This is the whole point.
+		//
+		// The filter above ran before WithWorld acquired the bridge mutex, and a node
+		// reconcile can sit on that mutex for seconds behind a slow admission pass.
+		// In that window the world moves: a Node deleted a moment ago is recreated
+		// under the same name — a kubelet re-registering, an operator replacing a
+		// machine, a test rebuilding its fixture — and the scheduler plugin mints
+		// fresh leases on it.
+		//
+		// The stale verdict then closes the leases of a node that is alive and
+		// carrying work, with reason NodeFailure. The gang loses a rank it never lost,
+		// and if the spare has not been minted yet it is "without spare coverage" and
+		// the run is failed or parked. That is a live-node data loss, and it is what
+		// task #36 was. The old code re-read the node ABOVE this call and its comment
+		// claimed that "closes #36 rather than narrowing it" — but the re-read was
+		// outside the critical section, so it narrowed the window instead of closing
+		// it. A check that races the thing it guards is a comment, not a guard.
+		//
+		// Re-reading here costs one uncached GET per genuine fencing event, which is
+		// rare by construction, and it is the only read whose answer cannot change
+		// before it is used.
+		stillFenced, err := r.fenced(ctx, req.NamespacedName)
+		if err != nil {
+			return err
+		}
+		if !stillFenced {
+			log.FromContext(ctx).Info("node was fenced when the event fired and is alive now; taking no action",
+				"node", req.Name)
+			return nil
+		}
+
 		rc := controllers.NewRunController(state, staticClock{now})
 		rc.Period = r.Bridge.Period
 		rc.Recorder = r.Bridge.recorderFor()
