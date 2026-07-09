@@ -26,6 +26,87 @@ The README compose note lists R5/R6 first. I moved the two P0 correctness bugs
 
 ## Decisions (chronological)
 
+### R4 pt2a — ledger-compaction primitive IMPLEMENTED (2026-07-08)
+Design first (`R4-pt2-ledger-compaction.md`, merged #53), because the investigation
+showed the spec's option (a) is subtler than an input filter. Then landed the
+Evaluate-side primitive. Judgment calls:
+- **Investigation reframed the problem.** `funding.Evaluate`'s accrual has no
+  rolling `Now-Period` clamp (accrues from the first lease ever, bounded only by an
+  envelope's explicit `Start`), so closed leases DO gate funding via `MaxGPUHours`
+  caps (envelope/aggregate/lending) — "drop old closed leases" is not correct. And
+  the golden oracle captures class *widths*, not GPU-hours (`goldenFunding`), so it
+  would pass an accrual regression silently → pt2 needs its own accrual round-trip
+  test, not just golden parity. Both written into the design doc.
+- **Additive, bit-identical when off.** New `Input.SettlementHorizon` +
+  `PriorAccrual`; a zero horizon disables compaction, so `Evaluate` is bit-identical
+  to pre-pt2 (golden confirmed unchanged). Nothing turns it on yet (pt2b does), so
+  zero production behavior change.
+- **Provably-safe settlement condition, enforced by `settlementSafe`.** Compaction
+  applies only when (1) the horizon is non-zero, (2) no budget has aggregate caps,
+  and (3) the no-straddle invariant holds (every retained lease starts ≥ horizon).
+  Under (3) the settled and retained epochs never co-occur in the fill, so the
+  settled accrual is independent and can be seeded. Any violation → full replay
+  (correct, uncompacted). A test poisons `PriorAccrual` and confirms a straddle
+  forces the fallback.
+- **pt2a seeds envelope-level accrual only; aggregate caps deferred.** Seeding
+  `ConsumedGPUHours` + `HoursByClass` covers the envelope and lending caps (lending
+  reads `HoursByClass[ClassBorrowed]`). Aggregate caps need per-aggregate,
+  per-envelope attribution the Evaluation doesn't expose cleanly yet, so pt2a
+  guards them onto the full-replay path and pt2b adds them — a perf limitation, not
+  a correctness gap.
+- **Per-run hour reporting semantic (adopted, flagged).** Settled leases' hours roll
+  to the envelope, not the run; a run reports hours for its currently-retained
+  leases ("current consumption"). Per-run history is report-only (not gating, not in
+  the golden), so keeping it would force a per-run summary growing with run count.
+- **The rail is the round-trip test, not the golden.** `TestLedgerCompactionRoundTrip`
+  proves `Evaluate(full) == Evaluate(summary + retained)` on the gating outputs
+  (ConsumedGPUHours, HoursByClass, WidthByClass, retained class) with a `MaxGPUHours`
+  cap the settled hours exhaust — and a no-seed variant proves the drop is real and
+  the summary load-bearing. Full suite green under `-race`; golden bit-identical;
+  antifake + helm OK. `SettleAccrual` (the summary computation) ships too — pt2b's
+  budget controller will call it.
+- **Adversarial review caught a real bug before merge (the third time this has paid
+  off, after R3 and R4 pt1): `settlementSafe` was missing a `horizon ≤ Now` guard.**
+  "Settled" means `effectiveEnd ≤ horizon`, and `effectiveEnd` honors a lease's
+  *scheduled* `Interval.End`, not just an observed `Status.Ended`. So a horizon past
+  `Now` settles a lease that is still **live at `Now`** (`Now < End ≤ horizon`): the
+  replay drops its width while `SettleAccrual` integrates it past the clock. The
+  no-straddle loop inspects only *retained* leases, so it structurally cannot catch
+  this. Reproduced at 16 → 24 GPU-hours with `Owned` width 4 → 0 — both gating, and
+  silent under the golden (which captures widths, not hours), exactly the Finding-2
+  weakness the design doc predicted. It falsified this file's own claim that "a
+  wrongly-chosen horizon degrades to correct-but-uncompacted, never to a wrong
+  funding decision." **Fix:** `settlementSafe` refuses `horizon > Now`, and
+  `SettleAccrual` *returns nil* for such a horizon rather than clamping `Now` — a
+  clamped summary would be under-integrated, and pt2b persists summaries, so it
+  would silently under-charge forever once the clock passed the horizon. Regression
+  test `TestLedgerCompactionRefusesFutureHorizon`. Latent-only today (no production
+  path sets `Interval.End`, no caller sets a horizon), but pt2b's natural horizon
+  choice — `min` open-lease start — is `+∞` with no open leases, which is precisely
+  how it would have been reached.
+- **Re-verified after the fix.** A 500k-case seeded property fuzz (random ledgers
+  over windows / lending / sponsors / spare roles / multi-envelope / binding caps,
+  with lease ends deliberately weighted past `Now`, and horizons drawn before / at /
+  after `Now`) found **zero divergences** between `Evaluate(full)` and
+  `Evaluate(summary + retained)` on ConsumedGPUHours, HoursByClass, WidthByClass,
+  SpareWidth, and every open lease's class. ~4% of cases were genuinely
+  `settlementSafe`, so the exact-arithmetic branch — not just the fallback — got
+  real exercise. A second adversarial review (9 attack surfaces) filed no findings
+  and produced the identity argument: with `horizon ≤ Now` plus no-straddle, the
+  settled prefix `[earliest, horizon)` has an identical live set, ranking (which
+  depends on Run creationTimestamp, not `Now`) and segmentation in both runs, so the
+  seed equals the full replay's envelope state at the horizon bit-for-bit; the
+  `MaxGPUHours` clamp is monotone and per-charge, so clamping early equals clamping
+  late; and aggregate caps are the only cross-envelope coupling, which
+  `settlementSafe` excludes outright.
+- **Two pt2b caller contracts, recorded not fixed** (both unreachable in pt2a
+  because nothing persists a summary — one `Evaluate` call always summarizes under
+  the budgets it replays): pt2b must pick `H = min(Now, min open/pending start)`,
+  and must add a `WindowStart` to `SettledAccrual` and invalidate on window
+  movement, since a renewal *releases* pre-window hours in a live replay
+  (`TestWindowReopenRefunds`) that a stale summary would keep charging. Both are now
+  written into the design doc's pt2b section.
+
 ### R4 — SPLIT; part 1 (observability) IMPLEMENTED, caching reverted (2026-07-08)
 R4's spec lists two "composable changes" (cached reads + snapshot; ledger
 compaction). I split them (as R2 was split; David confirmed the split when asked),

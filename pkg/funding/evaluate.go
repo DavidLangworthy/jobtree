@@ -31,6 +31,31 @@ type Input struct {
 	Runs    map[string]*v1.Run // keyed by keys.NamespacedKey
 	Now     time.Time
 	Period  time.Duration // accounting horizon; <= 0 uses DefaultPeriod
+
+	// R4 pt2 ledger compaction. When SettlementHorizon is non-zero, leases whose
+	// accrual ended at or before it are SETTLED: they are dropped from the replay
+	// and their per-envelope contribution is supplied instead by PriorAccrual
+	// (compute it with SettleAccrual). Evaluate only compacts when it is provably
+	// safe — the horizon is at or before Now (so nothing settled is still live),
+	// it precedes every retained lease's start (no straddle), and no budget in
+	// play uses aggregate caps (deferred to pt2b) — otherwise it falls back to a
+	// full replay, so a wrongly-chosen horizon degrades to correct-but-uncompacted,
+	// never to a wrong funding decision. A zero SettlementHorizon disables
+	// compaction entirely: Evaluate is then bit-identical to the pre-pt2 engine
+	// (the golden oracle's guarantee).
+	SettlementHorizon time.Time
+	PriorAccrual      map[EnvelopeKey]SettledAccrual
+}
+
+// SettledAccrual is one envelope's GPU-hour accrual from the settled epoch
+// (leases that ended at or before a settlement horizon). Seeding it lets Evaluate
+// replay only the retained leases while still charging envelope and lending
+// MaxGPUHours caps against the full history and reporting the full consumed
+// hours. Aggregate-cap accrual is intentionally absent — pt2a does not compact
+// aggregate-capped budgets (see Input.SettlementHorizon); pt2b adds it.
+type SettledAccrual struct {
+	ConsumedGPUHours float64
+	HoursByClass     map[Class]float64
 }
 
 // Evaluation is the derived classification at Input.Now plus the replayed
@@ -179,7 +204,26 @@ func Evaluate(in Input) *Evaluation {
 	})
 	ev.envelopes = envIndex
 
-	facts := buildLeaseFacts(in)
+	// R4 pt2: seed the settled epoch's accrual and drop its leases from the
+	// replay, but only where provably safe (see settlementSafe). Seeding the
+	// per-envelope ConsumedGPUHours / HoursByClass carries forward exactly what the
+	// depletion math and the envelope+lending caps read, so the retained replay
+	// continues from the correct baseline.
+	compact := settlementSafe(in)
+	if compact {
+		for key, prior := range in.PriorAccrual {
+			acct := envIndex[key]
+			if acct == nil {
+				continue
+			}
+			acct.ConsumedGPUHours += prior.ConsumedGPUHours
+			for cl, h := range prior.HoursByClass {
+				acct.HoursByClass[cl] += h
+			}
+		}
+	}
+
+	facts := buildLeaseFacts(in, compact)
 
 	// Replay: step through the event timeline, holding the funded set
 	// constant between events, and split segments at integral-depletion
@@ -217,11 +261,17 @@ func Evaluate(in Input) *Evaluation {
 	return ev
 }
 
-// buildLeaseFacts parses widths and group indices once.
-func buildLeaseFacts(in Input) []*leaseFact {
+// buildLeaseFacts parses widths and group indices once. When compact is set it
+// drops settled leases (accrual ended at or before Input.SettlementHorizon) —
+// their contribution is supplied by Input.PriorAccrual, so replaying them again
+// would double-count.
+func buildLeaseFacts(in Input, compact bool) []*leaseFact {
 	facts := make([]*leaseFact, 0, len(in.Leases))
 	for i := range in.Leases {
 		lease := &in.Leases[i]
+		if compact && leaseSettled(lease, in.SettlementHorizon) {
+			continue
+		}
 		width := int32(len(lease.Spec.Slice.Nodes))
 		if width == 0 {
 			width = 1
@@ -240,6 +290,101 @@ func buildLeaseFacts(in Input) []*leaseFact {
 		})
 	}
 	return facts
+}
+
+// leaseSettled reports whether a lease's accrual ended at or before the horizon
+// (so it belongs to the settled epoch, not the retained replay). An open lease
+// (zero effectiveEnd) is never settled.
+func leaseSettled(lease *v1.Lease, horizon time.Time) bool {
+	end := effectiveEnd(lease)
+	return !end.IsZero() && !end.After(horizon)
+}
+
+// settlementSafe reports whether Evaluate may compact this input. It requires
+// (1) a non-zero horizon that does not lead Now, (2) no budget in play using
+// aggregate caps — pt2a seeds only envelope-level accrual, so aggregate-capped
+// budgets are left to a full replay (pt2b), and (3) the no-straddle invariant:
+// every RETAINED lease starts at or after the horizon, so the settled and
+// retained epochs never co-occur in the fill and the settled accrual is
+// independent of anything retained. When any fails, Evaluate replays the full
+// ledger — correct, just uncompacted.
+func settlementSafe(in Input) bool {
+	if in.SettlementHorizon.IsZero() {
+		return false
+	}
+	// A horizon ahead of Now would settle leases that are still LIVE at Now: a
+	// lease whose Interval.End lies in (Now, horizon] has an effectiveEnd at or
+	// before the horizon, so leaseSettled calls it settled while leaseLiveAt still
+	// funds it. The no-straddle loop below only inspects retained leases, so it
+	// cannot catch that one. Requiring horizon <= Now makes it impossible: a
+	// settled lease's end is then <= Now, and leaseLiveAt is half-open, so no
+	// settled lease can hold width at Now. Its accrual is also complete, which is
+	// what lets SettleAccrual integrate it as of the horizon rather than as of Now.
+	if in.SettlementHorizon.After(in.Now) {
+		return false
+	}
+	for i := range in.Budgets {
+		if len(in.Budgets[i].Spec.AggregateCaps) > 0 {
+			return false
+		}
+	}
+	for i := range in.Leases {
+		l := &in.Leases[i]
+		if leaseSettled(l, in.SettlementHorizon) {
+			continue
+		}
+		if l.Spec.Interval.Start.Time.Before(in.SettlementHorizon) {
+			return false
+		}
+	}
+	return true
+}
+
+// SettleAccrual computes the per-envelope settled-epoch summary for compaction:
+// it replays only the leases that end at or before horizon, evaluated as of
+// horizon (so each accrues its full settled life), and returns their envelope
+// accrual. Feed the result back as Input.PriorAccrual with the same
+// SettlementHorizon to drop those leases from later replays with no change to the
+// funding result (R4 pt2). Returns nil for an empty epoch, and for a horizon that
+// leads Now — a summary taken past the clock would integrate leases that are
+// still live, and persisting it (pt2b) would over-charge the envelope forever
+// after. Callers should only advance the horizon past leases that can no longer
+// be reclassified — i.e. below every retained lease's start and within the
+// current envelope window.
+func SettleAccrual(in Input, horizon time.Time) map[EnvelopeKey]SettledAccrual {
+	if horizon.IsZero() || horizon.After(in.Now) {
+		return nil
+	}
+	epoch := in
+	epoch.Now = horizon
+	epoch.SettlementHorizon = time.Time{}
+	epoch.PriorAccrual = nil
+	var settled []v1.Lease
+	for i := range in.Leases {
+		if leaseSettled(&in.Leases[i], horizon) {
+			settled = append(settled, in.Leases[i])
+		}
+	}
+	if len(settled) == 0 {
+		return nil
+	}
+	epoch.Leases = settled
+	ev := Evaluate(epoch)
+	out := make(map[EnvelopeKey]SettledAccrual, len(ev.envelopes))
+	for key, acct := range ev.envelopes {
+		if acct.ConsumedGPUHours == 0 && len(acct.HoursByClass) == 0 {
+			continue
+		}
+		sa := SettledAccrual{
+			ConsumedGPUHours: acct.ConsumedGPUHours,
+			HoursByClass:     make(map[Class]float64, len(acct.HoursByClass)),
+		}
+		for cl, h := range acct.HoursByClass {
+			sa.HoursByClass[cl] = h
+		}
+		out[key] = sa
+	}
+	return out
 }
 
 // eventTimes collects the sorted, deduplicated timeline: lease starts and

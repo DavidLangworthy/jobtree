@@ -25,7 +25,7 @@ mechanical, no design needed (implement straight from the audit — Opus/Sonnet)
 | [R1](R1-phantom-lease-clear.md) | Phantom `pending` lease funding leak | ✅ | ✅ #46 | ✅ |
 | [R2](R2-gang-recovery.md) | Partial-gang wedge / restart / adopt-at-partial-width | ✅ | ◐ pt1 done; pt2/3 pending | ◐ |
 | [R3](R3-opportunistic-fork.md) | Opportunistic activation incoherent post-cutover | ✅ (refined) | ✅ Promise path | ✅ engine + plugin |
-| [R4](R4-plugin-hotpath.md) | Permit hot-path relists + unbounded ledger replay | ✅ | ◐ pt1 done (hot-path metrics); pt1b caching + pt2 compaction pending | ◐ unit+race; caching/bench deferred |
+| [R4](R4-plugin-hotpath.md) | Permit hot-path relists + unbounded ledger replay | ✅ | ◐ pt1 metrics + pt2a compaction primitive done; pt1b caching + pt2b settlement pending | ◐ unit+race+round-trip; caching/bench deferred |
 
 **P1 — multi-tenant safety**
 

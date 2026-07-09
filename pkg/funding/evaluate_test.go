@@ -79,6 +79,15 @@ func closedAt(t time.Time) leaseOpt {
 	}
 }
 
+// endingAt sets a scheduled end without closing the lease, so it is still live
+// before that instant. effectiveEnd honors it either way.
+func endingAt(t time.Time) leaseOpt {
+	return func(l *v1.Lease) {
+		end := v1.NewTime(t)
+		l.Spec.Interval.End = &end
+	}
+}
+
 func withRole(role string) leaseOpt {
 	return func(l *v1.Lease) { l.Spec.Slice.Role = role }
 }
@@ -153,6 +162,152 @@ func TestOwnerClaimFunded(t *testing.T) {
 	run := ev.Run("default/train")
 	if run.GPUs[ClassOwned] != 4 || math.Abs(run.GPUHours[ClassOwned]-8) > 1e-9 {
 		t.Errorf("expected 4 owned GPUs and 8 owned GPU-hours, got %d / %v", run.GPUs[ClassOwned], run.GPUHours[ClassOwned])
+	}
+}
+
+// R4 pt2: the ledger-compaction primitive. Settling closed leases before the
+// earliest retained start and feeding SettleAccrual back must reproduce the full
+// replay's funding decision EXACTLY — including a MaxGPUHours cap whose depletion
+// the settled hours drive — while dropping the settled leases from the replay.
+// The golden oracle does not capture GPU-hours, so this round-trip is the rail.
+func TestLedgerCompactionRoundTrip(t *testing.T) {
+	horizon := base.Add(5 * time.Hour)
+	now := base.Add(10 * time.Hour)
+	westKey := EnvelopeKey{Budget: "team-budget", Envelope: "west"}
+	budgets := []v1.Budget{budgetOf("team", "team-budget", nil, env("west", 8, withMaxHours(30)))}
+	runs := runsMap(runOf("old", "team", base, false), runOf("new", "team", horizon, false))
+	// Settled: 4 GPUs, base→horizon = 20 GPU-hours. Retained: 4 GPUs open from the
+	// horizon. The 30 GPU-hour cap is exhausted mid-way through the retained lease,
+	// so the settled hours must be carried forward for the demotion to match.
+	settled := leaseOf("settled", "old", "team", "team-budget", "west", 4, base, closedAt(horizon))
+	retained := leaseOf("retained", "new", "team", "team-budget", "west", 4, horizon)
+	leases := []v1.Lease{settled, retained}
+	mkInput := func() Input { return Input{Budgets: budgets, Leases: leases, Runs: runs, Now: now} }
+
+	full := Evaluate(mkInput())
+
+	prior := SettleAccrual(mkInput(), horizon)
+	if len(prior) == 0 {
+		t.Fatalf("SettleAccrual produced no summary for a settled lease")
+	}
+	ci := mkInput()
+	ci.SettlementHorizon = horizon
+	ci.PriorAccrual = prior
+	compact := Evaluate(ci)
+
+	// Dropping the settled lease WITHOUT the seed changes the result — proof that
+	// the drop is real and the summary is load-bearing: unseeded, the retained
+	// lease no longer inherits the exhausted cap (20 GPU-hours vs the full 30).
+	di := mkInput()
+	di.SettlementHorizon = horizon
+	if noSeed := Evaluate(di); math.Abs(noSeed.Envelope(westKey).ConsumedGPUHours-full.Envelope(westKey).ConsumedGPUHours) < 1e-6 {
+		t.Errorf("expected dropping settled leases without the seed to change consumed hours; both = %v", full.Envelope(westKey).ConsumedGPUHours)
+	}
+
+	if fc, cc := classOf(t, full, leases, "retained"), classOf(t, compact, leases, "retained"); fc != cc {
+		t.Errorf("retained lease class differs: full=%s compact=%s", fc, cc)
+	}
+
+	fe, ce := full.Envelope(westKey), compact.Envelope(westKey)
+	if math.Abs(fe.ConsumedGPUHours-ce.ConsumedGPUHours) > 1e-9 {
+		t.Errorf("ConsumedGPUHours: full=%v compact=%v", fe.ConsumedGPUHours, ce.ConsumedGPUHours)
+	}
+	for _, cl := range []Class{ClassOwned, ClassShared, ClassBorrowed, ClassUnfunded} {
+		if math.Abs(fe.HoursByClass[cl]-ce.HoursByClass[cl]) > 1e-9 {
+			t.Errorf("HoursByClass[%s]: full=%v compact=%v", cl, fe.HoursByClass[cl], ce.HoursByClass[cl])
+		}
+		if fe.WidthByClass[cl] != ce.WidthByClass[cl] {
+			t.Errorf("WidthByClass[%s]: full=%d compact=%d", cl, fe.WidthByClass[cl], ce.WidthByClass[cl])
+		}
+	}
+	// The cap actually bound (otherwise the round-trip proves nothing about
+	// depletion): 30 GPU-hours consumed, and the retained 4-GPU lease demoted to
+	// Unfunded once the settled hours exhausted the envelope.
+	if math.Abs(fe.ConsumedGPUHours-30) > 1e-6 {
+		t.Errorf("expected the 30 GPU-hour cap to bind, consumed=%v", fe.ConsumedGPUHours)
+	}
+	if fe.WidthByClass[ClassUnfunded] != 4 {
+		t.Errorf("expected the retained 4-GPU lease demoted to Unfunded at Now, got unfunded width %d", fe.WidthByClass[ClassUnfunded])
+	}
+}
+
+// R4 pt2: compaction is only applied when provably safe. A retained lease that
+// STARTED before the horizon straddles the settled epoch, so Evaluate must ignore
+// the settlement (poison PriorAccrual and all) and do a full replay — correct,
+// just uncompacted.
+func TestLedgerCompactionFallsBackOnStraddle(t *testing.T) {
+	horizon := base.Add(5 * time.Hour)
+	now := base.Add(10 * time.Hour)
+	westKey := EnvelopeKey{Budget: "team-budget", Envelope: "west"}
+	budgets := []v1.Budget{budgetOf("team", "team-budget", nil, env("west", 8))}
+	runs := runsMap(runOf("a", "team", base, false))
+	settled := leaseOf("settled", "a", "team", "team-budget", "west", 4, base, closedAt(horizon))
+	// Open, started before the horizon → straddles it.
+	straddle := leaseOf("straddle", "a", "team", "team-budget", "west", 4, base.Add(2*time.Hour))
+	leases := []v1.Lease{settled, straddle}
+	mkInput := func() Input { return Input{Budgets: budgets, Leases: leases, Runs: runs, Now: now} }
+
+	full := Evaluate(mkInput())
+	ci := mkInput()
+	ci.SettlementHorizon = horizon
+	ci.PriorAccrual = map[EnvelopeKey]SettledAccrual{westKey: {ConsumedGPUHours: 999}} // must be ignored
+	compact := Evaluate(ci)
+
+	if math.Abs(full.Envelope(westKey).ConsumedGPUHours-compact.Envelope(westKey).ConsumedGPUHours) > 1e-9 {
+		t.Errorf("straddle must force a full replay (poison PriorAccrual ignored): full=%v compact=%v",
+			full.Envelope(westKey).ConsumedGPUHours, compact.Envelope(westKey).ConsumedGPUHours)
+	}
+}
+
+// R4 pt2 (adversarial-review catch): a horizon ahead of Now would settle a lease
+// that is still LIVE — an Interval.End in (Now, horizon] puts effectiveEnd at or
+// before the horizon while the lease still holds width at Now. settlementSafe's
+// no-straddle loop skips settled leases, so only an explicit horizon <= Now guard
+// catches this one. Unguarded, compaction dropped the live lease's width (Owned 4
+// -> 0) and SettleAccrual integrated it past the clock (16 -> 24 GPU-hours): both
+// are gating outputs, and both would fail silently because the golden oracle
+// captures widths and lenders, not GPU-hours.
+func TestLedgerCompactionRefusesFutureHorizon(t *testing.T) {
+	now := base.Add(5 * time.Hour)
+	horizon := base.Add(8 * time.Hour)
+	westKey := EnvelopeKey{Budget: "team-budget", Envelope: "west"}
+	budgets := []v1.Budget{budgetOf("team", "team-budget", nil, env("west", 8))}
+	runs := runsMap(runOf("ghost", "team", base, false))
+	// Live at Now (5h < 7h), yet effectiveEnd (7h) is at or before the horizon (8h).
+	ghost := leaseOf("ghost", "ghost", "team", "team-budget", "west", 4, base.Add(time.Hour), endingAt(base.Add(7*time.Hour)))
+	leases := []v1.Lease{ghost}
+	mkInput := func() Input { return Input{Budgets: budgets, Leases: leases, Runs: runs, Now: now} }
+
+	if prior := SettleAccrual(mkInput(), horizon); prior != nil {
+		t.Errorf("SettleAccrual must refuse a horizon past Now rather than integrate a live lease to it, got %v", prior)
+	}
+
+	full := Evaluate(mkInput())
+	fe := full.Envelope(westKey)
+	if math.Abs(fe.ConsumedGPUHours-16) > 1e-6 {
+		t.Fatalf("setup: expected 4 GPUs x 4h = 16 GPU-hours accrued by Now, got %v", fe.ConsumedGPUHours)
+	}
+	if fe.WidthByClass[ClassOwned] != 4 {
+		t.Fatalf("setup: expected the lease live and Owned at Now, got owned width %d", fe.WidthByClass[ClassOwned])
+	}
+
+	ci := mkInput()
+	ci.SettlementHorizon = horizon
+	// The summary a caller would have computed for this horizon; it must be ignored.
+	ci.PriorAccrual = map[EnvelopeKey]SettledAccrual{westKey: {
+		ConsumedGPUHours: 24,
+		HoursByClass:     map[Class]float64{ClassOwned: 24},
+	}}
+	ce := Evaluate(ci).Envelope(westKey)
+
+	if math.Abs(ce.ConsumedGPUHours-fe.ConsumedGPUHours) > 1e-9 {
+		t.Errorf("a horizon past Now must force a full replay: full=%v compact=%v GPU-hours", fe.ConsumedGPUHours, ce.ConsumedGPUHours)
+	}
+	if ce.WidthByClass[ClassOwned] != fe.WidthByClass[ClassOwned] {
+		t.Errorf("a horizon past Now must not drop a live lease's width: full=%d compact=%d", fe.WidthByClass[ClassOwned], ce.WidthByClass[ClassOwned])
+	}
+	if fc, cc := classOf(t, full, leases, "ghost"), classOf(t, Evaluate(ci), leases, "ghost"); fc != cc {
+		t.Errorf("live lease class differs: full=%s compact=%s", fc, cc)
 	}
 }
 
