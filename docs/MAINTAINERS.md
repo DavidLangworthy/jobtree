@@ -30,9 +30,9 @@ discussed. If that changes, it will change in `LICENSE` and here first.
 The maintainer decides; the work is done by AI agents under his direction. Design
 decisions are recorded — with their reasoning, and with the owner's rulings quoted
 verbatim — in
-[`IMPLEMENTATION-LOG.md`](docs/project/remediation/IMPLEMENTATION-LOG.md).
+[`IMPLEMENTATION-LOG.md`](https://github.com/DavidLangworthy/jobtree/blob/main/docs/project/remediation/IMPLEMENTATION-LOG.md).
 The working method, including the rules that were learned the expensive way, is
-written down in [`working-agreement.md`](docs/project/working-agreement.md).
+written down in [`working-agreement.md`](https://github.com/DavidLangworthy/jobtree/blob/main/docs/project/working-agreement.md).
 
 ## Authorship
 
@@ -45,7 +45,7 @@ commits** carry a `Co-Authored-By: Claude` trailer as of 2026-07-09. Run
 Several load-bearing design documents were produced by Claude models working in
 distinct roles — design and hard root-cause, implementation, and adversarial
 review — a split described in
-[`working-agreement.md`](docs/project/working-agreement.md).
+[`working-agreement.md`](https://github.com/DavidLangworthy/jobtree/blob/main/docs/project/working-agreement.md).
 Adversarial review, by one model of another's code, caught four merge-blocking
 defects in the funding path that the unit tests and the golden oracle both passed.
 
