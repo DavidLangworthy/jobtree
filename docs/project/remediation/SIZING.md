@@ -44,7 +44,7 @@ Three multipliers, learned the hard way:
   tests structurally cannot (the `buildPod` cohort drop, the `sparesPerGroup`
   field-name bug).
 - **Blocked on a decision** ⇒ the size is a lie until the decision lands. Two of the
-  five have now been made (R9, R13); the three that remain block nothing high-severity.
+  five have now been made (R9, R13, R8, R7); the one that remains blocks nothing.
 
 ## Where we actually are
 
@@ -87,10 +87,17 @@ is the one that forces durable lease identity.
 
 | Item | Size | Why | Blocked on |
 |---|---|---|---|
-| **R7** namespace tenancy | **L** (pt1 **M**) | `EnvelopeKey` has no namespace, so same-named Budgets in different namespaces alias into one envelope. Six construction sites in `evaluate.go`. Funding engine ⇒ review + **golden regen**, with intra-namespace parity as the rail. | **pt2 (owner identity) is David's** |
+| **R7** namespace tenancy | **2×M** (~1 day) | **Re-scoped** by [R7-tenancy-amendment.md](R7-tenancy-amendment.md) after David's four rulings. pt1: `EnvelopeKey`/`claimKey` gain `Namespace`. pt2: **delete `Run.Spec.Owner`** — the namespace pays, so there is no field to forge, and **no new admission machinery at all**. Funding engine ⇒ adversarial review + golden re-topologize. | — (all decisions in) |
 
 Land R7's keying change **before** R4 pt1b/pt2b and R13 — all three touch the same
 `EnvelopeKey`/Lease reference surface, and rebasing that churn twice is waste.
+
+The amendment's adversarial critique found that **`PaidByNamespace` must be stamped at
+three lease-constructing sites, not one**: `admission.PodLeaseWithRole` (the real
+mint), `binder.buildLease` (legacy), and `run_controller.go:434`'s **hypothetical**
+leases — never persisted, but they *do* feed `funding.Evaluate`, so a forecast would
+silently diverge from the derivation. R2 pt3's mint-time identity threads the same
+three sites: **touch that surface once.**
 
 ### P2 — workload lifecycle
 
@@ -258,12 +265,16 @@ the *size* of other items rather than just their start date:
   training: a lost rank hangs the collective, and the survivors keep charging the
   budget.) We build this edge ourselves in 9A-3; it is *not* a JobSet `failurePolicy`.
 
-Two remain, and neither blocks the highest-severity work:
+- ✅ **R7: the tenant is the NAMESPACE.** Four rulings: one kind of principal (a
+  project is a principal like a user); a team is a *group*, not a principal;
+  *"permissions flow with accountability"*; and **the namespace pays** — *"if Bob
+  gives Alice his wallet it's his money that gets spent."* The namespace→tier binding
+  is admin-set. Family sharing and sponsor lending **do** cross namespaces, along
+  admin-declared edges only. See [R7-tenancy-amendment.md](R7-tenancy-amendment.md).
 
-1. **R7: is the tenant a namespace or an authenticated owner string?** Gates R7
-   **pt2 only**; pt1 (namespacing the `EnvelopeKey`) proceeds regardless, and pt1 is
-   the piece that must land before R4 pt2b and R13.
-2. **R19: license** (Apache-2.0 vs MIT) and whether governance becomes real. Legal,
+**One remains**, and it does not block the highest-severity work:
+
+1. **R19: license** (Apache-2.0 vs MIT) and whether governance becomes real. Legal,
    so start it early even though the code is trivial.
 
 One implicit decision still stands, and I will surface it rather than silently pick
@@ -280,7 +291,7 @@ location is now settled by the clean-break rule: Budget `status`.)
 **Lane 2 — finish P0, sequenced by the shared insight.**
 4. **R2 pt3** (**L**) — forces durable lease identity.
 5. **R4 pt1b** (**L**) — reuses it; needs a design pass first.
-6. **R7 pt1** (**M**) — namespace the `EnvelopeKey` *before* R4 pt2b and R13.
+6. **R7 pt1 + pt2** (**2×M**) — namespace the `EnvelopeKey`, delete `Run.Spec.Owner`; before R4 pt2b and R13.
 7. **R4 pt2b** (**L**).
 
 **Lane 3 — mechanical, parallelizable, Sonnet.** No dependency on anything above,
@@ -304,12 +315,13 @@ adversarial verification on every funding-path change.
 | Bucket | Items | Days |
 |---|---|---|
 | XS + S | R10, R16, R17, R24, R15, R19, 9A-0 | **~1.5** |
-| M | R12, R14, R18, R20, R23, R13, 9A-1, 9A-2 | **~4** |
-| L | R2 pt3, R4 pt1b, R4 pt2b, R7 pt1, R11, R21+R22+R25 bundle, R26, 9A-3, 9A-4 | **~11** |
+| M | R12, R14, R18, R20, R23, R13, 9A-1, 9A-2, R7 pt1+pt2 | **~5** |
+| L | R2 pt3, R4 pt1b, R4 pt2b, R11, R21+R22+R25 bundle, R26, 9A-3, 9A-4 | **~10** |
 | XL | ROLES | **~3** |
 
-**≈ 14–17 focused days.** With Lane 3 (the mechanical items) running concurrently
-on Sonnet, **≈ 11–13**.
+**≈ 13–16 focused days.** With Lane 3 running concurrently on Sonnet, **≈ 10–12**.
+(R7 fell from **L** to **2×M** once its rulings landed — the *second* time a decision
+shrank an item rather than merely unblocking it.)
 
 Where the ~6 days went:
 

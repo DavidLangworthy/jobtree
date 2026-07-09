@@ -26,6 +26,62 @@ The README compose note lists R5/R6 first. I moved the two P0 correctness bugs
 
 ## Decisions (chronological)
 
+### R7 settled: the tenant is the namespace (2026-07-09)
+David gave four rulings, each quoted verbatim in `R7-tenancy-amendment.md`. A Fable
+design pass turned them into a design; three adversarial critics (security, workflow
+coherence, blast radius) raised nine objections; Fable answered every one in §14.
+Verdict: **sound-with-fixes, no blocking objections. No decisions remain for David.**
+
+- **The rulings.** (1) There is one kind of funding principal — *"a project could lend
+  to or borrow from another project or user, just like a user. And a project lives in a
+  team and gets family sharing just like a user."* So a **team is a group**, an interior
+  node of the tier tree, not a principal. (2) *"Users have more accountability than
+  teams, and permissions flow with accountability"* — quota spendable without an
+  accountable individual is a hazard. (3) **The namespace pays**: *"if Bob gives Alice
+  his wallet it's his money that gets spent."* (4) The namespace→tier binding is
+  **admin-set** today; self-service tooling is deliberately deferred because it is
+  *"worthless if there is nothing to run it."*
+- **`Run.Spec.Owner` is DELETED.** Today it is a free string checked only for
+  non-emptiness (`run_types.go:295-296`) while R5's VAP matches **pods only** — so a
+  researcher can set `owner: org:ai:victim` and class Owned against a victim's envelope.
+  Deriving the owner from the namespace removes the field, and with it the whole forgery
+  class. A subtractive fix beats a guard.
+- **R7 shrank: L → 2×M (~1 focused day), and needs NO new admission machinery.** The
+  second time a ruling shrank an item rather than merely unblocking it (R13 was first).
+  Residual work: namespace `EnvelopeKey`/`claimKey`, delete the field, thread the
+  namespace through the derivation, re-topologize the golden.
+- **The critique earned its keep three times:**
+  - *Owner-string collision (major).* Namespacing `EnvelopeKey` does **not** close the
+    aliasing class, because `cover` resolves by owner **string** cluster-wide
+    (`cover.go:85-87,102-109`). The tenancy boundary rested on an unstated owner-string
+    uniqueness assumption the design never named. Fixed with an explicit invariant —
+    **one namespace per leaf owner** — detected during derivation, failing safe to
+    *unbound*, plus an R26 alarm and a regression fixture.
+  - *The stated fail-safe was false (minor, but real).* `lendingAllows` returns **true**
+    when `LendingPolicy.To` is empty (`evaluate.go:909-910`), so an unbound/ownerless
+    namespace could still borrow from a permissive sponsor. Deleting `Run.Spec.Owner`
+    makes an empty borrower reachable, so pt2 gains a one-line empty-borrower guard.
+    A hazard *introduced* by the change, caught before it was written.
+  - *Three lease-stamping sites, not one (major).* `PaidByNamespace` must be stamped at
+    `admission.PodLeaseWithRole` (the real mint), `binder.buildLease` (legacy), **and**
+    `run_controller.go:434`'s *hypothetical* leases — never persisted, but they **do**
+    feed `funding.Evaluate`, so a forecast would silently diverge from the derivation.
+    This corrects the earlier "R2 pt3 and R13 touch the mint once" sequencing claim:
+    all three touch the same surface, so coordinate them.
+- **David's project-vs-team distinction is real in the four-class model.** A *project's*
+  members run in the project's namespace and get **Owned** (senior, non-recallable). A
+  *team's* members run in their own namespaces and reach the team pool through the family
+  axis, getting **Shared** (junior, recallable). Same pool, different class — so a team
+  pool can never confer Owned-class capacity on a member. That falls directly out of his
+  accountability principle rather than being designed in.
+- **Impersonation is inert for funding**, as predicted: `request.userInfo` appears in
+  **zero** Go files, and the mint builds the Lease from `run.Namespace` alone. Acting as
+  a project buys permission and identity, not payment.
+- **Two defaults chosen, his to veto:** `LendingPolicy.To` stays owner-string patterns
+  (subtree lending preserved) rather than namespace names; and binding conflicts fail
+  safe to *unbound* + an R26 alarm rather than being rejected at admission (the
+  alternative buys a client-backed webhook for an admin-error class).
+
 ### David's ruling: workload failure policy (2026-07-09)
 **Per-role, default `Fail`; `Retry(n, backoff)` and `Ignore` opt-in.** David took the
 standing recommendation (`R8-pod-failure-handling.md:56-59`, rationale at :32-48).
