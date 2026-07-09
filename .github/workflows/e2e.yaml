@@ -18,8 +18,8 @@ jobs:
     name: kind e2e (real cluster)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.26.5'
 
@@ -28,12 +28,12 @@ jobs:
       # the whole dependency graph from cold, every run. One builder stage
       # (Dockerfile, two targets) plus a persistent cache makes the second image
       # nearly free and the first mostly a cache restore.
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       # Exports ACTIONS_RUNTIME_TOKEN / ACTIONS_CACHE_URL so `type=gha` works
       # from a raw `docker buildx build` (build-push-action would set these
       # itself, but we drive the build through `make e2e-build` so that CI and a
       # developer's local build stay the same command).
-      - uses: crazy-max/ghaction-github-runtime@v3
+      - uses: crazy-max/ghaction-github-runtime@v4
 
       - name: Install kind
         run: |
@@ -49,7 +49,7 @@ jobs:
           sudo mv "${RUNNER_TEMP}/kind" /usr/local/bin/kind
           kind version
 
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
         with:
           version: 'v3.16.4'
 
