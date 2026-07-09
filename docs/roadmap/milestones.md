@@ -1,6 +1,28 @@
 # Milestone roadmap
 
-The project is organized into progressive milestones. Each entry outlines scope, definition of done, validation, and artifacts. Status checkboxes reflect the current state of the repository and link to detailed design documents.
+!!! warning "Read this before the checkboxes below"
+
+    **A ticked box on this page means "scope built and unit-tested." It does not
+    mean correct, and it does not mean production-ready.**
+
+    A twelve-perspective, code-grounded audit in July 2026
+    (`docs/project/design-vs-implementation-audit.md`) found that the newly
+    load-bearing parts of the system — the scheduler plugin that is the sole
+    committer of GPU funding — carried the repository's worst and least-audited
+    failure semantics. Several milestones below were ticked while defects in the
+    behaviour they claim were still present. Some still are.
+
+    **The authoritative status is the remediation board**, in the repository
+    under `docs/project/remediation/README.md`, sized and sequenced in
+    `docs/project/remediation/SIZING.md`. Known-open defects are tracked there,
+    including ones that can corrupt a running job.
+
+    This page is kept as a record of what was *scoped and constructed*, milestone
+    by milestone, with its false claims corrected rather than deleted. Where a
+    milestone's stated outcome is not yet true, it now says so.
+
+The project was organized into progressive milestones. Each entry outlines scope,
+definition of done, validation, and artifacts.
 
 - [x] **M0 — Repository bootstrap & CRD shells**
   - **Scope:** Establish the Go module, initial CI, and strongly typed CRDs for Budget, Run, Reservation, and Lease with defaulting/validation logic and sample manifests.
@@ -13,7 +35,7 @@ The project is organized into progressive milestones. Each entry outlines scope,
   - **Scope:** Implement concurrency and GPU-hour accounting per envelope, aggregate caps, and lending ACLs; expose headroom metrics.
   - **Definition of done:** Budget controller reconciles live Budget objects, updating status/metrics; cover library returns funding plans respecting family sharing and lending limits.
   - **Validation:** Unit tests cover headroom math, aggregate caps, lending guardrails; controller tests validate status and metrics.
-  - **Artifacts delivered:** `pkg/budget`, `pkg/cover`, `controllers/budget_controller.go`, documentation under `docs/concepts/budgets.md`.
+  - **Artifacts delivered:** `pkg/cover`, `controllers/budget_controller.go`, documentation under `docs/concepts/budgets.md`. *(Correction: `pkg/budget` no longer exists. The accounting engine was replaced by `pkg/funding` — one pure `Evaluate` that derives the four funding classes from leases, budgets and the clock, and stores nothing. See `docs/project/quota-semantics.md`.)*
   - **Design doc:** [docs/roadmap/design/M1-budget-accounting-engine.md](design/M1-budget-accounting-engine.md)
 
 - [x] **M2 — Topology discovery & group-aware packing**
@@ -25,7 +47,7 @@ The project is organized into progressive milestones. Each entry outlines scope,
 
 - [x] **M3 — Binder & Leases (runs that can start immediately)**
   - **Scope:** Materialize pod manifests for feasible runs, emit Lease objects, and stitch cover/pack outputs into a runnable plan.
-  - **Definition of done:** Deterministic binder splits funding segments across node allocations, and the run controller admits a pending run using the in-memory cluster state while updating Run status.
+  - **Definition of done:** Deterministic binder splits funding segments across node allocations, and the run controller admits a pending run using the in-memory cluster state while updating Run status. *(Superseded: the run controller no longer commits funding. The scheduler plugin is the **sole committer** — it gang-gates at `Permit` and mints one `Lease` per pod at `PreBind`. `pkg/binder.Materialize` survives only for the legacy path and the parity tests.)*
   - **Validation:** Unit tests for binder split/validation logic and controller admission over a synthetic topology.
   - **Artifacts delivered:** `pkg/binder`, `controllers/run_controller.go`, `docs/user-guide/quickstart.md` updates summarizing the immediate-start path.
   - **Design doc:** [docs/roadmap/design/M3-binder-and-leases.md](design/M3-binder-and-leases.md)
@@ -46,7 +68,7 @@ The project is organized into progressive milestones. Each entry outlines scope,
 
 - [x] **M6 — Failure handling & hot spares** *(partial — see gap)*
   - **Scope:** Support per-group spares, opportunistic filler workloads, and deterministic spare swaps on node failure.
-  - **Definition of done:** Runs configured with spares survive node failures without losing world-size; opportunistic tenants are reclaimed cleanly. *Met:* the node reconciler drives `HandleNodeFailure` on node watch events (unit + envtest coverage).
+  - **Definition of done:** Runs configured with spares survive node failures without losing world-size; opportunistic tenants are reclaimed cleanly. *Partially met:* the node reconciler drives `HandleNodeFailure` on node watch events (unit + envtest coverage). **Not met, and unsafe today:** a `kubectl cordon` is misread as a node failure and triggers a destructive swap while the original pod keeps running — two live copies of the same rank (**R21**); the reclaim sweep closes co-located runs' leases at node rather than slot granularity (**R22**); deleting a spare-only node leaks an immortal, budget-charging lease (**R25**). A failed workload pod is never noticed at all (**R8**). All four are open.
   - **Validation:** Unit tests around spare accounting and controller/envtest swap coverage. **Gap:** the end-to-end fault-injection suite this milestone originally claimed does not exist — the Bridge apply is not atomic and partial API failures can strand states (tracked as **R28** in `docs/project/remediation-plan.md`).
   - **Artifacts delivered:** Spare-handling logic in `controllers/run_controller.go` and the node watch in `controllers/kube/reconcilers.go`. There is no `pkg/policy` package — the spare/opportunistic logic lives in the run controller; the earlier reference was aspirational. Docs in `docs/user-guide/spares-and-fill.md`.
   - **Design doc:** [docs/roadmap/design/M6-failure-and-spares.md](design/M6-failure-and-spares.md)
@@ -66,7 +88,7 @@ The project is organized into progressive milestones. Each entry outlines scope,
   - **Design doc:** [docs/roadmap/design/M8-cofunded-runs.md](design/M8-cofunded-runs.md)
 
 - [x] **M9 — Observability, CLI polish, packaging**
-  - **Scope:** Deliver Prometheus metrics, Grafana dashboards, a user-friendly `kubectl runs` plugin, and production-ready Helm/Kustomize bundles.
+  - **Scope:** Deliver Prometheus metrics, Grafana dashboards, a user-friendly `kubectl runs` plugin, and Helm/Kustomize bundles. *(Correction: the bundles are **not** production-ready. The release pipeline builds no container images at all, so the chart points at tags that were never pushed (**R15**); the `ServiceMonitor`'s selector matches no Service, so nothing is scraped (**R16**); and the production overlay runs three manager replicas with no leader-election key in `values.yaml` (**R17**).)*
   - **Definition of done:** Metrics exported via `pkg/metrics`, dashboards packaged with Helm, CLI covers submit/plan/watch/explain/budgets/sponsors/shrink/leases/completions, and Helm/Kustomize templates deploy the stack.
   - **Validation:** CLI golden tests under `cmd/kubectl-runs/cmd/root_test.go`; `go test ./...` executes metrics assertions; the Helm chart is linted **and** rendered with `helm template` in CI, which asserts scoped RBAC (no wildcards), the webhook serving configuration, and health probes (R22/R29). The release workflow cross-builds the CLI and produces an installable krew manifest with per-archive checksums (R23).
   - **Artifacts delivered:** `pkg/metrics`, CLI under `cmd/kubectl-runs`, Helm chart in `deploy/helm/gpu-fleet` (now provisions webhook certs/Service/configurations and probes so the deployed manager admits objects), Kustomize overlays in `deploy/kustomize/`, Grafana dashboards in `deploy/grafana/`, Prometheus rules in `deploy/prometheus/`, krew manifest in `plugins/krew/`, docs in `docs/architecture/metrics.md`, `docs/cli/kubectl-runs.md`, and `docs/operator-guide/observability.md`. *Packaging gaps (wildcard RBAC, unbuildable krew manifest, chart that could not serve webhooks) closed by R22/R23/R29.* The elasticity metrics this entry originally left as "will follow" (`elastic_grows_total`/`elastic_shrinks_total`/`elastic_width_current`) now exist and are emitted from `growRun`/`shrinkRun`'s real success points, asserted via `metrics.Snapshot()` — M9 no longer contradicts `elastic-runs.md`.

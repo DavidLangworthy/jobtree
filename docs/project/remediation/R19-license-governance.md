@@ -32,11 +32,24 @@ repo does not legally have.
    front-page "to understand ownership" link until governance exists. A dead
    security contact is worse than none — it implies a disclosure path that fails.
 
-### Decision for David (flagged)
+### Decision for David (flagged) — ✅ DECIDED 2026-07-09
 
 License choice (**Apache-2.0 recommended** vs MIT vs other), and whether governance
 is real-now (truthful MAINTAINERS + SECURITY.md) or the claims are trimmed until it
 is. Both are quick once decided.
+
+> **David ruled: no licence yet.** *"I'm not ready to give this away yet, but I want
+> to be able to talk about it."* The repository stays public, and an explicit
+> `LICENSE` states that **all rights are reserved and no licence is granted** — an
+> absent LICENSE file is ambiguous (did the author forget, or intend to reserve?);
+> an explicit one is not. He asked for MIT "or some non-commercial licence", but
+> those are opposites — MIT *permits* commercial use — and neither matches "not ready
+> to give this away." Governance is made **real and minimal** rather than trimmed: a
+> truthful one-person `MAINTAINERS.md`, and a `SECURITY.md` routed through GitHub's
+> **private vulnerability reporting** so no email address is ever published. He
+> asked explicitly that no email of his appear in the repository; none does.
+> Apache-2.0 or another licence may be granted later; that decision is deferred, not
+> foreclosed.
 
 ## Invariant
 

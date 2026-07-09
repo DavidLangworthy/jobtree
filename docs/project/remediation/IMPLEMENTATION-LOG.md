@@ -26,6 +26,55 @@ The README compose note lists R5/R6 first. I moved the two P0 correctness bugs
 
 ## Decisions (chronological)
 
+### R19 settled, and the project shell made honest (2026-07-09)
+David: *"I'm not ready to give this away yet, but I want to be able to talk about
+it."* Also: *"maintainers is a good place to give yourself credit for doing all this
+work... But don't make stuff up and don't put my email in the repo."* And, on the
+roadmap: *"milestones is also complete fiction now."*
+
+- **He asked for "MIT or some non-commercial licence" — and those are opposites.**
+  MIT *permits* commercial use; a non-commercial licence forbids it, and for a GPU
+  cluster scheduler that forbids essentially every real deployment. Surfaced rather
+  than silently resolved. What he actually wants is **source-available with no rights
+  granted**, which is neither. Ruling: **no licence yet**, stated explicitly.
+- **An absent LICENSE file is ambiguous**; an explicit one is not. `LICENSE` now says
+  all rights are reserved, notes that GitHub's terms let other users view and fork
+  within GitHub, and records that a licence may be granted later. It says plainly that
+  it is a statement of intent, not legal advice.
+- **`MAINTAINERS.md` was worse than R19 recorded.** Beyond the dead `.example`
+  security contact, it invented **four maintainers who do not exist** —
+  `@gpu-binder`, `@budget-controller`, `@researcher-experience`, `@metrics-squad` are
+  *component names* — plus a pager rotation, a two-maintainer emergency process, and a
+  majority-vote membership procedure. The same fabrication was **published on the docs
+  site** as `docs/MAINTAINERS.md`. Both replaced with the truth: one maintainer, no
+  rotation, no quorum, no vote, and no contributions accepted (there is no licence to
+  contribute under).
+- **Security reporting with no published email.** GitHub's *private vulnerability
+  reporting* gives a "Report a vulnerability" button that opens a private thread. It is
+  currently **disabled** and cannot be enabled by the agent's token (403, needs admin):
+  *Settings → Advanced Security → Private vulnerability reporting → Enable*, or
+  `gh api -X PUT repos/DavidLangworthy/jobtree/private-vulnerability-reporting`.
+  `SECURITY.md` links the report form and states scope honestly — in scope: the funding
+  path, the R5 trust anchor, tenancy, RBAC; out of scope: anything requiring `budgets`
+  write, since budgets are administrator-owned by the R7 design.
+- **Authorship, as a checkable fact rather than a flourish.** **97 of 189 commits**
+  carry a `Co-Authored-By: Claude` trailer; a reader can run `git log --grep=` and
+  verify it. **Claude is explicitly not listed as a maintainer:** a maintainer must be
+  able to answer a security report and take responsibility for a merge, which is a
+  property of people, not of models — the same principle the project's own tenancy
+  design uses, where *permissions flow with accountability*. Credit goes in the
+  history; responsibility stays with the human.
+- **The milestone roadmap was publishing false claims.** `docs/roadmap/milestones.md`
+  ticked M0–M9 and cited two packages that no longer exist (`pkg/budget`, `pkg/policy`).
+  M3's "definition of done" described the pre-cutover architecture in which the *run
+  controller* admits and binds. M6 claimed *"runs configured with spares survive node
+  failures without losing world-size"* while R21 can put **two live copies of the same
+  rank** on the cluster, R22 closes co-located runs' leases, R25 leaks an immortal
+  charging lease, and R8 never notices a failed pod at all. M9 claimed
+  "production-ready" packaging while R15/R16/R17 are confirmed live bugs. Corrected in
+  place, with a banner: **a ticked box means "scope built and unit-tested," not
+  "correct."** The authoritative status is the remediation board.
+
 ### R7 settled: the tenant is the namespace (2026-07-09)
 David gave four rulings, each quoted verbatim in `R7-tenancy-amendment.md`. A Fable
 design pass turned them into a design; three adversarial critics (security, workflow

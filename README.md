@@ -55,7 +55,9 @@ The long-term directory structure is documented in [`docs/architecture/directory
 
 - Hosted site: [jobtree.readthedocs.io](https://jobtree.readthedocs.io) (MkDocs + Material).
 - Preview locally: `pip install -r docs/requirements.txt && mkdocs serve`.
-- Maintainers and escalation paths: [`MAINTAINERS.md`](MAINTAINERS.md)
+- Maintainer and authorship: [`MAINTAINERS.md`](MAINTAINERS.md)
+- Security reporting (no email needed): [`SECURITY.md`](SECURITY.md)
+- **Licence:** none. The source is public to read and discuss; [no rights are granted](LICENSE).
 - First-class readiness checklist: [`docs/project/first-class-readiness.md`](docs/project/first-class-readiness.md)
 - Read the Docs implementation notes: [`docs/website/readthedocs.md`](docs/website/readthedocs.md)
 - Cluster visualization guide: [`docs/visualizations/cluster-allocation.md`](docs/visualizations/cluster-allocation.md)

@@ -67,7 +67,7 @@ mechanical, no design needed (implement straight from the audit — Opus/Sonnet)
 | R16 | ServiceMonitor selector mismatch; Prom-Operator hard dep | **mech** | ⏳ Sonnet | ⏳ Sonnet |
 | R17 | Prod overlay: 3 replicas, leader-election off; scheduler off | **mech** | ⏳ Sonnet | ⏳ Sonnet |
 | [R18](R18-operator-runbook.md) | No break-glass / uninstall / CRD-upgrade story | ✅ | ⏳ Sonnet | ⏳ Sonnet |
-| [R19](R19-license-governance.md) | No LICENSE; fictional governance | ✅ | ⏳ Sonnet | ⏳ Sonnet |
+| [R19](R19-license-governance.md) | No LICENSE; fictional governance | ✅ | ✅ all-rights-reserved + real MAINTAINERS/SECURITY | ✅ |
 
 **P5 — observability & correctness papercuts**
 
@@ -183,5 +183,8 @@ Collected here so they are not lost in the specs. Each is also flagged inline.
   (`GPULease` recommended). No dual-read window, no conversion webhook, no migration
   Job; a breaking change is scheduled, jobs stopped, and restarted. R15 established
   there is no production install to migrate.
-- **R19**: license choice (**Apache-2.0** recommended vs MIT) and whether
-  governance is made real now vs the claims trimmed.
+- **R19**: ✅ **DECIDED — no licence yet.** *"I'm not ready to give this away yet,
+  but I want to be able to talk about it."* Explicit `LICENSE` reserving all rights;
+  public source for reading and discussion only. Governance made **real and minimal**:
+  a truthful one-person `MAINTAINERS.md` and a `SECURITY.md` using GitHub private
+  vulnerability reporting — **no email published**. Apache-2.0 remains available later.
