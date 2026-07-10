@@ -11,6 +11,10 @@ to the design that it cannot drift far from reality.
 | `ReservationLifecycle` | plan / direct-bind / activate racing for one run | pods materialize at most once; no Pending reservation for a Running run (invariant 8) |
 | `BudgetConservation` | reconcilers admitting against one envelope from possibly-stale lease snapshots | the concurrency cap is never overspent |
 | `QuotaEvaluation` | the ranked greedy fill from `quota-semantics.md` Decision 3 | no overdraft; an owner's funding never depends on borrower claims (owner recall) |
+| `NodeFailure` | the node-failure / spare-swap / reclaim seam | no duplicate rank; exact-slot-only unfunded reclaim; no failed-node leak; no terminal immortal lease; phase is the join; ledger/workload plane agreement |
+| `LedgerCompaction` | the R4 pt2 settlement theorem for `pkg/funding/evaluate.go` | if `horizon <= now` and no retained lease starts before the horizon, replaying `summary + retained` matches full replay on funded lease-hours and the funded set at `Now` |
+| `LedgerCompactionStore` | the pt2b persisted-settlement store semantics | repeated settlement, time advance, and window movement preserve equivalence to full replay, provided window shifts invalidate or recompute the summary before reuse |
+| `LedgerCompactionAccounting` | the broader pt2b accounting surface: aggregate caps, full window identity, and lender/class carry-forward | persisted summary representation, one-shot round-trip equivalence, and representative seeded-fold steps for the owned and borrowed carry-forward cases |
 
 ## Running
 
@@ -21,6 +25,69 @@ make spec-counterexamples  # the historical bugs, demonstrated: these MUST fail
 
 `spec-check` downloads `tla2tools.jar` into `specs/.cache/` on first use and
 needs a Java runtime.
+
+The `NodeFailure` spec is intentionally checked by dedicated targets rather than
+the global `spec-check` gate:
+
+```bash
+make node-failure-spec-check
+make node-failure-spec-counterexamples
+```
+
+That seam has its own path-filtered CI workflow because the relevant Go files
+change on a different cadence from the rest of the design-level specs.
+
+`LedgerCompaction`, `LedgerCompactionStore`, and
+`LedgerCompactionAccounting` are checked with Apalache rather than TLC. They
+are bounded equivalence proofs, not just reachability searches:
+
+```bash
+make ledger-compaction-apalache-check
+make ledger-compaction-apalache-counterexamples
+make ledger-compaction-accounting-apalache-check
+make ledger-compaction-accounting-apalache-counterexamples
+```
+
+The accounting companion also has a small TLC witness rail for cheap,
+representative one-shot properties that do not need SMT:
+
+```bash
+make ledger-compaction-accounting-witness-check
+make ledger-compaction-accounting-witness-counterexamples
+```
+
+`LedgerCompaction` is the one-shot theorem for `settlementSafe` and
+`SettleAccrual`. `LedgerCompactionStore` is the stronger, stateful theorem for
+the persisted settlement store the budget controller will eventually carry.
+`LedgerCompactionAccounting` broadens that store to include aggregate-cap,
+window-end, and lender/class accounting. The TLC witness rail checks the extra
+representative properties that are cheap to evaluate directly:
+
+- class-hour round-trip,
+- lender-hour round-trip,
+- direct-vs-incremental representative settlement,
+- repaired start-shift summaries,
+- repaired end-shift summaries.
+
+The first two models intentionally abstract to one envelope, one greedy
+capacity dimension, and discrete ticks. `LedgerCompactionAccounting` widens the
+surface to two envelopes, one shared aggregate bucket plus one env-local
+aggregate bucket, full window identity, and lender/class buckets while still
+keeping a fixed two-lease history for SMT tractability.
+
+One important result of that broader model: the naive "add the newly settled
+chunk onto the old summary" law is false once depletion-sensitive accounting is
+included. The checked theorem is therefore a seeded replay law. On the current
+VM, Apalache discharges that theorem as two representative steps (`0 -> 1` and
+`1 -> 2`) rather than one universally quantified invariant.
+
+Together the compaction specs reproduce the failure shapes that mattered in the
+design review:
+
+- a retained lease straddling the settlement horizon,
+- a settlement horizon ahead of `Now`.
+- a window shift that keeps a previously-valid summary live.
+- a window-end change that leaves aggregate-accounting history stale.
 
 ## The counterexample configurations
 
@@ -33,6 +100,36 @@ needs a Java runtime.
   This is the result that pins the manager's Run reconciler to a single
   admission worker (`MaxConcurrentReconciles = 1`); revisit the spec before
   relaxing that.
+- `NodeFailureR21.cfg` widens "node failed" back to a schedulability/signal
+  test, and TLC finds duplicate execution of a rank.
+- `NodeFailureR22.cfg` coarsens reclaim from exact slot to same node, and TLC
+  finds a funded co-tenant reclaimed by a swap.
+- `NodeFailureR25.cfg` skips spare-only failed nodes, and TLC finds an open
+  lease still naming the failed node after the sweep completes.
+- `NodeFailureDeclinedSwap.cfg` leaves the declined spare open, and TLC finds a
+  terminal failed run still holding a lease.
+- `NodeFailureLastWriter.cfg` writes run phase directly instead of folding the
+  worst verdict, and TLC finds an order-dependent final phase.
+- `NodeFailureHalfPlane.cfg` fixes only the ledger plane during reclaim/swap,
+  and TLC finds the victim still machine-running after its lease was closed.
+- `LedgerCompactionStraddle.cfg` forces a retained lease to start before the
+  horizon, and Apalache finds that dropping settled competitors changes the
+  replay result.
+- `LedgerCompactionFutureHorizon.cfg` pushes the horizon ahead of `Now`, and
+  Apalache finds a still-live lease incorrectly treated as settled.
+- `LedgerCompactionStoreStaleWindow.cfg` keeps the persisted summary valid
+  across a window shift, and both Apalache and TLC find the resulting
+  over-charged replay.
+- `LedgerCompactionAccountingStaleWindow.cfg` reuses a summary across a window
+  start shift, and Apalache finds the compacted replay over-charging the
+  envelope-consumed history.
+- `LedgerCompactionAccountingStaleEnd.cfg` reuses a summary across a window end
+  change, and Apalache finds the compacted replay over-charging aggregate
+  history.
+- `LedgerCompactionAccountingStaleClassHours.cfg` reuses a summary across a
+  window start shift, and TLC finds stale owned-vs-unfunded class history.
+- `LedgerCompactionAccountingStaleLender.cfg` reuses a summary across a window
+  end change, and TLC finds stale lender-hour history.
 
 ## What is deliberately out of scope
 

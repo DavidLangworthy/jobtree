@@ -228,6 +228,19 @@ func (j *JobTree) PreBindPreFlight(_ context.Context, _ fwk.CycleState, _ *corev
 	return &fwk.PreBindPreFlightResult{}, nil
 }
 
+// SAFETY-CRITICAL SEMANTICS.
+//
+// The swap-window / bind-time mint contract is modeled in:
+//   - specs/NodeFailure.tla
+//   - specs/NodeFailure.md
+//
+// If you change PreBind's mint semantics for swap pods or the timing of when a
+// replacement lease appears, update that spec and rerun:
+//   - make node-failure-spec-check
+//   - make node-failure-spec-counterexamples
+//
+// The path-scoped CI rail is .github/workflows/node-failure-spec.yaml.
+//
 // PreBind mints the pod's Lease: the envelope Permit committed pays for
 // gpusPerPod GPUs on the node the scheduler bound the pod to. Idempotent by pod
 // name so a PreBind retry converges rather than duplicating.

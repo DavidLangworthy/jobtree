@@ -42,7 +42,10 @@ type Input struct {
 	// full replay, so a wrongly-chosen horizon degrades to correct-but-uncompacted,
 	// never to a wrong funding decision. A zero SettlementHorizon disables
 	// compaction entirely: Evaluate is then bit-identical to the pre-pt2 engine
-	// (the golden oracle's guarantee).
+	// (the golden oracle's guarantee). If you change these semantics, update
+	// `specs/LedgerCompaction.tla`, `specs/LedgerCompactionStore.tla`,
+	// `specs/LedgerCompactionAccounting.tla`, and rerun
+	// `make ledger-compaction-apalache-check`.
 	SettlementHorizon time.Time
 	PriorAccrual      map[EnvelopeKey]SettledAccrual
 }
@@ -307,7 +310,11 @@ func leaseSettled(lease *v1.Lease, horizon time.Time) bool {
 // every RETAINED lease starts at or after the horizon, so the settled and
 // retained epochs never co-occur in the fill and the settled accrual is
 // independent of anything retained. When any fails, Evaluate replays the full
-// ledger — correct, just uncompacted.
+// ledger — correct, just uncompacted. The local one-shot theorem lives in
+// `specs/LedgerCompaction.tla`; the persisted-store / window-invalidation
+// theorem lives in `specs/LedgerCompactionStore.tla`; the broader aggregate /
+// lender / full-window carry-forward model lives in
+// `specs/LedgerCompactionAccounting.tla`.
 func settlementSafe(in Input) bool {
 	if in.SettlementHorizon.IsZero() {
 		return false

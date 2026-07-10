@@ -1,0 +1,64 @@
+name: Node Failure Spec
+
+# This rail is intentionally separate from the controller build/test jobs.
+# The TLC check wants Java; the PDF artifact render wants Python + reportlab;
+# neither assumption belongs in the manager/scheduler build environment.
+on:
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - 'specs/NodeFailure*'
+      - 'specs/README.md'
+      - 'controllers/run_controller.go'
+      - 'controllers/node_failure_test.go'
+      - 'controllers/kube/reconcilers.go'
+      - 'controllers/kube/node_failed_test.go'
+      - 'cmd/scheduler/plugin/plugin.go'
+      - 'hack/specs/**'
+      - 'Makefile'
+  push:
+    branches: [ main ]
+    paths:
+      - 'specs/NodeFailure*'
+      - 'specs/README.md'
+      - 'controllers/run_controller.go'
+      - 'controllers/node_failure_test.go'
+      - 'controllers/kube/reconcilers.go'
+      - 'controllers/kube/node_failed_test.go'
+      - 'cmd/scheduler/plugin/plugin.go'
+      - 'hack/specs/**'
+      - 'Makefile'
+
+jobs:
+  tlc:
+    name: node failure tlc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Model-check NodeFailure
+        run: make node-failure-spec-check
+      - name: Demonstrate the historical counterexamples
+        run: make node-failure-spec-counterexamples
+
+  pdf:
+    name: node failure pdf
+    needs: tlc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Install PDF renderer
+        run: pip install reportlab
+      - name: Render spec PDF
+        run: make node-failure-spec-pdf
+      - name: Upload spec PDF artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: node-failure-spec-pdf
+          path: dist/node-failure-spec.pdf

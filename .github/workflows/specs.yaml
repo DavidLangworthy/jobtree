@@ -3,12 +3,16 @@ name: Specs
 on:
   pull_request:
     paths:
-      - 'specs/**'
+      - 'specs/ReservationLifecycle*'
+      - 'specs/BudgetConservation*'
+      - 'specs/QuotaEvaluation*'
       - 'Makefile'
   push:
     branches: [ main ]
     paths:
-      - 'specs/**'
+      - 'specs/ReservationLifecycle*'
+      - 'specs/BudgetConservation*'
+      - 'specs/QuotaEvaluation*'
       - 'Makefile'
 
 jobs:

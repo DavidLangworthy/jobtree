@@ -1154,6 +1154,19 @@ func (c *RunController) failReservationNoEnvelope(reservation *v1.Reservation, r
 	return fmt.Errorf("run %s has no envelope to fund reservation %s (budget removed)", runKey, reservation.Name)
 }
 
+// SAFETY-CRITICAL SEMANTICS.
+//
+// This node-failure / spare-swap seam is modeled in:
+//   - specs/NodeFailure.tla
+//   - specs/NodeFailure.md
+//
+// If you change the semantics of HandleNodeFailure, failGroupWithoutSpare,
+// runPhaseTracker, or closeRunLeases, update that spec and rerun:
+//   - make node-failure-spec-check
+//   - make node-failure-spec-counterexamples
+//
+// The path-scoped CI rail is .github/workflows/node-failure-spec.yaml.
+//
 // HandleNodeFailure performs a spare swap when a node fails.
 // ErrNoLeaseOnNode reports that no lease of any role named the node, so its
 // failure needs no response. Callers must test it with errors.Is — the reason it
