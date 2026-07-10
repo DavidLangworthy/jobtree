@@ -96,6 +96,13 @@ func planSingleDomain(snapshot *topology.Snapshot, req Request) (Plan, error) {
 		return Plan{}, &PlanError{Reason: FailureReasonInsufficientTopology, Msg: "no single domain can satisfy request"}
 	}
 	groups := deriveGroups(req.TotalGPUs, req.GroupGPUs)
+	// Symmetric with planWithGroups: deriveGroups returns empty for GroupGPUs<=0.
+	// Run.Validate rejects that at admission, so this is unreachable in production —
+	// but without the guard a caller that bypasses validation gets a silently
+	// vacuous "success" (Plan with zero placements). Fail closed instead.
+	if len(groups) == 0 {
+		return Plan{}, &PlanError{Reason: FailureReasonInvalidRequest, Msg: "no groups derived"}
+	}
 	var placements []GroupPlacement
 	for idx, size := range groups {
 		allocs, err := allocateInDomain(candidate, size)
