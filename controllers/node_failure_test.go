@@ -89,6 +89,7 @@ func TestNodeFailureClosesASpareOnlyNode(t *testing.T) {
 			nfLease("spare", "run", "org:ai:team", "team", []string{"node-b#0", "node-b#1"}, binder.RoleSpare, now),
 		},
 	}
+	mirrorPods(state)
 	c := NewRunController(state, runClock{now: now})
 
 	// node-b holds only the spare.
@@ -119,6 +120,7 @@ func TestNodeFailureReturnsTypedSentinelWhenNoLeaseNamesTheNode(t *testing.T) {
 		Runs:   map[string]*v1.Run{"default/run": nfRun("run", "org:ai:team", 1, now)},
 		Leases: []v1.Lease{nfLease("active", "run", "org:ai:team", "team", []string{"node-a#0"}, binder.RoleActive, now)},
 	}
+	mirrorPods(state)
 	c := NewRunController(state, runClock{now: now})
 
 	err := c.HandleNodeFailure("node-b", now)
@@ -149,6 +151,7 @@ func TestSwapLeavesACoLocatedRunOnOtherSlotsAlone(t *testing.T) {
 			nfLease("neighbour", "neighbour", "org:ai:other", "other", []string{"node-b#2", "node-b#3"}, binder.RoleActive, now),
 		},
 	}
+	mirrorPods(state)
 	c := NewRunController(state, runClock{now: now})
 
 	if err := c.HandleNodeFailure("node-a", now); err != nil {
@@ -184,6 +187,7 @@ func TestSwapDeclinesRatherThanEvictAFundedRunOnTheSpareSlots(t *testing.T) {
 			nfLease("squatter", "squatter", "org:ai:other", "other", []string{"node-b#0", "node-b#1"}, binder.RoleActive, now),
 		},
 	}
+	mirrorPods(state)
 	c := NewRunController(state, runClock{now: now})
 
 	if err := c.HandleNodeFailure("node-a", now); err != nil {
@@ -290,6 +294,7 @@ func TestDecliningTheSwapNeverStrandsTheRunsOwnSpare(t *testing.T) {
 			nfLease("squatter", "squatter", "org:ai:other", "other", []string{"node-b#0", "node-b#1"}, binder.RoleActive, now),
 		},
 	}
+	mirrorPods(state)
 	c := NewRunController(state, runClock{now: now})
 	if err := c.HandleNodeFailure("node-a", now); err != nil {
 		t.Fatalf("handle node failure: %v", err)
@@ -343,6 +348,7 @@ func TestDecliningTheSwapReleasesTheSpareEvenWhenTheRunParksInCheckpointGrace(t 
 			nfLease("squatter", "squatter", "org:ai:other", "other", []string{"node-b#0", "node-b#1"}, binder.RoleActive, now),
 		},
 	}
+	mirrorPods(state)
 	c := NewRunController(state, runClock{now: now})
 	if err := c.HandleNodeFailure("node-a", now); err != nil {
 		t.Fatalf("handle node failure: %v", err)

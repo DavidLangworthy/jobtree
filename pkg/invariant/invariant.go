@@ -73,6 +73,22 @@ const (
 	// so the outcome cannot depend on lease order.
 	TerminalPresent = "INV-TERMINAL-PRESENT"
 
+	// TerminalNoPods: a terminally Failed or Completed run has no pods left.
+	//
+	// This is INV-TERMINAL-PRESENT told backwards, and it needs its own name because
+	// the ledger cannot see it. Bridge.apply deletes exactly the pods ABSENT from
+	// State.Pods, so a pod the engine forgot to drop keeps running, keeps holding the
+	// GPU the ledger has just handed back, and the engine happily plans new work onto
+	// it — work the kube-scheduler can then never bind.
+	//
+	// Every failure path in this repo closed the leases and left the containers, for
+	// as long as the file existed. controllers.releaseRun is the answer; this is the
+	// rail that says so.
+	//
+	// Like TerminalPresent it holds on RETURN only: HandleNodeFailure marks a run
+	// Failed inside its lease loop and sweeps both planes after it.
+	TerminalNoPods = "INV-TERMINAL-NO-PODS"
+
 	// WidthAssembled: an assembled Running run holds at least its minimum
 	// runnable width, counting EVERY open non-spare lease. "Start together or not
 	// at all" — a fixed-width gang missing a rank makes no progress while every one
@@ -99,6 +115,27 @@ const (
 	// closure never reverts, and its recorded ending never moves. A reopened or
 	// re-stamped lease makes funding.Evaluate double-count a settled fact.
 	ClosedMonotone = "INV-CLOSED-MONOTONE"
+
+	// LeaseHasPod: a run holding an open lease holds at least one pod.
+	//
+	// The oracle counts leases, and so it was structurally blind to the defect that
+	// the fix for the immortal-lease class introduced: reclaimSquatter closed ONE
+	// lease and deleted the victim's WHOLE pod set, leaving the victim Running with
+	// open leases and no containers. Every lease-side invariant above was satisfied.
+	//
+	// The two planes only ever move in one legal direction apart. A pod appears
+	// FIRST and the plugin mints its lease at PreBind, so "pods without leases" is
+	// the ordinary swap window, and the checkpoint grace parks a run with its
+	// group's lease closed and its containers deliberately alive. The reverse — an
+	// open lease with no container anywhere in the run — is nothing but a budget
+	// billing for a GPU that is doing no work.
+	//
+	// This is the COARSE form of the rule: it asks whether the run has any pod at
+	// all, not whether each lease has its own. The exact per-lease correspondence
+	// needs the node and slot of both planes, and it belongs in R26's ledger
+	// auditor, which sees them. The coarse form is what a state projection can
+	// honestly answer, and it is enough to catch a whole-pod-set deletion.
+	LeaseHasPod = "INV-LEASE-HAS-POD"
 )
 
 // Violation is one broken invariant, named so it can be grepped, counted, and
@@ -151,6 +188,9 @@ type Run struct {
 	// checking.
 	RunnableGPUs    int
 	MinRunnableGPUs int
+	// Pods is how many pods of any role the workload plane still holds for this
+	// run. It is the plane the ledger cannot see; see TerminalNoPods.
+	Pods int
 	// AwaitingMint is true when the run has an intent pod with no matching open
 	// lease: the plugin has not committed it yet. Width invariants do not apply.
 	AwaitingMint bool
@@ -218,7 +258,28 @@ func CheckSteady(w World) []Violation {
 						r.Phase, len(names), strings.Join(names, ", ")),
 				})
 			}
+			if r.Pods > 0 {
+				out = append(out, Violation{
+					ID:      TerminalNoPods,
+					Subject: "run " + r.Key,
+					Detail: fmt.Sprintf(
+						"terminal (phase=%s) but the workload plane still holds %d pod(s) — "+
+							"each keeps a GPU the ledger has already handed back, and the engine will plan onto it",
+						r.Phase, r.Pods),
+				})
+			}
 			continue
+		}
+		if names := openByRun[r.Key]; len(names) > 0 && r.Pods == 0 {
+			sort.Strings(names)
+			out = append(out, Violation{
+				ID:      LeaseHasPod,
+				Subject: "run " + r.Key,
+				Detail: fmt.Sprintf(
+					"holds %d open lease(s) (%s) and not one pod — the ledger is billing a budget and "+
+						"reserving GPUs for containers that do not exist",
+					len(names), strings.Join(names, ", ")),
+			})
 		}
 		if r.Phase != "Running" || r.AwaitingMint || !r.KnownToLedger {
 			continue

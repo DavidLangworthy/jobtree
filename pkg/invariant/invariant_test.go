@@ -117,7 +117,9 @@ func TestPendingRunHoldingOpenLeasesIsLegal(t *testing.T) {
 	// The half-assembled gang: "start together or not at all" means the run parks
 	// Pending while it holds the leases it has and tops up the rest.
 	w := World{
-		Runs:   []Run{{Key: "default/train", Phase: "Pending", RunnableGPUs: 2, MinRunnableGPUs: 4, KnownToLedger: true}},
+		// Pods: 1 — the plugin mints at PreBind, so a lease exists only because a pod
+		// did first. A lease with no pod anywhere is INV-LEASE-HAS-POD, not this.
+		Runs:   []Run{{Key: "default/train", Phase: "Pending", RunnableGPUs: 2, MinRunnableGPUs: 4, Pods: 1, KnownToLedger: true}},
 		Leases: []Lease{{Name: "l1", RunKey: "default/train", GroupIndex: "0"}},
 	}
 	if got := CheckSteady(w); len(got) != 0 {
@@ -184,5 +186,61 @@ func TestClosedLeaseNeedsNoPlacementGroup(t *testing.T) {
 func TestUnderTestIsTrueInsideAGoTestBinary(t *testing.T) {
 	if !UnderTest() {
 		t.Fatal("UnderTest() must be true here, or the oracle silently never runs in CI")
+	}
+}
+
+// --- the pod plane ----------------------------------------------------------
+
+// A terminal run whose containers survive is the immortal lease told backwards:
+// the ledger has handed the GPUs back and something is still sitting on them.
+func TestTerminalRunKeepingItsPodsIsAViolation(t *testing.T) {
+	w := World{Runs: []Run{{Key: "default/train", Phase: "Failed", Terminal: true, Pods: 3}}}
+	got := CheckSteady(w)
+	if len(got) != 1 || got[0].ID != TerminalNoPods {
+		t.Fatalf("a failed run whose containers are still running must be caught; got [%s]", ids(got))
+	}
+}
+
+func TestTerminalRunWithNeitherLeasesNorPodsIsLegal(t *testing.T) {
+	w := World{Runs: []Run{{Key: "default/train", Phase: "Completed", Terminal: true}}}
+	if got := CheckSteady(w); len(got) != 0 {
+		t.Fatalf("a fully released run is the whole point, got [%s]", ids(got))
+	}
+}
+
+// The defect the fix for the immortal-lease class introduced: one lease closed,
+// the victim's WHOLE pod set deleted. Every lease-side invariant was satisfied.
+func TestOpenLeaseWithNoPodAnywhereIsAViolation(t *testing.T) {
+	w := World{
+		Runs:   []Run{{Key: "default/train", Phase: "Running", RunnableGPUs: 4, MinRunnableGPUs: 4, Pods: 0, KnownToLedger: true}},
+		Leases: []Lease{{Name: "l1", RunKey: "default/train", GroupIndex: "0"}},
+	}
+	got := CheckSteady(w)
+	if len(got) != 1 || got[0].ID != LeaseHasPod {
+		t.Fatalf("an open lease billing for a container that does not exist must be caught; got [%s]", ids(got))
+	}
+}
+
+// ...and the two legal states that look like it and are not.
+//
+// A pod with no lease is the ORDINARY case: the controller emits the pod and the
+// plugin mints its lease at PreBind, so every lease in the system spent a moment
+// in this state. The checkpoint grace parks a run here on purpose, with its
+// group's lease closed and its containers deliberately alive so they can write a
+// checkpoint. Neither is a violation, and an invariant that said so would kill a
+// swap in flight and a recovering run respectively.
+func TestPodsWithoutLeasesAreLegal(t *testing.T) {
+	awaitingMint := World{
+		Runs: []Run{{Key: "default/train", Phase: "Pending", Pods: 4, AwaitingMint: true, KnownToLedger: true}},
+	}
+	if got := CheckSteady(awaitingMint); len(got) != 0 {
+		t.Fatalf("a gang between its pods and its mint is legal, got [%s]", ids(got))
+	}
+	checkpointGrace := World{
+		Runs:   []Run{{Key: "default/train", Phase: "Pending", Pods: 4, KnownToLedger: true}},
+		Leases: []Lease{{Name: "l1", RunKey: "default/train", Closed: true, HasEnded: true, ClosureReason: "NodeFailure"}},
+	}
+	if got := CheckSteady(checkpointGrace); len(got) != 0 {
+		t.Fatalf("a run in checkpoint grace is legal, got [%s]", ids(got))
 	}
 }

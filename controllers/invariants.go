@@ -74,10 +74,13 @@ func (c *RunController) snapshotWorld() invariant.World {
 		}
 		openActiveLeases[leaseRun]++
 	}
-	anyPod := map[string]bool{}
+	// Every pod of every role, including the spares — a terminal run must leave
+	// none of them behind, and a spare's container holds a GPU exactly as an
+	// active's does.
+	podsOfRun := map[string]int{}
 	for _, pod := range c.State.Pods {
 		if runName := pod.Labels[binder.LabelRunName]; runName != "" {
-			anyPod[keys.NamespacedKey(pod.Namespace, runName)] = true
+			podsOfRun[keys.NamespacedKey(pod.Namespace, runName)]++
 		}
 	}
 
@@ -91,8 +94,9 @@ func (c *RunController) snapshotWorld() invariant.World {
 			Terminal:        run.Status.Phase == RunPhaseFailed || run.Status.Phase == RunPhaseComplete,
 			RunnableGPUs:    runnableGPUsForRun(key, c.State.Leases),
 			MinRunnableGPUs: minRunnableGPUs(run),
+			Pods:            podsOfRun[key],
 			AwaitingMint:    activePods[key] > openActiveLeases[key],
-			KnownToLedger:   anyLease[key] || anyPod[key],
+			KnownToLedger:   anyLease[key] || podsOfRun[key] > 0,
 		})
 	}
 	return w

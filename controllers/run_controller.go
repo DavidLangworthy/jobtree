@@ -528,24 +528,10 @@ func (c *RunController) runGangComplete(run *v1.Run) bool {
 // run's pods, and records the terminal phase.
 func (c *RunController) completeRun(run *v1.Run, now time.Time) {
 	runKey := keys.NamespacedKey(run.Namespace, run.Name)
-	for i := range c.State.Leases {
-		lease := &c.State.Leases[i]
-		if lease.Status.Closed {
-			continue
-		}
-		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
-			continue
-		}
-		CloseLease(lease, "Completed", now)
-	}
-	kept := c.State.Pods[:0]
-	for _, pod := range c.State.Pods {
-		if pod.Namespace == run.Namespace && pod.Labels[binder.LabelRunName] == run.Name {
-			continue
-		}
-		kept = append(kept, pod)
-	}
-	c.State.Pods = kept
+	// The success path has always retired both planes. It now says so with the same
+	// function every failure path uses, rather than a second copy of the loop: two
+	// implementations of one obligation is how the failure paths came to do half.
+	c.releaseRun(run, "Completed", now)
 	run.Status.Phase = RunPhaseComplete
 	run.Status.Message = "run completed: all active pods succeeded"
 	run.Status.PendingReservation = nil
