@@ -1,7 +1,48 @@
 # R12 — OwnerReferences + finalizers for API-native garbage collection
 
-**Priority:** P3 · **Design:** complete (Fable) · **Next:** Opus implements, Sonnet verifies
+**Priority:** ~~P3~~ → **P1, promoted 2026-07-10** · **Design:** complete (Fable) · **Next:** Opus implements, Sonnet verifies
 **Shares work with:** R5 (which already adds the Run OwnerReference to pods).
+
+## Why this is now P1: it retires R27c's `orphan-run` rule instead of hardening it
+
+R27c (`controllers/settle.go`) shipped a production sweep that closes an open lease —
+**and deletes its pods** — when the lease's Run is absent from `state.Runs`. That rule,
+`orphan-run`, infers a Run's deletion from the *silence* of a `List`. Absence of evidence
+is not evidence of absence: if a load ever returns an incomplete `Runs` set, the sweep
+destroys a live, funded, multi-day training job, quietly. See assumption **A4** in
+[`../tla/spec-brief.md`](../tla/spec-brief.md) §3, which the TLA+ model **cannot check**,
+because the world is the model's ground truth rather than one of its actors.
+
+The finalizer below makes that state **unreachable rather than merely rare**, and this is
+the whole argument for doing R12 before touching the sweep:
+
+> A finalizer holds the Run object in the API until its leases are closed. `DeletionTimestamp`
+> is set, but the Run is still present and still returned by `List`. So "an open lease whose
+> Run is absent" cannot occur — there is no window left to guess about.
+
+Note carefully which half does the work. **The ownerReference is not the mechanism**;
+§Design decision explicitly refuses to owner-ref a Lease, because cascade-deleting a
+funding fact erases accounting history and lets a force-deleted Run escape its charge.
+It is the **finalizer** that closes the window. Implementing "the ownerRef half" of R12
+would leave `orphan-run` exactly as dangerous as it is today while looking like progress.
+
+Sequence, decided (David, 2026-07-10 — *"move implementing the correct solution ahead of
+duct taping something that can't work"*):
+
+1. **Demote `orphan-run` to report-only now.** It must not close a lease or delete a pod.
+   Count it, log it, leave the lease open. That restores the pre-R27c property that a
+   wrong world causes an *omission* (a lease leaks, `pkg/invariant` counts it) rather than
+   an *action* (work is destroyed). `terminal-run` keeps acting: it rests on the positive
+   evidence of a Run object whose phase says `Failed`.
+2. **Land R12.** The finalizer closes leases with reason `RunDeleted` before the Run goes.
+3. **Delete the `orphan-run` rule entirely**, with a test asserting its premise is now
+   unreachable. Do not leave it in "just in case": a rule that cannot fire is a rule
+   nobody maintains, and it will be the one that fires.
+
+Do **not** harden `orphan-run` with a second read, a two-observation quorum, or a
+consistency check on the load. Those were considered and are duct tape on a rule whose
+premise is about to become impossible. (If R12 slips, revisit — a direct `Get` by name
+fails differently than a `List` does, and that is real, if partial, independence.)
 
 ## Problem (evidence)
 
@@ -68,3 +109,18 @@ leaves capacity funded or accounting open. Funding history survives.
 - **R5** adds the same pod OwnerReference; do it once.
 - **R4** compaction must respect the Lease finalizer/closure ordering.
 - **R7** ownership anchor (Run) is consistent with the tenancy identity model.
+- **R27c** (`controllers/settle.go`): the finalizer makes the `orphan-run` sweep rule's
+  premise unreachable. Delete the rule when this lands — see the P1 promotion note above.
+  `cleanupDeletedRun` becomes authoritative rather than best-effort, which also retires
+  the cloned-obligation smell (playbook class 7) of having two closers for a deleted run.
+- **R26** (ledger auditor): the auditor is the *observer* of two-plane disagreement; the
+  finalizer is what makes one of the disagreements impossible. Build the finalizer first
+  and the auditor has one less legal-but-alarming state to special-case.
+
+## Verification the sweep interaction needs (added 2026-07-10)
+
+5. **Envtest — the `orphan-run` premise is unreachable.** With the finalizer installed,
+   drive a Run deletion (graceful and `--force --grace-period=0`) while it holds open
+   leases, and assert that at no `Bridge.WithWorld` pass does `SettleLeases` observe an
+   open lease whose Run is absent. The sweep's `orphan-run` counter must stay at zero.
+   That assertion is the licence to delete the rule.
