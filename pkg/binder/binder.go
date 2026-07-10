@@ -135,6 +135,13 @@ type PodManifest struct {
 	Labels      map[string]string
 	Annotations map[string]string
 	Phase       string
+	// Terminating is true when the API object carries a DeletionTimestamp: the
+	// kubelet is draining it and its GPUs are being reclaimed. The engine keeps
+	// it in the world (so apply neither re-creates its name nor re-issues the
+	// delete) but the invariant projection must not count it as a pod the run
+	// "still holds" — a Terminating pod lingering after an ordinary completion
+	// is the routine graceful-deletion window, not an immortal container.
+	Terminating bool
 }
 
 // Materialize constructs pods and leases for the provided request. Node

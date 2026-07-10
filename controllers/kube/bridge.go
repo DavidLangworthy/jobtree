@@ -255,6 +255,11 @@ func (b *Bridge) load(ctx context.Context) (*worldSnapshot, error) {
 			Labels:      pod.Labels,
 			Annotations: pod.Annotations,
 			Phase:       string(pod.Status.Phase),
+			// A bound pod that has been Delete()'d lingers with a
+			// DeletionTimestamp until the kubelet finalizes it. List still
+			// returns it every pass; the oracle must not read it as a live
+			// container (see PodManifest.Terminating and snapshotWorld).
+			Terminating: !pod.DeletionTimestamp.IsZero(),
 		})
 		snap.pods[keys.NamespacedKey(pod.Namespace, pod.Name)] = pod
 	}

@@ -79,6 +79,17 @@ func (c *RunController) snapshotWorld() invariant.World {
 	// active's does.
 	podsOfRun := map[string]int{}
 	for _, pod := range c.State.Pods {
+		// A pod under graceful deletion has left the workload plane: the
+		// kubelet is draining it, its GPUs are being reclaimed, and the engine
+		// will never plan onto it. Counting it as a pod the run "still holds"
+		// turned the routine window after every ordinary completion — terminal
+		// run, lease already closed, pod still Terminating for its grace
+		// period — into a false INV-TERMINAL-NO-PODS panic on the next
+		// reconcile of ANY run (adversarial review 2026-07-10, c74e0ef:
+		// reproduced against a live envtest apiserver).
+		if pod.Terminating {
+			continue
+		}
 		if runName := pod.Labels[binder.LabelRunName]; runName != "" {
 			podsOfRun[keys.NamespacedKey(pod.Namespace, runName)]++
 		}
