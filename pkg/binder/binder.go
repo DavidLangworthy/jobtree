@@ -355,9 +355,10 @@ func (m *materializer) buildLease(groupIndex int, slots []nodeSlot, seg cover.Se
 			Interval: v1.LeaseInterval{
 				Start: v1.NewTime(m.now),
 			},
-			PaidByBudget:   seg.BudgetName,
-			PaidByEnvelope: seg.EnvelopeName,
-			Reason:         m.reason,
+			PaidByBudgetNamespace: seg.Namespace,
+			PaidByBudget:          seg.BudgetName,
+			PaidByEnvelope:        seg.EnvelopeName,
+			Reason:                m.reason,
 		},
 	}
 }
