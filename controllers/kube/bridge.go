@@ -146,17 +146,7 @@ func (b *Bridge) reportSweep(ctx context.Context, sweep controllers.Sweep, snap 
 		}
 	}
 	if sweep.Pods > 0 {
-		log.Info("settle sweep dropped orphaned pods", "count", sweep.Pods)
-	}
-	// Orphan-run is report-only (R12 step 1): the lease was NOT closed and its pod
-	// NOT dropped, because an absent Run can be a fake of one incomplete load. Count
-	// and log it so an operator can alert on the leak — there is no Run to raise an
-	// event on, and this is never a test failure. (The oracle can't see it either:
-	// its projection is keyed on state.Runs, which by definition lacks this run.)
-	for _, lease := range sweep.Observed {
-		metrics.IncSweptLease(lease.Rule)
-		log.Info("settle sweep observed an orphan lease and left it open (report-only, R12)",
-			"lease", lease.Name, "namespace", lease.Namespace, "run", lease.RunKey, "rule", lease.Rule)
+		log.Info("settle sweep dropped a terminal run's pods", "count", sweep.Pods)
 	}
 
 	shirked := sweep.Shirked()

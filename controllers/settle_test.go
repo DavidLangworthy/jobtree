@@ -58,12 +58,12 @@ func TestSweepClosesTheLeasesOfATerminalRun(t *testing.T) {
 	}
 }
 
-// A Run object that no longer exists. Under R12 step 1 the orphan rule is
-// REPORT-ONLY: an absent Run can be a fake of one incomplete world load (A4), so
-// the sweep records the lease and touches nothing. cleanupDeletedRun (and, once it
-// lands, R12's finalizer) is what actually closes a deleted run's leases; the
-// sweep must never destroy on an absence.
-func TestSweepReportsADeletedRunsLeaseWithoutClosingIt(t *testing.T) {
+// A Run object that no longer exists. The orphan-run rule is DELETED (R12 step 3):
+// the Run finalizer makes an absent-Run-with-open-lease unreachable, and a genuine
+// deleted run's leases are closed by cleanupDeletedRun on positive evidence. So the
+// sweep now leaves such a lease entirely alone — it must never guess "deleted" from
+// a silent load (spec-brief A4) and destroy a job.
+func TestSweepIgnoresALeaseWhoseRunIsAbsent(t *testing.T) {
 	now := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
 	state := settleState(now,
 		map[string]*v1.Run{},
@@ -72,23 +72,14 @@ func TestSweepReportsADeletedRunsLeaseWithoutClosingIt(t *testing.T) {
 
 	sweep := SettleLeases(state, now)
 
-	// Observed, not acted.
-	if len(sweep.Observed) != 1 || sweep.Observed[0].Rule != SweepOrphanRun {
-		t.Fatalf("an orphan lease must be OBSERVED, got observed=%+v", sweep.Observed)
+	if !sweep.Empty() {
+		t.Fatalf("the sweep must not touch a lease whose Run is absent; that is cleanupDeletedRun's job on real evidence, got %+v", sweep)
 	}
-	if len(sweep.Leases) != 0 {
-		t.Fatalf("the orphan rule must not CLOSE anything, got %+v", sweep.Leases)
-	}
-	// The lease stays open and the pod stays put — the omission a human can see,
-	// not the destruction of a job that a wrong load only made look deleted.
 	if closed, _ := closureOf(state, "ghost-0"); closed {
-		t.Errorf("orphan-run must leave the lease open (report-only), but it was closed")
+		t.Errorf("an absent-run lease was closed by the sweep; it must be left open")
 	}
 	if len(state.Pods) != 1 {
-		t.Errorf("orphan-run must not drop the pod, got %v", state.Pods)
-	}
-	if len(sweep.Shirked()) != 0 {
-		t.Errorf("an orphan observation is never a shirked duty")
+		t.Errorf("the sweep dropped an absent-run pod, got %v", state.Pods)
 	}
 }
 

@@ -9,11 +9,11 @@ import (
 )
 
 // The sweep-safety lens flagged this: a lease or pod carrying an EMPTY run-name
-// label keys to "namespace/", which matches no real Run, so the orphan rule would
-// close the lease and DELETE the pod. The sole committer always names the run, so
-// such an object is malformed, not orphaned — and a sweep that destroys work must
-// not act on a key it cannot trust. It must leave it (an omission the oracle
-// counts), never reap it.
+// label keys to "namespace/", which matches no real Run. The sole committer always
+// names the run, so such an object is malformed — and a sweep that destroys work
+// must never act on a key it cannot trust. With the orphan rule now deleted (R12)
+// the sweep only acts on terminal runs, and "namespace/" is never terminal, so a
+// malformed object is left alone by construction. This guards that it stays so.
 func TestSweepLeavesMalformedEmptyRunNameObjectsAlone(t *testing.T) {
 	now := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
 

@@ -3,6 +3,7 @@ package kube
 import (
 	"context"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -12,6 +13,7 @@ import (
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	"github.com/davidlangworthy/jobtree/controllers"
+	"github.com/davidlangworthy/jobtree/pkg/keys"
 )
 
 func req(name string) ctrl.Request {
@@ -103,5 +105,41 @@ func TestDeletingARunClosesItsLeasesBeforeTheObjectIsGone(t *testing.T) {
 	err := c.Get(context.Background(), types.NamespacedName{Name: "dead", Namespace: "default"}, &gone)
 	if err == nil {
 		t.Fatalf("the finalizer must be removed and the Run deleted once its accounting is closed; it is still present with finalizers %v", gone.Finalizers)
+	}
+}
+
+// The licence to delete the sweep's orphan-run rule (R12 step 3, verification item
+// #5): while a Run is being deleted, the finalizer HOLDS it in the API, so a world
+// load still contains it alongside its open lease. "An open lease whose Run is
+// absent" therefore never arises — the premise the orphan rule guarded is
+// unreachable, so the rule is gone.
+func TestADeletingRunIsStillInTheLoadedWorldSoNoOrphanArises(t *testing.T) {
+	_ = captureReport(t)
+	run := liveRun("closing", FundingClosureFinalizer)
+	lease := openLeaseOn("closing-0", "closing", "node-a")
+	c := fake.NewClientBuilder().WithScheme(testScheme()).
+		WithObjects(healthyNode("node-a", 4), run, lease).
+		WithStatusSubresource(&v1.Run{}, &v1.Lease{}).
+		Build()
+	bridge := &Bridge{Client: c, APIReader: c, Clock: controllers.RealClock{}}
+
+	if err := c.Delete(context.Background(), run); err != nil {
+		t.Fatalf("delete run: %v", err)
+	}
+
+	// Load the world during the deletion window (before the finalizer reconcile) and
+	// check the invariant the orphan rule used to guess at: the lease's Run is
+	// present, and SettleLeases (which runs in this very pass) finds nothing to do.
+	err := bridge.WithWorld(context.Background(), func(state *controllers.ClusterState, now time.Time) error {
+		if r := state.Runs[keys.NamespacedKey("default", "closing")]; r == nil {
+			t.Fatalf("a deleting Run must still be in the load (its finalizer holds it); it was absent, which is exactly the orphan the rule feared")
+		}
+		if sweep := controllers.SettleLeases(state, now); !sweep.Empty() {
+			t.Fatalf("the sweep must find nothing: the Run is present and not terminal, so its open lease is not an orphan, got %+v", sweep)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WithWorld: %v", err)
 	}
 }

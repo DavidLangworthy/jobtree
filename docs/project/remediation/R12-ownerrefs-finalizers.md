@@ -1,6 +1,6 @@
 # R12 — OwnerReferences + finalizers for API-native garbage collection
 
-**Priority:** ~~P3~~ → **P1, promoted 2026-07-10** · **Design:** complete (Fable) · **Next:** Opus implements, Sonnet verifies
+**Priority:** ~~P3~~ → **P1, promoted 2026-07-10** · **Design:** complete (Fable) · **Status:** implemented 2026-07-10 (finalizer + pod/Reservation ownerRefs + orphan-run rule deleted; fake-client tests green). **Remaining:** the real-apiserver envtest verification (§Verification spec items 1–5) runs under `make verify`/CI, and cascade-GC needs a live GC controller.
 **Shares work with:** R5 (which already adds the Run OwnerReference to pods).
 
 ## Why this is now P1: it retires R27c's `orphan-run` rule instead of hardening it
@@ -46,9 +46,14 @@ duct taping something that can't work"*):
    lifecycle; the real-apiserver + `--force` cases are the envtest gate, verification
    items 1–3. **Still owed: the pod/Reservation ownerRefs (§Implementation spec).**)*
    The finalizer closes leases with reason `RunDeleted` before the Run goes.
-3. **Delete the `orphan-run` rule entirely**, with a test asserting its premise is now
-   unreachable. Do not leave it in "just in case": a rule that cannot fire is a rule
-   nobody maintains, and it will be the one that fires.
+3. **✅ Delete the `orphan-run` rule entirely.** *(Done — `controllers/settle.go` now
+   has only the terminal-run rule; `Sweep.Observed` and the `orphan-run` reason are
+   gone. `TestADeletingRunIsStillInTheLoadedWorldSoNoOrphanArises` is the licence: while
+   a Run is deleted, the finalizer holds it in the load, so `SettleLeases` finds a Run
+   present and its lease is never an orphan. A genuinely deleted run's leases are closed
+   by `cleanupDeletedRun` on the Lease→Run watch, on positive evidence.)* Do not leave it
+   in "just in case": a rule that cannot fire is a rule nobody maintains, and it will be
+   the one that fires.
 
 Do **not** harden `orphan-run` with a second read, a two-observation quorum, or a
 consistency check on the load. Those were considered and are duct tape on a rule whose
