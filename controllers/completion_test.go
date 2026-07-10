@@ -100,7 +100,10 @@ func TestRunStaysRunningUntilAllPodsSucceed(t *testing.T) {
 }
 
 // A single pod failure must neither complete nor fail the run (owner decision).
-func TestSinglePodFailureDoesNotFailOrCompleteRun(t *testing.T) {
+// R9 9A-3 (was the immortal-zombie bug): under the default Fail policy a terminally
+// Failed active pod fails the whole gang and closes its leases, rather than leaving
+// the run Running and charging its budget forever.
+func TestSinglePodFailureFailsTheGangUnderDefaultPolicy(t *testing.T) {
 	now := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
 	state, key := completionWorld([]string{"Succeeded", "Failed"}, "")
 
@@ -108,7 +111,14 @@ func TestSinglePodFailureDoesNotFailOrCompleteRun(t *testing.T) {
 	if err := c.Reconcile(keys.DefaultNamespace, "job"); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if got := state.Runs[key].Status.Phase; got != RunPhaseRunning {
-		t.Fatalf("a pod Failure must leave the run Running, got %s", got)
+	if got := state.Runs[key].Status.Phase; got != RunPhaseFailed {
+		t.Fatalf("a failed active pod must fail the gang under the default policy, got %s", got)
+	}
+	for i := range state.Leases {
+		if !state.Leases[i].Status.Closed {
+			t.Errorf("a failed run's leases must close (WorkloadFailed), lease %s still open", state.Leases[i].Name)
+		} else if state.Leases[i].Status.ClosureReason != "WorkloadFailed" {
+			t.Errorf("lease %s closed with %q, want WorkloadFailed", state.Leases[i].Name, state.Leases[i].Status.ClosureReason)
+		}
 	}
 }

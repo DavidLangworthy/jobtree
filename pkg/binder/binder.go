@@ -124,6 +124,11 @@ type Result struct {
 // binder need no Kubernetes API dependency.
 const PodPhaseSucceeded = "Succeeded"
 
+// PodPhaseFailed is the workload-pod phase that signals a member terminally failed
+// (crash, OOM, non-zero exit). The run controller drives the R9 9A-3 failure edge
+// off it: apply the role's FailurePolicy instead of holding the run open forever.
+const PodPhaseFailed = "Failed"
+
 // EtaAnnotation is the pod annotation a workload sets to report an estimated
 // completion time (RFC3339); the run controller mirrors it into
 // Run.status.eta. Optional and observability only.
