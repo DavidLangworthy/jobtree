@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -36,6 +37,18 @@ type RunReconciler struct {
 	Bridge *Bridge
 }
 
+// FundingClosureFinalizer holds a Run in the API until its open leases are closed
+// (reason RunDeleted) and its pods dropped. Its whole purpose is to make one state
+// unreachable: "an open lease whose Run is absent." Because finalizers are honored
+// even by `kubectl delete --force --grace-period=0`, a deleted Run can NEVER escape
+// its accounting — the funding fact is closed and audited, not silently cascade-lost
+// (which is why a Lease is finalizer-closed here, never owner-ref'd to the Run).
+//
+// It also retires R27c's report-only orphan-run sweep rule: with the Run held until
+// closure, the sweep can no longer observe a lease whose Run has vanished (R12
+// verification item #5). See docs/project/remediation/R12-ownerrefs-finalizers.md.
+const FundingClosureFinalizer = "rq.davidlangworthy.io/funding-closure"
+
 // pendingRunResync re-drives runs parked as Pending without a reservation
 // (invalid request, no matching domain, planning failure): no watch event
 // announces that their blocker went away, so they poll.
@@ -52,15 +65,58 @@ const runningRunResync = 5 * time.Minute
 const waitingRunResync = 30 * time.Second
 
 func (r *RunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	key := keys.NamespacedKey(req.Namespace, req.Name)
+
+	// Finalizer lifecycle is a metadata concern, and WithWorld's apply writes only
+	// status — so the add/remove are direct Updates that bracket the engine. Read
+	// the object uncached (APIReader) to see its DeletionTimestamp and finalizers.
+	var run v1.Run
+	if err := r.Bridge.APIReader.Get(ctx, req.NamespacedName, &run); err != nil {
+		if apierrors.IsNotFound(err) {
+			// Truly gone — the finalizer already ran, or this is a pre-R12 Run with
+			// no finalizer. Backstop: release anything left behind. Lease events
+			// mapped to the missing run (and the watch replay after a restart) also
+			// land here, so orphans converge to cleaned up.
+			return ctrl.Result{}, r.Bridge.WithWorld(ctx, func(state *controllers.ClusterState, now time.Time) error {
+				cleanupDeletedRun(state, key, req.Namespace, req.Name, now)
+				return nil
+			})
+		}
+		return ctrl.Result{}, err
+	}
+
+	if run.DeletionTimestamp != nil {
+		// Being deleted, held by our finalizer. Close the accounting IN-STATE so
+		// WithWorld's apply writes the closures to the API, and only THEN drop the
+		// finalizer — so the leases are provably closed before the Run object can
+		// vanish, even under --force --grace-period=0.
+		if !controllerutil.ContainsFinalizer(&run, FundingClosureFinalizer) {
+			return ctrl.Result{}, nil
+		}
+		if err := r.Bridge.WithWorld(ctx, func(state *controllers.ClusterState, now time.Time) error {
+			cleanupDeletedRun(state, key, req.Namespace, req.Name, now)
+			return nil
+		}); err != nil {
+			return ctrl.Result{}, err // keep the finalizer: accounting is not yet closed
+		}
+		controllerutil.RemoveFinalizer(&run, FundingClosureFinalizer)
+		return ctrl.Result{}, r.Bridge.Client.Update(ctx, &run)
+	}
+
+	// A live Run without our finalizer: install it before admitting, so a delete
+	// that races admission still gets funding-closure. Adding it bumps no
+	// generation; fall through and admit in the same pass (WithWorld reloads).
+	if !controllerutil.ContainsFinalizer(&run, FundingClosureFinalizer) {
+		controllerutil.AddFinalizer(&run, FundingClosureFinalizer)
+		if err := r.Bridge.Client.Update(ctx, &run); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
 	var parked, running, waiting bool
 	err := r.Bridge.WithWorld(ctx, func(state *controllers.ClusterState, now time.Time) error {
-		key := keys.NamespacedKey(req.Namespace, req.Name)
 		run, ok := state.Runs[key]
 		if !ok {
-			// The run is gone: release what it left behind. Both the
-			// deletion event itself and lease events mapped to the
-			// missing run (including the watch replay after a manager
-			// restart) land here, so orphans converge to cleaned up.
 			cleanupDeletedRun(state, key, req.Namespace, req.Name, now)
 			return nil
 		}
@@ -171,9 +227,27 @@ func (r *RunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		DeleteFunc:  func(event.DeleteEvent) bool { return true },
 		GenericFunc: func(event.GenericEvent) bool { return false },
 	}
+	// The primary watch fires on spec changes (generation) — a status write rewrites
+	// float GPU-hour fields every reconcile and must NOT re-trigger, or the single
+	// serial worker churns — AND on the object ENTERING deletion. A finalizer turns
+	// a delete into a metadata-only update that bumps no generation, so the
+	// generation gate alone would strand the Run Terminating, its finalizer forever
+	// unremoved (R12). The delete of a run WITHOUT the finalizer is a real Delete
+	// event, which GenerationChangedPredicate already passes.
+	runPrimary := predicate.Or(
+		predicate.GenerationChangedPredicate{},
+		predicate.Funcs{
+			CreateFunc:  func(event.CreateEvent) bool { return false },
+			DeleteFunc:  func(event.DeleteEvent) bool { return false },
+			GenericFunc: func(event.GenericEvent) bool { return false },
+			UpdateFunc: func(e event.UpdateEvent) bool {
+				return e.ObjectOld.GetDeletionTimestamp() == nil && e.ObjectNew.GetDeletionTimestamp() != nil
+			},
+		},
+	)
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("run").
-		For(&v1.Run{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		For(&v1.Run{}, builder.WithPredicates(runPrimary)).
 		Watches(&v1.Lease{}, handler.EnqueueRequestsFromMapFunc(leaseToRun)).
 		Watches(&v1.Budget{}, handler.EnqueueRequestsFromMapFunc(r.budgetToRuns),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).

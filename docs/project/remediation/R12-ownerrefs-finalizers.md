@@ -37,7 +37,15 @@ duct taping something that can't work"*):
    reports — note `pkg/invariant` does NOT catch it, its projection is keyed on
    `state.Runs`; R26's auditor will) rather than an *action* (work destroyed). `terminal-run`
    keeps acting: it rests on the positive evidence of a Run object whose phase says `Failed`.
-2. **Land R12.** The finalizer closes leases with reason `RunDeleted` before the Run goes.
+2. **Land R12.** *(Finalizer done — `controllers/kube/reconcilers.go`
+   `FundingClosureFinalizer`; the `RunReconciler` installs it on a live Run and, on
+   deletion, closes the leases via `cleanupDeletedRun` under `WithWorld` and only THEN
+   removes the finalizer, so the accounting is closed before the object can vanish even
+   under `--force`. The `For()` watch predicate was widened to fire when a Run enters
+   deletion, or the finalizer would strand it Terminating. Fake-client tests pin the
+   lifecycle; the real-apiserver + `--force` cases are the envtest gate, verification
+   items 1–3. **Still owed: the pod/Reservation ownerRefs (§Implementation spec).**)*
+   The finalizer closes leases with reason `RunDeleted` before the Run goes.
 3. **Delete the `orphan-run` rule entirely**, with a test asserting its premise is now
    unreachable. Do not leave it in "just in case": a rule that cannot fire is a rule
    nobody maintains, and it will be the one that fires.
