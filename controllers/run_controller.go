@@ -1880,6 +1880,20 @@ func (c *RunController) applyResolution(result resolver.Result, now time.Time) {
 			run.Status.PendingReservation = nil
 			run.Status.EarliestStart = nil
 			c.emit(run, EventTypeWarning, "ResolverReclaimed", run.Status.Message)
+		case run.Status.CheckpointDeadline != nil && now.Before(run.Status.CheckpointDeadline.Time):
+			// The run is inside an unexpired checkpoint-grace window: an earlier
+			// capacity loss parked it Pending and promised its containers stay up
+			// until the deadline SO THEY CAN WRITE A CHECKPOINT (releaseRun's
+			// contract; failGroupWithoutSpare sets the deadline). Reaping it here —
+			// the default branch's releaseRun deletes every pod — destroys the very
+			// checkpoint the grace exists to save, minutes before the deadline the
+			// engine itself set. Honor the deadline, not the phase (adversarial
+			// review 2026-07-10, c74e0ef: reproduced ending a funded run 25 minutes
+			// early). Hold it parked; Reconcile fails it the moment the deadline
+			// passes (run_controller.go:167).
+			run.Status.Phase = RunPhasePending
+			run.Status.Message = "resolver cut during checkpoint grace; holding containers until the deadline"
+			c.emit(run, EventTypeWarning, "ResolverGraceHeld", run.Status.Message)
 		default:
 			run.Status.Phase = RunPhaseFailed
 			run.Status.Message = "ended by resolver"
