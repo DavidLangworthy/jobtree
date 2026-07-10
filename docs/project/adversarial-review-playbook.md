@@ -139,6 +139,30 @@ update the comment — it was to make `failRun` **close the leases**, so the sen
 became true by construction. That is the correct shape of every fix in this class.
 See `failRun`.
 
+**Variant — a re-read that does not hold across its use.** A check can *look* like
+enforcement — it re-reads the very thing it guards — and still be prose, because its
+result is consumed after the code crosses a lock or a blocking call the read did not
+hold across. The world moves in that window and the stale answer drives a real
+action. A check that races the thing it guards is a comment, not a guard.
+
+*Where.* Grep for a `Get`/`List` whose result is *used after* a `WithWorld`, a mutex
+acquire, or any blocking call the read did not span. In this engine the bridge mutex
+serializes every decision, so a read taken before it is a read about a world that can
+have moved by the time it is used.
+
+*Specimen.* `NodeReconciler` read a Node, decided *fenced*, then blocked on the bridge
+mutex behind a slow admission pass; a Node recreated under the same name in that window
+had its FRESH leases closed as a failure (#36/#53). The re-read that supposedly *closed*
+#36 was itself outside the mutex — it narrowed the window, it did not close it. The fix
+re-takes the verdict INSIDE `WithWorld`, the only read whose answer cannot change before
+it is used; the outside read is explicitly "a filter, not a verdict". See
+`NodeReconciler.fenced` and the deterministic `racyReader` test (first `Get` says gone,
+every later `Get` says alive — no sleep, no envtest). **Audited 2026-07-10: this is the
+only live instance in the reconcilers.** The budget reconciler reads lock-free but writes
+only self-correcting status (funding is always re-derived from open leases, never read
+back from `Budget.Status`), and R12's finalizer read drives resourceVersion-guarded
+metadata while its one destructive act — closing the run's leases — runs under the lock.
+
 ---
 
 ### 3. LAST-WRITER-WINS — an outcome that depends on iteration order
