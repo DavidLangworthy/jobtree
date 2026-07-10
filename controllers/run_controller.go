@@ -3008,12 +3008,18 @@ func (c *RunController) shrinkRun(run *v1.Run, target int32, ev *funding.Evaluat
 		removed[strconv.Itoa(grp.Index)] = struct{}{}
 	}
 
-	if current-freed > target {
-		return fmt.Errorf("insufficient groups available to reach target width")
-	}
-
+	// Both planes drop together. The pods of any group whose leases we closed
+	// must go with them, even when we FALL SHORT of the exact target: returning
+	// the shortfall error before removing them stranded the closed groups' pods —
+	// the ledger freed the GPUs (leases closed) while the containers kept holding
+	// them. That is the same half-plane class as the SwapDeclined fix, a different
+	// door. Remove first, then report the shortfall.
 	if len(removed) > 0 {
 		c.removePodsForGroups(runKey, removed)
+	}
+
+	if current-freed > target {
+		return fmt.Errorf("insufficient groups available to reach target width")
 	}
 	return nil
 }
