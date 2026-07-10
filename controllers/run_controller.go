@@ -1470,8 +1470,34 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 			}
 			otherKey := keys.NamespacedKey(other.Spec.RunRef.Namespace, other.Spec.RunRef.Name)
 			if otherKey == runKey {
-				// Our own stale lease on the spare's slots: safe to clear.
+				// Our own stale lease on the spare's slots. Clearing it must move
+				// BOTH planes: close the lease AND drop the pod holding the slot, or
+				// the pod is stranded on the swap target — it keeps its real
+				// nvidia.com/gpu claim, and the swap pod (hard-pinned to this node)
+				// can never bind, while INV-LEASE-HAS-POD stays green because it is
+				// coarse (the run still has other pods). That is the same half-plane
+				// reclaimSquatter was built to avoid, on the same-run door.
+				//
+				// The pod plane addresses NODES, not slots (chunk-local ordinals mean
+				// two same-run leases can share a slot STRING on physically distinct
+				// GPUs — this is how the branch is even reachable). So dropping the
+				// node's pods is only safe when no OTHER open same-run lease shares
+				// the node; if one does, its container is a sibling's and not ours to
+				// delete. Fail closed exactly as reclaimSquatter does: drop the pod
+				// only when provably safe, else close the lease alone (no worse than
+				// before, never evicting a sibling's live rank).
+				nodes := nodesOfSlots(other.Spec.Slice.Nodes)
+				podDropSafe := true
+				for _, d := range c.openRunLeasesOnNodes(runKey, nodes) {
+					if d != other && d != spareLease && d != lease {
+						podDropSafe = false
+						break
+					}
+				}
 				CloseLease(other, "ReclaimedBySpare", now)
+				if podDropSafe {
+					c.removeRunPodsOnNodes(runKey, nodes)
+				}
 				continue
 			}
 			// Another run holds the exact slots the swap needs. Whether we may take
