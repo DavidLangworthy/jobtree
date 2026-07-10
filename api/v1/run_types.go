@@ -403,10 +403,25 @@ func (s *RunSpec) validateRoles() error {
 // template: at least one container, a non-empty image on the GPU-target
 // container, and none of the jobtree-owned pod fields (nodeName, schedulerName,
 // restartPolicy) set by the researcher.
+// ReservedRendezvousEnvNames are container env vars jobtree injects for
+// distributed-training rendezvous (R9 9A-2). A researcher must not set them: the
+// injected value is authoritative, and a researcher-set one would only be silently
+// overridden, so reject it at submission instead of confusing them later.
+var ReservedRendezvousEnvNames = []string{"MASTER_ADDR", "MASTER_PORT", "WORLD_SIZE", "NNODES", "NODE_RANK"}
+
 func (r *RunRole) validateTemplate() error {
 	spec := &r.Template.Spec
 	if len(spec.Containers) == 0 {
 		return fmt.Errorf("spec.roles[0].template must define at least one container")
+	}
+	for i := range spec.Containers {
+		for _, e := range spec.Containers[i].Env {
+			for _, reserved := range ReservedRendezvousEnvNames {
+				if e.Name == reserved {
+					return fmt.Errorf("spec.roles[0].template: container %q sets env %q, which jobtree owns for distributed-training rendezvous (R9 9A-2) — remove it", spec.Containers[i].Name, e.Name)
+				}
+			}
+		}
 	}
 	target := r.GPUTargetContainerIndex()
 	if target < 0 || spec.Containers[target].Image == "" {
