@@ -92,7 +92,11 @@ func seedSwapLease(t *testing.T, state *ClusterState, runName string, now time.T
 		ObjectMeta: v1.ObjectMeta{
 			Namespace: pod.Namespace,
 			Name:      pod.Name + "-lease",
-			Labels:    map[string]string{binder.LabelRunName: pod.Labels[binder.LabelRunName], binder.LabelRunRole: binder.RoleActive},
+			Labels: map[string]string{
+				binder.LabelRunName:    pod.Labels[binder.LabelRunName],
+				binder.LabelGroupIndex: pod.Labels[binder.LabelGroupIndex], // the plugin copies it off the pod (R28b)
+				binder.LabelRunRole:    binder.RoleActive,
+			},
 		},
 		Spec: v1.LeaseSpec{
 			Owner:          pod.Annotations[binder.AnnotationPayerOwner],
@@ -139,7 +143,7 @@ func seedPromiseLeases(t *testing.T, state *ClusterState, runName string, now ti
 			ObjectMeta: v1.ObjectMeta{
 				Namespace: p.Namespace,
 				Name:      p.Name + "-lease",
-				Labels:    map[string]string{binder.LabelRunName: runName, binder.LabelRunRole: role},
+				Labels:    map[string]string{binder.LabelRunName: runName, binder.LabelGroupIndex: "0", binder.LabelRunRole: role},
 			},
 			Spec: v1.LeaseSpec{
 				Owner:          p.Annotations[binder.AnnotationPayerOwner],

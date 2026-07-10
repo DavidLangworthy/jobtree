@@ -1,0 +1,80 @@
+[
+  {
+    "taxonomyClass": "class1-immortal-lease",
+    "file": "controllers/run_controller.go",
+    "line": 1268,
+    "why": "ev := c.evaluate(now) is computed once before the pass-2 loop over c.State.Leases; reclaimSquatter (called at line 1300) closes leases mid-loop via CloseLease, so a later iteration's ev.Class(other) lookup for a different other lease may be classifying against a funding evaluation that is now stale relative to the leases just closed, potentially misclassifying a later squatter or funded lease."
+  },
+  {
+    "taxonomyClass": "class1-immortal-lease",
+    "file": "controllers/run_controller.go",
+    "line": 1697,
+    "why": "applyResolution's switch now branches on allocated >= expected using baseGangGPUsForRun vs minRunnableGPUs; confirm every branch correctly discharges leases for a malleable run that grew then had its base cut, since baseGangGPUsForRun excludes Grow leases and could pass or fail the gate in a way that mis-triggers or skips the new closeRunLeases call in the default branch."
+  },
+  {
+    "taxonomyClass": "class1-immortal-lease",
+    "file": "controllers/run_controller.go",
+    "line": 1456,
+    "why": "reclaimSquatter demotes the victim to RunPhasePending when it falls below minRunnableGPUs, but only closes the one lease passed in and removes pods for the one group label on that lease; if the victim run holds other open leases in different groups, those remain open on a Pending (non-terminal) run, and INV-TERMINAL-PRESENT does not catch Pending runs, so a demoted run could keep charging a budget for leases outside the reclaimed group with no discharge check."
+  },
+  {
+    "taxonomyClass": "class2-comment-as-enforcement",
+    "file": "pkg/invariant/invariant.go",
+    "line": 37,
+    "why": "Header comment enumerates four invariants 'considered and REJECTED because each is false in a state this engine legally produces' -- these are load-bearing claims about engine behavior documented in prose only; if a future change makes one of these actually required, nothing forces an update here."
+  },
+  {
+    "taxonomyClass": "class2-comment-as-enforcement",
+    "file": "controllers/run_controller.go",
+    "line": 1440,
+    "why": "reclaimSquatter's doc comment asserts 'The resolver's eviction path already did all three... This is the same obligation, and it is now discharged the same way' -- an indicative claim of parity between two independent code paths that is not enforced by any shared helper or test comparing the two paths."
+  },
+  {
+    "taxonomyClass": "class2-comment-as-enforcement",
+    "file": "pkg/invariant/invariant.go",
+    "line": 757,
+    "why": "Comment states 'A Lease is an immutable fact. Its Spec never changes, its closure never reverts, and its recorded ending never moves' -- an indicative assertion about a property that CheckTransition only partially verifies via four specific switch cases; worth confirming coverage is complete."
+  },
+  {
+    "taxonomyClass": "class6-guard-before-predicate",
+    "file": "controllers/run_controller.go",
+    "line": 1462,
+    "why": "reclaimSquatter only calls removePodsForGroups when group != empty string (from lease.Labels[binder.LabelGroupIndex]); if a squatter's lease has an empty group label, pod removal is skipped entirely, leaving the victim's pod running on the reclaimed slots even though its lease was closed -- a new half-plane bug of the same shape the surrounding comment describes fixing for R22."
+  },
+  {
+    "taxonomyClass": "class6-guard-before-predicate",
+    "file": "controllers/invariants.go",
+    "line": 63,
+    "why": "AwaitingMint is computed as activePods[key] > openActiveLeases[key] using only per-run pod/lease COUNTS, not per-group or per-slot identity; a mid-swap run where counts shift in an unexpected order across the same reconcile pass could evade or falsely trigger the WIDTH-ASSEMBLED gate depending on the relative timing of pod emission vs lease close."
+  },
+  {
+    "taxonomyClass": "class3-last-writer-wins",
+    "file": "controllers/invariants.go",
+    "line": 68,
+    "why": "KnownToLedger := anyLease[key] || anyPod[key] is a deliberately loose OR the task explicitly asks to be checked for hiding a real violation in production; a run with only closed leases and no pods is 'known' but the boundary condition for a run that legitimately never touched the ledger yet is worth reviewer adjudication."
+  },
+  {
+    "taxonomyClass": "class8-test-asserts-bug",
+    "file": "controllers/node_failure_test.go",
+    "line": 83,
+    "why": "The fixture's Run GPU-request width was changed from 4 to 2 specifically so the run's requested width matches its lease-held width and does not trip the new WIDTH-ASSEMBLED invariant; this edits the test's own input to accommodate the oracle rather than independently verifying behavior, worth confirming the test still exercises the original node-failure-closes-a-spare-only-node scenario faithfully."
+  },
+  {
+    "taxonomyClass": "class8-test-asserts-bug",
+    "file": "controllers/node_failure_test.go",
+    "line": 117,
+    "why": "Same pattern as the sibling test above: TestNodeFailureReturnsTypedSentinelWhenNoLeaseNamesTheNode has its Run width changed from 4 to 1 to align with the single-slot lease, per the same rationale comment; confirm this doesn't mask whether the sentinel/no-lease-found path still behaves identically for a wider run."
+  },
+  {
+    "taxonomyClass": "other-defer-order",
+    "file": "controllers/run_controller.go",
+    "line": 123,
+    "why": "defer c.checkInvariants(...) is registered before defer func for metrics.ObserveAdmission a few lines later inside Reconcile; Go defers run LIFO, so ObserveAdmission fires first and checkInvariants (which can panic under test, or log/count in prod) fires second, meaning the admission metric is recorded even when the invariant oracle subsequently flags or panics on that same reconcile."
+  },
+  {
+    "taxonomyClass": "other-missing-entry-snapshot",
+    "file": "controllers/run_controller.go",
+    "line": 118,
+    "why": "The not-found early return happens before 'before := c.snapshotWorld()' and the checkInvariants defer are registered a few lines later, so that return path never runs any invariant check at all -- likely benign since no state mutation occurs on that path, but it is a genuine gap in the 'runs on EVERY return' claim made by the comment immediately following it."
+  }
+]

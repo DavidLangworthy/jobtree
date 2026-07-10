@@ -327,7 +327,7 @@ func mintPodLease(t *testing.T, ctx context.Context, c client.Client, m *gangMan
 	}
 	run := &v1.Run{ObjectMeta: v1.ObjectMeta{Namespace: pod.Namespace, Name: pod.Labels[binder.LabelRunName]}}
 	role := pod.Labels[binder.LabelRunRole]
-	lease := admission.PodLeaseWithRole(run, seg, node, gpus, pod.Name+"-lease", m.clock(), "Start", role)
+	lease := admission.PodLeaseWithRole(run, seg, node, gpus, pod.Name+"-lease", m.clock(), "Start", role, pod.Labels[binder.LabelGroupIndex])
 	if err := c.Create(ctx, &lease); err != nil {
 		t.Fatalf("create real lease for %s: %v", pod.Name, err)
 	}

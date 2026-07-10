@@ -15,17 +15,19 @@ import (
 var (
 	mu sync.Mutex
 
-	admissionLatency   = make(map[string]map[string]*histogram)
-	forecastLatency    = make(map[string]*histogram)
-	reservationBacklog = make(map[string]reservationBacklogEntry)
-	resolverActions    = make(map[string]float64)
-	budgetData         = make(map[BudgetKey]BudgetUsage)
-	spareData          = make(map[string]float64)
-	elasticGrows       = make(map[string]float64)
-	elasticShrinks     = make(map[string]float64)
-	elasticWidth       = make(map[string]float64)
-	decideLatency      = make(map[string]*histogram)
-	evaluateInputSize  float64
+	admissionLatency    = make(map[string]map[string]*histogram)
+	forecastLatency     = make(map[string]*histogram)
+	reservationBacklog  = make(map[string]reservationBacklogEntry)
+	resolverActions     = make(map[string]float64)
+	invariantViolations = make(map[string]float64)
+	sweptLeases         = make(map[string]float64)
+	budgetData          = make(map[BudgetKey]BudgetUsage)
+	spareData           = make(map[string]float64)
+	elasticGrows        = make(map[string]float64)
+	elasticShrinks      = make(map[string]float64)
+	elasticWidth        = make(map[string]float64)
+	decideLatency       = make(map[string]*histogram)
+	evaluateInputSize   float64
 )
 
 var defaultBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
@@ -158,6 +160,33 @@ func ClearReservationBacklog(reservationKey string) {
 	delete(reservationBacklog, reservationKey)
 }
 
+// IncInvariantViolation counts one violation of a named engine invariant
+// (pkg/invariant). In production a violation is reported, never fatal — this
+// counter is how anyone finds out. Alert on any nonzero value: the engine
+// reached a state its own postconditions call illegal.
+func IncInvariantViolation(id string) {
+	if id == "" {
+		return
+	}
+	mu.Lock()
+	invariantViolations[id]++
+	mu.Unlock()
+}
+
+// IncSweptLease counts one lease the production sweep had to close because an
+// engine path left it open (controllers.SettleLeases). Alert on rule=terminal-run
+// at any nonzero value: it means a run died holding a lease, which nothing else
+// would ever have closed. rule=orphan-run races a Run deletion and is expected to
+// tick occasionally.
+func IncSweptLease(rule string) {
+	if rule == "" {
+		return
+	}
+	mu.Lock()
+	sweptLeases[rule]++
+	mu.Unlock()
+}
+
 // IncResolverAction increments the resolver action counter for the kind.
 func IncResolverAction(kind string) {
 	if kind == "" {
@@ -269,17 +298,19 @@ type ReservationBacklogValue struct {
 
 // MetricsSnapshot captures a copy of the metrics state.
 type MetricsSnapshot struct {
-	AdmissionLatency   map[string]map[string]Histogram
-	ForecastLatency    map[string]Histogram
-	ReservationBacklog map[string]ReservationBacklogValue
-	ResolverActions    map[string]float64
-	BudgetUsage        map[BudgetKey]BudgetUsage
-	SpareUsage         map[string]float64
-	ElasticGrows       map[string]float64
-	ElasticShrinks     map[string]float64
-	ElasticWidth       map[string]float64
-	DecideLatency      map[string]Histogram
-	EvaluateInputSize  float64
+	AdmissionLatency    map[string]map[string]Histogram
+	ForecastLatency     map[string]Histogram
+	ReservationBacklog  map[string]ReservationBacklogValue
+	ResolverActions     map[string]float64
+	InvariantViolations map[string]float64
+	SweptLeases         map[string]float64
+	BudgetUsage         map[BudgetKey]BudgetUsage
+	SpareUsage          map[string]float64
+	ElasticGrows        map[string]float64
+	ElasticShrinks      map[string]float64
+	ElasticWidth        map[string]float64
+	DecideLatency       map[string]Histogram
+	EvaluateInputSize   float64
 }
 
 // Snapshot returns the current metrics data for inspection/testing.
@@ -288,17 +319,19 @@ func Snapshot() MetricsSnapshot {
 	defer mu.Unlock()
 
 	snap := MetricsSnapshot{
-		AdmissionLatency:   make(map[string]map[string]Histogram, len(admissionLatency)),
-		ForecastLatency:    make(map[string]Histogram, len(forecastLatency)),
-		ReservationBacklog: make(map[string]ReservationBacklogValue, len(reservationBacklog)),
-		ResolverActions:    make(map[string]float64, len(resolverActions)),
-		BudgetUsage:        make(map[BudgetKey]BudgetUsage, len(budgetData)),
-		SpareUsage:         make(map[string]float64, len(spareData)),
-		ElasticGrows:       make(map[string]float64, len(elasticGrows)),
-		ElasticShrinks:     make(map[string]float64, len(elasticShrinks)),
-		ElasticWidth:       make(map[string]float64, len(elasticWidth)),
-		DecideLatency:      make(map[string]Histogram, len(decideLatency)),
-		EvaluateInputSize:  evaluateInputSize,
+		AdmissionLatency:    make(map[string]map[string]Histogram, len(admissionLatency)),
+		ForecastLatency:     make(map[string]Histogram, len(forecastLatency)),
+		ReservationBacklog:  make(map[string]ReservationBacklogValue, len(reservationBacklog)),
+		ResolverActions:     make(map[string]float64, len(resolverActions)),
+		InvariantViolations: make(map[string]float64, len(invariantViolations)),
+		SweptLeases:         make(map[string]float64, len(sweptLeases)),
+		BudgetUsage:         make(map[BudgetKey]BudgetUsage, len(budgetData)),
+		SpareUsage:          make(map[string]float64, len(spareData)),
+		ElasticGrows:        make(map[string]float64, len(elasticGrows)),
+		ElasticShrinks:      make(map[string]float64, len(elasticShrinks)),
+		ElasticWidth:        make(map[string]float64, len(elasticWidth)),
+		DecideLatency:       make(map[string]Histogram, len(decideLatency)),
+		EvaluateInputSize:   evaluateInputSize,
 	}
 
 	for flavor, byResult := range admissionLatency {
@@ -329,6 +362,14 @@ func Snapshot() MetricsSnapshot {
 
 	for kind, count := range resolverActions {
 		snap.ResolverActions[kind] = count
+	}
+
+	for id, count := range invariantViolations {
+		snap.InvariantViolations[id] = count
+	}
+
+	for rule, count := range sweptLeases {
+		snap.SweptLeases[rule] = count
 	}
 
 	for key, usage := range budgetData {
@@ -368,6 +409,8 @@ func Reset() {
 	forecastLatency = make(map[string]*histogram)
 	reservationBacklog = make(map[string]reservationBacklogEntry)
 	resolverActions = make(map[string]float64)
+	invariantViolations = make(map[string]float64)
+	sweptLeases = make(map[string]float64)
 	budgetData = make(map[BudgetKey]BudgetUsage)
 	spareData = make(map[string]float64)
 	elasticGrows = make(map[string]float64)
@@ -449,6 +492,16 @@ func WritePrometheus(w io.Writer) {
 	for _, key := range sortedKeys(snap.ReservationBacklog) {
 		entry := snap.ReservationBacklog[key]
 		writeSample(buf, "jobtree_reservations_backlog_seconds", map[string]string{"reservation": key, "flavor": entry.Flavor}, formatFloat(entry.Seconds))
+	}
+
+	writeHeader(buf, "jobtree_invariant_violations_total", "Engine invariant violations (pkg/invariant). Any nonzero value is a bug: the engine reached a state its own postconditions call illegal.", "counter")
+	for _, id := range sortedKeys(snap.InvariantViolations) {
+		writeSample(buf, "jobtree_invariant_violations_total", map[string]string{"invariant": id}, formatFloat(snap.InvariantViolations[id]))
+	}
+
+	writeHeader(buf, "jobtree_swept_leases_total", "Leases closed by the production settle sweep because an engine path left them open. Nonzero rule=terminal-run is a bug.", "counter")
+	for _, rule := range sortedKeys(snap.SweptLeases) {
+		writeSample(buf, "jobtree_swept_leases_total", map[string]string{"rule": rule}, formatFloat(snap.SweptLeases[rule]))
 	}
 
 	writeHeader(buf, "jobtree_resolver_actions_total", "Structural actions performed by the resolver.", "counter")

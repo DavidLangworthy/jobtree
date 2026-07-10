@@ -971,6 +971,7 @@ func TestReconcileAdoptsHalfAppliedAdmission(t *testing.T) {
 		},
 	}
 
+	mirrorPods(state)
 	controller := NewRunController(state, runClock{now: now})
 	if err := controller.Reconcile("default", "half"); err != nil {
 		t.Fatalf("reconcile failed: %v", err)
@@ -1045,6 +1046,7 @@ func TestActivateReservationAdoptsHalfAppliedActivation(t *testing.T) {
 		},
 	}
 
+	mirrorPods(state)
 	controller := NewRunController(state, runClock{now: now})
 	if err := controller.ActivateReservations(now); err != nil {
 		t.Fatalf("activate failed: %v", err)

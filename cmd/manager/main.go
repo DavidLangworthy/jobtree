@@ -19,6 +19,7 @@ import (
 	"github.com/davidlangworthy/jobtree/controllers"
 	"github.com/davidlangworthy/jobtree/controllers/kube"
 	"github.com/davidlangworthy/jobtree/pkg/funding"
+	"github.com/davidlangworthy/jobtree/pkg/invariant"
 	"github.com/davidlangworthy/jobtree/pkg/metrics"
 )
 
@@ -69,6 +70,22 @@ func main() {
 	if err != nil {
 		log.Error(err, "unable to start manager")
 		os.Exit(1)
+	}
+
+	// The oracle (pkg/invariant) panics under `go test`, so a test asserting an
+	// illegal state goes red inside the engine call. In production it must never
+	// be fatal: an oracle that crashes the scheduler is worse than the bug it
+	// found. Log it, count it, keep serving. Alert on any nonzero value of
+	// jobtree_invariant_violations_total — the engine reached a state its own
+	// postconditions call illegal, which means somebody's budget is being
+	// charged for GPUs nobody is using, or a gang is reporting healthy while
+	// short of its ranks.
+	invariant.Report = func(site string, violations []invariant.Violation) {
+		for _, v := range violations {
+			metrics.IncInvariantViolation(v.ID)
+			log.Error(nil, "engine invariant violated",
+				"invariant", v.ID, "site", site, "subject", v.Subject, "detail", v.Detail)
+		}
 	}
 
 	bridge := &kube.Bridge{

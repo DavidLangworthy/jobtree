@@ -22,7 +22,11 @@ func completionWorld(activePhases []string, sparePhase string) (*ClusterState, s
 
 	mkLease := func(name, role string) v1.Lease {
 		return v1.Lease{
-			ObjectMeta: v1.ObjectMeta{Namespace: keys.DefaultNamespace, Name: name},
+			ObjectMeta: v1.ObjectMeta{
+				Namespace: keys.DefaultNamespace, Name: name,
+				// Every minted lease names its placement group (R28b).
+				Labels: map[string]string{binder.LabelRunName: "job", binder.LabelGroupIndex: "0", binder.LabelRunRole: role},
+			},
 			Spec: v1.LeaseSpec{
 				Owner:  "team",
 				RunRef: v1.RunReference{Name: "job", Namespace: keys.DefaultNamespace},
@@ -33,7 +37,7 @@ func completionWorld(activePhases []string, sparePhase string) (*ClusterState, s
 	mkPod := func(name, role, phase string) binder.PodManifest {
 		return binder.PodManifest{
 			Namespace: keys.DefaultNamespace, Name: name, Phase: phase,
-			Labels: map[string]string{binder.LabelRunName: "job", binder.LabelRunRole: role},
+			Labels: map[string]string{binder.LabelRunName: "job", binder.LabelGroupIndex: "0", binder.LabelRunRole: role},
 		}
 	}
 	for i, phase := range activePhases {

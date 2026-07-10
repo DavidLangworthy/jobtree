@@ -1,0 +1,36 @@
+scout: 13 priority lead(s) across 7 taxonomy class(es)
+running 4 standard + 3 caller lens(es)
+lens "std:signal-and-identity" attempt 1 REJECTED: the agent produced no output at all
+lens "std:ledger-lifecycle": 3 finding(s), 9 citations verified
+lens "std:order-dependence": 1 finding(s), 6 citations verified
+lens "std:signal-and-identity": 2 finding(s), 9 citations verified
+lens "std:test-integrity": 2 finding(s), 7 citations verified
+lens "invariant-soundness": 4 finding(s), 9 citations verified
+lens "reclaim-both-planes": 4 finding(s), 8 citations verified
+lens "resolver-width-gate": 3 finding(s), 9 citations verified
+[judge0:reclaimSquatter skips po] failed: You've hit your session limit · resets 7pm (UTC)
+[judge1:reclaimSquatter skips po] failed: You've hit your session limit · resets 7pm (UTC)
+[judge2:reclaimSquatter skips po] failed: You've hit your session limit · resets 7pm (UTC)
+[judge0:reclaimSquatter's pod ev] failed: You've hit your session limit · resets 7pm (UTC)
+[judge1:reclaimSquatter's pod ev] failed: You've hit your session limit · resets 7pm (UTC)
+[judge2:reclaimSquatter's pod ev] failed: You've hit your session limit · resets 7pm (UTC)
+[judge0:reclaimSquatter closes o] failed: You've hit your session limit · resets 7pm (UTC)
+[judge1:reclaimSquatter closes o] failed: You've hit your session limit · resets 7pm (UTC)
+[judge2:reclaimSquatter closes o] failed: You've hit your session limit · resets 7pm (UTC)
+[judge0:Malleable-above-min vict] failed: You've hit your session limit · resets 7pm (UTC)
+[judge1:Malleable-above-min vict] failed: You've hit your session limit · resets 7pm (UTC)
+[judge2:Malleable-above-min vict] failed: You've hit your session limit · resets 7pm (UTC)
+[judge0:reclaimSquatter widens t] failed: You've hit your session limit · resets 7pm (UTC)
+[judge1:reclaimSquatter widens t] failed: You've hit your session limit · resets 7pm (UTC)
+[judge2:reclaimSquatter widens t] failed: You've hit your session limit · resets 7pm (UTC)
+[judge0:Terminal branch closes a] failed: You've hit your session limit · resets 7pm (UTC)
+[judge1:Terminal branch closes a] failed: You've hit your session limit · resets 7pm (UTC)
+[judge2:Terminal branch closes a] failed: You've hit your session limit · resets 7pm (UTC)
+[judge0:Malleable run at its dec] failed: You've hit your session limit · resets 7pm (UTC)
+[judge1:Malleable run at its dec] failed: You've hit your session limit · resets 7pm (UTC)
+[judge2:Malleable run at its dec] failed: You've hit your session limit · resets 7pm (UTC)
+[judge0:New resolver-settlement] failed: You've hit your session limit · resets 7pm (UTC)
+[judge1:reclaimSquatter demotes] failed: You've hit your session limit · resets 7pm (UTC)
+[judge2:New resolver-settlement] failed: You've hit your session limit · resets 7pm (UTC)
+[judge1:New resolver-settlement] failed: You've hit your session limit · resets 7pm (UTC)
+1 confirmed, 9 UNRESOLVED (under quorum), 9 refuted, 0 blocked lens(es)

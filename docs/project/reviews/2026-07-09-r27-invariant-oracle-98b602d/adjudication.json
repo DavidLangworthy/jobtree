@@ -1,0 +1,1006 @@
+{
+  "head": "e2b5355",
+  "reviewedCommit": "98b602d",
+  "adjudicated": [
+    {
+      "id": "F1",
+      "severity": "medium",
+      "title": "reclaimSquatter demotes the victim to Pending but only closes the one conflicting lease, stranding the victim's other-group open leases on a non-terminal run",
+      "outcome": "not-a-defect",
+      "why": null,
+      "tally": {
+        "not-a-defect": 2
+      },
+      "votes": [
+        {
+          "status": "not-a-defect",
+          "ranCode": true,
+          "reasoning": "The finding's mechanical claim is TRUE and I confirmed it by execution: reclaimSquatter closes only the one conflicting lease (group-0), demotes the victim to Pending, and group-1's lease stays open across 20 reconciles / 20 simulated hours on a non-terminal run, so INV-TERMINAL-PRESENT (which gates on r.Terminal) never fires. BUT the state is LEGAL, not a leak, on four independent grounds:\n\n1) The oracle — the repo's own authority on legality, which panics under `go test` — did NOT fire on ANY of the 20 reconciles. A Pending run holding open leases is exactly the half-assembled-gang state the engine is built to produce. invariant.go's package doc explicitly REJECTS the neighbouring invariant \"a Running run holds at least one open active lease\" as false-in-legal-states; the width invariant gates on Phase==Running, and the terminal invariant on Terminal. Pending-holding-open is deliberately uncovered.\n\n2) The run does not wedge: run_controller.go's adoption path (case allocated>0) deliberately parks the run Pending, re-emits the missing slice via topUpActiveGang (my test observed 4 victim pods re-emitted), and — proven by my second test (F1b) — the moment a replacement group-0 lease is minted the run adopts back to Running and REUSES the still-open group-1 lease (phase=Running, g1Closed=false). \"Stranded\" is the wrong word; the lease is adopted and reused.\n\n3) reclaimSquatter runs ONLY for an Unfunded victim — its sole caller is guarded by `class == funding.ClassUnfunded`. An unfunded open lease charges no budget (it runs on capacity nobody paid for), so the immortal-lease harm model (\"charges a budget forever\") does not apply. The GPUs it holds are reclaimable by any funded admission (reclaimForAdmission / the resolver), so it is not a permanent capacity hold either. This is the documented unfunded contract (quota-semantics R14: \"it requeues and re-admits when capacity returns\"), which reclaimSquatter's own comment states.\n\n4) The immortal-lease class is specifically a lease on a CORPSE that nothing reconciles. This victim is Pending and reconciled every tick, not terminal. The only path to terminal is failRun, which closes every lease (closeRunLeases) — so there is no reachable state where the victim is terminal AND holds group-1 open. The deliberate absence of a CheckpointDeadline (unlike failGroupWithoutSpare) is correct: unfunded work is not entitled to a bounded grace that fails-and-releases; it is entitled to wait indefinitely for opportunistic capacity.\n\nOn the reachability question the task raised: b4f6a6d's runPhaseTracker changes only WHICH phase wins when multiple writers race for one run's Status.Phase; it neither adds nor removes a lease-closing step, so it does not open or close F1. The demotion to Pending and the open group-1 lease are unchanged by it. The prior panel's \"refuted as pre-existing\" is also correct as a matter of fact — group-1's lease was already open (the run was Running over 4 GPU) before the node failure; reclaimSquatter did not MINT a new lease, it reduced the victim's footprint and demoted it — but pre-existence is not why I rule not-a-defect; the legality (oracle-clean, re-admits/reuses, unfunded+reclaimable, non-terminal) is.",
+          "reproduction": "Copied the repo to a temp dir at HEAD e2b5355 and added controllers/f1_probe_test.go. Scenario: node-a and node-b (4 GPU each). swap run (funded, budget \"team\") holds active on node-a#0,#1 and spare on node-b#0,#1. victim run (owner org:ai:nobody, budget \"\", fixed-width 4 GPU) holds group-0 on node-b#0,#1 (the spare's exact slots) and group-1 on node-b#2,#3. Ran HandleNodeFailure(\"node-a\"), then Reconcile(\"default\",\"victim\") 20 times advancing the clock 1h each. Command: `go test ./controllers/ -run TestF1_ -v`. Result (exit 0, no oracle panic): after HandleNodeFailure victim.Phase=Pending, victim-g0 closed reason \"ReclaimedBySpare\", victim-g1 OPEN, CheckpointDeadline=nil. After 20 reconciles/20h: victim.Phase=Pending \"assembling gang: 2/4 GPUs held\", victim-g1 still open, 1 open victim lease, 4 victim pods re-emitted. Second test F1b: after minting a replacement group-0 lease and one reconcile, victim.Phase=Running with group-1 NOT closed (reused) — the run re-admits and reuses the lease.",
+          "recommendedFix": "None required. If the team nonetheless wants an unfunded fixed-width run that provably can never reassemble to stop occupying slots, the correct place is NOT reclaimSquatter (killing it would violate the quota-semantics R14 unfunded-requeue contract and the \"start together or not at all\" assembly design); it would be a separate, funding-class-aware GC of long-idle assembling runs. But note that group-1 here is unfunded and already reclaimable by any funded admission, so there is no capacity or budget leak to fix.",
+          "evidence": [
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1298,
+              "quote": "if classified && class == funding.ClassUnfunded {"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1452,
+              "quote": "// Demote, do not kill: unfunded work is reclaimable by definition, and"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 238,
+              "quote": "created := c.topUpActiveGang(run)"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 231,
+              "quote": "// would read it as whole. Stay pre-Running, re-emit whatever pods"
+            },
+            {
+              "file": "pkg/invariant/invariant.go",
+              "line": 40,
+              "quote": "//   - \"a Running run holds at least one open active lease\". False during a swap:"
+            },
+            {
+              "file": "pkg/invariant/invariant.go",
+              "line": 187,
+              "quote": "if r.Terminal {"
+            }
+          ]
+        },
+        {
+          "status": "not-a-defect",
+          "ranCode": true,
+          "reasoning": "F1's factual observations are all TRUE, but the end state it flags is a legal, documented state, not a leak. I copied the tree at HEAD (e2b5355) and drove the exact scenario as a pure-engine simulation.\n\nWHAT IS TRUE (TestF1_StrandedOtherGroupLease): a fixed-width 4-GPU unfunded run holding group-0 on the spare's exact slots and group-1 on node-c is demoted to Pending by reclaimSquatter, which closes only the passed lease (run_controller.go:1477 `CloseLease(lease, \"ReclaimedBySpare\", now)`) and leaves filler-g1 open. Driven through 20 Reconciles over 20 simulated hours the run stays `Pending`, message \"assembling gang: 2/4 GPUs held\", and filler-g1 never closes. The oracle never panics — INV-TERMINAL-PRESENT only constrains terminal runs (invariant.go:187 `if r.Terminal {`), and Pending is not terminal.\n\nWHY IT IS LEGAL, NOT A LEAK. (1) The demoted run does not wedge: it lands in the adoption path's half-assembled-gang branch, which DELIBERATELY parks a run Pending while it holds open leases and re-emits the missing ranks (run_controller.go:239-240, topUpActiveGang). (2) TestF1_FreshHalfAssembledIsLegal shows a FRESH unfunded run that only ever minted 2 of its 4 GPUs produces the byte-identical state — Pending, holding one open lease, same \"assembling gang: 2/4\" message, oracle silent. The state F1 flags is therefore indistinguishable from the ordinary partially-placed gang; the oracle accepts both. (3) TestF1_ReAdoptsReusingHeldLease shows that when the missing rank is re-minted (as the plugin does when capacity returns) the run adopts back to Running REUSING the held lease (it stays open, is not re-minted) — \"adopted 4 GPUs of open leases from an earlier admission\". This is the \"demote, do not kill; requeues and re-admits when capacity returns\" behavior the reclaimSquatter comment states (run_controller.go:1452-1453).\n\nCONSEQUENCE IF ASSUMED REAL. The stranded lease is UNFUNDED by construction — reclaimSquatter is reached only for `class == funding.ClassUnfunded` (run_controller.go:1298). An unfunded lease charges NO budget (it runs on capacity nobody paid for), so nothing is billed forever. It holds 2 GPUs, but unfunded work is reclaimable by definition: any funded admission with a deficit takes it via reclaimForAdmission/applyResolution (OnlyUnfunded). So there is no permanent budget charge and no permanent capacity lock — only opportunistic capacity held while the run waits to reassemble, surrendered the instant funded work needs it.\n\nREAPER CHECK. A \"fix\" that closed the victim's other-group leases on demotion, or an invariant \"a Pending run holds no open lease\", would reap the legal half-assembled-gang state the adoption path routinely produces (line 239 sets Pending while `allocated > 0`), forcing every requeued unfunded run and every partially-placed gang to discard acquired ranks and re-acquire from scratch. That is exactly the rejected-invariant class documented in pkg/invariant. b4f6a6d's routing of reclaimSquatter's phase through runPhaseTracker only changes which verdict wins when multiple writers touch one run in a pass; it does not change reachability of this state, and the state remains legal.",
+          "reproduction": "Copied HEAD (e2b5355) to a temp dir and added controllers/f1_probe_test.go, then ran `go test ./controllers/ -run TestF1_ -v`. TestF1_StrandedOtherGroupLease: HandleNodeFailure(\"node-a\") demotes filler to Pending, closes filler-g0 (ReclaimedBySpare), leaves filler-g1 open; 20 Reconciles / 20h keep it Pending \"assembling gang: 2/4 GPUs held\" with filler-g1 open — oracle never panics. TestF1_FreshHalfAssembledIsLegal: a fresh unfunded run with only 2/4 GPUs minted produces the identical Pending+open-lease state, oracle silent. TestF1_ReAdoptsReusingHeldLease: re-minting the missing rank flips the run to Running reusing the held lease (still open). All three pass.",
+          "recommendedFix": "None. The flagged state is legal (the documented half-assembled-gang / requeued-unfunded park). A fix that closed the held lease or added a \"Pending holds no open lease\" invariant would be a reaper against the adoption path at run_controller.go:239 and every partially-placed gang. If observability is desired, the only defensible change is non-behavioral: emit a periodic event on a long-Pending unfunded run so operators can see it is waiting to reassemble — but do not close its lease and do not fail it, since unfunded work is meant to requeue indefinitely (R14).",
+          "evidence": [
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1477,
+              "quote": "CloseLease(lease, \"ReclaimedBySpare\", now)"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1452,
+              "quote": "// Demote, do not kill: unfunded work is reclaimable by definition, and"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1298,
+              "quote": "if classified && class == funding.ClassUnfunded {"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 239,
+              "quote": "run.Status.Phase = RunPhasePending"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 240,
+              "quote": "run.Status.Message = fmt.Sprintf(\"assembling gang: %d/%d GPUs held (awaiting the jobtree scheduler)\", allocated, expected)"
+            },
+            {
+              "file": "pkg/invariant/invariant.go",
+              "line": 187,
+              "quote": "if r.Terminal {"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F2",
+      "severity": "low",
+      "title": "reclaimSquatter skips pod removal entirely when the squatter lease has an empty group label, leaving the victim's pod on the reclaimed slots",
+      "outcome": "fixed-by-a-later-commit",
+      "why": null,
+      "tally": {
+        "fixed-by-a-later-commit": 3
+      },
+      "votes": [
+        {
+          "status": "fixed-by-a-later-commit",
+          "ranCode": true,
+          "reasoning": "F2 was a REAL defect in the reviewed commit 98b602d and is CLOSED by commit 8a1dc2c (line `group := leaseGroupIndex(lease)` at controllers/run_controller.go:1476, together with deletion of the `if group != \"\"` guard). I verified the fix by execution and mutation, not by reading.\n\nTRACE OF THE ORIGINAL (98b602d). `git show 98b602d:controllers/run_controller.go` line 1456 reads `group := lease.Labels[binder.LabelGroupIndex]` and line 1465 guards `if group != \"\" { c.removePodsForGroups(victimKey, map[string]struct{}{group: {}}) }`. The sole production mint path (admission.PodLeaseWithRole) stamps no LabelGroupIndex, so the raw read returns \"\", the guard is false, and pod removal is skipped entirely — the lease is closed (ledger frees the slot) while the container keeps running on the exact node#ordinal the swap targets. That is exactly F2.\n\nTRACE OF HEAD (e2b5355). reclaimSquatter now does `group := leaseGroupIndex(lease)` (run_controller.go:1476); leaseGroupIndex (2128-2135) returns \"0\" when the label is absent/empty. The `if group != \"\"` guard is gone, so `c.removePodsForGroups(victimKey, map[string]struct{}{group: {}})` (1485) runs unconditionally with group=\"0\". removePodsForGroups (2639-2655) reads each pod's raw LabelGroupIndex; emitCohortPods/emitSparePods hardcode \"0\", so pod-\"0\" is in the {\"0\"} set and the victim pod is dropped from c.State.Pods. Lease-side and pod-side now agree at \"0\", so the pod is really removed.\n\nEXECUTION. Copied the repo to /tmp/f2work and ran TestReclaimedSquatterIsEvictedInBothPlanesWithAProductionShapedLease (drives the real HandleNodeFailure with prodLease(), which deletes LabelGroupIndex to match what PodLeaseWithRole mints): PASS. MUTATION: reverting line 1476 to `group := lease.Labels[binder.LabelGroupIndex]` (the 98b602d read) makes the production-shaped test FAIL with F2's exact message — \"the squatter's container filler-active-0 still holds the slots the swap targets. The lease says group \\\"<absent>\\\" and the pod says \\\"0\\\"\" — while the older fixture-rich TestReclaimedSquatterIsEvictedInBothPlanes still PASSES. This proves (a) F2 was a true under-eviction defect and (b) the fix is LOAD-BEARING ON THE PRODUCTION PATH, not dead code like F3: the production-shaped fixture carries no group label, exactly as the real system mints.\n\nHARDER QUESTIONS. (1) Is defaulting to \"0\" right today? Yes, and only because the world is uniformly \"0\": every lease lacks the label (→\"0\") and every pod hardcodes \"0\". They agree by construction. (2) Could the default evict the wrong group once R28b lands and labels become real? That is a FUTURE hazard, not a current defect. The author documents it explicitly in the 8a1dc2c message and R28-group-identity.md: \"The '0' default then becomes a migration shim and must be DELETED — a permanent silent default would hide the next instance of this bug.\" A related latent issue — reclaiming ONE squatter lease calls removePodsForGroups({\"0\"}), which removes ALL of a multi-lease victim run's pods while closing only the one lease — is the same R28b no-per-group-identity limitation (documented, open), and it is over-eviction, the opposite direction from F2's claim. Neither is what F2 alleges, and neither is a current correctness break because there is exactly one group. So F2 itself is fixed; the reaper it points at is filed as R28b and is out of F2's scope.",
+          "reproduction": "In /tmp/f2work (copy of repo at HEAD e2b5355): `go test ./controllers/ -run TestReclaimedSquatterIsEvictedInBothPlanes -count=1 -v` -> both PASS. Then edit controllers/run_controller.go line 1476 from `group := leaseGroupIndex(lease)` to `group := lease.Labels[binder.LabelGroupIndex]` and re-run -> TestReclaimedSquatterIsEvictedInBothPlanesWithAProductionShapedLease FAILS at resolver_settlement_test.go:341 (\"the squatter's container filler-active-0 still holds the slots the swap targets\"), the fixture-rich TestReclaimedSquatterIsEvictedInBothPlanes still PASSES. This is F2 reproduced against the reverted fix and confirmed absent on HEAD.",
+          "recommendedFix": "No fix needed for F2: it is closed on HEAD. Carry the residual reaper forward under R28b: when the packer's real group indices reach both leases (plugin stamps the label from the pod, fail-closed PreBind gate on the R5/R6 model) and pods, the \"0\" default in leaseGroupIndex (run_controller.go:2128 and the twin in pkg/resolver/resolver.go:271) MUST be deleted so a label-less lease no longer silently collapses into group \"0\"; otherwise reclaimSquatter could match the wrong group's pods. Also, once groups are real, reclaimSquatter's removePodsForGroups({group}) should remove only the reclaimed group's pods rather than every pod sharing the collapsed \"0\", so a multi-lease victim's untouched groups are not evicted.",
+          "evidence": [
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1476,
+              "quote": "group := leaseGroupIndex(lease)"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1485,
+              "quote": "c.removePodsForGroups(victimKey, map[string]struct{}{group: {}})"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 2130,
+              "quote": "if idx, ok := lease.Labels[binder.LabelGroupIndex]; ok && idx != \"\" {"
+            },
+            {
+              "file": "controllers/resolver_settlement_test.go",
+              "line": 341,
+              "quote": "the squatter's container %s still holds the slots the swap targets. "
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 2646,
+              "quote": "group := pod.Labels[binder.LabelGroupIndex]"
+            }
+          ]
+        },
+        {
+          "status": "fixed-by-a-later-commit",
+          "ranCode": true,
+          "reasoning": "F2 was a real defect at 98b602d and is closed at HEAD (e2b5355) by commit 8a1dc2c. At 98b602d reclaimSquatter read the raw label (`group := lease.Labels[binder.LabelGroupIndex]`) and guarded pod removal with `if group != \"\"`. The only production mint path (admission.PodLeaseWithRole) stamps NO group index, so a real squatter lease has group==\"\" and the pod removal was skipped entirely — the ledger freed the slot while the container kept running on the exact node#ordinal the swap targeted. I confirmed the old body verbatim via `git show 98b602d:controllers/run_controller.go`. Commit 8a1dc2c (verified via `git log -S`) introduced leaseGroupIndex(), which defaults a missing label to \"0\", changed reclaimSquatter to use it, and DELETED the `if group != \"\"` guard so removePodsForGroups always runs. Since the sole committer stamps no label, leaseGroupIndex returns \"0\", and emitCohortPods/emitSparePods hardcode pod group \"0\", so the derived group now matches the pod label and the removal fires — the fix is LIVE in production shape, not dead code. I proved this by copying the repo to a temp dir and running the author's production-shaped test (prodLease deletes the group label to model the real mint path): it PASSED. I then mutated the fix back to the raw-label read + guard; the same test went RED with the exact F2 symptom (\"the squatter's container filler-active-0 still holds the slots the swap targets ... the reclaim freed the ledger and nothing else\"). Restoring the fix returned it to green. On the harder question: defaulting to \"0\" is correct and necessary TODAY (every lease is label-less, every pod is \"0\", so it is a single-group world and the default is the only thing that makes ledger-group and pod-group agree). The default fires ONLY when the label is absent; once R28b is fixed and every lease carries a real group label, the default never triggers and behavior is per-group-correct, so the default cannot by itself evict the wrong group in a fully-migrated world. The only way the default could evict a wrong group is a TRANSITIONAL mixed state (some leases labelled with real indices, pods labelled real indices, but the reclaimed lease still label-less → it would default to \"0\" and remove group-0 pods). That mixed state is not one today's production produces and is precisely the R28b territory the leaseGroupIndex doc comment explicitly disclaims fixing (docs/project/remediation/R28-group-identity.md). It is not introduced by this fix and does not reopen F2.",
+          "reproduction": "Copy repo to temp dir. Run `go test ./controllers/ -run TestReclaimedSquatterIsEvictedInBothPlanesWithAProductionShapedLease -v` → PASS. The fixture builds a filler run whose active lease squats node-b#0/#1 (the spare's slots) via prodLease (which delete()s LabelGroupIndex, modelling admission.PodLeaseWithRole) plus one pod labelled group \"0\"; HandleNodeFailure(\"node-a\") triggers the swap. Assertions: filler lease closes with reason ReclaimedBySpare AND no filler pod remains AND spare closes with reason Swap — all hold. MUTATION: change `group := leaseGroupIndex(lease)` back to `group := lease.Labels[binder.LabelGroupIndex]` and wrap the removePodsForGroups call in `if group != \"\" {}`; re-run → FAIL: \"the squatter's container filler-active-0 still holds the slots the swap targets ... The lease says group \\\"<absent>\\\" and the pod says \\\"0\\\"\". Restore → PASS. This proves the fix is load-bearing and effective in production shape.",
+          "recommendedFix": "No fix needed for F2 — it is closed at HEAD by 8a1dc2c and I verified the fix works in production shape via a mutation-checked test run. Follow-up (tracked as R28b, not F2): once real per-group labels are introduced, the \"0\" default in leaseGroupIndex must be retired in lockstep so a still-label-less lease cannot default onto group 0 and evict a different real group's pods during migration; keep the default and the emit-side hardcoding tied together in a single R28b change rather than landing them separately.",
+          "evidence": [
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1476,
+              "quote": "group := leaseGroupIndex(lease)"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1485,
+              "quote": "c.removePodsForGroups(victimKey, map[string]struct{}{group: {}})"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 2130,
+              "quote": "if idx, ok := lease.Labels[binder.LabelGroupIndex]; ok && idx != \"\" {"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 2134,
+              "quote": "return \"0\""
+            },
+            {
+              "file": "controllers/resolver_settlement_test.go",
+              "line": 299,
+              "quote": "delete(l.Labels, binder.LabelGroupIndex)"
+            },
+            {
+              "file": "controllers/resolver_settlement_test.go",
+              "line": 341,
+              "quote": "the squatter's container %s still holds the slots the swap targets. \""
+            }
+          ]
+        },
+        {
+          "status": "fixed-by-a-later-commit",
+          "ranCode": true,
+          "reasoning": "F2 was a REAL defect at the reviewed commit 98b602d. There, reclaimSquatter read the RAW label — `group := lease.Labels[binder.LabelGroupIndex]` — and guarded pod removal with `if group != \"\"`. A production-shaped lease carries no group index (admission.PodLeaseWithRole stamps only LabelRunName and LabelRunRole), so group == \"\" and the guard SKIPPED removePodsForGroups entirely. The lease's ledger entry was closed (CloseLease at the top) while the victim's container — whose pod is labelled group \"0\" by emitCohortPods/emitSparePods (both hardcode LabelGroupIndex:\"0\", verified at run_controller.go:1949 and :2070) — kept running on the exact node#ordinal the swap then targeted. Budget charged: none after closure (the lease closes), but the CONSEQUENCE is worse — the ledger calls the slot free while a live kubelet container squats it, so the swap pod hard-targets an occupied node → double occupancy, and the victim run reports Running forever holding no lease, a zombie no reconcile visits.\n\nCommit 8a1dc2c CLOSES it. reclaimSquatter now does `group := leaseGroupIndex(lease)` (run_controller.go:1476), the `if group != \"\"` guard is DELETED, and removePodsForGroups is called unconditionally (:1485). leaseGroupIndex defaults a missing/empty label to \"0\" (:2128-2134). Since production leases have no label → \"0\" and production pods carry \"0\", the match now succeeds.\n\nI did NOT trust the comment — I EXECUTED. Copied the repo to /tmp/jt-f2 and ran TestReclaimedSquatterIsEvictedInBothPlanesWithAProductionShapedLease (which uses prodLease, a fixture with the group label DELETED, exactly the production shape): PASS. Then I MUTATED the fix back to the raw-label read `group := lease.Labels[binder.LabelGroupIndex]` and re-ran: it FAILED with \"the squatter's container filler-active-0 still holds the slots the swap targets. The lease says group \\\"<absent>\\\" and the pod says \\\"0\\\"\" — i.e. the F2 bug reproduces exactly. Restored the fix; the targeted and broader (NodeFailure/Reclaim/OrderIndependence/Settlement) suites pass. The fix is load-bearing and is NOT dead code in production (unlike F3): it fires on the real production lease shape.\n\nREAPER CHECK. Does defaulting to \"0\" evict the wrong group's pods in the CURRENT tree? No. reclaimSquatter is only reached for an `other` lease that ev.Class classifies as funding.ClassUnfunded AND that leaseOccupiesSlots the spare's exact slots (run_controller.go:1297-1303) — a genuine unfunded squatter, reclaimable by definition (quota-semantics R14). removePodsForGroups filters by victimKey (pod.Labels[LabelRunName] namespaced == runKey), so it can only touch the VICTIM run's own pods, never a healthy funded run's. No legal state is reaped. The \"wrong group\" risk the task raises is a CONDITIONAL FUTURE hazard: once R28b is fixed and labels become real, an unlabeled lease defaulting to \"0\" could match real group-0 pods — but that depends entirely on how R28b stamps labels, it is not a defect in the current tree (where every lease is unlabeled and every pod is \"0\", making the default exactly correct), and leaseGroupIndex's own comment flags that R28b is unfixed. A secondary coarseness — a multi-rank victim has all pods removed because they all read \"0\" — is likewise the R28b group-identity gap, explicitly filed, recoverable (the demoted unfunded run re-admits), and strictly better than the F2 bug it replaced (a permanently squatting container). Verdict: fixed by 8a1dc2c.",
+          "reproduction": "cp -r /workspaces/jobtree /tmp/jt-f2; cd /tmp/jt-f2; go test ./controllers/ -run TestReclaimedSquatterIsEvictedInBothPlanesWithAProductionShapedLease -count=1 -v  (PASS). Then mutate run_controller.go:1476 from `group := leaseGroupIndex(lease)` to `group := lease.Labels[binder.LabelGroupIndex]` and re-run: FAILS with \"the squatter's container filler-active-0 still holds the slots the swap targets ... the pod says \\\"0\\\"\" — reproducing the F2 bug. Restore line 1476; suite passes.",
+          "recommendedFix": "None required for the current tree — 8a1dc2c fixes F2 and the fix is exercised in production. When R28b is addressed, revisit leaseGroupIndex's \"0\" default: once leases carry real group labels, an unlabeled lease defaulting to \"0\" could match real group-0 pods, and removePodsForGroups should then key on genuine per-group identity rather than a coalesced default.",
+          "evidence": [
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1476,
+              "quote": "group := leaseGroupIndex(lease)"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1485,
+              "quote": "c.removePodsForGroups(victimKey, map[string]struct{}{group: {}})"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 2130,
+              "quote": "if idx, ok := lease.Labels[binder.LabelGroupIndex]; ok && idx != \"\" {"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1949,
+              "quote": "binder.LabelGroupIndex: \"0\","
+            },
+            {
+              "file": "controllers/resolver_settlement_test.go",
+              "line": 341,
+              "quote": "the squatter's container %s still holds the slots the swap targets. "
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F3",
+      "severity": "critical",
+      "title": "reclaimSquatter's pod eviction is dead code in production: plugin-minted leases carry no group-index label",
+      "outcome": "fixed-by-a-later-commit",
+      "why": null,
+      "tally": {
+        "fixed-by-a-later-commit": 3
+      },
+      "votes": [
+        {
+          "status": "fixed-by-a-later-commit",
+          "ranCode": true,
+          "reasoning": "F3 claimed reclaimSquatter's pod eviction was dead code in production: it keyed pod removal on a group-index label that the sole committer (admission.PodLeaseWithRole) never stamps, so in a real cluster the lease read returns \"\" while emitted pods carry \"0\", so removePodsForGroups matched nothing — a ledger-only eviction. The author claims 8a1dc2c fixed it. I verified the fix adversarially by CODE TRACE and by EXECUTION.\n\nCODE TRACE (HEAD=e2b5355): reclaimSquatter (controllers/run_controller.go:1469) now computes `group := leaseGroupIndex(lease)` (line 1476), then `c.removePodsForGroups(victimKey, map[string]struct{}{group: {}})` (line 1485). leaseGroupIndex (line 2128) returns the label only when present AND non-empty (`ok && idx != \"\"`, line 2130), otherwise returns \"0\" (line 2134). removePodsForGroups (line 2639) removes pods whose raw pod label `pod.Labels[binder.LabelGroupIndex]` (line 2646) is in the set. For a production-shaped lease with no group label, group resolves to \"0\", which matches the pods emitCohortPods/emitSparePods hardcode as \"0\". So the pod-plane eviction now fires.\n\nEXECUTION: I copied the tree via `git archive HEAD`, built clean, and ran the two eviction tests — both PASS, including TestReclaimedSquatterIsEvictedInBothPlanesWithAProductionShapedLease, which drives the real HandleNodeFailure with prodLease() (LabelRunName + LabelRunRole, group label deleted — exactly PodLeaseWithRole's shape). MUTATION M9: I reverted reclaimSquatter to the raw read `group := lease.Labels[binder.LabelGroupIndex]`. The production-shaped test then FAILED (\"the squatter's container filler-active-0 still holds the slots... The lease says group \\\"<absent>\\\" and the pod says \\\"0\\\"\"), while the older fixture-rich test (which sets the label) still PASSED. This proves the fix is load-bearing and not decorative, and that it evicts pods for a lease shaped exactly like the sole committer's output. A fix that were inert in production would have kept the production-shaped test passing under the mutation; it did not.\n\nOTHER CONSUMERS: grep for raw `Labels[binder.LabelGroupIndex]` across production code (excluding tests/worktrees) returns only lines 1680 and 2646 (both POD-side, correct — pods really carry \"0\"), and the two helper bodies (controller line 2130, resolver line 273). No stray raw lease-side read remains. CLONED-OBLIGATION (playbook class 7): pkg/resolver/resolver.go:271 is a SECOND implementation of leaseGroupIndex that differs subtly — it returns idx whenever the key is present (`ok`, line 273), so a present-but-empty label yields \"\" there but \"0\" in the controller. In production this divergence is latent, not live: PodLeaseWithRole never stamps the label so `ok` is false in both and both return \"0\"; binder.buildLease (the only path that stamps a value, always numeric) is dead post-cutover. So the resolver's pod eviction (applyResolution, action.GroupIndex=\"0\" matched against pod label \"0\") also works today. The cloned helper is a real class-7 smell worth consolidating but does not reopen F3.\n\nConclusion: the reclaimSquatter dead-code defect that F3 describes is genuinely closed by 8a1dc2c, verified by execution and mutation, not merely by inspection. The deeper R28b problem (packer groups never reach leases/pods so every lease is uniformly \"0\") remains open by the author's own admission, but that is a separate, filed finding.",
+          "reproduction": "Copied HEAD (e2b5355) via `git archive HEAD | tar -x` into a temp dir; `go build ./...` clean. Ran `go test ./controllers/ -run TestReclaimedSquatterIsEvictedInBothPlanes -v`: both TestReclaimedSquatterIsEvictedInBothPlanesWithAProductionShapedLease and TestReclaimedSquatterIsEvictedInBothPlanes PASS. Mutation M9: replaced `group := leaseGroupIndex(lease)` with `group := lease.Labels[binder.LabelGroupIndex]` in reclaimSquatter; rebuilt; the production-shaped test FAILED (squatter pod filler-active-0 not evicted) while the fixture-rich test still PASSED — confirming the fix is load-bearing and evicts pods for a lease shaped exactly like admission.PodLeaseWithRole's output.",
+          "recommendedFix": "No fix needed for F3 itself — closed by 8a1dc2c and verified by execution/mutation. Secondary cleanup (class-7 cloned obligation): consolidate the two leaseGroupIndex implementations (controllers/run_controller.go:2128 and pkg/resolver/resolver.go:271) into one, and align the empty-string handling (resolver returns \"\" for a present-but-empty label; controller defaults it to \"0\"). Latent today because the sole committer never stamps the label, but it will diverge the moment R28b makes the label real, exactly the kind of silent default the author warns must be deleted, not left in two subtly different copies.",
+          "evidence": [
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1476,
+              "quote": "group := leaseGroupIndex(lease)"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 2130,
+              "quote": "if idx, ok := lease.Labels[binder.LabelGroupIndex]; ok && idx != \"\" {"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1485,
+              "quote": "c.removePodsForGroups(victimKey, map[string]struct{}{group: {}})"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 2646,
+              "quote": "group := pod.Labels[binder.LabelGroupIndex]"
+            },
+            {
+              "file": "pkg/resolver/resolver.go",
+              "line": 273,
+              "quote": "if idx, ok := lease.Labels[binder.LabelGroupIndex]; ok {"
+            },
+            {
+              "file": "controllers/resolver_settlement_test.go",
+              "line": 341,
+              "quote": "the squatter's container %s still holds the slots the swap targets. "
+            }
+          ]
+        },
+        {
+          "status": "fixed-by-a-later-commit",
+          "ranCode": true,
+          "reasoning": "F3 claimed that the both-planes eviction added in 98b602d was itself a ledger-only eviction in production, because reclaimSquatter keyed pod removal on lease.Labels[binder.LabelGroupIndex] — a label the sole committer never stamps — so it removed pods for group \"\" while the victim's pods carry \"0\", matching nothing. I confirmed the claim was TRUE in 98b602d and that commit 8a1dc2c genuinely closes it, and I did so by executing, not by reading.\n\nThe engine is pure, so I copied the repo to a temp dir and drove the real HandleNodeFailure. Three checks:\n\n1) The author's production-shaped test (TestReclaimedSquatterIsEvictedInBothPlanesWithAProductionShapedLease) PASSES on HEAD. Its prodLease() fixture deletes LabelGroupIndex, so the lease carries only LabelRunName+LabelRunRole — the exact label set of admission.PodLeaseWithRole.\n\n2) Mutation: reverting reclaimSquatter's line back to `group := lease.Labels[binder.LabelGroupIndex]` turns the production-shaped test RED (\"the squatter's container filler-active-0 still holds the slots the swap targets... the reclaim freed the ledger and nothing else\") while the OLD fixture-rich test TestReclaimedSquatterIsEvictedInBothPlanes stays GREEN — proving the old test was decorative and the fix line is load-bearing.\n\n3) My OWN independent test (f3_independent_test.go) mints the squatter lease through the REAL sole committer, admission.PodLeaseWithRole, and asserts at runtime that the mint stamps NO group index and exactly two labels. On HEAD the squatter pod is evicted and the swap proceeds (PASS); under the same mutation it prints \"DEAD CODE: squatter container filler-active-0 survives; pod group=\\\"0\\\" lease had no group label\" (FAIL). This proves the fix is live for a lease shaped exactly like production, not merely for a fixture.\n\nThe mechanism of the fix: leaseGroupIndex normalizes a missing/empty lease label to \"0\" (run_controller.go:2128-2135); the pods emitCohortPods/emitSparePods emit carry \"0\"; so removePodsForGroups now matches them.\n\nSecondary questions from the finding: (a) No other LEASE-side raw reads remain in controllers — every lease read routes through leaseGroupIndex; the two remaining raw Labels[LabelGroupIndex] reads (run_controller.go:1680 and :2646) are POD reads, where the raw \"0\" is correct. (b) pkg/resolver/resolver.go:271 IS a second implementation of the same rule (playbook class 7, cloned obligation). It diverges from controllers.leaseGroupIndex: resolver uses `if ok` (returns \"\" for an explicit empty label) while controllers uses `if ok && idx != \"\"` (normalizes \"\" to \"0\"). In production this divergence is DORMANT because admission stamps no label at all (ok=false in both → both return \"0\"), so it is not a live defect today — but it is latent cloned-obligation debt worth tracking, and R28b already owns deleting the \"0\" default once the mint stamps the label.",
+          "reproduction": "Copy repo to temp dir. On HEAD (e2b5355), `go test ./controllers/ -run TestReclaimedSquatterIsEvictedInBothPlanesWithAProductionShapedLease -v` PASSES; the squatter pod (group \"0\", lease with no group label) is evicted and the spare swaps in. Then edit reclaimSquatter (controllers/run_controller.go, currently line 1476) from `group := leaseGroupIndex(lease)` to `group := lease.Labels[binder.LabelGroupIndex]` and re-run: the production-shaped test FAILS (\"the squatter's container filler-active-0 still holds the slots the swap targets\") while TestReclaimedSquatterIsEvictedInBothPlanes stays green. I also added an independent test that mints the squatter via admission.PodLeaseWithRole and asserts the mint carries no group index: PASSES on HEAD, FAILS (\"DEAD CODE: squatter container filler-active-0 survives\") under the same mutation.",
+          "recommendedFix": "No fix needed for F3 itself — 8a1dc2c closes it. Follow-up (not F3, tracked as R28b): collapse the two leaseGroupIndex implementations (controllers/run_controller.go:2128 and pkg/resolver/resolver.go:271) into one, since they disagree on an explicit empty-string label; and once the plugin stamps LabelGroupIndex at mint with a fail-closed PreBind gate, delete the \"0\" default so it cannot silently hide the next instance of this bug.",
+          "evidence": [
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1476,
+              "quote": "group := leaseGroupIndex(lease)"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 2128,
+              "quote": "func leaseGroupIndex(lease *v1.Lease) string {\n\tif lease.Labels != nil {\n\t\tif idx, ok := lease.Labels[binder.LabelGroupIndex]; ok && idx != \"\" {\n\t\t\treturn idx"
+            },
+            {
+              "file": "pkg/admission/admission.go",
+              "line": 221,
+              "quote": "binder.LabelRunName: run.Name,\n\t\t\t\tbinder.LabelRunRole: role,"
+            },
+            {
+              "file": "pkg/resolver/resolver.go",
+              "line": 271,
+              "quote": "func leaseGroupIndex(lease *v1.Lease) string {\n\tif lease.Labels != nil {\n\t\tif idx, ok := lease.Labels[binder.LabelGroupIndex]; ok {\n\t\t\treturn idx"
+            }
+          ]
+        },
+        {
+          "status": "fixed-by-a-later-commit",
+          "ranCode": true,
+          "reasoning": "F3 was real at 98b602d: reclaimSquatter read the group index off the LEASE with `group := lease.Labels[binder.LabelGroupIndex]`, but the sole committer (admission.PodLeaseWithRole, pkg/admission/admission.go:216-234) stamps only LabelRunName and LabelRunRole — no group index. So the read returned \"\" in production, while the pods emitted by emitCohortPods/emitSparePods carry hardcoded \"0\". removePodsForGroups(victimKey, {\"\": {}}) matched nothing, so the eviction closed the ledger lease but left the squatter's container running on the exact node#ordinal slots the swap then targeted, and the victim went on reporting Running while holding nothing (the both-planes eviction was itself a ledger-only eviction). The 98b602d test passed only because its fixture set a label the real system never sets.\n\nCommit 8a1dc2c fixes it at controllers/run_controller.go:1476, replacing the raw read with `group := leaseGroupIndex(lease)`, a helper that defaults the missing label to \"0\" — the same value the pods carry — so removePodsForGroups now matches. I VERIFIED the fix by execution, not inspection: (1) copied the repo to a temp dir and ran the added TestReclaimedSquatterIsEvictedInBothPlanesWithAProductionShapedLease, which drives the real HandleNodeFailure with a lease shaped exactly like PodLeaseWithRole's output (prodLease deletes the group label) — it passes; (2) mutation test — reverting line 1476 back to `lease.Labels[binder.LabelGroupIndex]` makes the production-shaped test FAIL with the exact symptom ('the squatter's container filler-active-0 still holds the slots the swap targets ... lease says group \"<absent>\" and the pod says \"0\"'), while the older fixture-rich test still PASSES. That contrast shows the fix is load-bearing and the new test is not decorative.\n\nReaper check: the fix only makes eviction of an UNFUNDED squatter actually happen in both planes. Unfunded work is reclaimable by definition (quota-semantics R14). reclaimSquatter never touches a funded conflict — the engine's declared behaviour is to decline the swap rather than evict funded work (invariant.go rejects the 'no two open leases share a slot' invariant for exactly this reason). So making the eviction real destroys no legal state; it removes the pods of a run that was already being demoted.\n\nOther consumers: the only surviving lease-side reads are the two leaseGroupIndex helpers (controllers/run_controller.go:2128 and pkg/resolver/resolver.go:271), both defaulting to \"0\"; every other raw Labels[LabelGroupIndex] read (lines 1680, 2646) is a POD read, and pods carry \"0\". No un-defaulted lease-side read remains on a production path. NOTE (class 7, cloned obligation, latent not live): pkg/resolver.leaseGroupIndex is a SECOND implementation of the same rule across a package boundary; the controller's consolidation (its doc says 'There is now one') did not remove it. It defaults to \"0\" with a slightly weaker guard (checks only `ok`, not `idx != \\\"\\\"`), so it agrees with the controller's version in production today and is not a live defect — but it is a clone that must be kept in lockstep, and is exactly the shape of the bug F3 caught. The deeper R28b (packer groups never reach pods/ledger; the '0' default is a shim that must be deleted once the plugin stamps the label) remains open by design.",
+          "reproduction": "In a temp copy of the repo: `go test ./controllers/ -run TestReclaimedSquatterIsEvictedInBothPlanes -count=1 -v` — both pass. Then edit controllers/run_controller.go:1476, changing `group := leaseGroupIndex(lease)` to `group := lease.Labels[binder.LabelGroupIndex]`, and re-run: TestReclaimedSquatterIsEvictedInBothPlanesWithAProductionShapedLease now FAILS ('the squatter's container filler-active-0 still holds the slots the swap targets. The lease says group \\\"<absent>\\\" and the pod says \\\"0\\\"'), while TestReclaimedSquatterIsEvictedInBothPlanes still PASSES — proving the pre-8a1dc2c code was inert in production and the old fixture-rich test could not catch it.",
+          "recommendedFix": "No fix needed for F3 itself — 8a1dc2c closes it and I confirmed it by execution + mutation. Recommended follow-ups (not F3): (1) collapse pkg/resolver.leaseGroupIndex into the single controllers helper or share one implementation, to remove the class-7 clone before the two copies drift; (2) close R28b (docs/project/remediation/R28-group-identity.md) so the packer's groups actually reach the pods and the plugin stamps the label at PreBind, after which the '0' default must be DELETED so it stops hiding the next instance of this bug.",
+          "evidence": [
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1476,
+              "quote": "group := leaseGroupIndex(lease)"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1470,
+              "quote": "leaseGroupIndex, not the raw label. The sole committer stamps no group index,"
+            },
+            {
+              "file": "pkg/admission/admission.go",
+              "line": 221,
+              "quote": "binder.LabelRunName: run.Name,\n\t\t\t\tbinder.LabelRunRole: role,"
+            },
+            {
+              "file": "controllers/resolver_settlement_test.go",
+              "line": 299,
+              "quote": "delete(l.Labels, binder.LabelGroupIndex)"
+            },
+            {
+              "file": "controllers/resolver_settlement_test.go",
+              "line": 341,
+              "quote": "still holds the slots the swap targets"
+            },
+            {
+              "file": "pkg/resolver/resolver.go",
+              "line": 271,
+              "quote": "func leaseGroupIndex(lease *v1.Lease) string {"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F4",
+      "severity": "high",
+      "title": "reclaimSquatter closes one lease but deletes the whole group's pods, over-evicting and orphaning sibling leases",
+      "outcome": "still-present",
+      "why": null,
+      "tally": {
+        "still-present": 3
+      },
+      "votes": [
+        {
+          "status": "still-present",
+          "ranCode": true,
+          "reasoning": "F4 is a real defect in the current tree (HEAD e2b5355), and I confirmed it by execution rather than inspection.\n\nThe path: HandleNodeFailure pass 2 detects conflicts at SLOT granularity — line 1277 skips any lease that does not occupy the spare's exact node#ordinal slots (`!leaseOccupiesSlots(other, spareSlots)`; leaseOccupiesSlots returns true if the lease holds ANY of the exact slots). For each unfunded conflicting lease it calls `c.reclaimSquatter(other, ...)` (line 1303). reclaimSquatter closes only that ONE lease (`CloseLease(lease, \"ReclaimedBySpare\", now)`, line 1477) but then evicts pods at GROUP granularity: `c.removePodsForGroups(victimKey, map[string]struct{}{group: {}})` (line 1485), deleting every pod of the victim whose group label matches. The two granularities do not agree, and reclaimSquatter never closes the victim's other open leases.\n\nBecause the sole committer stamps no group index every lease reads group \"0\" (leaseGroupIndex defaults to \"0\"), and every controller-emitted pod is hardcoded \"0\" (R28b). So removePodsForGroups({\"0\"}) deletes ALL of the victim's pods, while the caller loop closes only the leases whose slots intersect the spare set. Any victim wider than the spare — the normal case, since the sole committer mints one lease per pod, so a multi-rank unfunded run has multiple leases — keeps open leases on non-spare slots whose pods were just deleted. An OPEN lease charges a budget and holds GPUs (CORE FACT), so the run pays forever for GPUs whose containers are gone, and containers on slots the swap never needed are killed (over-eviction).\n\nI proved it: a victim (\"filler\", unfunded) holding two leases, filler-b0 on node-b#0 (the spare's slot) and filler-b1 on node-b#1 (not), with two group-\"0\" pods. After HandleNodeFailure(\"node-a\"): filler-b0 closed=ReclaimedBySpare, filler-b1 still OPEN, and BOTH pods deleted. Over-eviction and orphaned lease, exactly as F4 describes.\n\nThis is not merely pre-existing: commit 8a1dc2c ACTIVATED it. In 98b602d reclaimSquatter read the raw label (`group := lease.Labels[binder.LabelGroupIndex]`, i.e. \"\") and guarded `if group != \"\"`, so removePodsForGroups was never called — the reclaim was inert in the pod plane. 8a1dc2c changed it to `group := leaseGroupIndex(lease)` (defaults \"0\") and DELETED the `if group != \"\"` guard, so pod eviction now fires at group granularity while still closing a single lease. So 8a1dc2c turned an inert reclaim into a working-but-over-evicting one and did not close the sibling leases. No later commit (b4f6a6d, e2b5355) touches this.\n\nThe shipped test TestReclaimedSquatterIsEvictedInBothPlanesWithAProductionShapedLease hides it because its victim has ONE lease covering exactly the spare's slots and ONE pod — closing that lease frees precisely the pods deleted, so no orphan surfaces.\n\nDirection of fix: option (a). The pod model (PodManifest carries NodeName+GPUs, not ordinals) makes slot-granular pod removal impossible, so group-granular pod eviction is forced; the remedy is to make the LEASES follow the pods. I implemented it (close every open lease of the victim matching the same leaseGroupIndex predicate used for pod deletion) in a temp copy: the F4 test then passes (filler-b1 closed too) and the full controllers suite still passes. This is not a reaper: reclaimSquatter is only reached for ClassUnfunded victims (call-site guard at line 1298), it only touches the victim's own leases, and the lease predicate mirrors the pod predicate exactly, so it can never close funded or foreign capacity. The residual over-eviction of containers (killing more ranks than the swap needs) is inherent to the coarse group=\"0\" pod identity and cannot be fixed without R28b's per-slot pod identity.",
+          "reproduction": "Copy repo to temp; add controllers/f4_orphan_test.go with an unfunded victim \"filler\" holding two production-shaped leases — filler-b0 on node-b#0 (the swap run's spare slot) and filler-b1 on node-b#1 — plus two group-\"0\" pods on node-b, and the swap run holding active node-a#0 + spare node-b#0. Call c.HandleNodeFailure(\"node-a\", now). Observed: filler-b0 closed (ReclaimedBySpare), filler-b1 still OPEN, both filler pods deleted. `go test ./controllers/ -run TestF4OverEvictAndOrphan -v` fails on the orphan assertion. After applying the fix (close every open lease of the victim whose leaseGroupIndex == group, right after removePodsForGroups), the same test passes and `go test ./controllers/` stays green.",
+          "recommendedFix": "In reclaimSquatter (controllers/run_controller.go), immediately after `c.removePodsForGroups(victimKey, map[string]struct{}{group: {}})`, close every OPEN lease belonging to the victim whose leaseGroupIndex(sib) == group (the same predicate the pod deletion uses), with reason \"ReclaimedBySpare\" — not just the single `lease` argument. This keeps the lease plane consistent with the pod plane it just cleared: no sibling lease survives with its container deleted. Then let the existing width check demote the victim (today, since group=\"0\"==the whole run, it drops to 0 width and parks Pending to re-admit per R14). Verified: closes the orphan, full controllers suite still passes, and it cannot over-reach because reclaimSquatter runs only for ClassUnfunded victims and touches only the victim's own leases. It does NOT fix the container over-eviction (killing ranks on non-spare slots), which is inherent to R28b's group=\"0\" pod identity and needs per-slot pod addressing to resolve.",
+          "evidence": [
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1277,
+              "quote": "if other.Status.Closed || !leaseOccupiesSlots(other, spareSlots) {"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1303,
+              "quote": "c.reclaimSquatter(other, otherKey, now, phases)"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1477,
+              "quote": "CloseLease(lease, \"ReclaimedBySpare\", now)"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1485,
+              "quote": "c.removePodsForGroups(victimKey, map[string]struct{}{group: {}})"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 2720,
+              "quote": "func leaseOccupiesSlots(lease *v1.Lease, slots map[string]struct{}) bool {"
+            }
+          ]
+        },
+        {
+          "status": "still-present",
+          "ranCode": true,
+          "reasoning": "F4 is real at HEAD (e2b5355), and a later commit (8a1dc2c) made it LIVE rather than fixing it. I copied the repo to /tmp/f4 (HEAD e2b5355) and ran a pure simulation of HandleNodeFailure using the existing nf* test harness.\n\nThe engine detects the conflict at SLOT granularity: pass 2 builds spareSlots := buildSlotSet(spareLease...) and only visits an `other` lease when leaseOccupiesSlots(other, spareSlots) is true (run_controller.go ~1270-1277). But reclaimSquatter EVICTS at GROUP granularity: it computes group := leaseGroupIndex(lease) and calls removePodsForGroups(victimKey, {group}), which deletes EVERY pod of the victim run carrying that group label (run_controller.go 2639-2654 filters only on run + group, never on node or ordinal). It then closes ONLY the single triggering lease via CloseLease(lease, ...) at line 1477; the victim's other open leases in the same group are never touched.\n\nMy fixture: healthy funded run \"run\" (active node-a#0, spare node-b#0). Unfunded victim \"filler\" holds TWO active leases in group \"0\": filler-squat on node-b#0 (the spare's exact slot) and filler-sib on node-b#1 (a slot the swap does not need), with two pods both labelled group \"0\" — exactly the R28b production reality where every pod is group \"0\". node-a fails; run swaps group 0 onto node-b#0; reclaimSquatter fires on filler-squat. Observed output: filler-squat closed=ReclaimedBySpare, but filler-sib closed=false reason=\"\" — STILL OPEN — while BOTH filler pods were deleted (only run's swap pod survives). filler went phase=Pending. So (1) over-eviction: filler-sib-pod on node-b#1 died though the swap never needed node-b#1; (2) orphan: filler-sib lease stays open holding node-b#1 with no container. Nothing later closes it — the post-loop sweep (line 1343-1351) only closes leases of runs whose tracker phase == RunPhaseFailed, and reclaimSquatter only ever writes Pending, never Failed; cleanupDeletedRun only runs when the Run object is deleted. So the lease holds the slot (marks it occupied, counted by baseGangGPUsForRun) until the Run is deleted.\n\nWhy 8a1dc2c matters: at 98b602d reclaimSquatter read the RAW label (lease.Labels[LabelGroupIndex]) → \"\" for every production lease, and guarded `if group != \"\"` before removePodsForGroups — so in production the pod removal was inert dead code (documented at HEAD lines 1470-1475). 8a1dc2c switched to leaseGroupIndex (defaults to \"0\", run_controller.go 2128-2135) and DELETED the guard, activating the group-granular pod deletion. It thereby traded the old \"lease closed / container survives\" ghost for a new \"container deleted / sibling leases survive\" orphan — moving the bug, not removing it, and under R28b (group \"0\" == whole run) amplifying it: reclaiming one contended slot of an unfunded gang now deletes that run's ENTIRE set of containers while closing only one of its leases.\n\nOption (b) from WHERE TO PUSH — slot-granular pod removal — is genuinely impossible with the current pod model: PodManifest carries NodeName (a bare node string) and a GPUs count, no node#ordinal (binder.go 130-138), and in my fixture both filler pods are NodeName=\"node-b\" with no way to distinguish the node-b#0 pod from the node-b#1 pod. So option (a) is the only coherent granularity, and it requires the sibling leases to close — which they do not. R28b makes this WORSE, not moot.",
+          "reproduction": "Copied repo to /tmp/f4 (HEAD e2b5355). Added controllers/f4_repro_test.go using the existing nf* harness. Scenario: funded run with active node-a#0 + spare node-b#0; unfunded \"filler\" with two group-\"0\" active leases (filler-squat node-b#0, filler-sib node-b#1) and two group-\"0\" pods on node-b. Ran: `go test ./controllers/ -run TestF4OrphanSiblingLease -v`. Output: `LEASE filler-squat closed=true reason=ReclaimedBySpare`, `LEASE filler-sib closed=false reason=` (STILL OPEN), only the swap pod survives (both filler pods deleted), `filler phase=Pending`. Test FAILs with \"ORPHAN CONFIRMED: filler-sib pod was deleted but filler-sib lease is still OPEN\". Demonstrates both over-eviction (node-b#1 pod deleted though swap needs only node-b#0) and the orphaned sibling lease.",
+          "recommendedFix": "Make the two planes agree at the granularity the pod model can actually express. Since removePodsForGroups deletes the victim's ENTIRE group (a gang missing ranks is dead, and PodManifest has no ordinal so nothing finer is possible), reclaimSquatter must close EVERY open lease the victim holds in that group, not just the triggering one. Concretely, in reclaimSquatter after removePodsForGroups, iterate c.State.Leases and CloseLease(other, \"ReclaimedBySpare\", now) for every open lease with victimKey and leaseGroupIndex==group; then compute baseGangGPUsForRun AFTER that closure so the \"still wide enough to stay Running\" branch reflects only the victim's OTHER groups (under R28b there are none, so the run correctly requeues from zero). Reaper check: this closes only leases whose containers were just deleted by the same call, so it cannot strand funded work or over-close a live slot — it removes an orphan, it does not create one; and it does not touch Lease.Status outside CloseLease, respecting the sole-closer rule. Caveat / true cost: this only stops the orphan-lease billing. The over-eviction itself (one contended slot nuking the victim's whole gang) is inherent to R28b's coarsened identity and cannot be fixed here — it needs R28b resolved (real per-group labels so a group is a gang, not the whole run) plus a pod model that carries node#ordinal so slot-granular pod removal becomes possible. Until then group-granular reclaim with symmetric lease closure is the best available, and the fix should carry a comment saying so.",
+          "evidence": [
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1477,
+              "quote": "CloseLease(lease, \"ReclaimedBySpare\", now)"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1485,
+              "quote": "c.removePodsForGroups(victimKey, map[string]struct{}{group: {}})"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 2648,
+              "quote": "if _, ok := groups[group]; ok {"
+            },
+            {
+              "file": "pkg/binder/binder.go",
+              "line": 133,
+              "quote": "NodeName    string"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1344,
+              "quote": "if phase != RunPhaseFailed {"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 2134,
+              "quote": "return \"0\""
+            }
+          ]
+        },
+        {
+          "status": "still-present",
+          "ranCode": true,
+          "reasoning": "F4 is real at HEAD (e2b5355) and I confirmed it by execution, not inspection. The conflict is detected at node#ordinal SLOT granularity: the inner loop at run_controller.go:1277 keeps only leases where leaseOccupiesSlots(other, spareSlots) — the spare's exact slots. But the eviction acts at GROUP granularity: reclaimSquatter closes exactly ONE lease (CloseLease at 1477) and then calls removePodsForGroups(victimKey, {group}) at 1485, which (2646-2648) deletes EVERY pod of the victim run whose LabelGroupIndex matches, regardless of which slot it sits on. So a victim group spanning more slots than the one being reclaimed loses containers on slots the swap never needs — R22's identity-coarsening bug, now in the pod plane.\n\nI built the scenario as a Go test in a copy of the repo (engine is pure): a swapping run with active-0 on node-a#0 and spare-0 on node-b#0; node-a fails; an UNFUNDED victim \"filler\" with two active leases, both group \"0\" (the production reality — the sole committer stamps no group label, so leaseGroupIndex defaults to \"0\"), one squatting node-b#0 (the spare's slot) and one SIBLING on the healthy, unrelated node-c#0. After HandleNodeFailure: lease \"squatter\" closed, but lease \"sibling\" on node-c#0 stays OPEN while its pod filler-sibling is DELETED. The swap needed only node-b#0; it destroyed a running container on node-c and left node-c#0 held-but-idle. With a malleable victim (min=1) the run reports phase=Running, Allocated:1, with zero containers on the GPU it still holds. A follow-up Reconcile does NOT re-place a container on node-c (it emits a fresh cohort pod elsewhere) and does NOT close the node-c#0 lease — the two planes diverge indefinitely: the ledger marks node-c#0 occupied by an open unfunded lease (blocking funded work from packing there), no work runs on it, and no invariant fires because the run is non-terminal (INV-TERMINAL-PRESENT only guards Failed/Completed runs).\n\nThis was NEWLY ACTIVATED IN PRODUCTION by 8a1dc2c, not fixed by it. At 98b602d the guard `if group != \"\"` skipped removePodsForGroups entirely in production (raw label was \"\"), so pods were never over-evicted — a different bug (container kept running, R28a). 8a1dc2c switched to leaseGroupIndex (=\"0\") and DELETED the guard, turning the pod removal from a production no-op into a whole-run wipe. b4f6a6d (phases tracker) and e2b5355 (fencing) do not touch the lease/pod scope. No commit ever added sibling-lease closing.\n\nReaper check. reclaimSquatter runs ONLY for unfunded victims (gate at 1297-1298: class == funding.ClassUnfunded), so no funded run's pods or leases are ever touched. The finding poses two horns. Horn (a) \"close the sibling leases too\" is itself a REAPER: a malleable unfunded victim that keeps enough width is demote-not-kill (R14) and legally stays Running at reduced width holding node-c#0 — pkg/invariant explicitly REJECTED \"an open Spare lease implies an open Active lease of the same group\" and tolerates oversubscription for exactly this reason (invariant.go:29-39,46). Closing all its leases would kill a legal Running run. So the sibling lease is correctly OPEN; the actual defect is horn (b): the POD removal is over-broad and destroys containers on slots the swap does not reclaim. The correct fix narrows destruction and therefore reaps nothing legal.",
+          "reproduction": "Copied repo to a temp dir (HEAD e2b5355) and added controllers/f4_sibling_orphan_test.go. Scenario: run \"run\" with active-0=node-a#0, spare-0=node-b#0 (RoleSpare); unfunded victim \"filler\" with TWO active leases both group \"0\" — \"squatter\"=node-b#0 (spare's slot) and \"sibling\"=node-c#0 (healthy, unrelated node) — plus pods filler-squat(node-b) and filler-sibling(node-c), both group \"0\". Call HandleNodeFailure(\"node-a\"). Observed: lease \"squatter\" closed=true (ReclaimedBySpare), lease \"sibling\" closed=FALSE (still holds node-c#0), pod filler-sibling DELETED. Swap re-placed only onto node-b. With filler made Malleable{Min:1}, phase=Running, Width Allocated:1, zero containers on node-c. A follow-up Reconcile(\"default\",\"filler\") leaves the node-c#0 lease open and places no container there. `go test ./controllers/ -run TestF4SiblingLeaseOrphan -v` prints the divergence and passes.",
+          "recommendedFix": "Scope the pod eviction to the slots actually being reclaimed, not the group. Since reclaimSquatter is only ever called for an unfunded victim occupying the spare's exact slots (gate at run_controller.go:1297-1298), thread the reclaimed spare's node set through to reclaimSquatter and, in place of removePodsForGroups(victimKey, {group}) at 1485, delete only the victim's pods whose PodManifest.NodeName is one of the reclaimed spare nodes — leaving pods AND leases on all other nodes untouched. That keeps the pod plane consistent with the (correctly still-open) sibling lease and preserves the legal demote-not-kill state for a malleable victim running at reduced width. For the fixed-width case where losing the reclaimed rank drops the victim below minRunnableGPUs, the gang truly is dead: route it through the same terminal path the post-loop sweep uses (run_controller.go:1343-1355) so ALL its leases close — do NOT leave it Pending with open orphan leases, and do NOT close all sibling leases in the general case (that reaps the legal malleable-Running state). Caveat (disclose in the fix): node-scoping is a strict improvement but cannot distinguish two victim ranks sharing one node at different ordinals, because PodManifest carries NodeName and GPUs, not ordinals; the precise fix needs the per-slot pod identity tracked in R28b (docs/project/remediation/R28-group-identity.md). Note R28b makes the current bug maximal: every real lease and pod is group \"0\", so \"the whole group\" is \"the whole run\" — reclaiming one unfunded rank destroys every container of the victim run cluster-wide.",
+          "evidence": [
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1277,
+              "quote": "if other.Status.Closed || !leaseOccupiesSlots(other, spareSlots) {"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1485,
+              "quote": "c.removePodsForGroups(victimKey, map[string]struct{}{group: {}})"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1477,
+              "quote": "CloseLease(lease, \"ReclaimedBySpare\", now)"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 2648,
+              "quote": "if _, ok := groups[group]; ok {"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1298,
+              "quote": "if classified && class == funding.ClassUnfunded {"
+            },
+            {
+              "file": "pkg/invariant/invariant.go",
+              "line": 46,
+              "quote": "An invariant that is wrong is not a weaker safety net. It is a reaper."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F5",
+      "severity": "medium",
+      "title": "Malleable-above-min victim left Running with open leases whose pods were deleted — a two-plane split invisible to the oracle",
+      "outcome": "still-present",
+      "why": null,
+      "tally": {
+        "still-present": 3
+      },
+      "votes": [
+        {
+          "status": "still-present",
+          "ranCode": true,
+          "reasoning": "F5 is real in the current tree (HEAD e2b5355), reproduced and confirmed by execution.\n\nMECHANISM. reclaimSquatter is called for an unfunded run squatting the swap's exact spare slots (run_controller.go:1297-1303). It closes exactly ONE lease — the squatter — then computes group := leaseGroupIndex(lease) which, for a production-shaped lease (the sole committer stamps no group index), defaults to \"0\" (leaseGroupIndex, run_controller.go:2128-2135). It then calls removePodsForGroups(victimKey, {\"0\"}). Because emitCohortPods and emitSparePods hardcode LabelGroupIndex:\"0\" on EVERY pod (run_controller.go:2070, 1949), that call deletes ALL of the victim's pods, not just the squatter's. If the victim is malleable and still >= minRunnableGPUs after the one lease closes, reclaimSquatter takes the \"stays Running\" branch (run_controller.go:1487-1494) and returns, leaving the run Running with its OTHER base leases still open but zero pods behind them.\n\nSTABILITY. Nothing repairs it. runGangComplete returns false when a run has no pods (sawActive stays false, run_controller.go:508-523), so completeRun never fires. reconcileElasticRun grows/shrinks off lease width and never re-creates base pods. topUpActiveGang — the only pod-restorer — is gated behind phase != Running at BOTH call sites (Reconcile adoption at run_controller.go:208-238, activateReservation at run_controller.go:810-833), and the codebase itself states this at run_controller.go:1702 (\"topUpActiveGang is only reachable pre-Running\"). There is no settleLeases/ledger-audit sweep in controllers/. I drove Reconcile 20 times over 20 simulated hours: the run stays Running, the leftover lease stays open, and its pod is never recreated.\n\nORACLE BLINDNESS. snapshotWorld computes RunnableGPUs from runnableGPUsForRun (leases) and sets AwaitingMint := activePods > openActiveLeases (invariants.go:88-93). INV-WIDTH-ASSEMBLED then only fires when width (leases) < min. There is a check for pods>leases (AwaitingMint) but NONE for leases>pods, so a Running run with open leases and zero pods produces no violation — my reproduction ran the deferred checkInvariants and did not panic.\n\nROOT CAUSE / PROVENANCE. This is a manifestation of R28b (all pods collapse to group \"0\" because real per-group identity never reaches the pods or leases). The counterfactual test with distinct group labels shows filler-keep's pod survives — no split. Proximately, 8a1dc2c introduced it: git show 8a1dc2c deletes reclaimSquatter's `if group != \"\"` guard and switches to leaseGroupIndex (default \"0\"). Before it, group was \"\" and removePodsForGroups({\"\"}) matched no \"0\"-labelled pods, so no pods were deleted (that was the R27 ledger-only-eviction bug). 8a1dc2c fixed the single-lease squatter case but, in doing so, opened the opposite half-plane door for the malleable-above-min case — precisely the \"reached by a new door\" pattern the playbook warns about. Per AGENTS.md, \"rooted in a known bug / pre-existing\" is a classification, not a dismissal, and a change that trades one half-plane defect for another keeps the finding on the table.\n\nb4f6a6d's runnableGPUsForRun change is irrelevant here: reclaimSquatter's Running gate still uses baseGangGPUsForRun (run_controller.go:1487); either width notion keeps the run Running when it is above min. e2b5355 (NodeReconciler fencing) does not touch this path.",
+          "reproduction": "Copied the repo to /tmp/jtf5 (HEAD e2b5355) and added controllers/f5_repro_test.go. Scenario, all leases production-shaped (prodLease -> no group label), all pods hardcoded group \"0\": swap run \"run\" with active on node-a#0,#1 and spare on node-b#0,#1; malleable victim \"filler\" (MinTotalGPUs 2, holding 4 GPUs) with lease filler-squat on node-b#0,#1 (the spare's exact slots, unfunded) and lease filler-keep on node-b#2,#3, plus one pod each. Call c.HandleNodeFailure(\"node-a\", now). RESULT: filler-squat closed ReclaimedBySpare, filler-keep stays OPEN, filler stays Running, and ALL filler pods are deleted -> \"filler: phase=Running openRunnableGPUs=2 pods=0\". The deferred invariant oracle did NOT panic. Driving Reconcile(\"default\",\"filler\") 20x over 20h leaves the state unchanged (Running, filler-keep open, 0 pods). A second test (TestF5DisappearsWithRealGroupIdentity) gives the squatter group \"0\" and filler-keep group \"1\": filler-keep's pod then survives, isolating the root as the group-\"0\" collision (R28b). Both tests PASS. git show 8a1dc2c confirms it deleted reclaimSquatter's `if group != \"\"` guard.",
+          "recommendedFix": "Primary (durable) fix is R28b: thread the packer's per-group identity through the sole committer into the Lease's LabelGroupIndex and keep the pods' group labels distinct, so reclaimSquatter's removePodsForGroups(victimKey, {group}) (run_controller.go:1485) deletes ONLY the squatter's pods and leaves the pods backing the victim's still-open leases intact — exactly what already happens when labels are distinct (proven by the counterfactual test). Until R28b lands, reclaimSquatter's \"stays Running\" branch (run_controller.go:1487-1494) must re-establish plane agreement rather than return: after removePodsForGroups it should re-emit the surviving base gang's intent pods for the still-open leases (a topUpActiveGang-style call for the Running malleable victim), so the open leases have containers again. A backstop oracle check is also available cheaply: snapshotWorld already computes activePods and openActiveLeases (invariants.go:74-93) but only fires AwaitingMint on activePods > openActiveLeases; the reverse — a Running, !AwaitingMint, KnownToLedger run with activePods < openActiveLeases — is currently unchecked and is exactly F5. REAPER CHECK on that proposed invariant: it does NOT reap the checkpoint-grace state (failGroupWithoutSpare parks the run PENDING, not Running, and leaves pods running with a CLOSED lease — the pods>leases direction, opposite to this check), and it does NOT reap the swap window (HandleNodeFailure emits a swap POD before the plugin mints its lease, so activePods >= openActiveLeases and AwaitingMint is true, skipping the check). It is nonetheless adjacent to the invariant pkg/invariant explicitly REJECTED (\"a Running run holds at least one open active lease\"), so it must be validated with the same rigor before shipping — my trace says it survives the swap and checkpoint-grace states, but that must be confirmed against every engine entry point, not asserted.",
+          "evidence": [
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1485,
+              "quote": "c.removePodsForGroups(victimKey, map[string]struct{}{group: {}})"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1487,
+              "quote": "if baseGangGPUsForRun(victimKey, c.State.Leases) >= minRunnableGPUs(victim) {"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 2070,
+              "quote": "binder.LabelGroupIndex: \"0\","
+            },
+            {
+              "file": "controllers/invariants.go",
+              "line": 93,
+              "quote": "AwaitingMint:    activePods[key] > openActiveLeases[key],"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1702,
+              "quote": "// topUpActiveGang is only reachable pre-Running."
+            }
+          ]
+        },
+        {
+          "status": "still-present",
+          "ranCode": true,
+          "reasoning": "F5 reproduces on HEAD (e2b5355). reclaimSquatter closes exactly ONE lease (the squatting lease) with CloseLease at run_controller.go:1477, then calls removePodsForGroups(victimKey, {leaseGroupIndex(lease)}) at :1485. In production, per the two verified facts, every controller-emitted pod is stamped LabelGroupIndex \"0\" (emitCohortPods hardcodes it) and leaseGroupIndex now defaults a missing label to \"0\" (:2134). So removePodsForGroups deletes EVERY base-gang pod the victim owns, not just the reclaimed slot's — while only one lease was closed. Then the guard at :1487 (baseGangGPUsForRun >= minRunnableGPUs) leaves a malleable-above-min victim Running. Result: a Running run holding an open base-gang lease (charging its budget, holding node-b#1) whose container was deleted, with zero pods.\n\nThe oracle is blind exactly as the finding claims. WidthAssembled compares RunnableGPUs (open non-spare leases, =1) against MinRunnableGPUs (=1), so no violation. The only pod-plane term in the projection is AwaitingMint = activePods > openActiveLeases (invariants.go:93), which models the OPPOSITE direction (pods exceeding leases, the mint window). The leases-exceed-pods direction has no invariant at all. HandleNodeFailure runs checkInvariants on return (run_controller.go:1191-1192) and my repro produced no panic.\n\nThe split is stable. A Running run returns at run_controller.go:200 before ever reaching the adoption path that calls topUpActiveGang; a malleable Running run only runs reconcileElasticRun, which grows/shrinks but never re-emits the base gang (cohort \"0\"). I drove 20 reconciles over 20 simulated hours: the survivor lease stayed open and no cohort-0 pod was ever recreated.\n\nThis is playbook class 9 (half-plane action, \"lease open, pod gone\" -> immortal lease), driven by class 5 (identity coarsening: group \"0\" for everything). It was newly made reachable by 8a1dc2c: at 98b602d reclaimSquatter read the raw label (git show 98b602d:...:1456 group := lease.Labels[...]), which is \"\" in production, so removePodsForGroups matched nothing and deleted no pods. 8a1dc2c's leaseGroupIndex default of \"0\" turned \"delete nothing\" into \"delete the whole run's base gang,\" trading the R27 ledger-only-reclaim bug for its mirror image. b4f6a6d's runnableGPUsForRun does not touch this: reclaimSquatter's stay-Running gate uses baseGangGPUsForRun (:1487), not runnableGPUsForRun.",
+          "reproduction": "Copied the repo to a temp dir at HEAD e2b5355 and added controllers/f5_repro_test.go. Fixture (production-faithful: leases carry only LabelRunName+LabelRunRole, NO group index; pods stamped group \"0\"): funded run \"run\" with active-0 on node-a#0 and spare-0 on node-b#0; unfunded malleable run \"filler\" (MinTotalGPUs=1, MaxTotalGPUs=4, DesiredTotalGPUs=1) with a squatter lease on node-b#0 (the spare's exact slot) and a survivor lease on node-b#1, plus pods filler-squat and filler-survivor (both group \"0\"). Call HandleNodeFailure(\"node-a\"). Output: `F5: filler.phase=\"Running\" openLeases=[survivor] pods=[]` with NO invariant panic. Then 20 reconciles over 20 hours: `F5 after 20 reconciles: filler.phase=\"Running\" survivorLeaseOpen=true baseCohortPods=0`. The survivor base-gang lease remains open and un-podded forever. Reverting the mechanism (leaseGroupIndex -> raw label, i.e. the 98b602d behavior) makes removePodsForGroups match nothing, confirming 8a1dc2c introduced the direction.",
+          "recommendedFix": "Make the two planes agree in reclaimSquatter; do not leave a Running run holding open leases whose pods it just deleted. The root cause is coarse group identity (R28b): the packer's placement groups never reach the leases or pods, so both collapse to \"0\", and removePodsForGroups({\"0\"}) nukes the victim's entire base gang while CloseLease closes one slot. Two options: (1) Proper fix — land R28b so leases and pods carry per-slice identity; reclaimSquatter then deletes exactly the reclaimed slot's pod and the survivor lease+pod stay paired. (2) Local fix until then — when reclaimSquatter removes the victim's group-\"0\" pods, also close the victim's group-\"0\" base-gang leases whose pods it just deleted, so both planes drop together. The victim then falls below its held width and demotes to Pending (the existing else-branch), re-admitting cleanly per R14 requeue semantics — coarser than intended, but forced by coarse identity and strictly better than an immortal survivor lease. Do NOT simply re-emit via topUpActiveGang: it re-emits the full base gang and could re-place a pod back onto the reclaimed slot the swap needs. A backstop invariant is possible (plane agreement: a non-terminal run that is NOT AwaitingMint must not have open active leases exceeding active pods), but it must be checked against the reaper question first: gate it on Phase==\"Running\" so the checkpoint-grace window (which parks Pending, per failGroupWithoutSpare) is exempt, and confirm no other Running-with-open-lease-no-pod window is legal before shipping it.",
+          "evidence": [
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1485,
+              "quote": "c.removePodsForGroups(victimKey, map[string]struct{}{group: {}})"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1487,
+              "quote": "if baseGangGPUsForRun(victimKey, c.State.Leases) >= minRunnableGPUs(victim) {"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 2134,
+              "quote": "return \"0\""
+            },
+            {
+              "file": "controllers/invariants.go",
+              "line": 93,
+              "quote": "AwaitingMint:    activePods[key] > openActiveLeases[key],"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 200,
+              "quote": "\t\treturn nil"
+            }
+          ]
+        },
+        {
+          "status": "still-present",
+          "ranCode": true,
+          "reasoning": "F5 is real at HEAD (e2b5355), and it was OPENED by 8a1dc2c, not closed by any later commit. I built and ran a reproduction in a temp copy of the tree.\n\nMechanism. reclaimSquatter evicts an unfunded squatter from a spare's slots. It computes `group := leaseGroupIndex(lease)` — which, per the two production facts, is ALWAYS \"0\" (the sole committer stamps no LabelGroupIndex; the default is \"0\") — and then calls `c.removePodsForGroups(victimKey, {group})`. removePodsForGroups matches pods by `pod.Labels[binder.LabelGroupIndex]`, and every pod emitCohortPods/emitSparePods emits is hardcoded to \"0\". So the removal, keyed on group \"0\", deletes EVERY pod the victim run owns — not just the squatter's pod on the reclaimed node. Meanwhile only the ONE squatter lease is closed; the victim's other open leases (on unrelated, healthy nodes) survive. If the victim is malleable and still holds >= minRunnableGPUs after the reclaim, the `baseGangGPUsForRun >= minRunnableGPUs` branch returns early and leaves it Running. Result: a Running run holding open leases with ZERO backing pods.\n\nOracle blindness confirmed. INV-WIDTH-ASSEMBLED (CheckSteady) compares RunnableGPUs against MinRunnableGPUs, and snapshotWorld projects RunnableGPUs = runnableGPUsForRun(key, leases) — it counts LEASES. AwaitingMint = activePods > openActiveLeases, which is 0 > 1 = false here, so the width check runs and PASSES (2 >= 2). The oracle deferred at the end of HandleNodeFailure did not fire in my run. The playbook's class-9 rail (\"assert on BOTH state.Leases and state.Pods\") is exactly what the oracle omits in this direction.\n\nStability confirmed. runGangComplete returns `sawActive`, which is false with zero pods, so completeRun never fires and never closes the leases. For a malleable Running run, Reconcile takes the elastic path (line 191-201 returns before any topUpActiveGang); reconcileElasticRun works purely on lease width and either does nothing (desired==allocated) or GROWS a new cohort onto fresh slots — it never restores the deleted pod on the surviving lease's slots. Across 10 reconciles the surviving lease (filler-live on node-c#0,#1) stayed open with no container on it.\n\nConsequence. The victim is Unfunded, so no budget is charged (this bounds severity to medium, not the top immortal-budget class). But two real harms remain: (1) silent workload loss — a node failure on an UNRELATED funded run's node deletes the victim's healthy container on a different, healthy node, with no phase change and no event for that group; (2) stranded capacity — the surviving lease stays open, so computeUsage marks those node#ordinals occupied and the engine will not plan funded work onto physically-idle GPUs, until the Run object is deleted or the run terminates.\n\nWhich commit. `git show 8a1dc2c` proves it: reclaimSquatter's read changed from `lease.Labels[binder.LabelGroupIndex]` (which returned \"\" in production, so removePodsForGroups matched NOTHING — the F3 inert-in-production bug) to `leaseGroupIndex(lease)` (\"0\"), and the `if group != \"\"` guard was deleted. That fix made the pod removal actually fire — but with coarse group identity it now over-fires, deleting every group's pods. This is the playbook's \"reached by a new door\": fixing one half-plane opened another. e2b5355 (fencing) and b4f6a6d (runnableGPUsForRun/tracker) do not touch this path.\n\nReaper check. The code fix (evict by the reclaimed node/slot, not the coarse group) reaps nothing: it deletes exactly the container on the slot the swap targets and leaves pods on other nodes alone; no legal state depends on the current over-deletion. A blanket \"open lease implies a backing pod\" invariant would be the opposite direction from the checkpoint-grace window (closed lease + running pod, legal), so grace does not violate it, and the swap window is exempted by AwaitingMint — but R28b coarsening makes a precise lease→pod mapping impossible, so an invariant is a fragile secondary backstop, not the primary fix.",
+          "reproduction": "Copied the repo to a temp dir at HEAD e2b5355 and added controllers/f5_repro_test.go. Setup: three healthy nodes (a=fails, b=spare+squatter, c=victim's second lease); funded run \"run\" with active on node-a#0,#1 and spare on node-b#0,#1; unfunded MALLEABLE victim \"filler\" (Min=2,Max=8,Step=2) with two production-shaped leases (no group label): \"filler-squat\" on node-b#0,#1 (the spare's slots) and \"filler-live\" on node-c#0,#1, plus one pod each labelled group \"0\". Called HandleNodeFailure(\"node-a\"). Output: `filler.Phase=Running openLeases=1 pods=0 runnableGPUs=2 min=2` — the oracle deferred inside HandleNodeFailure did NOT panic. After 10 further Reconciles: `filler-live-open=true podsOnNodeC=0` — the surviving lease stayed open on node-c with no container; the only pods created were grow cohorts on fresh slots. Command: `go test ./controllers/ -run TestF5_MalleableSquatterAboveMin_LeasesWithoutPods -v` (PASS, i.e. the illegal half-plane was reproduced without the oracle firing).",
+          "recommendedFix": "In reclaimSquatter, stop evicting the pod plane by the coarse group label. Replace `c.removePodsForGroups(victimKey, map[string]struct{}{group: {}})` with a slot/node-scoped removal that deletes only the victim's pod(s) sitting on the reclaimed node#ordinals — i.e. nodeFromSlot(lease.Spec.Slice.Nodes) — mirroring the existing removeSparePodOnNodes helper. That deletes exactly the container occupying the slot the swap is about to take and leaves the victim's other groups (on unrelated healthy nodes) running, so their leases keep a backing pod. The durable fix is R28b: thread real per-group/per-slot identity into leases and pods so a lease-derived group addresses only its own pods; until then, node/slot scoping is strictly safer than the current cluster-wide group-\"0\" match. Do NOT ship a naive plane-agreement invariant as the primary remedy: scope any \"open active lease must have a backing pod\" check to Running, non-AwaitingMint runs and keep it distinct from the checkpoint-grace window (closed lease + running pod), which is the opposite, legal direction.",
+          "evidence": [
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1485,
+              "quote": "c.removePodsForGroups(victimKey, map[string]struct{}{group: {}})"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1487,
+              "quote": "if baseGangGPUsForRun(victimKey, c.State.Leases) >= minRunnableGPUs(victim) {"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 2646,
+              "quote": "group := pod.Labels[binder.LabelGroupIndex]"
+            },
+            {
+              "file": "controllers/invariants.go",
+              "line": 91,
+              "quote": "RunnableGPUs:    runnableGPUsForRun(key, c.State.Leases),"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 2134,
+              "quote": "return \"0\""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F6",
+      "severity": "low",
+      "title": "reclaimSquatter widens the blast radius of the pre-existing stale-ev misclassification in HandleNodeFailure pass 2",
+      "outcome": "still-present",
+      "why": null,
+      "tally": {
+        "still-present": 2
+      },
+      "votes": [
+        {
+          "status": "still-present",
+          "ranCode": true,
+          "reasoning": "The finding's mechanical claim holds against HEAD (e2b5355), and I proved the load-bearing lemma by execution rather than argument.\n\nTRACE. HandleNodeFailure computes the funding derivation exactly once, at run_controller.go:1231 (`ev := c.evaluate(now)`), immediately after pass 1 and before the pass-2 loop. The comment above it (1228-1231) frames this as \"computed once ... the only way to know\" — convenience, not a justified staleness invariant. That single `ev` is the ONLY funding evaluation inside the function (grep confirms: no re-evaluate between 1182 and 1361). Pass 2 then consults it at run_controller.go:1297 (`class, classified := ev.Class(other)`) for every exact-slot conflict, and reclaims when it reads Unfunded (1298 -> 1303 `c.reclaimSquatter(...)`). Meanwhile pass 2 CLOSES leases as it runs: 1247 (orphan), 1283 (own stale), 1321/1322 (the swap: a funded active AND a funded spare), and reclaimSquatter itself at 1477. The swap closures at 1321/1322 execute at the END of iteration i, so iteration i+1's ev.Class(other) at 1297 is consulted AFTER real closures the snapshot never saw. `ev.Class` (funding/evaluate.go:1096-1099) is a pure lookup into `classes map[string]Class // by LeaseKey, open leases only` (evaluate.go:69), a frozen map built from the open-lease set at 1231. So a later `other` is classified against a world that no longer exists — exactly as the finding states.\n\nDIRECTION (the reviewer's core question). Only direction (a), evict-funded, is possible; (b) is impossible. Proof: pass 2 never MINTS a lease — emitSwapPod emits a pod and the plugin mints at PreBind, outside this call — it only closes. So the real open-lease set is a strict subset of ev's. Every funding mechanism (envelope width/concurrency, GPU-hour integrals at Now, lending headroom, aggregate caps) is monotone: removing an open lease weakly RAISES every other lease's funded standing and never lowers it. Therefore stale ev can only OVER-report Unfunded, never under-report it. Consequence: the engine may reclaim a squatter that stale-ev calls Unfunded but that the current world funds (a); it can never fail to reclaim a genuinely-Unfunded squatter (b). So this is the data-loss direction, not a missed optimization.\n\nEXECUTED LEMMA. I built pkg/funding/f6_stale_test.go in a temp copy: one envelope, concurrency cap 8; run A (older) holds lA width 8, run B (younger) squats lB width 4. With both open, Evaluate classes lB Unfunded (over the cap). Close lA, re-Evaluate: lB flips to Owned. Output: \"lB flips Unfunded -> Owned when lA closes.\" This is the promotion the stale snapshot misses. Because reclaimSquatter now evicts in BOTH planes — CloseLease at 1477 plus c.removePodsForGroups at 1485 (kills the container) plus a phase demote — a stale-ev false positive now DESTROYS a workload that is funded in the current world, where the pre-R27 ledger-only closeLease merely mis-stated the ledger. That is precisely the finding's title: reclaimSquatter widened the blast radius of the pre-existing stale-ev misclassification. And it violates the function's own declared contract at 1286-1296: \"evicting it belongs to the resolver, which ranks by class — not to this function.\" A stale ev makes HandleNodeFailure usurp exactly the funded-vs-funded eviction it says it must not make.\n\nREACHABILITY. Requires two active leases on the same failed node from runs sharing a budget context (envelope width cap, family excess, or lending pool), where the first's teardown frees the capacity that funds a squatter examined later. Multiple tenants oversubscribing one node and node failures are routine over months; this is not exotic. Not dismissible under \"unusual sequence.\"\n\nWHY NOT the naive fix (checked against the reaper question). Recomputing ev before each ev.Class would reflect the current world but make the reclaim decision depend on the order c.State.Leases stores the failing leases — different orders close different funded leases first, flipping later classifications. That is playbook class 3 (last-writer-wins), the reaper this file fights. The single pre-pass evaluation is at least order-INDEPENDENT; the fix must preserve that.",
+          "reproduction": "Executed pkg/funding/f6_stale_test.go (TestF6_ClosingLeaseFlipsClass) in a temp copy of the repo. Setup: budget owner \"team\", one envelope \"west\" with concurrency cap 8; run A (created at base) holds lease lA width 8, run B (created base+30m) holds lease lB width 4, all in envelope west. Result: `go test ./pkg/funding -run TestF6_ClosingLeaseFlipsClass -v` PASSES with logs: \"stale ev (both open): lB = Unfunded\" and \"fresh ev (lA closed): lB = Owned\". This demonstrates that closing one open lease promotes another open lease's derived class, so the single ev computed at run_controller.go:1231 misclassifies any squatter whose funding improved due to closures made earlier in the pass-2 sweep (e.g. the Swap closures at 1321-1322). I did not build the full ClusterState controller scenario; the funding lemma plus the code trace (single ev at 1231, reused at 1297 after intervening closures, monotone-toward-funded because pass 2 only closes leases) establishes both the mechanism and its single direction.",
+          "recommendedFix": "Do NOT recompute ev per iteration — that reintroduces order-dependence (class 3), since which funded lease closes first would change later classifications. Instead make the reclaim classification consistent with the world it acts on, order-independently. Two acceptable shapes: (1) Defer reclamation: during pass 2, collect candidate squatter leases (those on a spare's exact slots that stale-ev calls Unfunded) without evicting; after the pass-2 loop has finished all its closures, call c.evaluate(now) ONCE more and reclaim only the candidates still Unfunded in that final world. One post-loop evaluation is both current-world-accurate and order-independent. This changes semantics — a squatter that becomes funded purely because the failing run's own teardown freed capacity gets reprieved — so record the decision in quota-semantics.md. (2) If, conversely, the intent is deliberately to judge reclaim-eligibility at the failure instant (pre-teardown) so a squatter is not reprieved by transient teardown capacity, then keep the single ev but replace the \"computed once ... only way to know\" comment at 1228 with an explicit statement that reclaim eligibility is fixed at the failure instant and why (order-independence + no reprieve), turning an accidental snapshot into a chosen invariant. Either way the reaper check passes: neither option lets lease slice order determine who is evicted. Given severity is low (the victim is opportunistic unfunded-class work that demotes to Pending and re-admits), option (2) with a corrected comment is the cheapest correct resolution if the design agrees a same-failure reprieve is undesirable.",
+          "evidence": [
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1231,
+              "quote": "\t// The funding derivation, computed once: pass 2 needs it to decide whether an\n\t// exact-slot conflict may be reclaimed. Class is derived, never stored\n\t// (quota-semantics Decision 3), so this is the only way to know.\n\tev := c.evaluate(now)"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1297,
+              "quote": "\t\t\tclass, classified := ev.Class(other)\n\t\t\tif classified && class == funding.ClassUnfunded {"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1321,
+              "quote": "\t\tCloseLease(spareLease, \"Swap\", now)\n\t\tCloseLease(lease, \"NodeFailure\", now)"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1485,
+              "quote": "\tc.removePodsForGroups(victimKey, map[string]struct{}{group: {}})"
+            },
+            {
+              "file": "pkg/funding/evaluate.go",
+              "line": 69,
+              "quote": "\tclasses   map[string]Class // by LeaseKey, open leases only"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1286,
+              "quote": "evicting it belongs to the resolver, which ranks\n\t\t\t\t// by class — not to this function. Decline the swap instead"
+            }
+          ]
+        },
+        {
+          "status": "still-present",
+          "ranCode": true,
+          "reasoning": "MECHANISM (confirmed present in HEAD). HandleNodeFailure computes the funding derivation exactly once, after pass 1 but before pass 2: `ev := c.evaluate(now)` at run_controller.go:1231, comment \"The funding derivation, computed once\". Pass 2 (1234-1336) then CLOSES funded leases as it runs — the swap path closes the spare and the failed active (`CloseLease(spareLease, \"Swap\", now)` / `CloseLease(lease, \"NodeFailure\", now)`, 1321-1322) and failGroupWithoutSpare sweeps more — while every reclaim decision reads the never-refreshed map via `class, classified := ev.Class(other)` (1297) and reclaims only on `class == funding.ClassUnfunded` (1298). I confirmed with `awk` that there is NO `c.evaluate` between 1234 and 1336, so ev is stale for the whole of pass 2. Across successive outer-loop iterations (a node holding several funded actives — routine) an earlier iteration closes a funded lease that a later `other` shares a budget envelope with; that later `other` is then classified against a world that no longer exists.\n\nDIRECTION — settled by EXECUTION, not argument. I copied the repo and added pkg/funding/f6_monotone_test.go. Two 4-GPU leases of different runs on one width-4 envelope: the earlier-start lease funds and exhausts the envelope, the later one is Unfunded. Removing the earlier (funded) lease and re-evaluating promotes the later one from Unfunded to Owned. Output: \"lo: stale=Unfunded  fresh(post-closure)=Owned\". Because pass 2 only ever CLOSES leases (minting happens later, at PreBind, by the plugin), the open-lease set is monotonically shrinking, so funding can only move up: the stale ev can only OVER-report Unfunded, never under-report. Therefore the error is exclusively direction (a): reclaimSquatter, gated on stale Unfunded, EVICTS a run that is FUNDED in the true post-closure world. Direction (b) (declining a truly-unfunded squatter) is unreachable.\n\nWHY reclaimSquatter is the right defendant (and one correction to the SCENARIO). reclaimSquatter's OWN closures are inert to this: its guard (1298) only fires on Unfunded, and markLease (evaluate.go:739-743) records nothing on the envelope account for an Unfunded lease, so closing an Unfunded lease frees no budget and promotes nobody. The staleness that bites comes from the FUNDED swap/failGroup closures, which predate reclaimSquatter. But the finding's TITLE — \"widens the blast radius\" — is exactly right: `git show 7a681c0` shows the Unfunded branch changed from `closeLease(other, \"ReclaimedBySpare\", now)` (a ledger-only close) to `c.reclaimSquatter(other, otherKey, now)`, which additionally removePodsForGroups (kills the victim's running container) and demotes its phase to Pending. So a stale-ev misclassification that was previously a bounded ledger error now KILLS a funded run's in-flight GPU work and requeues it. reclaimSquatter is live in production post-8a1dc2c (leaseGroupIndex defaults the missing label to \"0\" and the pods are labelled \"0\"), so this is not a dead-code fix like F3.\n\nCONSEQUENCE (assume real). A funded run C, sharing an envelope with a run whose funded lease died with the node and was closed in an earlier pass-2 iteration, and squatting the spare's exact slots (an oversubscription the engine explicitly tolerates, invariant.go), is classified Unfunded by the stale ev though it is Owned/Shared/Borrowed in the true post-closure world. reclaimSquatter closes its lease, removes its pods (its running containers die → lost progress), and demotes it to Pending. No budget is charged forever (this is not an immortal-lease bug); the harm is DATA LOSS of a funded run plus a requeue. Narrow geometry (multi-lease node failure + shared envelope + cross-run exact-slot squatter + budget tight enough to have made C Unfunded-at-entry), which is why low severity is right; but each ingredient is legal and node failures + budget rollovers run for months.\n\nREAPER CHECK. The finding's implied fix — re-evaluate ev per iteration — is a REAPER. Computing ev once against the fixed post-pass-1 world makes every reclaim decision use ONE order-free baseline; that order-independence is deliberate (the phases tracker, order_independence_test.go, history-run-phase-writers.md, \"seventh defect of this exact class\"). A fresh ev mid-loop would classify each `other` against whatever earlier iterations happened to close, i.e. against c.State.Leases order — reintroducing the exact order-dependent-phase defect class this path has shipped repeatedly. So per-iteration re-eval trades a narrow data-loss bug for a broad order-dependence bug.",
+          "reproduction": "Executed: pkg/funding/f6_monotone_test.go in a scratch copy of the repo. Envelope \"west\" concurrency 4; lease \"hi\" (run hi, start base) and lease \"lo\" (run lo, start base+1h), both 4 GPUs on team-budget/west. Evaluate with both open: classOf(lo)=Unfunded. Evaluate with hi removed: classOf(lo)=Owned. `go test ./pkg/funding -run TestF6StaleEvOverReportsUnfunded -v` PASSES, logging \"lo: stale=Unfunded  fresh(post-closure)=Owned\". This proves closing a funded lease promotes a lower-priority same-envelope lease Unfunded→funded, so an ev computed before pass-2 closures over-reports Unfunded and reclaimSquatter (guarded on Unfunded at run_controller.go:1298) would evict funded work. The full end-to-end HandleNodeFailure geometry (two funded actives failing on one node, a cross-run exact-slot squatter on the second group's spare slots, squatter sharing the first group's envelope) is legal per the tolerated-oversubscription invariant but was not built end-to-end; the funding monotonicity that is the sole uncertain link is executed above, and the control-flow links (ev computed once at 1231, read at 1297, funded closures at 1321-1322 across iterations, no re-eval 1234-1336) are read directly.",
+          "recommendedFix": "Keep a SINGLE evaluation (do not re-evaluate per iteration — that reaps order-independence). Make that one evaluation reflect the world the node failure produces, which is order-free: at line 1231 evaluate against the lease set with every lease on the failed node excluded (they are all going to close regardless of order — `leaseContainsNode(lease, nodeName)`). Removing leases only promotes funding, so gating reclaim on this post-casualty ev can only move `other` from Unfunded toward funded, i.e. it can only UNDER-reclaim (a missed optimization — the safe direction) and never evict funded work. The residual second-order effect (a declined-swap spare release freeing yet more budget) is bounded and also only frees budget, so it too can only cause safe under-reclaim; if you want it exact, exclude releasable spares as well, but that reintroduces circularity with the swap decision and is not worth it for a low finding. Mutate-test the fix: revert the exclusion and the executed scenario (funded lease on the failed node sharing an envelope with a cross-run squatter on the spare's slots) must go from \"declined\" back to \"squatter wrongly reclaimed\".",
+          "evidence": [
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1231,
+              "quote": "ev := c.evaluate(now)"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1297,
+              "quote": "class, classified := ev.Class(other)"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1298,
+              "quote": "if classified && class == funding.ClassUnfunded {"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1321,
+              "quote": "CloseLease(spareLease, \"Swap\", now)"
+            },
+            {
+              "file": "pkg/funding/evaluate.go",
+              "line": 741,
+              "quote": "if class != ClassUnfunded && acct != nil {"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F7",
+      "severity": "high",
+      "title": "Terminal branch closes a failed run's out-of-scope spare and surviving-group leases but leaves their pods running (half-plane double-allocation)",
+      "outcome": "still-present",
+      "why": null,
+      "tally": {
+        "still-present": 2
+      },
+      "votes": [
+        {
+          "status": "still-present",
+          "ranCode": true,
+          "reasoning": "F7 is a real, present defect at HEAD (e2b5355), confirmed by execution in a clean-room clone, not by argument. The engine's terminal-failure paths release a run's leases (freeing the GPUs in the ledger) but do NOT remove the run's surviving pods from state.Pods, and Bridge.apply deletes only pods that are ABSENT from state.Pods (controllers/kube/bridge.go:262). So the containers keep running and holding GPUs while funding.Evaluate counts those GPUs as free — the half-plane double-allocation the finding describes.\n\nI reproduced it three ways on pristine HEAD: (1) HandleNodeFailure's post-loop Failed sweep — a 2-group run loses group-0's node with no spare, goes Failed, closeRunLeases closes group-1's lease on the HEALTHY node, yet run-1's pod stays in state.Pods (test logged: phase=Failed, open leases=0, pods=[run-0-Active run-1-Active]); (2) failRun leaving a spare pod on a healthy node; (3) by inspection, applyResolution's resolver-cut branch (run_controller.go ~1746) closes leases with no pod removal — its own comment admits a run's spare can lie outside reservation scope, matching F7's \"out-of-scope spare\" wording.\n\ncompleteRun is the proof this is a bug, not a legal state: on the identical shape it closes leases AND removes pods (c.State.Pods = kept, line 548). reclaimSquatter documents that a lease and a pod are two different claims on one GPU and evicts BOTH planes — so the author already treats a ledger-only release as double-allocation everywhere except the terminal paths.\n\nOn the FIX and the reaper question: the correct fix is a removeAllRunPods(run) helper mirroring completeRun, called at all three terminal-close sites (failRun, the HandleNodeFailure Failed sweep, the applyResolution resolver-Failed branch). I applied it and verified: the F7/F7b reproductions pass, the FULL controllers suite passes, and JOBTREE_INVARIANT=warn reports 0 violations. The checkpoint-grace window is NOT reaped: failGroupWithoutSpare's grace branch parks the run Pending (not Failed) and closes only the dead group's lease, so it is never swept; the surviving container is kept alive to checkpoint, exactly as intended. Because every terminal path sets CheckpointDeadline=nil, keying pod removal on the terminal transition is safe, but guarding the sweep on CheckpointDeadline==nil would make the exemption robust to future edits, per the finding's advice. On ownerRef GC: pods carry runOwnerReferences (bridge.go:456), so deleting the Run object GCs them — but a Failed run persists for the record until a human deletes it, an unbounded window during which the ledger hands the GPUs back and the engine plans new work the kube-scheduler can never bind. 'Wait for the human' is not acceptable; synchronous removal like completeRun's is required.",
+          "reproduction": "Clean clone of HEAD (e2b5355). Add a test in package controllers: build ClusterState with nodes node-a/node-b, one Run 'run' (4 GPUs, Running), two active leases g0 on node-a#0/#1 and g1 on node-b#0/#1, and two PodManifests (group 0 on node-a, group 1 on node-b). Call c.HandleNodeFailure(\"node-a\", now). Observed: run.Status.Phase==Failed, 0 open leases for the run, but state.Pods still == [run-0-Active, run-1-Active] — the surviving group-1 pod on the healthy node is never removed, so Bridge.apply (which deletes only pods absent from state.Pods) never deletes it. A parallel test on the same shape with c.completeRun(...) removes all pods (state.Pods empty). A failRun variant (spare lease on healthy node-b) likewise leaves the spare pod. Applying removeAllRunPods(run) at failRun, the Failed sweep, and the resolver-Failed branch makes all three pass; full controllers suite passes; JOBTREE_INVARIANT=warn reports 0 violations.",
+          "recommendedFix": "Add a helper mirroring completeRun's pod cull and call it at every site that drives a run terminal and closes its leases:\n\nfunc (c *RunController) removeAllRunPods(run *v1.Run) {\n    kept := c.State.Pods[:0]\n    for _, pod := range c.State.Pods {\n        if pod.Namespace == run.Namespace && pod.Labels[binder.LabelRunName] == run.Name {\n            continue\n        }\n        kept = append(kept, pod)\n    }\n    c.State.Pods = kept\n}\n\nCall c.removeAllRunPods(run) immediately after closeRunLeases in (1) failRun, (2) HandleNodeFailure's post-loop `for runKey, phase := range phases { if phase == RunPhaseFailed ...}` sweep, and (3) applyResolution's resolver-cut `default: run.Status.Phase = RunPhaseFailed` branch. Do NOT add it to failGroupWithoutSpare's checkpoint-grace (Pending) branch — that half-plane is legal and bounded by CheckpointDeadline. For defence in depth, guard the sweep-site call on run.Status.CheckpointDeadline == nil so the exemption keys on the deadline, not the phase, as the finding advises. This makes the two planes agree: a terminal run releases both its ledger and its pods, so the GPUs it hands back are actually free.",
+          "evidence": [
+            {
+              "file": "controllers/run_controller.go",
+              "line": 710,
+              "quote": "released %d open lease(s) still held by the failed run"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 548,
+              "quote": "c.State.Pods = kept"
+            },
+            {
+              "file": "controllers/kube/bridge.go",
+              "line": 262,
+              "quote": "if _, still := current[key]; !still {"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1353,
+              "quote": "released %d open lease(s) held by the failed run"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1746,
+              "quote": "released %d open lease(s) still held by the failed run"
+            }
+          ]
+        },
+        {
+          "status": "still-present",
+          "ranCode": true,
+          "reasoning": "F7 is real and unfixed at HEAD (e2b5355). I reproduced both branches the finding names, in the pure engine, in a temp copy of the tree at HEAD.\n\nBranch 1 — HandleNodeFailure's post-loop Failed sweep. A two-group run loses group 0's node with no spare. failGroupWithoutSpare drives the run Failed (line 1433). The post-loop sweep (lines 1343-1355) then calls closeRunLeases, which closes BOTH the failed group's lease AND the surviving group 1 lease on the HEALTHY node-b (reason \"RunFailed\"). closeRunLeases (1512-1527) only ever calls CloseLease; it never touches c.State.Pods. So group 1's pod stays in state.Pods, and Bridge.apply (bridge.go:261-266) deletes only pods ABSENT from state.Pods — nothing deletes it. My test observed: phase=Failed, g1 lease closed, pod run-g1 still running on node-b.\n\nBranch 2 — failRun via checkpoint-grace expiry. Reconcile line 167-168 calls failRun once now >= CheckpointDeadline. failRun (701-713) closes the run's leases via closeRunLeases and touches no pods. My test observed the identical leak: Failed, g1 closed, pod run-g1 still on node-b.\n\nI also found a THIRD identical door: applyResolution's terminal branch (1745) closes leases with the same closeRunLeases and removes no pods.\n\nThe consequence is the class-9 \"pod running, lease closed\" lie. The budget is NOT charged forever here (funding.Evaluate derives class from OPEN leases, and these are closed) — the harm is the inverse: the ledger says node-b#0/#1 are FREE while zombie containers physically occupy them. The engine plans new work onto those GPUs; the kube-scheduler can never bind it (GPUs busy), so the new gang wedges assembling forever while the dead run's containers burn power. For a distributed-training rank, re-admission onto the same slots risks two live copies of one rank. Duration is unbounded: cleanupDeletedRun (reconcilers.go:92) is the only path that drops a run's pods, and it fires ONLY when the Run object is deleted — a Failed run persists in state.Runs until a human deletes it (the finding's \"months\").\n\nReaper check — the fix does not destroy any legal state. The one legal half-plane is checkpoint grace: failGroupWithoutSpare parks the run PENDING (not Failed) with a CheckpointDeadline and keeps containers running (1418-1430). Removing pods on the TERMINAL (Failed) transition never touches a Pending run, and failRun on checkpoint-expiry only fires after the deadline is spent. None of pkg/invariant's four rejected invariants concern the pod plane, so a terminal pod sweep collides with none of them. The invariant oracle itself is silent on this bug (TerminalPresent, invariant.go:187-198, checks only open leases), which is exactly why it slipped 0/3 skeptics.\n\nNone of b4f6a6d / 8a1dc2c / e2b5355 fix it: the only pod-removal added since 98b602d is inside reclaimSquatter (the OTHER half-plane direction).",
+          "reproduction": "Copied repo to a temp dir at HEAD (e2b5355) and added controllers/f7_repro_test.go with two pure-engine tests. (1) TestF7SurvivingGroupPodOutlivesFailedRun: a run with active leases g0 (node-a) and g1 (node-b), pods run-g0/run-g1, no spare; c.HandleNodeFailure(\"node-a\", now). Result: run Failed, g1 lease closed (\"RunFailed\"), yet pod run-g1 still present on healthy node-b. (2) TestF7CheckpointExpiryLeavesSurvivingPod: run Pending with CheckpointDeadline in the past, open g1 lease + run-g1 pod on node-b; c.Reconcile(\"default\",\"run\"). Result: failRun fires, g1 closed, run-g1 pod still on node-b. Both FAIL, printing \"HALF-PLANE ... ledger says free, kubelet says busy\". No invariant panic in either case — the oracle does not check the pod plane.",
+          "recommendedFix": "Pair the lease-closing obligation with pod removal at every terminal-failure site, mirroring completeRun (run_controller.go:541-548) and cleanupDeletedRun (reconcilers.go:107-), both of which already release BOTH planes together. Concretely, wherever a run is driven terminal Failed and its leases are closed — failRun (708), HandleNodeFailure's post-loop Failed sweep (1351), and applyResolution's terminal branch (1745) — also drop the run's pods (the run-scoped pod prune completeRun uses, keyed on LabelRunName). Best factored into a single helper (e.g. failRunReleaseBothPlanes / extend closeRunLeases's callers) so the two-plane discharge cannot drift across the three sites. Key pod removal on the TERMINAL transition, not on any general \"lease closed => drop pod\" scan: the checkpoint-grace window (Phase Pending + CheckpointDeadline, containers running on purpose) must remain untouched, and it is, because it is never Failed and failRun only runs after the deadline is spent. Do NOT rely on ownerRef GC at Run deletion — leases release immediately while the Run (and its pods) persist until a human deletes it, leaving an unbounded double-allocation window. Add a test that asserts on BOTH state.Leases and state.Pods for the surviving group (the two repro tests above are ready-made), and mutate the fix (delete the pod-removal line, confirm red).",
+          "evidence": [
+            {
+              "file": "controllers/run_controller.go",
+              "line": 708,
+              "quote": "if closed := c.closeRunLeases(run, \"RunFailed\", c.Clock.Now()); closed > 0 {"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1351,
+              "quote": "if closed := c.closeRunLeases(run, \"RunFailed\", now); closed > 0 {"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1523,
+              "quote": "CloseLease(lease, reason, now)"
+            },
+            {
+              "file": "controllers/kube/bridge.go",
+              "line": 261,
+              "quote": "for key, pod := range snap.pods {\n\t\tif _, still := current[key]; !still {"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 541,
+              "quote": "kept := c.State.Pods[:0]"
+            },
+            {
+              "file": "controllers/kube/reconcilers.go",
+              "line": 92,
+              "quote": "func cleanupDeletedRun(state *controllers.ClusterState, runKey, namespace, name string, now time.Time) {"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F8",
+      "severity": "medium",
+      "title": "Malleable run at its declared minimum total width is failed and swept because the gate counts base-gang GPUs but compares against a total-GPU minimum",
+      "outcome": "fixed-by-a-later-commit",
+      "why": null,
+      "tally": {
+        "fixed-by-a-later-commit": 3
+      },
+      "votes": [
+        {
+          "status": "fixed-by-a-later-commit",
+          "ranCode": true,
+          "reasoning": "F8 was a real reaper in the reviewed commit 98b602d, and commit b4f6a6d closes it in both places it lived. I verified the whole chain by tracing the current tree and then executing.\n\nTHE ORIGINAL DEFECT (98b602d). applyResolution set a malleable run's phase from `allocated := baseGangGPUsForRun(runKey, c.State.Leases)` compared against `expected := minRunnableGPUs(run)`. For a malleable run minRunnableGPUs returns MinTotalGPUs, a TOTAL, while baseGangGPUsForRun EXCLUDES Reason==Grow leases. The resolver's own lottery/shrink guard (pkg/resolver/resolver.go:503 and :413) permits a cut while `st.Remaining-grp.GPUs >= MinTotalGPUs`, and Remaining counts every open lease including grow. So the resolver may legitimately cut a malleable run's base group while its grow ranks still cover the declared minimum; applyResolution then compared the surviving BASE width against a TOTAL minimum, failed the run, and — via the default branch's closeRunLeases — swept its surviving grow leases. The invariant carried the identical reaper: 98b602d's controllers/invariants.go projected `BaseGangGPUs: baseGangGPUsForRun(...)` against MinRunnableGPUs, and pkg/invariant fired WidthAssembled on `BaseGangGPUs < MinRunnableGPUs`, which PANICS under go test on a legally-Running malleable run.\n\nTHE FIX (b4f6a6d). applyResolution now uses `runnableGPUsForRun` (total open non-spare width incl. Grow), and the invariant field was renamed RunnableGPUs, projected by the SAME helper (controllers/invariants.go:91) and compared at pkg/invariant/invariant.go:204. Both consumers now agree with the resolver's Remaining accounting.\n\nI DID NOT TRUST THE COMMENTS — I RAN IT. (1) The author's regression test TestResolverKeepsAMalleableRunRunningWhenGrowWidthCoversItsMinimum passes at HEAD. (2) I mutated the load-bearing line 1719 back to baseGangGPUsForRun; the test went red with the exact F8 message (\"a malleable run still holding 0 GPUs ... was FAILED and swept. The gate counted base-gang GPUs against a TOTAL-GPU minimum\"), proving the test guards the fix and the refutation was wrong. (3) NOT-DEAD-CODE CHECK (the F3 trap): the applyResolution partial-cut needs multiple placement groups, which R28b says production never has (all leases group \"0\"), so THAT half of the fix is latent in production today. But the base-vs-grow split is by Spec.Reason, independent of group labels, so the INVARIANT half is live in production. I wrote a probe with production-shaped leases (prodLease: NO group index, base Reason=Start, grow Reason=Grow, Running, min=2, base=1, total=2): at HEAD CheckSteady raises no WidthAssembled; substituting the old base-gang projection makes it fire. So the fix removes a reaper that WAS reachable on production-shaped state.\n\nREAPER-TWIN / legality: the invariant is now correct, not differently wrong. It fires only when Phase==Running AND !AwaitingMint AND KnownToLedger AND RunnableGPUs<MinRunnableGPUs. AwaitingMint (activePods>openActiveLeases) exempts the swap/mint window; KnownToLedger exempts hand-built ledger-less runs. A run genuinely below its MINIMUM TOTAL runnable width with no pod pending is illegal per demote-not-kill (it must go Pending/Failed, not stay Running), so firing there is correct. The adoption split is right: adoption (run_controller.go:209) keeps baseGangGPUsForRun so a run cannot reach width on grow leases alone during post-restart reconstruction — a different question from judging an already-assembled run's phase.",
+          "reproduction": "Copied repo to a temp dir. (1) `go test ./controllers -run TestResolverKeepsAMalleableRunRunningWhenGrowWidthCoversItsMinimum` PASSES at HEAD. (2) Mutated run_controller.go:1719 `runnableGPUsForRun`->`baseGangGPUsForRun`; the same test FAILS: \"a malleable run still holding 0 GPUs - exactly its declared MinTotalGPUs of 2 - was FAILED and swept\" (proves the fix is load-bearing). Restored. (3) Wrote a probe using prodLease (production-shaped: no group index) building a Running malleable run min=2 with base=1 (Reason=Start) + grow=1 (Reason=Grow); c.snapshotWorld()+invariant.CheckSteady raises NO WidthAssembled at HEAD, and re-projecting RunnableGPUs=baseGangGPUsForRun (the old code) makes WidthAssembled fire - confirming the invariant reaper was real, production-reachable, and removed. Full `go test ./controllers ./pkg/resolver ./pkg/invariant` is green.",
+          "recommendedFix": "None required for F8 itself; fixed by b4f6a6d. Adjacent note (not F8): the applyResolution half of the fix cannot be exercised in production until R28b (docs/project/remediation/R28-group-identity.md) is fixed, because every production lease is group \"0\" so a malleable run has a single placement group the resolver cuts all-or-nothing. The invariant half is live regardless. When R28b lands, keep the runnableGPUsForRun gate; do not revert it toward base-gang.",
+          "evidence": [
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1719,
+              "quote": "allocated := runnableGPUsForRun(runKey, c.State.Leases)"
+            },
+            {
+              "file": "controllers/invariants.go",
+              "line": 91,
+              "quote": "RunnableGPUs:    runnableGPUsForRun(key, c.State.Leases),"
+            },
+            {
+              "file": "pkg/resolver/resolver.go",
+              "line": 503,
+              "quote": "if st.Malleable != nil && st.Remaining-grp.GPUs < int(st.Malleable.MinTotalGPUs) {"
+            },
+            {
+              "file": "pkg/invariant/invariant.go",
+              "line": 204,
+              "quote": "if r.RunnableGPUs < r.MinRunnableGPUs {"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 209,
+              "quote": "allocated := baseGangGPUsForRun(key, c.State.Leases)"
+            }
+          ]
+        },
+        {
+          "status": "fixed-by-a-later-commit",
+          "ranCode": true,
+          "reasoning": "F8 was a REAL defect, and it is closed by b4f6a6d in BOTH the decision path and its invariant twin. I reproduced it by execution, not argument.\n\nTHE DEFECT WAS REAL (refutation was wrong). I copied the repo and, in controllers/run_controller.go's applyResolution, reverted the load-bearing line 1719 from `runnableGPUsForRun` back to the pre-fix `baseGangGPUsForRun`. The existing reaper test TestResolverKeepsAMalleableRunRunningWhenGrowWidthCoversItsMinimum then FAILED with: \"a malleable run still holding 0 GPUs — exactly its declared MinTotalGPUs of 2 — was FAILED and swept. The gate counted base-gang GPUs against a TOTAL-GPU minimum.\" That is exactly F8's scenario: a malleable run (MinTotalGPUs=2) whose base group (2 GPUs) is cut by the lottery while its grow lease (2 GPUs) still covers the minimum. The resolver's own guard (pkg/resolver/resolver.go:503, `st.Remaining-grp.GPUs < int(st.Malleable.MinTotalGPUs)`) permits that cut because Remaining counts the grow lease, so the input is one the real resolver produces. Restoring the fix makes the test pass. The fix is load-bearing; the prior refutation was wrong.\n\nTHE FIX IS LIVE IN PRODUCTION (not inert like F3). runnableGPUsForRun reads lease.Spec.RunRef, lease.Spec.Slice.Role, and lease.Spec.Slice.Nodes — all stamped by the sole committer admission.PodLeaseWithRole (pkg/admission/admission.go: `RunRef: ...`, `Slice: v1.LeaseSlice{Nodes: slots, Role: role}`). It does NOT depend on LabelGroupIndex, the label the sole committer never sets and which made reclaimSquatter inert (R28b). So unlike F3, this fix operates on real cluster leases.\n\nTHE TWIN IS FIXED, NOT DIFFERENTLY WRONG. pkg/invariant renamed Run.BaseGangGPUs to RunnableGPUs and controllers/invariants.go:91 now feeds it runnableGPUsForRun. I wrote a test building the same healthy grow-covered Running state and ran it through c.snapshotWorld()+invariant.CheckSteady: runnable=2, min=2, awaitingMint=false, known=true → ZERO violations. When I substituted the OLD base-gang width into the same projection, INV-WIDTH-ASSEMBLED fired (\"reports Running while holding 0 of 2 minimum runnable GPUs, with no pod awaiting a mint\") — proving the old field WOULD have panicked in CI on a healthy run. The reaper question (\"any legal Running state with < min TOTAL non-spare width that is still healthy?\") is covered by the gates: the swap window sets AwaitingMint (pod emitted, lease minted later by plugin); checkpoint-grace parks the run Pending, not Running; hand-built runs are excluded by KnownToLedger; and the resolver guard forbids cutting a malleable run below MinTotalGPUs of total width. Because applyResolution and the oracle now share runnableGPUsForRun, the oracle cannot fire on a state applyResolution legally produces.\n\nTHE ADOPTION SPLIT IS RIGHT. Adoption (run_controller.go:209) still uses baseGangGPUsForRun deliberately: a run reconstructing from leases after a restart must not reach Running on grow leases alone (R2). That is the opposite, conservative direction — it declines to promote, it does not fail-and-sweep — so it is not a reaper, and it is documented at run_controller.go:2167-2176.",
+          "reproduction": "Copied /workspaces/jobtree to a temp dir. (1) `go test ./controllers/ -run TestResolverKeepsAMalleableRunRunningWhenGrowWidthCoversItsMinimum` PASSES on HEAD. (2) Mutation: sed line 1719 `runnableGPUsForRun`→`baseGangGPUsForRun`; same test FAILS (\"a malleable run still holding 0 GPUs ... was FAILED and swept\"). Restored. (3) Wrote controllers/f8_twin_test.go building a Running malleable run (MinTotalGPUs=2) with its base lease closed and a 2-GPU grow lease open: c.snapshotWorld() yields runnable=2 min=2 awaitingMint=false known=true and invariant.CheckSteady returns no violations; substituting baseGangGPUsForRun into the projection makes invariant.CheckSteady return INV-WIDTH-ASSEMBLED. Both twin tests PASS, confirming the current oracle is clean and the old field was a reaper. (Note: an unrelated f7_repro_test.go for finding F7 is present in the tree and fails; it is outside F8's scope.)",
+          "recommendedFix": "None needed for F8. The fix is present, load-bearing, and live in production. One adjacent observation, not a defect in F8's direction: runnableGPUsForRun counts ALL open non-spare leases including grow, so it can only ever OVER-report width relative to base — it cannot falsely fail a healthy run (F8's harm), though it means the width invariant is intentionally permissive by exactly the amount the resolver is. That permissiveness is the documented design (invariants.go:23-26) and shared with the decision path, so it is consistent by construction.",
+          "evidence": [
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1719,
+              "quote": "allocated := runnableGPUsForRun(runKey, c.State.Leases)"
+            },
+            {
+              "file": "controllers/invariants.go",
+              "line": 91,
+              "quote": "RunnableGPUs:    runnableGPUsForRun(key, c.State.Leases),"
+            },
+            {
+              "file": "pkg/resolver/resolver.go",
+              "line": 503,
+              "quote": "if st.Malleable != nil && st.Remaining-grp.GPUs < int(st.Malleable.MinTotalGPUs) {"
+            },
+            {
+              "file": "controllers/resolver_settlement_test.go",
+              "line": 274,
+              "quote": "a malleable run still holding %d GPUs — exactly its declared MinTotalGPUs of %d — was FAILED "
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 2152,
+              "quote": "func runnableGPUsForRun(runKey string, leases []v1.Lease) int {"
+            }
+          ]
+        },
+        {
+          "status": "fixed-by-a-later-commit",
+          "ranCode": true,
+          "reasoning": "F8 was a REAL reaper at the reviewed commit 98b602d and is CLOSED at HEAD (e2b5355) by commit b4f6a6d. The prior refutation was wrong.\n\nTHE BUG (at 98b602d): applyResolution judged a shrunk run's phase with `baseGangGPUsForRun(runKey) >= minRunnableGPUs(run)`. baseGangGPUsForRun EXCLUDES Grow leases (`if lease.Spec.Reason == binder.LeaseReasonGrow { continue }`), but for a malleable run minRunnableGPUs returns MinTotalGPUs — a TOTAL. The resolver's own lottery guard (pkg/resolver/resolver.go:503, `st.Remaining-grp.GPUs < MinTotalGPUs` -> continue) permits cutting a BASE group while grow ranks still cover the minimum, and Remaining counts grow leases (resolver.go:234 `st.Remaining += candidate.GPUs` for every non-spare open lease). So the resolver legally cuts a base group leaving base=0, grow=min; the gate then saw 0 < min, took the default branch, set RunPhaseFailed, and closeRunLeases(\"RunFailed\") SWEPT the surviving grow leases. This is a reaper of the inverse kind to the immortal-lease class: it does not leak budget, it KILLS a healthy elastic run and terminates its live training ranks — a demote-not-kill violation.\n\nTHE FIX (b4f6a6d): applyResolution now uses `runnableGPUsForRun` (TOTAL open non-spare width, incl. Grow) vs minRunnableGPUs — total vs total, unit-consistent. pkg/invariant's field BaseGangGPUs was renamed RunnableGPUs and controllers/invariants.go now projects `RunnableGPUs: runnableGPUsForRun(...)`, so INV-WIDTH-ASSEMBLED (which under go test PANICS) no longer trips on a legal Running run at base=0/total>=min. Adoption (run_controller.go:209, 820) and the reclaim-victim gate (1487) correctly KEEP baseGangGPUsForRun — a different question (\"is this run assembling / must not reach width on grow leases alone after a restart\"). That split is documented and correct.\n\nHOW I CHECKED (not just that it looks right): (1) copied repo to temp, ran TestResolverKeepsAMalleableRunRunningWhenGrowWidthCoversItsMinimum at HEAD -> PASS. (2) Mutated the fix, reverting applyResolution's helper to baseGangGPUsForRun -> test goes RED with \"a malleable run still holding 0 GPUs ... was FAILED and swept\" — proving the fix is load-bearing and reproducing the reaper (grow lease swept, run Failed). (3) Confirmed the fix is NOT dead code in production (contrast F3): runnableGPUsForRun sums len(Slice.Nodes) over non-spare open leases and has ZERO dependency on the group-index label, so it works despite R28b's every-lease-is-group-0 reality. (4) Confirmed via git that 98b602d had baseGangGPUsForRun at the gate and BaseGangGPUs in the oracle; b4f6a6d is the commit that changed both.\n\nREAPER-CHECK ON THE FIX: using TOTAL width cannot reap a legal state. The only Running states where total non-spare width < min are AwaitingMint (pod emitted, plugin has not minted the lease yet) and not-KnownToLedger (hand-built runs with no leases/pods) — both explicitly gated out in CheckSteady (invariant.go:201). The checkpoint-grace window parks the run Pending, and HandleNodeFailure's swap sets AwaitingMint. So no healthy Running run is reaped by the total-width comparison. The fix is safe.",
+          "reproduction": "Temp copy of repo at HEAD. `go test ./controllers/ -run TestResolverKeepsAMalleableRunRunningWhenGrowWidthCoversItsMinimum -count=1` -> ok. Then mutate controllers/run_controller.go line 1719 `runnableGPUsForRun` -> `baseGangGPUsForRun` and re-run -> FAIL: \"a malleable run still holding 0 GPUs — exactly its declared MinTotalGPUs of 2 — was FAILED and swept. The gate counted base-gang GPUs against a TOTAL-GPU minimum.\" This reproduces the original reaper: run set Failed and the surviving grow lease swept by closeRunLeases.",
+          "recommendedFix": "None needed — closed by b4f6a6d and verified load-bearing by mutation. (No further change; the adoption/gate split is correct as documented.)",
+          "evidence": [
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1719,
+              "quote": "allocated := runnableGPUsForRun(runKey, c.State.Leases)"
+            },
+            {
+              "file": "controllers/invariants.go",
+              "line": 91,
+              "quote": "RunnableGPUs:    runnableGPUsForRun(key, c.State.Leases),"
+            },
+            {
+              "file": "pkg/resolver/resolver.go",
+              "line": 234,
+              "quote": "st.Remaining += candidate.GPUs"
+            },
+            {
+              "file": "pkg/resolver/resolver.go",
+              "line": 503,
+              "quote": "if st.Malleable != nil && st.Remaining-grp.GPUs < int(st.Malleable.MinTotalGPUs) {"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 2184,
+              "quote": "if lease.Spec.Reason == binder.LeaseReasonGrow {"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F9",
+      "severity": "low",
+      "title": "New resolver-settlement tests omit the pod plane and grow leases, so neither the terminal-branch half-plane nor the malleable-grow kill is covered",
+      "outcome": "still-present",
+      "why": null,
+      "tally": {
+        "still-present": 2
+      },
+      "votes": [
+        {
+          "status": "still-present",
+          "ranCode": true,
+          "reasoning": "F9 named two coverage gaps in the new resolver-settlement tests. One is now closed, the other is genuinely still absent at HEAD (e2b5355), so the finding survives.\n\nFIXED HALF (malleable-grow kill): commit b4f6a6d added TestResolverKeepsAMalleableRunRunningWhenGrowWidthCoversItsMinimum (resolver_settlement_test.go:244-287). It builds a real Grow lease (grow.Spec.Reason = binder.LeaseReasonGrow), cuts the BASE group, and asserts the run stays Running and the grow lease survives. I mutated the load-bearing line mentally: the gate is runnableGPUsForRun (total open non-spare width incl. Grow) not baseGangGPUsForRun; the test asserts runnableGPUsForRun==4 while baseGang==0, so it exercises the split. This half is real coverage.\n\nSTILL-MISSING HALF (terminal-branch half-plane / pod plane): TestResolverEndingARunReleasesTheLeasesItStillHolds (lines 47-126) builds a ClusterState with Nodes/Budgets/Runs/Leases and NO Pods, and asserts only closureOf(...) on leases. TestApplyResolutionOutcomeIsInvariantUnderMapIteration cuts runs a and c to terminal but builds no pods for them. So no test in the current tree drives applyResolution's terminal (Failed) branch with pods present and checks the pod plane.\n\nI confirmed by execution (temp copy of the repo, HEAD e2b5355) that this omission hides a genuine half-plane in the code. applyResolution's terminal branch calls c.closeRunLeases(run, \"RunFailed\", now) (run_controller.go:1745), which only closes leases (run_controller.go:1512-1527) and never touches c.State.Pods. Pods are pruned once, earlier, ONLY for closedGroups built from resolver ACTIONS (run_controller.go:1666-1688) — the extra leases closeRunLeases sweeps (e.g. the out-of-scope spare) are not in closedGroups. My probe put a pod on the swept spare: with the spare in a different group (\"1\") the FAILED run's pod SURVIVES (lease closed=true reason=RunFailed, container still running); with the spare in group \"0\" the pod is pruned only INCIDENTALLY by the closedGroups collision, not by the terminal branch's logic. completeRun (run_controller.go:541-548) does sweep pods run-scoped; failRun and applyResolution's terminal branch do not, and a Failed run gets no later pod GC (adoption is skipped for Failed at run_controller.go:208; a Failed run falls through Reconcile doing nothing to its pods).\n\nHonest F3 caveat: the resolver stamps action.GroupIndex from leaseGroupIndex(lease) (resolver.go:215,219), which is \"0\" for every production lease (no LabelGroupIndex), and every production pod is hardcoded group \"0\" (emitCohortPods/emitSparePods). So in TODAY's single-group production the closedGroups collision masks the orphan, making the half-plane a LATENT defect that becomes live under multi-group / R28b. A test that faithfully models production (group \"0\" pods) would pass and catch nothing; a group-\"1\" test is richer than reality. That is precisely why the missing coverage is worth flagging AND why the right remedy is to remove the code's dependence on the collision, not merely to add a richer fixture. The test-coverage gap F9 named for the terminal branch is factually present at HEAD, so: still-present.",
+          "reproduction": "In a temp copy of HEAD (e2b5355), added controllers/probe_f9_test.go reproducing TestResolverEndingARunReleasesTheLeasesItStillHolds but with two Pods (one per lease) and the out-of-scope spare placed in group \"1\". `go test ./controllers/ -run TestProbe_TerminalBranch -v` output: diffGroup case -> run phase=\"Failed\", spare closed=true reason=\"RunFailed\", surviving pods: [victim-spare-0(victim/1)] -> FAIL \"HALF-PLANE: pod of the FAILED run survives (lease closed, container running)\". sameGroup case (spare group \"0\", production shape) -> surviving pods: [] -> PASS, because the closedGroups prune from the cut active (also group \"0\") incidentally sweeps it. This proves (a) the terminal branch does not evict pods itself, and (b) production single-group shape masks the orphan via collision.",
+          "recommendedFix": "Two parts. (1) Code: make applyResolution's terminal branch evict the failed run's pods run-scoped, exactly as completeRun already does (run_controller.go:541-548), immediately after closeRunLeases at run_controller.go:1745 — drop every pod whose Namespace+LabelRunName match the failed run. This makes the pod plane correct independently of whether the resolver happened to cut a lease in the same group as the surviving pod, so it does not rely on the closedGroups collision. Reaper check: this is legal and mirrors the established pattern — a terminal run holds no open lease (the branch's own comment) and completeRun already sweeps a terminal run's pods; dropping pods for a resolver-ended run introduces no illegal state and no side-by-side path. (2) Test: add a case that drives applyResolution's terminal branch with pods present and asserts every pod of the failed run is gone. To avoid the F3 masking, assert run-scoped (no pod with LabelRunName==victim survives) rather than by group, and include a pod in a group NOT among the cut groups, labeled explicitly as guarding the R28b multi-group future so it is not dismissed as richer-than-reality. Mutate: revert the new pod-sweep line and confirm the test goes red.",
+          "evidence": [
+            {
+              "file": "controllers/resolver_settlement_test.go",
+              "line": 109,
+              "quote": "closed, reason := closureOf(state, \"victim-spare\")"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1745,
+              "quote": "if closed := c.closeRunLeases(run, \"RunFailed\", now); closed > 0 {"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1676,
+              "quote": "if len(closedGroups) > 0 {"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 541,
+              "quote": "kept := c.State.Pods[:0]"
+            },
+            {
+              "file": "controllers/resolver_settlement_test.go",
+              "line": 244,
+              "quote": "func TestResolverKeepsAMalleableRunRunningWhenGrowWidthCoversItsMinimum(t *testing.T) {"
+            }
+          ]
+        },
+        {
+          "status": "still-present",
+          "ranCode": true,
+          "reasoning": "F9 bundles two coverage gaps; they resolve differently.\n\n(b) The malleable-grow-kill gap is FIXED by b4f6a6d. TestResolverKeepsAMalleableRunRunningWhenGrowWidthCoversItsMinimum builds a real Grow lease (grow.Spec.Reason = binder.LeaseReasonGrow), drives applyResolution, and asserts the grow lease survives and the run stays Running. I verified it is load-bearing, not decorative: in a temp copy I reverted the width gate at run_controller.go:1719 from runnableGPUsForRun back to baseGangGPUsForRun and the test failed with its own reaper message (\"a malleable run still holding 0 GPUs ... was FAILED and swept\").\n\n(a) The terminal-branch half-plane (pod plane) gap is STILL PRESENT. TestResolverEndingARunReleasesTheLeasesItStillHolds reaches applyResolution's default/terminal branch but builds no Pods and asserts only on lease closure (closureOf(state,\"victim-spare\")). The only other test that reaches that terminal branch, TestApplyResolutionOutcomeIsInvariantUnderMapIteration, also builds no Pods. So the half-plane the playbook itself names at line 336 — the terminal branch drops the pods of closedGroups but closeRunLeases (run_controller.go:1745) sweeps leases whose groups are NOT in closedGroups — is uncovered by any test.\n\nThe uncovered defect is REAL in the code. I reproduced it: a run with an in-scope active group (cut by the resolver) plus an out-of-scope active rank in a DISTINCT group \"1\"; the resolver cut sends the run terminal, closeRunLeases sweeps the group-1 lease, but the pod-drop at run_controller.go:1682 keys only on closedGroups = {runKey::0}, so the group-1 pod (label \"1\") survives. Lease closed, container still running: the \"ledger says GPU free\" lie — the engine then plans new work onto an occupied slot and the new gang wedges assembling forever.\n\nCONSEQUENCE / masking: with production-shaped fixtures (every pod group \"0\", per R28b's emitCohortPods/emitSparePods hardcode, and the resolver defaulting every action's GroupIndex to \"0\" via leaseGroupIndex) the pod-drop keyed on runKey::0 sweeps EVERY pod of a cut run, so no pod survives — my production-shaped repro passed with zero remaining pods. The terminal half-plane is therefore currently MASKED, not absent: it is dormant behind the unfixed R28b group-collapse and goes live the instant R28b is fixed (restoring distinct groups is R28b's whole purpose). That is exactly \"a dead path made reachable is worsening it.\" So the coverage gap is real and shadows a real, currently-dormant defect.\n\nREAPER-CHECK: a code fix that makes the terminal branch drop the pods of every lease it sweeps does NOT reap the checkpoint-grace window — that state lives in failGroupWithoutSpare/HandleNodeFailure, parks the run Pending with a CheckpointDeadline, and never reaches applyResolution's RunPhaseFailed branch; a run this branch fails is genuinely ending, so dropping its containers is correct. The trap to avoid is the opposite one (F3): a test that uses distinct group labels to demonstrate the half-plane is richer than reality and proves nothing about production while R28b stands.",
+          "reproduction": "Copied repo to /tmp/jt-repro, added controllers/f9_repro_test.go with two tests driving the REAL resolver into applyResolution's terminal branch, then adding pods. (1) Production-shaped (out-of-scope spare + pods all group \"0\"): after applyResolution the spare lease closes AND its pod is dropped — remaining victim pods = [] — no half-plane, PASS. (2) Distinct groups (out-of-scope active rank in group \"1\", pod label \"1\"): after applyResolution lease victim-g1 closed=true but pod victim-g1-0 survives — HALF-PLANE CONFIRMED, FAIL. Separately, reverting run_controller.go:1719 runnableGPUsForRun->baseGangGPUsForRun made TestResolverKeepsAMalleableRunRunningWhenGrowWidthCoversItsMinimum fail, proving the grow-kill test is load-bearing. Both go test runs executed on the temp copy.",
+          "recommendedFix": "Two parts, and keep them honest about R28b. Code: in applyResolution's terminal (RunPhaseFailed) branch, after closeRunLeases, also drop the pods of every lease that branch swept — not just those in closedGroups — so both planes settle together (mirror what closeRunLeases returns). This is safe against the checkpoint-grace reaper because that window never reaches this branch. Test: extend TestResolverEndingARunReleasesTheLeasesItStillHolds to build production-shaped pods (group \"0\") for the run and assert state.Pods holds none of the terminated run's pods after applyResolution — this locks in the currently-correct behaviour and will go red if the collapse is ever narrowed. But note explicitly in the test that its coverage of the genuine half-plane is bounded by R28b: while every pod is group \"0\" the over-broad drop hides the defect, so the terminal-branch half-plane cannot be truly exercised until R28b (distinct group identity) is fixed. Do NOT paper over this with a distinct-group fixture presented as a passing regression — that is a richer-than-reality test. The durable fix is: fix R28b, then the pod-plane assertion on this branch becomes meaningful and the code fix above becomes load-bearing.",
+          "evidence": [
+            {
+              "file": "controllers/resolver_settlement_test.go",
+              "line": 109,
+              "quote": "closed, reason := closureOf(state, \"victim-spare\")"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1682,
+              "quote": "if _, ok := closedGroups[key]; ok {"
+            },
+            {
+              "file": "controllers/run_controller.go",
+              "line": 1745,
+              "quote": "if closed := c.closeRunLeases(run, \"RunFailed\", now); closed > 0 {"
+            },
+            {
+              "file": "docs/project/adversarial-review-playbook.md",
+              "line": 336,
+              "quote": "the pods of `closedGroups`, but the sweep closes leases whose groups are not in that set)."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "stillPresent": [
+    "F4",
+    "F5",
+    "F6",
+    "F7",
+    "F9"
+  ],
+  "unresolvedAfterRetry": [],
+  "reproductions": [
+    {
+      "id": "F4",
+      "severity": "high",
+      "title": "reclaimSquatter closes one lease but deletes the whole group's pods, over-evicting and orphaning sibling leases",
+      "repro": {
+        "reproduced": true,
+        "observedOutput": "Test TestF4_ReclaimSquatterOrphansSiblingLeases (production-shaped fixture, leases via prodLease with NO group label, pods labeled group \"0\"), against the finding's target commit e2b5355:\n\n    filler-b (on node-b#2, a slot the swap never needed): closed=false reason=\"\"\n    filler open leases after failure: [filler-b]\n    filler pods after failure:        []\n    filler phase: Running\n    OVER-EVICTION CONFIRMED: every filler pod deleted, incl. the one on node-b#2 the swap never needed\n    ORPHAN LEASE CONFIRMED: filler-b OPEN with reason=\"\" while its pod is deleted\n    after 20 reconciles / 20h — filler-b open: true; filler open leases: [filler-b]; ... phase: Running\n    IMMORTAL LEASE CONFIRMED: filler-b still open after 20 simulated hours; it bills forever\n    --- PASS\n\nFixed-width variant TestF4_FixedWidthFillerAlsoOrphans:\n    filler phase=Pending; filler-b closed=false reason=\"\"; filler pods=[]; open leases=[filler-b]\n    ORPHAN CONFIRMED (fixed-width): filler-b OPEN, pod deleted, run Pending\n\nFix-reaper probe TestF4_FixReapsFundedSiblingLease (reachable mixed-class victim, budget Concurrency=1):\n    lease filler-owned slot=[node-b#2]  class=Owned (classified=true)\n    lease filler-squat slot=[node-b#0]  class=Unfunded (classified=true)\n    filler lease filler-squat onSpareSlot=true class=Unfunded -> reclaimSquatter fires=true\n\nHandleNodeFailure's deferred invariant oracle did NOT panic in any case — the orphan is oracle-invisible.",
+        "analysis": "CONFIRMED. F4 is a real defect at the finding's target commit e2b5355 (note: the worktree's `main` is at 6090665, which predates the R27 branch; e2b5355 lives on fix/r27-invariant-oracle, a descendant of main, and is where reclaimSquatter/leaseGroupIndex exist — I exported that exact tree with `git archive` and ran against it).\n\nThe two-plane mismatch is exact. Conflict detection is SLOT-granular: HandleNodeFailure pass 2 only visits an `other` lease when `!leaseOccupiesSlots(other, spareSlots)` is false (run_controller.go:1277) — i.e. it holds one of the spare's exact node#ordinal slots. But eviction is GROUP-granular: for an Unfunded conflict it calls `c.reclaimSquatter(other, otherKey, now, phases)` (1303), which computes `group := leaseGroupIndex(lease)` (1476), closes ONLY that one lease with `CloseLease(lease, \"ReclaimedBySpare\", now)` (1477), then `c.removePodsForGroups(victimKey, map[string]struct{}{group: {}})` (1485). removePodsForGroups deletes every pod whose LabelGroupIndex matches (2646-2648). Under the two production facts given, every lease has no group index → leaseGroupIndex defaults to \"0\", and every pod is hardcoded group \"0\", so \"the group\" is \"the whole run\": one contended slot deletes the victim's entire pod set cluster-wide, while only the one triggering lease is closed. Any sibling lease on a different slot is left OPEN with its container deleted — an immortal lease (class 9 half-plane / class 1 immortal-lease). My fixture gives the victim two production-shaped active leases (filler-a on the spare's slot node-b#0, filler-b on node-b#2 which the swap never needs). After the swap: filler-a closed, filler-b OPEN, all filler pods gone. It persists across 20 reconciles / 20 simulated hours. The width invariant does not catch it because filler-b counts as 1 open non-spare GPU >= min, so the run legally reports Running while holding a lease over a dead container — exactly the blind spot invariant.go documents (no lease-vs-pod invariant; no same-slot invariant).\n\nFIX ANALYSIS (step 5 — the legal state each proposed fix destroys). Fixes 1 & 2 (\"after removePodsForGroups, close every open victim lease whose leaseGroupIndex == group\") REAP a legal state. Because funding class is derived per-lease and concurrency-ranked, a single run legally holds a MIX of Owned and Unfunded leases (a malleable run that grew one rank beyond its owned concurrency onto opportunistic capacity — quota-semantics R14, and invariant.go's RunnableGPUs doc explicitly blesses \"a run can legally be Running with zero base-gang GPUs\"). I built that reachable state: with a Concurrency=1 budget, filler-squat (on the spare slot) derives Unfunded and triggers the reclaim, while its sibling filler-owned (node-b#2) derives Owned. Under R28b both are group \"0\", so \"close every lease in the group\" closes filler-owned — the run's funded, running rank. Deciding to evict funded work is the resolver's job; the same function already DECLINES the swap for cross-run funded conflicts (1297-1309) precisely to avoid this. Fixes 1&2 would silently evict funded work of the SAME run — a class-5 identity-coarsening reaper. Fix 3 (node-scope the pod deletion; route dead fixed-width gangs through the terminal sweep; do NOT close sibling leases) avoids the funded-lease reaper but does NOT eliminate F4: filler-squat (node-b#0) and filler-owned (node-b#2) share node-b, and PodManifest carries only NodeName, so node-scoped deletion still deletes filler-owned's pod, and leaving its lease open (correct for a still-Running rank) re-creates the same half-plane orphan for same-node co-ranks — fix 3's own caveat, which my repro demonstrates is load-bearing. Bottom line: F4 is real; all three proposed fixes are partial. A complete fix requires R28b's per-group/per-slot identity so a group is a gang (not the whole run) and pod removal can be slot-granular.",
+        "minimalTrigger": "A node-failure swap onto a held spare whose exact slots are squatted by an UNFUNDED lease, where the victim run also holds a second (sibling) lease on a different slot. Because every production lease defaults to group \"0\" and every pod is labeled group \"0\" (R28b), reclaimSquatter deletes ALL the victim's pods but closes only the one squatting lease. Fixture: funded run \"run\" active on node-a#0 (failing) + spare on node-b#0; unfunded \"filler\" with active leases on node-b#0 (spare slot) and node-b#2 (sibling); pods for both filler ranks. Call HandleNodeFailure(\"node-a\"). filler-b ends OPEN with all filler pods deleted.",
+        "recommendedFix": "Make the lease plane and pod plane agree at the granularity the model can express, without over-reaching into funded work. Because removePodsForGroups deletes the victim's entire group and (under R28b) the group is the whole run, reclaimSquatter must close only the leases whose containers it actually deleted AND must not close funded ones — but funded eviction is the resolver's call, so the honest fix is: scope BOTH planes to the reclaimed spare's slots. This is blocked today because PodManifest carries NodeName/GPUs but no ordinal, so same-node co-ranks (node-b#0 vs node-b#2) cannot be separated. Therefore the correct fix requires R28b (docs/project/remediation/R28-group-identity.md): give leases and pods real per-group/per-slot identity so a group is a gang, not the whole run, and pod removal can be slot-granular. Until then, the minimum consistency fix is: in reclaimSquatter, after removePodsForGroups, close every OPEN victim lease in that group WHOSE DERIVED CLASS IS Unfunded (reuse the ev.Class check already done at the call site), reason \"ReclaimedBySpare\" — never a bare group match, which reaps Owned/Shared siblings. Any funded sibling on a deleted slot must instead route the victim through the resolver/terminal path, not be silently closed here. Add a test that asserts on BOTH state.Leases and state.Pods for a victim holding a sibling lease AND a mixed Owned/Unfunded victim.",
+        "testSource": "Wrote /tmp/f4-work/e2b/controllers/f4_repro_test.go (TestF4_ReclaimSquatterOrphansSiblingLeases, TestF4_FixedWidthFillerAlsoOrphans) and /tmp/f4-work/e2b/controllers/f4_fixcheck_test.go (TestF4_FixReapsFundedSiblingLease), run against the git-archive export of commit e2b5355. Reused the existing production-shaped prodLease fixture (added by 8a1dc2c in controllers/resolver_settlement_test.go: LabelRunName + LabelRunRole, no LabelGroupIndex) and added prodActivePod (LabelGroupIndex \"0\", mirroring emitCohortPods). Full `go test ./controllers/` passes (0.023s) with all three tests present; HandleNodeFailure's deferred invariant oracle never fired."
+      }
+    },
+    {
+      "id": "F5",
+      "severity": "medium",
+      "title": "Malleable-above-min victim left Running with open leases whose pods were deleted — a two-plane split invisible to the oracle",
+      "repro": {
+        "reproduced": true,
+        "observedOutput": "Against a tree extracted from commit e2b5355 (`git archive e2b5355`), with the invariant oracle wired into every entry point and PANICKING under `go test`:\n\n=== RUN   TestF5_MalleableAboveMinVictimLeftRunningWithOpenLeasesNoPods\n  BEFORE: victim phase=Running openLeases=[filler-squat filler-keep] pods=4\n  AFTER:  victim phase=Running openLeases=[filler-keep] pods=0\n          filler-squat closed=true reason=\"ReclaimedBySpare\" ; filler-keep closed=false\n          oracle did NOT panic: the state passed every installed invariant\n  F5 REPRODUCED: victim default/filler is Running, holds open lease(s) [filler-keep], and has 0 pods\n  AFTER 20 RECONCILES (+20h): victim phase=Running filler-keep-closed=false total-filler-pods=40\n  PERSISTS: filler-keep stayed OPEN and the run stayed Running across all 20 reconciles. Nothing closes the orphaned lease.\n--- PASS: TestF5_MalleableAboveMinVictimLeftRunningWithOpenLeasesNoPods\n\n=== RUN   TestF5_CleanImmortalLease   (desired==post-reclaim width, so no elastic grow)\n  AFTER NF: phase=Running open=[filler-keep] pods=0\n  AFTER 20 RECONCILES (+20h): phase=Running open=[filler-keep] pods=0 filler-keep-closed=false\n  IMMORTAL LEASE: default/filler is Running with open lease [filler-keep] and ZERO pods after 20h; nothing closes it, the oracle never fires.\n--- PASS: TestF5_CleanImmortalLease\n\n=== RUN   TestF5_Counterfactual_DistinctGroupsSpareTheSurvivor\n  with distinct groups: filler total pods=2, survivor(group1) pods=2\n  MECHANISM CONFIRMED: distinct per-slice identity leaves filler-keep's containers alive; the F5 split exists ONLY because leaseGroupIndex and every pod collapse to \"0\".\n--- PASS: TestF5_Counterfactual_DistinctGroupsSpareTheSurvivor\nok  github.com/davidlangworthy/jobtree/controllers",
+        "analysis": "F5 REPRODUCED and CONFIRMED against e2b5355, with the oracle active (a deferred checkInvariants that panics under test). The panel's still-present verdict holds.\n\nMECHANISM (verified by execution, not argument). A funded run's node-failure swap needs the exact spare slots (node-b#0,#1) that an UNFUNDED malleable run (\"filler\") squats on. In HandleNodeFailure's pass-2 exact-slot loop the squatter derives funding.ClassUnfunded, so reclaimSquatter runs. Inside reclaimSquatter: `group := leaseGroupIndex(lease)` (run_controller.go:1476) which, for a production-shaped lease (admission.PodLeaseWithRole stamps NO LabelGroupIndex), defaults to \"0\" (leaseGroupIndex, :2134 `return \"0\"`); then `CloseLease(lease,...)` closes exactly ONE lease (:1477); then `c.removePodsForGroups(victimKey, map[string]struct{}{group: {}})` (:1485). Because emitCohortPods/emitSparePods hardcode LabelGroupIndex \"0\" on EVERY pod, removePodsForGroups keyed on \"0\" deletes ALL of the victim's pods — the surviving filler-keep group's containers included — while only one lease was closed. The gate `if baseGangGPUsForRun(victimKey, c.State.Leases) >= minRunnableGPUs(victim)` (:1487) is 2>=2 (malleable min=2; filler-keep still open = 2 base-gang GPUs), so the run is left RUNNING. Result: a Running run holding an open active lease (filler-keep) with zero backing containers — a two-plane split. My counterfactual (distinct group labels: squatter pods \"0\", survivor pods \"1\") leaves the survivor's 2 pods intact, isolating the coarse-\"0\" collapse as the sole cause — i.e. the durable fix is R28b (per-slice identity reaching leases and pods).\n\nORACLE BLINDNESS (verified). No installed invariant fires. INV-WIDTH-ASSEMBLED derives width from runnableGPUsForRun (open non-spare LEASES = 2), not pods, so 2>=min(2) passes. The AwaitingMint gate is `activePods > openActiveLeases` (invariants.go:93); after the reclaim activePods(0) < openActiveLeases(1), so AwaitingMint is FALSE and the width check is not even skipped — it just passes. INV-TERMINAL-PRESENT only checks terminal runs; the victim is Running. The oracle is structurally blind to leases-exceeding-pods on a Running run. The reverse (pods>leases) is what AwaitingMint watches; F5 is the unchecked direction.\n\nPERSISTENCE (verified over 20 reconciles / 20 simulated hours). filler-keep NEVER closes and the run NEVER leaves Running. runGangComplete requires at least one live active pod to complete (run_controller.go:508-524; sawActive stays false with 0 pods), so the run cannot self-complete; nothing fails it. In the clean variant (DesiredTotalGPUs == post-reclaim width) the elastic reconcile is a pure no-op and the run sits Running with an open pod-less lease and ZERO pods for the full 20h — an immortal lease charging its budget and holding node-c#0,#1 forever. NUANCE worth flagging on the author's own claim \"nothing re-creates the pods: topUpActiveGang is only reachable pre-Running\": for a malleable run whose Desired>Allocated, reconcileElasticRun DOES emit pods — but via growRun toward Desired on NEW slots, never re-pairing filler-keep with a container and never closing it. In the pure sim (no plugin to mint) those grow pods leak unbounded (2,4,...,40); in production the plugin would mint grow leases, growing the lease/GPU footprint further while filler-keep's slot stays pod-less. Either way the orphaned lease is immortal.\n\nADVERSARIAL CHECK OF THE PROPOSED FIXES. (1) R28b (thread per-slice identity into leases+pods): destroys no legal state; it only makes removePodsForGroups precise, exactly as the counterfactual proves. Safest and durable. (2) Slot/node-scoped pod removal (removeSparePodOnNodes-style, delete only pods on the reclaimed node): strictly safer than the cluster-wide group-\"0\" match — in this fixture it deletes filler-squat's node-b pods and spares filler-keep's node-c pods. Pods carry only NodeName (no ordinal), so node-scoping is the finest granularity available pre-R28b, and it destroys no legal state a lease-derived group would not already touch. (3) The proposed BACKSTOP invariant — fire on a Running, !AwaitingMint, KnownToLedger run with activePods < openActiveLeases — is the risky one, and it is a near neighbour of the explicitly REJECTED \"a Running run holds at least one open active lease\". It survives the two states the author checked (checkpoint-grace parks PENDING with pods>leases, opposite direction; the swap window has a swap pod so pods>=leases and AwaitingMint is true). The LEGAL state it risks reaping that the author did NOT rule out: a gang running to completion where some ranks have Succeeded and their pods have been reaped (kubelet/GC/TTL) while their leases stay OPEN pending whole-gang completion — the engine keeps a run Running until EVERY active pod succeeds (run_controller.go:143-145), and if a finished rank's pod is gone before the run completes, that run legally has openActiveLeases > activePods while Running and not awaiting a mint. In the pure engine a Succeeded pod is retained (runGangComplete iterates it), so I could not force this state in-sim, hence PLAUSIBLE not CONFIRMED — but it is exactly the kind of state that turned a plausible invariant into a reaper before, and it must be excluded against the real pod lifecycle before that backstop ships. Recommendation: fix in reclaimSquatter (R28b, or node-scoped removal until then) rather than rely on the backstop invariant as the primary remedy.",
+        "minimalTrigger": "An unfunded MALLEABLE run (min < current width) squatting the exact spare slots a node-failure swap needs, with two base-gang groups on different nodes, all pods stamped LabelGroupIndex \"0\" (as emitCohortPods hardcodes) and leases carrying no group index (as admission.PodLeaseWithRole mints). HandleNodeFailure -> reclaimSquatter closes the one squatting lease, removePodsForGroups({\"0\"}) deletes ALL victim pods, the width gate (baseGangGPUs >= min) leaves it Running -> Running run with an open lease and zero backing pods, invisible to the oracle, never closed.",
+        "recommendedFix": "Fix in reclaimSquatter; do not rely on a backstop oracle check as the primary remedy. Durable: land R28b so the packer's per-slice identity reaches both the Lease (LabelGroupIndex) and the pods, so removePodsForGroups({group}) deletes only the reclaimed slot's pod and the survivor lease+pod stay paired (proven by the counterfactual test). Until R28b: replace the cluster-wide group-\"0\" removal (run_controller.go:1485) with a node/slot-scoped removal (mirror removeSparePodOnNodes on lease.Spec.Slice.Nodes) so only the pod on the reclaimed node is deleted; OR, forced by coarse identity, ALSO close the victim's group-\"0\" base-gang leases whose pods were just deleted so both planes drop together and the run demotes to Pending and re-admits (R14). Any backstop invariant (Running, !AwaitingMint, KnownToLedger, activePods < openActiveLeases) must first be proven not to reap a Running gang whose Succeeded ranks' pods were reaped while their leases stay open pending whole-gang completion.",
+        "testSource": "/tmp/f5/controllers/f5_repro_test.go (TestF5_MalleableAboveMinVictimLeftRunningWithOpenLeasesNoPods, TestF5_CleanImmortalLease) and /tmp/f5/controllers/f5_cf_test.go (TestF5_Counterfactual_DistinctGroupsSpareTheSurvivor), run against a tree extracted via `git archive e2b5355`. Reuses the repo's own production-shaped helper prodLease (controllers/resolver_settlement_test.go: stamps LabelRunName+LabelRunRole, deletes LabelGroupIndex) and models pods with hardcoded LabelGroupIndex \"0\" as emitCohortPods emits them."
+      }
+    },
+    {
+      "id": "F6",
+      "severity": "low",
+      "title": "reclaimSquatter widens the blast radius of the pre-existing stale-ev misclassification in HandleNodeFailure pass 2",
+      "repro": {
+        "reproduced": true,
+        "testSource": "/tmp/f6work/jobtree/controllers/f6_stale_ev_test.go (temp copy of the repo at HEAD e2b5355). Two tests: TestF6StaleEvReclaimsASquatterThatTheFailureItselfFunds (the reproduction) and TestF6MutationFixDeclinesInsteadOfReclaiming (mutation of the proposed fix). Both use f6ProdLease, which mirrors admission.PodLeaseWithRole exactly — stamps only LabelRunName + LabelRunRole, NO LabelGroupIndex. A one-line scratch mutant switch (mutantF6ExcludeFailedNode, default off) was added to controllers/run_controller.go at the `ev := c.evaluate(now)` site to drive the fix test.",
+        "observedOutput": "=== RUN   TestF6StaleEvReclaimsASquatterThatTheFailureItselfFunds\n    f6_stale_ev_test.go:126: AFTER HandleNodeFailure(node-a):\n    f6_stale_ev_test.go:127:   filler closed=true reason=\"ReclaimedBySpare\" phase=Pending\n    f6_stale_ev_test.go:128:   hog    closed=true (casualty of node-a)\n    f6_stale_ev_test.go:129:   victim phase=Running\n    f6_stale_ev_test.go:147:   counterfactual (hog closed, filler open): filler classifies as Owned ok=true\n    f6_stale_ev_test.go:152: F6 REPRODUCED: filler reclaimed on a STALE world. In the world the failure produced (hog dead) filler is Owned — funded, should have been DECLINED not evicted\n--- FAIL: TestF6StaleEvReclaimsASquatterThatTheFailureItselfFunds (0.00s)\n=== RUN   TestF6MutationFixDeclinesInsteadOfReclaiming\n    f6_stale_ev_test.go:197: WITH FIX: filler closed=false reason=\"\" ; victim phase=Failed\n--- PASS: TestF6MutationFixDeclinesInsteadOfReclaiming (0.00s)\n\nOracle: grep \"INVARIANT VIOLATION\" over the reproduction run => 0 panics. The reclaimed state is LEGAL, not a corruption.",
+        "minimalTrigger": "A node fails while it carries (a) an active lease of a run that has a spare on some slots, and (b) an active lease of a DIFFERENT run whose budget's concurrency is also consumed by a third run squatting on those exact spare slots. Concretely: budget \"other\" has Concurrency=2; run \"hog\" (older, ranks first) holds 2 GPUs on the failed node-a and consumes all of budget other's concurrency; run \"filler\" (younger) holds 2 GPUs on node-b#0,#1 — the exact slots of victim's spare — so at the failure instant filler is over-cap and derives Unfunded. victim (budget team) holds an active on node-a and a spare on node-b#0,#1. HandleNodeFailure(\"node-a\") computes `ev` once (run_controller.go:1231, before pass 2), so it sees hog still open and filler Unfunded; pass 2 then reclaims filler via reclaimSquatter (class==ClassUnfunded at 1297-1303) AND separately closes hog (a casualty of the same node). In the world the failure actually produces (hog dead), filler is Owned.",
+        "analysis": "CONFIRMED. The finding's mechanical claim holds verbatim against HEAD e2b5355: HandleNodeFailure computes the funding derivation exactly once at run_controller.go:1231 (`ev := c.evaluate(now)`), immediately after pass 1 and before the pass-2 loop, and that single map is the only funding evaluation in the function. Pass 2 then closes leases as it runs — the swap path closes the spare and failed active (1321-1322), failGroupWithoutSpare closes leases (1403,1411), reclaimSquatter closes squatters (1477) — while every reclaim decision reads the never-refreshed `ev` at 1297 (`class, classified := ev.Class(other)`) and reclaims on ClassUnfunded at 1298/1303. Because closing leases only frees budget, a squatter the stale ev calls Unfunded can be funded in the post-closure world. My test drove exactly this: filler is genuinely Unfunded at the failure instant (hog holds budget other's Concurrency=2, verified by the pre-failure `pre := c.evaluate(now)` premise check), gets reclaimed with reason \"ReclaimedBySpare\" and demoted to Pending, yet in the world the failure produces — hog's lease closed as a casualty of the same node-a failure — filler classifies as Owned (verified by the counterfactual evaluation). So the reclaim widened its blast radius past work that the failure itself funds.\n\nTwo important qualifications the reproduction establishes and that keep this at LOW:\n\n1) It is NOT an immortal lease and NOT an oracle violation. reclaimSquatter acts in both planes (closes the lease AND removePodsForGroups, per the R28a/half-plane fixes), filler lands in Pending, and the grep for INVARIANT VIOLATION returns 0 — the produced state is legal and self-correcting (filler re-admits when capacity returns, per quota-semantics R14). The defect is an unnecessary/incorrect eviction driven by a stale classification, not a corruption or leak. The 20-reconcile persistence check for immortality is therefore N/A: there is no leaked lease to persist.\n\n2) Whether this is even a bug is an undocumented policy question, which is why it is genuinely LOW. filler is unfunded AT THE FAILURE INSTANT — hog is, at that instant, a live funded claim. hog dies because of the same failure. So \"should filler be reprieved?\" is exactly the \"same-failure reprieve\" question the finding raises, and it is NOT settled in quota-semantics.md.\n\nAdversarial check of the proposed fix (step 5): I mutated in the stronger proposed fix — evaluate `ev` against the lease set with every failed-node lease excluded (the post-casualty world) — and the SAME scenario flipped: filler stays open (Owned in that world), the swap is DECLINED, and crucially **victim phase=Failed**. That is the legal, arguably-desirable state the fix DESTROYS: today's reclaim keeps a genuinely-funded team-budget run (victim) Running through a node failure by reclaiming slots from a squatter whose Owned status is a transient artifact of a co-tenant's death. Reprieving filler makes the funded victim lose its node-failure recovery and fail — and when hog re-admits into budget other, filler goes back over-cap to Unfunded anyway, so the reprieve was to temporary funding. The mutation both proves the reproduction is load-bearing on the staleness (it flips only when ev reflects the post-casualty world) and exposes that the \"obvious\" fix trades a funded run's fault tolerance for a squatter's transient funding.",
+        "recommendedFix": "Do NOT adopt the \"exclude failed-node leases from ev\" reshape as-is: the mutation shows it fails a genuinely-funded victim run (victim phase=Failed) to reprieve a squatter whose Owned status is a transient artifact of the co-tenant's death — and the reprieve evaporates the moment the dead run re-admits. Both proposed re-evaluation shapes change semantics in a direction that is at least as questionable as the current behavior. Given severity is LOW, the reclaim produces a LEGAL, self-correcting state (no immortal lease, no oracle violation, filler re-admits), and the reclaim keeps the funded victim Running, the cheapest correct resolution is finding-option (2): keep the single `ev`, and REPLACE the \"computed once ... the only way to know\" comment at run_controller.go:1228-1230 with an explicit statement that reclaim eligibility is deliberately fixed at the failure instant (pre-teardown) — for order-independence AND to deny a squatter a reprieve from transient teardown capacity that the failing run's replacement/re-admission will reclaim anyway. Record that decision in quota-semantics.md so it is a chosen invariant, not an accidental snapshot. Only pursue a re-evaluation-based fix if the design explicitly decides a same-failure reprieve is desirable, in which case option (1) (defer reclamation, single post-loop c.evaluate) is order-independent whereas per-iteration re-evaluation reintroduces the class-3 order dependence."
+      }
+    },
+    {
+      "id": "F7",
+      "severity": "high",
+      "title": "Terminal branch closes a failed run's out-of-scope spare and surviving-group leases but leaves their pods running (half-plane double-allocation)",
+      "repro": {
+        "reproduced": true,
+        "observedOutput": "Pristine HEAD (e2b5355), production-shaped fixture (prodLease: no LabelGroupIndex; prodPod: LabelGroupIndex \"0\"):\n\n=== RUN   TestF7_NodeFailureSweepLeavesSurvivingPodRunning\n    run phase after node-a failure: Failed (\"node node-a failed without spare coverage\")\n    lease a (node-a, dead): closed=true reason=\"NodeFailure\"\n    lease b (node-b, HEALTHY): closed=true reason=\"RunFailed\"\n    surviving pod run-pod-b still in state.Pods: true  (nodePods total=2)\n    F7 REPRODUCED: lease b is closed (GPU free in ledger) but pod run-pod-b remains in state.Pods on healthy node-b — bridge.apply will NOT delete it, so the container keeps holding node-b#0. Half-plane double-allocation.\n--- FAIL: TestF7_NodeFailureSweepLeavesSurvivingPodRunning\n\n=== RUN   TestF7_SurvivingPodIsImmortalAcrossReconciles\n    after 20 reconciles / 20h: run phase=Pending  lease-b closed=true(\"RunFailed\")  pod-b present=true\n    F7 PERSISTS: 20h later the surviving pod is STILL in state.Pods while its lease stays closed — an immortal half-plane double-allocation\n--- FAIL: TestF7_SurvivingPodIsImmortalAcrossReconciles\n\n=== RUN   TestF7_FailRunLeavesSurvivingPodRunning\n    failRun: phase=Failed  lease-b closed=true(\"RunFailed\")  pod-b present=true\n    F7 REPRODUCED via failRun: lease b closed (GPU free in ledger) but pod run-pod-b still running on healthy node-b\n--- FAIL: TestF7_FailRunLeavesSurvivingPodRunning\n\nNo invariant-oracle panic on any repro (pkg/invariant reasons about leases only). After applying the proposed removeAllRunPods fix: all three F7 tests PASS and the entire controllers suite (incl. checkpoint_grace_test) stays green.",
+        "analysis": "F7 is REAL, PRESENT at HEAD (e2b5355), and PERSISTENT. I reproduced it by execution in a copy of the tree, using a production-shaped fixture (leases with no LabelGroupIndex per admission.PodLeaseWithRole; pods labelled group \"0\" per emitCohortPods).\n\nMechanism, confirmed by reading and executing:\n1. controllers/run_controller.go closeRunLeases (~line 1512) closes a run's open leases and NEVER touches c.State.Pods.\n2. Three terminal-failure sites drive a run Failed and call closeRunLeases without culling the run's surviving pods: failRun (~708), HandleNodeFailure's post-loop `for runKey, phase := range phases { if phase==RunPhaseFailed ... closeRunLeases }` sweep (~1343-1355), and applyResolution's `default:` branch that sets RunPhaseFailed (~1732-1749). applyResolution DOES cull pods, but only for closedGroups (groups named by a resolver action, ~1676-1688); a surviving group's pod / out-of-scope spare pod has no action and is left behind.\n3. controllers/kube/bridge.go apply (line 261-266) deletes only Pods ABSENT from state.Pods. A pod that stays in state.Pods is never deleted, so its container keeps running.\n\nResult: the ledger closes the surviving group's lease (funding.Evaluate stops classifying it → node-b#0 counts as free) while the kubelet keeps the container on node-b#0. That is exactly playbook class 9 HALF-PLANE ACTION in the \"pod running, lease closed\" direction.\n\nContrast confirms the defect is a genuine omission: completeRun (~541-548) and cleanupDeletedRun both release BOTH planes. The three failure sites release only the ledger.\n\nPersistence: I drove Reconcile 20 times over 20 simulated hours on pristine HEAD. lease-b stays closed and pod-b stays in state.Pods the whole time — an immortal double-allocation that lives until a human deletes the Run. Notably the run even flipped Failed→Pending during the loop: the engine re-planned the now-\"free\" node-b while the old container still held it, which is precisely the downstream \"engine plans new work onto an occupied GPU\" consequence class 9 warns about.\n\nThe invariant oracle does NOT catch this: pkg/invariant projects only Runs and Leases, never Pods, so TerminalPresent is satisfied (both leases closed) and no panic fires. F7 is invisible to every existing rail — no test failed, no oracle fired.\n\nAdversarial check of the proposed fix (removeAllRunPods called at the three terminal sites, NOT at failGroupWithoutSpare's grace branch, guarded by CheckpointDeadline==nil at the sweep): I implemented it and it turns all three repros green while the full suite — including checkpoint_grace_test — stays green. The ONE legal state at risk is the checkpoint-grace half-plane (failGroupWithoutSpare parks the run Pending with a CheckpointDeadline and deliberately leaves surviving containers running to write a checkpoint). The fix protects it correctly and by two independent arguments: (a) that branch sets Pending, and the sweep and failRun act only on Failed / post-deadline runs, so the grace window is never reached; (b) the CheckpointDeadline==nil guard is belt-and-suspenders. As long as removeAllRunPods is keyed on the TERMINAL transition and never added to the grace branch, it destroys no legal state. A general \"lease closed → drop pod\" scan WOULD reap the grace window — the proposers correctly reject that shape.",
+        "minimalTrigger": "A run spans two nodes with no spare (production shape: leases carry LabelRunName+LabelRunRole and NO group label; pods labelled group \"0\"). node-a fails via HandleNodeFailure(\"node-a\"): the node-a slice takes the no-spare path (failGroupWithoutSpare → Failed, no checkpoint), and the post-loop Failed sweep closes the SURVIVING node-b lease via closeRunLeases. The node-b pod is never removed from state.Pods, so bridge.apply never deletes it. Same result reaching failRun directly (checkpoint-grace expiry) and applyResolution's terminal branch (surviving-group / out-of-scope-spare pods).",
+        "recommendedFix": "Add a run-scoped pod cull mirroring completeRun and call it at every site that drives a run terminal-Failed and closes its leases:\n\nfunc (c *RunController) removeAllRunPods(run *v1.Run) {\n    kept := c.State.Pods[:0]\n    for _, pod := range c.State.Pods {\n        if pod.Namespace == run.Namespace && pod.Labels[binder.LabelRunName] == run.Name {\n            continue\n        }\n        kept = append(kept, pod)\n    }\n    c.State.Pods = kept\n}\n\nCall it after closeRunLeases in (1) failRun, (2) HandleNodeFailure's post-loop Failed sweep — guarded by run.Status.CheckpointDeadline == nil so the exemption keys on the deadline, and (3) applyResolution's `default: RunPhaseFailed` branch. Do NOT add it to failGroupWithoutSpare's checkpoint-grace (Pending) branch: that half-plane is legal and bounded by CheckpointDeadline. Verified: this turns the F7 repros green and leaves the whole controllers suite (incl. checkpoint grace) green. Add a test asserting on BOTH state.Leases and state.Pods for the surviving group, and mutate it (delete the removeAllRunPods line → red) to keep it load-bearing, since no invariant catches this class (pkg/invariant never projects Pods).",
+        "testSource": "Wrote controllers/f7_repro_test.go in a throwaway copy of HEAD at /tmp/.../scratchpad/jtree. It reuses the existing production-shaped prodLease helper (resolver_settlement_test.go: LabelRunName+LabelRunRole, no LabelGroupIndex) and adds prodPod (LabelGroupIndex \"0\", as emitCohortPods hardcodes). Three tests: TestF7_NodeFailureSweepLeavesSurvivingPodRunning (2-node run, no spare, fail node-a → asserts surviving node-b pod absent once its lease is swept), TestF7_SurvivingPodIsImmortalAcrossReconciles (same, then 20× Reconcile over 20h), TestF7_FailRunLeavesSurvivingPodRunning (failRun directly with a surviving-group pod present). All three FAIL on pristine HEAD and PASS after adding removeAllRunPods at the three terminal sites."
+      }
+    },
+    {
+      "id": "F9",
+      "severity": "low",
+      "title": "New resolver-settlement tests omit the pod plane and grow leases, so neither the terminal-branch half-plane nor the malleable-grow kill is covered",
+      "repro": {
+        "reproduced": true,
+        "observedOutput": "Working at e2b5355 (the reviewed HEAD; the worktree's own HEAD 6090665 is a divergent branch that does NOT contain the R27/R28/#36 fixes, so I checked out e2b5355 into a temp copy).\n\n== Existing resolver-settlement suite (baseline, all pass) ==\n--- PASS: TestResolverEndingARunReleasesTheLeasesItStillHolds\n--- PASS: TestResolverNeverReportsAFixedWidthGangRunningBelowItsWidth\n--- PASS: TestResolverKeepsAMalleableRunRunningAtItsMinimum\n--- PASS: TestResolverKeepsAMalleableRunRunningWhenGrowWidthCoversItsMinimum\n\n== (b) grow half is FIXED and load-bearing (mutation: revert run_controller.go:1719 runnableGPUsForRun -> baseGangGPUsForRun) ==\n--- FAIL: TestResolverKeepsAMalleableRunRunningWhenGrowWidthCoversItsMinimum\n    resolver_settlement_test.go:274: a malleable run still holding 0 GPUs — exactly its declared MinTotalGPUs of 2 — was FAILED and swept. The gate counted base-gang GPUs against a TOTAL-GPU minimum.\n\n== (a) terminal-branch pod plane: CASE A production-shaped, single group -> NO DEFECT ==\n=== RUN   TestF9_TerminalBranch_ProductionShaped_SingleGroup\n    f9_repro_test.go:45: production lease derives group \"0\"; pod carries \"0\"\n    f9_repro_test.go:53: run phase after resolution: \"Failed\" (ended by resolver)\n    f9_repro_test.go:67: no pod of the failed run survives (evicted via closedGroups path)\n--- PASS\n\n== (a) CASE B multi-group (R28b future, richer-than-reality) -> HALF-PLANE DEFECT ==\n=== RUN   TestF9_TerminalBranch_MultiGroup\n    f9_repro_test.go:99: run phase: \"Failed\" (ended by resolver)\n    f9_repro_test.go:117: HALF-PLANE DEFECT: failed run's leases are all closed but 1 pod(s) survive: [victim-g1-0(group=1, node=node-b)]\n--- FAIL\n\n== Persistence (multi-group) ==\n    f9_repro_test.go:156: after 20 reconciles / 20h: run phase=\"Pending\", surviving victim pods=5\n--- FAIL: TestF9_TerminalBranch_MultiGroup_Persists\n(No invariant panic in any run — pkg/invariant's World projects only Runs+Leases, never Pods, so a leftover pod is invisible to the oracle.)",
+        "analysis": "F9 bundles two coverage gaps in controllers/resolver_settlement_test.go; they resolve differently, exactly as the skeptics said.\n\n(b) The malleable-grow-kill gap is CLOSED. b4f6a6d added TestResolverKeepsAMalleableRunRunningWhenGrowWidthCoversItsMinimum (resolver_settlement_test.go:244-287): it builds a real Grow lease (grow.Spec.Reason = binder.LeaseReasonGrow), cuts the BASE group via applyResolution, and asserts the run stays Running and the grow lease survives. I confirmed it is load-bearing: reverting the width gate at run_controller.go:1719 from runnableGPUsForRun to baseGangGPUsForRun makes it FAIL with its own reaper message. Half of F9 is genuinely fixed.\n\n(a) The terminal-branch pod-plane gap is STILL PRESENT as a coverage gap: none of the four resolver-settlement tests builds any Pods, so none asserts that applyResolution's terminal (RunPhaseFailed) branch settles the pod plane. True structural fact of the file.\n\nBut the DEFECT the gap points at is masked in production, and this is the load-bearing conclusion. applyResolution evicts pods in exactly one place: the group-scoped drop at run_controller.go:1676-1688, which drops only pods whose namespace/run::group key is in closedGroups (the groups the resolver actually cut). The terminal branch itself (run_controller.go:1733-1750) closes the run's leases via closeRunLeases but never drops the run's pods run-scoped the way completeRun does (run_controller.go:541-548). So a terminal run can keep a pod of a group that was NOT cut. CASE B reproduces this cleanly: a two-group fixed-width run cut on g0 only goes Failed, both leases close, yet g0's sibling pod victim-g1-0 keeps running on node-b — ledger says the slots are free, the container disagrees. The invariant oracle does not catch it, because pkg/invariant's World carries only Runs and Leases, never Pods (there is deliberately no \"terminal run holds no pod\" invariant).\n\nThe catch: that defect is unreachable in the real system. admission.PodLeaseWithRole stamps no LabelGroupIndex, so the resolver's leaseGroupIndex (resolver.go:271-277) defaults every lease to group \"0\" and every action carries GroupIndex \"0\"; emitCohortPods hardcodes every pod to group \"0\" (R28b). With everything in group \"0\", the closedGroups drop always matches every pod of a cut run, so the terminal run's pods are already evicted before the terminal branch runs. CASE A — a production-shaped single-group fixture (prodLease with the group label deleted, pod group \"0\", action.GroupIndex derived exactly as the resolver derives it) — PASSES: the pod is gone. So a production-shaped terminal-branch pod test would pass with no code change and prove nothing; only a richer-than-reality multi-group fixture (CASE B) fails.\n\nVerdict: F9(a) survives as a coverage gap, but it currently hides a defect that R28b makes unreachable. The gap cannot be filled with a load-bearing production-shaped test until R28b (distinct group identity) is fixed. The persistence run is noisy (the multi-group fixture re-admits the run to Pending and re-emits pods) precisely because multi-group is not a state production builds; I do not lean on it beyond showing nothing reaps the leftover pod.",
+        "minimalTrigger": "applyResolution reaches its terminal branch (run_controller.go:1733) for a run whose cut groups (closedGroups) are a strict subset of the run's groups. The run is set Failed and closeRunLeases sweeps all its leases, but the group-scoped pod drop at run_controller.go:1676-1688 evicts only pods in the cut groups, so pods in the run's uncut groups survive on their nodes. Reachable only when a run has more than one distinct group index — which production never produces (leases carry no LabelGroupIndex -> group \"0\"; emitCohortPods hardcodes pods to group \"0\"), so the closedGroups drop already covers every production pod and the defect is masked until R28b is fixed.",
+        "recommendedFix": "Do NOT paper this over with a distinct-group fixture presented as a passing regression — that is a richer-than-reality test the playbook (class 8) warns against, and CASE A shows a production-shaped test passes with no code change. The durable ordering is: fix R28b (distinct group identity) FIRST; only then does a terminal-branch pod-plane assertion become meaningful and any code fix become load-bearing.\n\nIf a code fix is applied now, prefer a run-scoped pod drop in applyResolution's terminal branch, immediately after closeRunLeases at run_controller.go:1745, mirroring completeRun (run_controller.go:541-548): drop every pod whose Namespace+LabelRunName match the failed run. Adversarial check of that fix: it violates no invariant (there is no pod invariant), and in production it is a strict no-op because it drops exactly the pods the closedGroups path already dropped (all group \"0\"). The one real objection is consistency, not legality: failRun (run_controller.go:701-713) is the OTHER terminal path and deliberately does NOT drop pods — a checkpoint-grace/follow/upstream failure leaves the run's pods in State.Pods until the Run object is deleted (cleanupDeletedRun, reconcilers.go:107-114). So \"mirror completeRun\" would make the resolver-terminal path diverge from failRun. Either both terminal paths should run-scope-drop pods or neither; fixing only the resolver branch half-addresses and leaves failRun with the same latent half-plane. That divergence — not any invariant violation — is the legal behaviour the fix perturbs.",
+        "testSource": "/tmp/claude-1000/-workspaces-jobtree/b3df7d06-fa76-4793-98b7-31b44b11906e/scratchpad/jobtree-copy/controllers/f9_repro_test.go (temp copy checked out at e2b5355). Three tests: TestF9_TerminalBranch_ProductionShaped_SingleGroup (production-shaped prodLease + group-\"0\" pod, PASSES -> no production defect), TestF9_TerminalBranch_MultiGroup (two groups, cut one, FAILS -> surviving pod victim-g1-0), TestF9_TerminalBranch_MultiGroup_Persists (20 reconciles). The (b) mutation was applied to run_controller.go:1719 and run against the existing resolver_settlement_test.go:244 test."
+      }
+    }
+  ]
+}

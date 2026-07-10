@@ -268,13 +268,20 @@ func leaseInScope(lease *v1.Lease, nodeIndex map[string]map[string]string, scope
 	return true
 }
 
+// leaseGroupIndex reads the placement group off a Lease. It does not default.
+//
+// It used to return "0" for a missing label, which was invisible until R28b: the sole
+// committer stamped no group, so EVERY lease of EVERY run fell into one bucket and
+// gatherCandidates yielded one lottery token per run. The lottery cut whole runs and
+// nobody noticed, because per-group cuts were never observed to be absent.
+//
+// A lease with no group index now buckets under "", which pkg/invariant rejects at the
+// engine's door.
 func leaseGroupIndex(lease *v1.Lease) string {
-	if lease.Labels != nil {
-		if idx, ok := lease.Labels[binder.LabelGroupIndex]; ok {
-			return idx
-		}
+	if lease.Labels == nil {
+		return ""
 	}
-	return "0"
+	return lease.Labels[binder.LabelGroupIndex]
 }
 
 // reclaimUnfunded ends groups whose every non-spare lease evaluates
