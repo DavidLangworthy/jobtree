@@ -1,10 +1,9 @@
 # How the three-model lens split performed — R27 branch review (c74e0ef)
 
-**Status: PRELIMINARY.** Written while the Judge panel is still adjudicating. These are the
-*raised-and-attested* numbers, not the final scorecard. The decisive metric — **confirmed** after
-adjudication, and which model found a confirmed finding no other lens caught — comes from the skeptic
-panel, which died on the 9am UTC session limit and is being re-run via
-`resumeFromRunId: wf_5ed1383f-2ce`. This note is updated when that lands.
+**Status: adjudicated for the criticals; panel incomplete.** The harness Judge panel never finished
+(two lifecycle deaths). The critical findings were hand-adjudicated by executable reproduction; the
+raised-findings attribution below is complete, and the confirmed-vs-refuted split is reliable for the
+criticals. It is NOT a full panel scorecard — treat the sub-critical attribution as raised-only.
 
 Reviewed commit: `c74e0ef` on `fix/r27-invariant-oracle`. Feeds task **#55** ("is one Fable worth
 three Opus?"). Related: [[model-split]], [[adversarial-panel-design]], [[oracle-not-more-review]].
@@ -65,10 +64,29 @@ Abstract refutation and empirical coverage-gap, arrived at independently, landed
 opposite directions. Neither alone is as convincing as the pair. That convergence is the concrete
 argument for paying for heterogeneity rather than running one model three times.
 
-## What this does NOT yet answer (task #55)
+## Task #55 — what the criticals actually show
 
-"Worth it" is not a raised count. A model that raises 10 plausible-but-wrong findings is worse than one
-that raises 3 real ones. The number that decides #55 is **confirmed after adjudication**, plus
-**confirmed-found-by-exactly-one-lens**, plus the failure mode that would argue *against* Fable:
-**anything the Fable lens missed that an Opus or Sonnet lens caught.** All three come from the skeptic
-panel. Until it completes, this stays PRELIMINARY and no verdict on the split is declared.
+"Worth it" is not a raised count; it is *confirmed*, and *found-by-exactly-one-lens*. On the five
+criticals, hand-adjudicated:
+
+- **Sonnet (generator-honesty) found a confirmed critical no other lens caught.** C4 (the
+  `RunnableGPUs`→`baseGangGPUsForRun` mutation caught by nothing) only surfaces by actually
+  mutation-testing the suite — an *empirical* act. Neither Fable's analysis nor Opus's trace reached
+  it. Sonnet also produced the measurement that explains *why* the C1/C5 reapers shipped green (the
+  generator can't reach pod-deletion states). The measurement lens earned its seat distinctly.
+- **Fable (oracle-reaper) both found the headline and overreached.** It raised C1 (the real
+  INV-TERMINAL-NO-PODS reaper — confirmed, the single most valuable finding) AND C5 (INV-LEASE-HAS-POD
+  "reaper" — **refuted** by two skeptics; the invariant is correct). So Fable's critical hit-rate was
+  1 confirmed / 1 false-positive. Its analytical strength is real *and* it is the lens most prone to
+  calling a correct-but-alarming state a reaper.
+- **Opus (sweep-safety) confirmed C2** and traced the settle races that the analytical lens stated
+  abstractly.
+
+**The honest answer to "is one Fable worth three Opus": no — the value is diversity, not dominance.**
+On this review the empirical lens (Sonnet) caught a confirmed critical Fable and Opus both missed, and
+Fable overreached on one critical. The strongest result — C1 — came from *convergence* (Fable's
+refutation + Sonnet's coverage measurement), not from any single model. Keep all three; do not swap the
+panel for N copies of the best-scoring one.
+
+Caveat: this rests on the five criticals only. The full panel (which would let us measure the
+sub-critical confirmed-by-exactly-one-lens rate) never completed.

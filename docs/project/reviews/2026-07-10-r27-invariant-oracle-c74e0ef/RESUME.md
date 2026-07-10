@@ -1,9 +1,14 @@
 # RESUME POINTER — R27 branch adversarial review (c74e0ef)
 
-**If the codespace restarted mid-review, start here. One command recovers everything.**
+**RESOLVED 2026-07-10 by hand-adjudication — resume no longer required.** After two lifecycle
+deaths, the criticals were adjudicated from the banked journal + executable reproduction rather
+than by paying the resume tax a third time. See [`README.md`](README.md) for the dispositions.
+This file is kept as the record of how recovery would have worked, and because the journal snapshot
+it points at is the primary evidence.
 
-Status: **IN PROGRESS / PAUSED by lifecycle event.** The Review + Attest phases are complete and
-cached; the Judge panel is partway done. Do NOT treat any partial result as green.
+Status: **DONE (hand-adjudicated).** The Review + Attest phases are cached in the snapshot; the Judge
+panel was partial (~18 judges) and was superseded by hand-adjudication. Do NOT treat the partial
+harness result alone as green — the README is the authority.
 
 ## State (update this line each time you touch it)
 

@@ -50,4 +50,5 @@ The verdict line is the least interesting part. Three things repay attention:
 
 | Date | Review | Commit | Verdict | Confirmed |
 |---|---|---|---|---|
+| 2026-07-10 | [R27 branch — oracle, sweep, quiescence driver](2026-07-10-r27-invariant-oracle-c74e0ef/) | `c74e0ef` | DEFECTS CONFIRMED | 5 critical (4 fixed, 1 refuted); panel hand-adjudicated |
 | 2026-07-09 | [R27 — the invariant oracle](2026-07-09-r27-invariant-oracle-98b602d/) | `98b602d` | DEFECTS CONFIRMED | see record |
