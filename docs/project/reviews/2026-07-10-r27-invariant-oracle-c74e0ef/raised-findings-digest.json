@@ -1,0 +1,214 @@
+[
+ {
+  "title": "groupIndexForPodIndex/groupSizesFor is a second implementation of pack.deriveGroups guarded only by an example-based pin test",
+  "severity": "low",
+  "file": "controllers/run_controller.go",
+  "line": 2507,
+  "failure_scenario": "If pack.deriveGroups' group layout is ever changed for a shape not in the pin's set {8/0, 8/4, 9/4, 12/4/2, 64/32} -- e.g. a change affecting total sizes divisible in a way none of those tuples exercise -- the spec-only clone used by topUpActiveGang re-emits a lost rank with a group index the packer never chose. INV-GROUP-STAMPED still passes (the label is present, just wrong), so the resolver's per-group lottery, the elastic shrink loop, and the node-failure spare pairing all silently address the wrong ranks, with nothing red.",
+  "taxonomyClass": "7 CLONED OBLIGATION"
+ },
+ {
+  "title": "applyResolution unit tests are not backstopped by the invariant oracle",
+  "severity": "low",
+  "file": "controllers/run_controller.go",
+  "line": 1836,
+  "failure_scenario": "In mutation F I removed applyResolution's terminal c.releaseRun(run,\"RunFailed\",now); the resulting state (a Failed run holding an open out-of-scope spare) is exactly INV-TERMINAL-PRESENT, yet TestResolverEndingARunReleasesTheLeasesItStillHolds did NOT panic inside the call \u2014 it was caught only by its own line-111 assertion. If a future edit both reintroduces an illegal-state bug in applyResolution AND weakens one of these isolated assertions, the unit test would stay green; only the ActivateReservations entry point and the quiescence integration (both of which DO run the oracle) would catch it. This is a partial hole in the 'green means asserted-and-legal' guarantee for precisely the resolver/Scope path where class-1's 'third door' lived. Mitigation: add a deferred checkInvariants to applyResolution, or drive these tests through ActivateReservations. Not a code defect \u2014 the shipped code is correct and the assertions are load-bearing \u2014 but a review-worthy gap in the safety net.",
+  "taxonomyClass": "8"
+ },
+ {
+  "title": "External pod loss (drain/eviction) leaves an open lease with no closer anywhere, forever",
+  "severity": "high",
+  "file": "controllers/run_controller.go",
+  "line": 191,
+  "failure_scenario": "A Running run's pod is deleted by the world (drain/eviction/kubectl) leaving an open lease with no closer anywhere: Reconcile's Running branch returns without reading pods, the pod watch DeleteFunc returns false, SettleLeases skips non-terminal existing runs, and INV-LEASE-HAS-POD fires on every reconcile forever. Compiled repro (scratchpad module): 20 reconciles over 20 simulated hours \u2014 lease closed=false, phase=Running, INV-LEASE-HAS-POD panic on every call, SettleLeases swept=0.",
+  "taxonomyClass": "1 immortal-lease / 9 half-plane (plus a new-invariant false-fire); pre-existing gap, materially interacted-with by this branch: the sweep whose stated purpose is closing immortal leases by derivation does not cover this door, and the new INV-LEASE-HAS-POD alarms on it forever without healing; the generator omits the one event that reaches it"
+ },
+ {
+  "title": "Same-run stale-lease branch closes lease but leaves active pod on the exact node a swap pod hard-targets",
+  "severity": "medium",
+  "file": "controllers/run_controller.go",
+  "line": 1297,
+  "failure_scenario": "Pass 2's same-run 'stale lease on the spare's slots' branch closes the lease ReclaimedBySpare and removes no pod (removeSparePodOnNodes filters RoleSpare only), then emitSwapPod hard-targets the same node \u2014 a ledger-only eviction of exactly the shape the branch's cross-run fix exists to prevent. Compiled repro: stale lease closed=true reason=ReclaimedBySpare, its active pod still present on node-b, 1 swap pod emitted with required affinity to node-b.",
+  "taxonomyClass": "9 half-plane; pre-existing (branch only renamed closeLease\u2192CloseLease here), but it is the un-fixed sibling of the branch's own reclaimSquatter two-plane fix, one branch above it"
+ },
+ {
+  "title": "INV-TERMINAL-NO-PODS fires on the routine graceful-termination window because load() does not filter DeletionTimestamp",
+  "severity": "medium",
+  "file": "controllers/kube/bridge.go",
+  "line": 190,
+  "failure_scenario": "load() does not filter pods with a DeletionTimestamp, so for the graceful-termination window after every failure-path releaseRun (forever in envtest, which has no kubelet) the world contains a terminal run with a Terminating pod; INV-TERMINAL-NO-PODS then fires from any engine entry point. Compiled repro: reconciling a different, healthy run panics INV-TERMINAL-NO-PODS on the dead run's lingering pod \u2014 production alert noise on routine failures, latent panic for any future failure-path envtest.",
+  "taxonomyClass": "reaper-invariant (new class candidate: invariant blind to API deletion latency); new in this branch (INV-TERMINAL-NO-PODS, 4e832a7/7a681c0)"
+ },
+ {
+  "title": "Declined-swap checkpoint-grace path strands the spare holder pod, blocking future re-provisioning",
+  "severity": "medium",
+  "file": "controllers/run_controller.go",
+  "line": 1437,
+  "failure_scenario": "On the declined-swap checkpoint-grace path the spare's lease is closed (SwapDeclined) but the spare HOLDER pod (sleep-forever, GPU-holding) is never removed; on re-admission emitSparePods counts it as an existing spare (lines 2062-2069) and a bound pod is never re-scheduled, so no spare lease is ever minted again \u2014 one GPU-group held unbilled for the run's lifetime plus silently lost swap coverage. TestDecliningTheSwapReleasesTheSpareEvenWhenTheRunParksInCheckpointGrace asserts only the lease plane for the spare.",
+  "taxonomyClass": "9 half-plane; pre-existing; the branch's F4/F5/F7 fix paired the Failed branch (releaseRun culls the spare pod) and left the grace branch unpaired"
+ },
+ {
+  "title": "Mint-after-terminal race is swept and reported as 'Shirked' though nothing shirked a duty",
+  "severity": "low",
+  "file": "controllers/settle.go",
+  "line": 60,
+  "failure_scenario": "A lease the plugin mints at PreBind after releaseRun's world snapshot was loaded lands on an already-terminal run and is swept next pass as 'terminal-run' \u2014 Shirked panics under test and trips the alert-on-nonzero terminal-run metric, though no code path shirked anything; the identical two-process race shape was explicitly excused for the orphan-run rule and not for this one. Not reproduced (spans two processes).",
+  "taxonomyClass": "signal-not-reality (a race read as a shirked duty); new in this branch (c74e0ef reportSweep asymmetry)"
+ },
+ {
+  "title": "Empty-valued run-name label is reaped: SettleLeases deletes the pod and closes empty-RunRef leases via the doomed key \"namespace/\"",
+  "severity": "medium",
+  "file": "controllers/settle.go",
+  "line": 149,
+  "taxonomyClass": "5 identity-coarsening (missing empty-key guard; adjacent to 6 guard-before-predicate)",
+  "failure_scenario": "SettleLeases builds its doomed set by keying pods and leases with keys.NamespacedKey(namespace, pod.Labels[LabelRunName]) / (RunRef.Namespace, RunRef.Name). An empty run-name collapses to \"namespace/\", which is never a real Run key, so every empty-run-name object is classified SweepOrphanRun and then deleted/closed with shirked=0 (accuses nobody). client.HasLabels{LabelRunName} in Bridge.load (bridge.go:190) admits a pod whose label is PRESENT but EMPTY (HasLabels is an EXISTS requirement), so such a pod reaches state.Pods and is deleted through the API on the very next pass. Confirmed by executing the real Bridge over a fake client: the stray empty-label pod was deleted while a co-located healthy Running run survived. Blast radius is confined to objects carrying jobtree's label with an empty value / empty RunRef, which the sole committer (buildPod/buildLease/PodLeaseWithRole) never emits, so this is not sole-committer data loss \u2014 but any user or buggy tool that stamps rq.davidlangworthy.io/run=\"\" on a pod gets it silently deleted by jobtree on every reconcile. Fix: skip an empty run name in all three doomed loops and the pod-drop loop (treat 'no run name' as 'not ours', not 'orphan')."
+ },
+ {
+  "title": "Orphan-run rule cannot cover a same-name recreated Run: the old incarnation's open lease (name-only RunRef, no owner-ref) is mis-attributed and never closed",
+  "severity": "low",
+  "file": "pkg/admission/admission.go",
+  "line": 246,
+  "taxonomyClass": "1 immortal-lease",
+  "failure_scenario": "Minted leases carry RunRef{Name,Namespace} with NO UID (RunReference has no UID field) and NO OwnerReference (PodLeaseWithRole sets only Namespace/Name/Labels), so they are not apiserver-GC'd on Run deletion. If a Run is deleted and recreated under the same name before cleanupDeletedRun runs (there is no finalizer yet \u2014 R12's is still a doc/P1), the prior incarnation's still-open lease keys to the SAME run key as the new incarnation. cleanupDeletedRun never fires (state.Runs[key] is now present), settle's orphan rule never fires (the Run object exists), and settle's terminal rule never fires (the new run is not terminal) \u2014 so the old lease charges the new run's budget and holds GPUs forever. The R2 nonce only makes the lease NAME unique to avoid an AlreadyExists collision; it does not disambiguate RunRef, which is what funding.Evaluate and the sweep key on. settle.go's orphan-rule comment claims to close leases when 'no Run object exists for the lease at all', which is precisely the case name-aliasing defeats. Not introduced by this branch, but the reviewer should know the new orphan rule has this blind spot; a real fix keys attribution on run UID."
+ },
+ {
+  "title": "INV-LEASE-HAS-POD is refuted: a drained (or GC'd) pod under a legally-open lease violates it forever on a correct engine",
+  "severity": "critical",
+  "file": "pkg/invariant/invariant.go",
+  "line": 273,
+  "failure_scenario": "A kubectl drain / delete pod / pod GC of a Succeeded gang removes the pod object; per R21 no fencing assertion exists so the engine correctly closes nothing; pod delete events are filtered (reconcilers.go:153); SettleLeases only touches terminal/orphan runs. The violation fires at the return of every entry point forever (reproduced 20/20 simulated hours) \u2014 in CI it brands any faithful drain fixture illegal, in production it fires every 5-minute Running resync against an alert whose contract is 'any nonzero value is a bug'.",
+  "taxonomyClass": "4 SIGNAL != REALITY (absence of a pod OBJECT read as an engine-shirked obligation); the 'wrong invariant is a reaper' failure mode pkg/invariant's own package doc names"
+ },
+ {
+  "title": "INV-TERMINAL-NO-PODS is refuted: Kubernetes' asynchronous graceful pod deletion makes the pass after EVERY ordinary completion or terminal failure illegal",
+  "severity": "critical",
+  "file": "controllers/kube/bridge.go",
+  "line": 190,
+  "failure_scenario": "completeRun/releaseRun retire both planes correctly; Bridge.apply issues the delete; the lease-closure events deterministically re-trigger the run reconciler (Lease watch, reconcilers.go:177) inside the termination window; Bridge.load reloads the terminating pod with no DeletionTimestamp/phase filter and binder.PodManifest cannot carry one. Reproduced: pass N legal, pass N+1 panics; an unrelated healthy run's reconcile also panics about the neighbour because the oracle checks the whole world.",
+  "taxonomyClass": "4 SIGNAL != REALITY (a terminating or Succeeded pod object counted as 'holding a GPU the ledger handed back' \u2014 false for terminal-phase pods, whose resources are freed)"
+ },
+ {
+  "title": "Counting every role in Run.Pods lets one surviving SPARE pod mask the whole-active-pod-set deletion INV-LEASE-HAS-POD was written to catch",
+  "severity": "medium",
+  "file": "controllers/invariants.go",
+  "line": 87,
+  "failure_scenario": "Executed: a Running run with an open ACTIVE lease, zero active pods, and one spare pod raises nothing. The coarse per-run form is documented as deliberate (per-lease correspondence deferred to R26's ledger auditor), but the masking direction is not documented; worth a line in the package doc or a role-aware refinement when R26 lands.",
+  "taxonomyClass": "8-adjacent weakness (the rail passes states containing the defect class it exists to detect)"
+ },
+ {
+  "title": "The quiescence driver's 'legal world' model excludes pod deletion entirely \u2014 the only reason 800 seeds stay green under these two invariants",
+  "severity": "medium",
+  "file": "controllers/quiescence_test.go",
+  "line": 53,
+  "failure_scenario": "quiescence_test.go:53 declares 'Nothing in this file ... deletes a pod' as fidelity, yet the same file models kube deleting NODES (deleteNode), and real kube deletes pods routinely (drain, eviction API, pod GC \u2014 which force-deletes the pods of the very nodes deleteNode kills, another divergence: the driver retains a dead node's pods forever). Adding either legal event to the driver panics it immediately via the two invariant refutations above.",
+  "taxonomyClass": "8 THE TEST ASSERTS THE BUG, generator form: the rail's legality model is exactly the invariants' blind spot"
+ },
+ {
+  "title": "mintPending's random node selection fabricates physically impossible lease topologies",
+  "severity": "high",
+  "file": "controllers/quiescence_test.go",
+  "line": 201,
+  "failure_scenario": "mintPending picks qNodes()[w.rng.Intn(3)].Name uniformly at random with zero capacity/occupancy awareness when pod.NodeName is blank, producing the same GPU ordinal slot claimed by 3-4 different leases simultaneously in 9085 of ~37600 observed states across the 800-seed run \u2014 a topology the real kube-scheduler (which uses post-Filter, capacity-guaranteed nodeName in PreBind) cannot produce, meaning much of the generator's explored state space is unreachable in production and the oracle may be validating against fictitious states.",
+  "taxonomyClass": "oracle-corruption"
+ },
+ {
+  "title": "RunnableGPUs computed via baseGangGPUsForRun mutation caught by neither generator nor hand-written suite",
+  "severity": "critical",
+  "file": "controllers/invariants.go",
+  "line": 95,
+  "failure_scenario": "When invariants.go's RunnableGPUs field is computed with baseGangGPUsForRun instead of runnableGPUsForRun, both the 800-seed generator run and the full hand-written test suite stay green; this corrupts the oracle itself (the very component meant to catch regressions) while producing no test failures anywhere in the repository, making the defect invisible to both verification layers simultaneously."
+ },
+ {
+  "title": "leaseGroupIndex missing-label default of \"0\" caught by neither suite",
+  "severity": "high",
+  "file": "controllers/run_controller.go",
+  "line": 2260,
+  "failure_scenario": "Mutating leaseGroupIndex to default a missing group label to \"0\" is caught by neither the generator nor any hand-written test; the class is invisible to every invariant because production's fail-closed mint refusal (R28b) means no lease can legally lack a group label today, so the state that would trip a check never arises \u2014 leaving the fallback code path structurally undefended by any test."
+ },
+ {
+  "title": "reclaimSquatter's fail-closed decline branch is never exercised by the generator",
+  "severity": "medium",
+  "file": "controllers/run_controller.go",
+  "line": 1534,
+  "failure_scenario": "reclaimSquatter's fail-closed decline (return false, lines 1533-1536) is called 7 times across all 800 seeds but the decline path is never taken once; a regression that deletes this fail-closed loop entirely goes undetected by the generator (green) and is caught only by the hand-written TestSwapDeclinesRatherThanEvictAFundedRunOnTheSpareSlots test, meaning generator-only verification would miss a regression that could evict a funded run onto spare slots."
+ },
+ {
+  "title": "runPhaseTracker severity-lattice mutation caught only by hand-written order-independence tests",
+  "severity": "medium",
+  "file": "controllers/run_controller.go",
+  "line": 1410,
+  "failure_scenario": "Replacing the phase severity lattice with plain last-write (mutation f) produces a legal-looking final state that the seven shipped invariants (which check state legality, not order-independence) do not flag, so the 800-seed generator goes green; only TestNodeFailureOutcomeIsInvariantUnderLeaseOrder and TestRunPhaseDoesNotDependOnLeaseOrder, which explicitly permute lease order and assert byte-identical outcomes, catch this class of order-dependent phase-assignment regression."
+ },
+ {
+  "title": "Slot-conflict test collapses to node-granularity, defeating R22 exact-GPU premise",
+  "severity": "high",
+  "file": "controllers/run_controller.go",
+  "line": 1284,
+  "taxonomyClass": "5 identity-coarsening",
+  "failure_scenario": "Run A has an active rank on nodeF (group 0) and a hot spare on nodeS (slot nodeS#0). An unrelated run B is bin-packed onto nodeS with a 1-GPU lease (also slot nodeS#0, a DIFFERENT physical GPU). nodeF is fenced. In HandleNodeFailure pass 2, spareSlots={nodeS#0}; leaseOccupiesSlots(B, spareSlots) returns true though B shares no physical GPU with A's spare. If B is FUNDED, crossRunConflict=true and A's group is sent to failGroupWithoutSpare \u2014 A loses a spare whose GPU was physically free, a spurious swap-decline of paid-for fault tolerance. If B is UNFUNDED, reclaimSquatter closes B's leases AND deletes B's pods on nodeS (two-plane), killing B's containers for a conflict that does not physically exist. This branch worsens the unfunded arm: pre-branch it was a ledger-only CloseLease; it is now a real container eviction. I executed a scratch program using the exported PodLeaseWithRole: two unrelated runs on nodeS both produced slot [nodeS#0] and the occupancy test returned true. The 800-seed quiescence generator and pkg/invariant miss this because a spurious decline (run parks Pending) and a spurious eviction (unfunded run demoted Pending, both planes dropped) are both LEGAL states \u2014 the oracle detects illegal states, not incorrect-but-legal decisions. Fix requires a physical-GPU ordinal in the ledger (as binder.assign's offset+i produces) or replacing the slot-conflict test with a real free-capacity check on the spare's node."
+ },
+ {
+  "title": "removeSparePodOnNodes ignores R28b placement group when selecting spare pod to delete",
+  "severity": "medium",
+  "file": "controllers/run_controller.go",
+  "line": 2131,
+  "taxonomyClass": "5 identity-coarsening",
+  "failure_scenario": "Run A holds spares for group 0 and group 1, both bin-packed onto nodeS. Group 0's rank fails and the swap consumes group 0's spare (spareLease). The swap path calls removeSparePodOnNodes(A, [nodeS]) intending to free group 0's spare pod, but the loop matches on role=Spare + node only and removes whichever spare pod appears first in State.Pods \u2014 which may be group 1's. Result: group 0's spare lease is closed (CloseLease spareLease 'Swap') but its pod survives in State.Pods, so Bridge.apply keeps it running on a closed lease (half-plane: a pod holding a GPU the ledger freed), and the swap pod (requireNode nodeS) cannot bind because the GPU is still occupied \u2014 the gang wedges. Meanwhile group 1's spare pod is deleted while its lease stays open \u2014 an immortal lease and silent loss of group 1's fault tolerance. Reachability depends on the packer co-locating two groups' spares on one node; plausible over months but not demonstrated with a running test here. Fix: key the spare-pod removal on LabelGroupIndex of the consumed spareLease, not just node+role."
+ },
+ {
+  "title": "SwapDeclined lease closure leaves the spare pod running, stranding GPUs the ledger calls free",
+  "severity": "critical",
+  "file": "controllers/run_controller.go",
+  "line": 1437,
+  "taxonomyClass": "9-half-plane-action",
+  "failure_scenario": "Fenced node kills group's rank; spare's exact slots are squatted by funded work; swap declines; checkpointGrace > 0 parks the run Pending. The spare pod (sleep 2147483647, holding nvidia.com/gpu) stays in state.Pods \u2014 Bridge.apply deletes only pods ABSENT from state.Pods. Run re-admits inside grace, adoption clears CheckpointDeadline; the post-loop releaseRun never runs (run is not terminal). Executed probe: 20 simulated hours after recovery the pod still held 2 GPUs the ledger calls free; the engine plans new gangs onto them and kube-scheduler can never bind; INV-LEASE-HAS-POD is blind (it fires only on pods == 0). TestDecliningTheSwapReleasesTheSpareEvenWhenTheRunParksInCheckpointGrace asserts only the lease plane."
+ },
+ {
+  "title": "applyResolution's terminal default branch kills checkpoint-grace containers before the deadline expires",
+  "severity": "critical",
+  "file": "controllers/run_controller.go",
+  "line": 1888,
+  "taxonomyClass": "9-half-plane-action",
+  "failure_scenario": "Run parked Pending by failGroupWithoutSpare with 25 minutes of grace left, surviving group's lease open, containers writing a checkpoint. Budget tightens; the lottery cuts the surviving lease; allocated < minRunnableGPUs and not reclaimedOnly \u2192 Phase=Failed, releaseRun deletes every pod. Executed probe output: phase=Failed, podsLeft=0, deadline 2024-01-01 10:25 still set. The identical domain event via HandleNodeFailure grants a 30-minute grace; via the resolver it is execution. The Failed verdict is pre-existing; killing the uncut groups' containers mid-grace is new to this branch's fix."
+ },
+ {
+  "title": "INV-TERMINAL-NO-PODS fires on the ordinary graceful pod-deletion window, panicking on healthy reconciles and desensitizing the production alarm",
+  "severity": "high",
+  "file": "pkg/invariant/invariant.go",
+  "line": 90,
+  "taxonomyClass": "8-wrong-invariant-reaper",
+  "failure_scenario": "Pass N: run fails, releaseRun drops pods, apply issues graceful Delete (bridge.go:314, no grace override). Pass N+1 within terminationGracePeriodSeconds: load lists the Terminating pods (bridge.go:190); ANY engine entry \u2014 including Reconcile of an unrelated healthy run \u2014 sees terminal run + pods > 0. Executed probe reproduced the panic banner from reconciling the healthy run. Production: jobtree_invariant_violations_total, documented as 'any nonzero value is a bug', becomes routinely nonzero after every preemption; envtest binds pods (settle_bridge_test.go:38) and has no kubelet to finalize deletion, so a bound pod stays Terminating forever \u2014 a latent CI panic for any test that drives a second pass after a terminal release."
+ },
+ {
+  "title": "INV-LEASE-HAS-POD trips on legal external pod deletion the engine cannot repair from any entry point",
+  "severity": "medium",
+  "file": "pkg/invariant/invariant.go",
+  "line": 138,
+  "taxonomyClass": "8-wrong-invariant-reaper",
+  "failure_scenario": "Manager down; node deleted; kube's Pod GC force-deletes its pods; manager restarts \u2014 reconcilers.go:512 admits no event replays the deletion, so the leases stay open. Every entry point now reports the run holding open leases and zero pods, forever (SettleLeases exempts non-terminal runs; R26's auditor does not exist yet). Under go test this panics on healthy recovery choreography; in production it counts \u2014 half correct detection of a real unhealed billing state (leases charging with no containers, an immortal-lease variant nothing heals), half unresolvable noise. The quiescence driver cannot catch either side: its deleteNode never models Pod GC."
+ },
+ {
+  "title": "shrinkRun's insufficient-groups error return strands closed groups' pods between the lease closures and removePodsForGroups (pre-existing, kept on the table)",
+  "severity": "medium",
+  "file": "controllers/run_controller.go",
+  "line": 2750,
+  "taxonomyClass": "9-half-plane-action",
+  "failure_scenario": "Malleable run, groups of 2/2/2/2 GPUs, funding-derived target 3: the loop closes two groups (freed=4), skips the rest (would overshoot), then current-freed=4 > 3 \u2192 returns the error at 2750 before reaching removePodsForGroups at 2754. Two groups' leases are closed (the bridge applies mutations even on error) while their pods keep running; later shrink passes cannot see the closed groups (collectElasticGroups skips closed leases), so the pods hold 4 dark GPUs until the run terminates. Confirmed by arithmetic against the loop's guards; not executed."
+ },
+ {
+  "title": "Own-stale-lease ReclaimedBySpare closure removes no pod on the spare's slots, potentially wedging the swap pod's required-affinity bind",
+  "severity": "low",
+  "file": "controllers/run_controller.go",
+  "line": 1297,
+  "taxonomyClass": "9-half-plane-action",
+  "failure_scenario": "If the run's own duplicate/stale lease on its spare's slots is ever backed by a live container, closing the lease leaves the container holding the GPU while emitSwapPod (1355) pins the replacement to that node with required affinity \u2014 the swap pod can never bind and the rank is not restored. Reaching the state needs a same-run lease occupying the spare's exact slots (an incomplete prior swap or oversubscribed mint); could not be constructed from legal events in the time available, and removeSparePodOnNodes (2138) removes only ONE spare-role pod, which also leaves a second same-node spare pod behind in the multi-spare case."
+ },
+ {
+  "title": "groupIndexForPodIndex/groupSizesFor is a second implementation of pack.deriveGroups guarded only by an example-based pin test",
+  "severity": "low",
+  "file": "controllers/run_controller.go",
+  "line": 2507,
+  "failure_scenario": "If pack.deriveGroups' group layout is ever changed for a shape not in the pin's set {8/0, 8/4, 9/4, 12/4/2, 64/32} -- e.g. a change affecting total sizes divisible in a way none of those tuples exercise -- the spec-only clone used by topUpActiveGang re-emits a lost rank with a group index the packer never chose. INV-GROUP-STAMPED still passes (the label is present, just wrong), so the resolver's per-group lottery, the elastic shrink loop, and the node-failure spare pairing all silently address the wrong ranks, with nothing red.",
+  "taxonomyClass": "7 CLONED OBLIGATION"
+ }
+]
