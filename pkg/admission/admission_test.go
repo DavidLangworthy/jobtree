@@ -6,6 +6,8 @@ import (
 	"time"
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
+	"github.com/davidlangworthy/jobtree/pkg/binder"
+	"github.com/davidlangworthy/jobtree/pkg/cover"
 	"github.com/davidlangworthy/jobtree/pkg/topology"
 )
 
@@ -343,5 +345,28 @@ func TestPlanBorrowLimitedErrors(t *testing.T) {
 
 	if _, err := Plan(in); err == nil {
 		t.Fatalf("expected a cover borrow-limit error, got nil")
+	}
+}
+
+// R28b. The sole committer stamps the placement group onto every lease it mints,
+// copied from the pod being bound. Before this it stamped none, and three separate
+// consumers papered over the gap with a "0" default — so the resolver cut whole runs
+// instead of groups and nobody could see it.
+func TestPodLeaseWithRoleStampsThePlacementGroup(t *testing.T) {
+	now := time.Now()
+	run := &v1.Run{ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"}}
+	seg := cover.Segment{Owner: "org:ai:team", BudgetName: "team", EnvelopeName: "west"}
+
+	lease := PodLeaseWithRole(run, seg, "node-a", 1, "train-pod-0-lease", now, "Start", binder.RoleActive, "3")
+	if got := lease.Labels[binder.LabelGroupIndex]; got != "3" {
+		t.Fatalf("minted lease group index = %q, want %q; the resolver, the elastic loop and the "+
+			"node-failure swap all address work by it", got, "3")
+	}
+
+	// The plugin's in-memory phantom pending leases have no pod and no group. They
+	// never reach the API, and pkg/invariant only constrains persisted leases.
+	phantom := PodLeaseWithRole(run, seg, "node-a", 1, "pending-train-0", now, "Start", binder.RoleActive, "")
+	if _, ok := phantom.Labels[binder.LabelGroupIndex]; ok {
+		t.Errorf("a phantom pending lease must not invent a group index it does not have")
 	}
 }

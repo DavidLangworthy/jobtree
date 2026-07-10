@@ -287,17 +287,21 @@ func TestResolverKeepsAMalleableRunRunningWhenGrowWidthCoversItsMinimum(t *testi
 }
 
 // prodLease builds a lease shaped like the ones the SOLE COMMITTER actually mints:
-// admission.PodLeaseWithRole stamps LabelRunName and LabelRunRole, and no
-// LabelGroupIndex. Every lease in a real cluster looks like this.
+// admission.PodLeaseWithRole stamps LabelRunName, LabelRunRole and — since R28b —
+// LabelGroupIndex, copied from the pod being bound.
 //
-// The fixtures elsewhere in this package set the group label, which is why a test
-// asserting "the squatter's pods are evicted" passed while the production code
-// path evicted nothing: reclaimSquatter read the raw label ("") and the pods carry
-// "0". A test whose fixture is richer than reality proves nothing about reality.
+// It exists because this file once asserted that a reclaim evicted the squatter's
+// pods while the production path evicted nothing: the fixture set a group label the
+// real system never set, so the lease-derived group matched the pod-derived one only
+// in the test. A fixture richer than reality proves nothing about reality. Keep this
+// function in lock-step with PodLeaseWithRole, and prefer it to nfLeaseGroup wherever
+// a test reasons about what production does.
 func prodLease(name, run, owner, budget string, slots []string, role string, now time.Time) v1.Lease {
-	l := nfLeaseGroup(name, run, owner, budget, "0", slots, role, now)
-	delete(l.Labels, binder.LabelGroupIndex)
-	return l
+	return prodLeaseGroup(name, run, owner, budget, "0", slots, role, now)
+}
+
+func prodLeaseGroup(name, run, owner, budget, group string, slots []string, role string, now time.Time) v1.Lease {
+	return nfLeaseGroup(name, run, owner, budget, group, slots, role, now)
 }
 
 // The same eviction, driven by a lease the sole committer would really have minted.

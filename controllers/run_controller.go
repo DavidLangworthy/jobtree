@@ -1225,9 +1225,37 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 		}
 	}
 
-	// The funding derivation, computed once: pass 2 needs it to decide whether an
-	// exact-slot conflict may be reclaimed. Class is derived, never stored
-	// (quota-semantics Decision 3), so this is the only way to know.
+	// The funding derivation, taken ONCE, against the world as it was BEFORE this
+	// failure was handled. That is a SEMANTIC CHOICE, not an optimisation, and the
+	// comment that used to sit here implied otherwise.
+	//
+	// Pass 2 closes leases as it runs — the swap closes the spare and the failed
+	// active, failGroupWithoutSpare closes a dead group's, reclaimSquatter closes a
+	// squatter's — and closing a lease frees budget. So a squatter this evaluation
+	// calls Unfunded can derive a FUNDED class in the world the failure itself
+	// produces, once a co-tenant's lease dies with the node. An adversarial panel
+	// reproduced exactly that (finding F6).
+	//
+	// We reclaim it anyway, deliberately:
+	//
+	//   - Re-evaluating per iteration would make the outcome depend on the order of
+	//     c.State.Leases. That is playbook class 3, the defect this file has now
+	//     shipped seven times. One evaluation per failure is what makes pass 2
+	//     commutative.
+	//   - The funded status such a squatter acquires is an artifact of a co-tenant's
+	//     death, and it evaporates the moment that run re-admits. Sparing it means
+	//     failing a genuinely funded victim to protect work that is about to be
+	//     unfunded again — which is precisely what a judge's mutation of the
+	//     "refresh ev" fix did.
+	//   - The error is one-directional and safe. A stale ev can only make us reclaim
+	//     work that is about to be funded; it can never make us evict a lease this
+	//     evaluation calls funded, because that path declines the swap.
+	//   - The reclaimed run is demoted, not killed, and re-admits when capacity
+	//     returns (quota-semantics R14). The state is legal and self-correcting.
+	//
+	// Class is derived, never stored (quota-semantics Decision 3), so an evaluation
+	// is the only way to know. Tracked as task #54. Do not "fix" this without a
+	// ruling recorded in docs/project/quota-semantics.md.
 	ev := c.evaluate(now)
 
 	// Pass 2 — active leases on the failed node.
@@ -2004,7 +2032,7 @@ func expectedSpareTotal(run *v1.Run, plan *pack.Plan) int32 {
 // tops up the pods that do not yet exist.
 func (c *RunController) emitIntentPods(run *v1.Run, packPlan pack.Plan) int {
 	gpusPerPod, width := intentPodShape(run)
-	created := c.emitCohortPods(run, flattenPackNodes(packPlan), gpusPerPod, width, "0", "Start", nil)
+	created := c.emitCohortPods(run, packPlacements(packPlan, gpusPerPod, 0), gpusPerPod, width, "0", "Start", nil)
 	created += c.emitSparePods(run, packPlan, gpusPerPod, "Start", nil)
 	return created
 }
@@ -2022,7 +2050,7 @@ func (c *RunController) emitPromisePods(run *v1.Run, packPlan pack.Plan, payer c
 		binder.AnnotationPayerEnvelope: payer.EnvelopeName,
 	}
 	gpusPerPod, width := intentPodShape(run)
-	created := c.emitCohortPods(run, flattenPackNodes(packPlan), gpusPerPod, width, "0", binder.LeaseReasonPromise, extra)
+	created := c.emitCohortPods(run, packPlacements(packPlan, gpusPerPod, 0), gpusPerPod, width, "0", binder.LeaseReasonPromise, extra)
 	created += c.emitSparePods(run, packPlan, gpusPerPod, binder.LeaseReasonPromise, extra)
 	return created
 }
@@ -2044,7 +2072,7 @@ func (c *RunController) emitSparePods(run *v1.Run, packPlan pack.Plan, gpusPerPo
 	if count <= 0 {
 		return 0
 	}
-	advisory := flattenSpareNodes(packPlan)
+	placements := sparePlacements(packPlan, gpusPerPod)
 	existing := 0
 	for i := range c.State.Pods {
 		p := &c.State.Pods[i]
@@ -2056,8 +2084,14 @@ func (c *RunController) emitSparePods(run *v1.Run, packPlan pack.Plan, gpusPerPo
 	created := 0
 	for i := existing; i < count; i++ {
 		node := ""
-		if len(advisory) > 0 {
-			node = advisory[i%len(advisory)]
+		// A spare belongs to the group it covers: that is how findSpareLease pairs it
+		// with the rank it will replace.
+		group := "0"
+		if len(placements) > 0 {
+			node = placements[i%len(placements)].Node
+			if i < len(placements) {
+				group = placements[i].Group
+			}
 		}
 		created++
 		annotations := map[string]string{
@@ -2075,7 +2109,7 @@ func (c *RunController) emitSparePods(run *v1.Run, packPlan pack.Plan, gpusPerPo
 			Labels: map[string]string{
 				binder.LabelRunName:    run.Name,
 				binder.LabelRunRole:    binder.RoleSpare,
-				binder.LabelGroupIndex: "0",
+				binder.LabelGroupIndex: group,
 			},
 			Annotations: annotations,
 		})
@@ -2120,18 +2154,6 @@ func (c *RunController) removeSparePodOnNodes(run *v1.Run, nodes []string) {
 	}
 }
 
-// flattenSpareNodes lists the nodes pack chose for a run's spare placements, in
-// group order — the advisory targets for spare intent pods.
-func flattenSpareNodes(plan pack.Plan) []string {
-	var nodes []string
-	for _, g := range plan.Groups {
-		for _, np := range g.SparePlacements {
-			nodes = append(nodes, np.Node)
-		}
-	}
-	return nodes
-}
-
 // cohortPodName is the deterministic name of a cohort's i-th Active intent pod.
 // The base gang ("0") carries no cohort marker, so its pods keep the original
 // name shape.
@@ -2154,7 +2176,7 @@ func cohortPodName(run *v1.Run, cohort string, i int) string {
 // top-up re-emits a member that went missing from the MIDDLE of the cohort, and
 // a count-based scan would then rebuild the wrong index (creating a duplicate of
 // the last pod while the missing one never returns).
-func (c *RunController) emitCohortPods(run *v1.Run, advisory []string, gpusPerPod, count int, cohort, reason string, extra map[string]string) int {
+func (c *RunController) emitCohortPods(run *v1.Run, placements []podPlacement, gpusPerPod, count int, cohort, reason string, extra map[string]string) int {
 	if gpusPerPod <= 0 || count <= 0 {
 		return 0
 	}
@@ -2174,8 +2196,16 @@ func (c *RunController) emitCohortPods(run *v1.Run, advisory []string, gpusPerPo
 			continue
 		}
 		node := ""
-		if len(advisory) > 0 {
-			node = advisory[i%len(advisory)]
+		// The group is AUTHORITATIVE and the node is a hint, so they are resolved
+		// differently. When the plan is in hand the pod takes its planned group; when
+		// it is not — topUpActiveGang re-emitting a rank whose plan is long gone — the
+		// group is recomputed from the Run spec, which is what the packer laid out.
+		group := groupIndexForPodIndex(run, i, gpusPerPod)
+		if len(placements) > 0 {
+			node = placements[i%len(placements)].Node
+			if i < len(placements) {
+				group = placements[i].Group
+			}
 		}
 		created++
 		annotations := map[string]string{
@@ -2196,7 +2226,7 @@ func (c *RunController) emitCohortPods(run *v1.Run, advisory []string, gpusPerPo
 			Labels: map[string]string{
 				binder.LabelRunName:    run.Name,
 				binder.LabelRunRole:    binder.RoleActive,
-				binder.LabelGroupIndex: "0",
+				binder.LabelGroupIndex: group,
 			},
 			Annotations: annotations,
 		})
@@ -2232,35 +2262,20 @@ func minRunnableGPUs(run *v1.Run) int {
 
 // leaseGroupIndex is the ONE way to ask which placement group a Lease belongs to.
 //
-// The sole committer does not stamp the label. admission.PodLeaseWithRole — the
-// only production mint path — sets LabelRunName and LabelRunRole and nothing else,
-// so every Lease in a real cluster carries NO group index. Meanwhile every pod the
-// controller emits is labelled group "0" (emitCohortPods, emitSparePods hardcode
-// it).
+// It reads the label and does not invent one. Before R28b the sole committer stamped
+// no group index at all, so this defaulted to "0" — and because every pod was ALSO
+// stamped "0", the default looked harmless while it silently merged every group of
+// every run into one. The resolver's lottery cut whole runs instead of groups, the
+// elastic loop shrank in whole-run units, and a reclaim that asked for "the pods of
+// this group" got the pods of the entire run.
 //
-// Three consumers already coped with that by defaulting a missing label to "0":
-// pkg/resolver's leaseGroupIndex, collectElasticGroups, and — implicitly — every
-// comparison between two leases that were both missing it. Two others read the raw
-// label and got "". The mismatch is invisible until a lease-derived group is used
-// to select PODS, whose label really is "0":
-//
-//	reclaimSquatter removed pods for group ""  ->  matched nothing
-//	                                          ->  the ledger freed the slot,
-//	                                              the container kept running.
-//
-// So this is the cloned-obligation class: three implementations of one question,
-// two of which defaulted and one of which did not. There is now one.
-//
-// It does NOT fix the deeper problem — that the packer's groups never reach the
-// ledger or the pods at all, so a multi-group run has no per-group identity to
-// address. That is R28b; see docs/project/remediation/R28-group-identity.md.
+// The default is gone. A persisted Lease with no group index is a bug in the mint,
+// and pkg/invariant's INV-GROUP-STAMPED fails the build rather than papering over it.
 func leaseGroupIndex(lease *v1.Lease) string {
-	if lease.Labels != nil {
-		if idx, ok := lease.Labels[binder.LabelGroupIndex]; ok && idx != "" {
-			return idx
-		}
+	if lease.Labels == nil {
+		return ""
 	}
-	return "0"
+	return lease.Labels[binder.LabelGroupIndex]
 }
 
 // runnableGPUsForRun is the run's TOTAL live width: every open, non-spare lease,
@@ -2449,16 +2464,148 @@ func intentPodShape(run *v1.Run) (gpusPerPod, width int) {
 	return 1, int(run.Spec.Resources.TotalGPUs)
 }
 
-// flattenPackNodes lists the nodes pack chose, in placement order, for use as
-// advisory per-pod placement hints.
-func flattenPackNodes(plan pack.Plan) []string {
-	var nodes []string
-	for _, g := range plan.Groups {
-		for _, np := range g.NodePlacements {
-			nodes = append(nodes, np.Node)
+// podPlacement is one intent pod's ADVISORY node and its AUTHORITATIVE group.
+//
+// The node is a hint: the bridge turns it into soft affinity and the scheduler
+// decides. The group is not a hint. It names which fast-fabric gang the rank belongs
+// to, and the resolver, the elastic loop and the node-failure swap all address work
+// by it. Before R28b the packer computed groups and every pod was stamped "0", so
+// none of those three could address anything.
+type podPlacement struct {
+	Node  string
+	Group string
+}
+
+// groupGPUsFor is the run's declared fast-fabric group size, in GPUs. Unset means
+// one group: the whole gang.
+func groupGPUsFor(run *v1.Run) int {
+	if len(run.Spec.Roles) > 0 && run.Spec.Roles[0].GroupGPUs != nil {
+		if g := int(*run.Spec.Roles[0].GroupGPUs); g > 0 {
+			return g
 		}
 	}
-	return nodes
+	if run.Spec.Locality != nil && run.Spec.Locality.GroupGPUs != nil {
+		if g := int(*run.Spec.Locality.GroupGPUs); g > 0 {
+			return g
+		}
+	}
+	return expectedActiveGPUs(run)
+}
+
+// groupSizesFor mirrors pack.deriveGroups: consecutive groups of groupGPUs, the last
+// possibly short. It is duplicated here rather than exported from pkg/pack because
+// this side must answer the question WITHOUT a plan — topUpActiveGang re-emits a lost
+// pod long after the plan that placed it is gone, and the group it stamps must match
+// the one the packer chose. The two are pinned together by a test.
+func groupSizesFor(run *v1.Run) []int {
+	total := expectedActiveGPUs(run)
+	size := groupGPUsFor(run)
+	if total <= 0 || size <= 0 {
+		return nil
+	}
+	var sizes []int
+	for remaining := total; remaining > 0; {
+		n := size
+		if n > remaining {
+			n = remaining
+		}
+		sizes = append(sizes, n)
+		remaining -= n
+	}
+	return sizes
+}
+
+// groupIndexForPodIndex answers "which group does the i-th pod of the base gang
+// belong to?" from the Run spec alone. Pods are emitted in group order, gpusPerPod at
+// a time, exactly as the packer lays groups out.
+func groupIndexForPodIndex(run *v1.Run, i, gpusPerPod int) string {
+	sizes := groupSizesFor(run)
+	if len(sizes) == 0 || gpusPerPod <= 0 {
+		return "0"
+	}
+	offset := i * gpusPerPod
+	for idx, size := range sizes {
+		if offset < size {
+			return strconv.Itoa(idx)
+		}
+		offset -= size
+	}
+	// More pods than the spec's width: the last group owns the overflow rather than
+	// inventing a group the packer never planned.
+	return strconv.Itoa(len(sizes) - 1)
+}
+
+// nextGroupIndex is one past the highest group index the run currently occupies, in
+// EITHER plane. An elastic grow appends new groups; it must not renumber the ones the
+// gang is already running on, or a later swap would address the wrong ranks.
+func (c *RunController) nextGroupIndex(run *v1.Run) int {
+	runKey := keys.NamespacedKey(run.Namespace, run.Name)
+	highest := -1
+	note := func(raw string) {
+		if idx, err := strconv.Atoi(raw); err == nil && idx > highest {
+			highest = idx
+		}
+	}
+	for i := range c.State.Leases {
+		lease := &c.State.Leases[i]
+		if lease.Status.Closed {
+			continue
+		}
+		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) == runKey {
+			note(leaseGroupIndex(lease))
+		}
+	}
+	for _, pod := range c.State.Pods {
+		if keys.NamespacedKey(pod.Namespace, pod.Labels[binder.LabelRunName]) == runKey {
+			note(pod.Labels[binder.LabelGroupIndex])
+		}
+	}
+	return highest + 1
+}
+
+// packPlacements turns a pack.Plan into one podPlacement per intent pod, in the order
+// the pods are emitted. groupOffset shifts the plan's group numbering, which an
+// elastic grow needs so its new groups sit above the base gang's.
+func packPlacements(plan pack.Plan, gpusPerPod, groupOffset int) []podPlacement {
+	if gpusPerPod <= 0 {
+		return nil
+	}
+	var out []podPlacement
+	for _, g := range plan.Groups {
+		group := strconv.Itoa(g.GroupIndex + groupOffset)
+		for _, np := range g.NodePlacements {
+			n := np.GPUs / gpusPerPod
+			if n < 1 {
+				n = 1
+			}
+			for k := 0; k < n; k++ {
+				out = append(out, podPlacement{Node: np.Node, Group: group})
+			}
+		}
+	}
+	return out
+}
+
+// sparePlacements does the same for the spares the packer reserved beside each group.
+// A spare belongs to the group it covers: that is how findSpareLease matches them.
+func sparePlacements(plan pack.Plan, gpusPerPod int) []podPlacement {
+	if gpusPerPod <= 0 {
+		return nil
+	}
+	var out []podPlacement
+	for _, g := range plan.Groups {
+		group := strconv.Itoa(g.GroupIndex)
+		for _, sp := range g.SparePlacements {
+			n := sp.GPUs / gpusPerPod
+			if n < 1 {
+				n = 1
+			}
+			for k := 0; k < n; k++ {
+				out = append(out, podPlacement{Node: sp.Node, Group: group})
+			}
+		}
+	}
+	return out
 }
 
 func (c *RunController) reconcileElasticRun(run *v1.Run, snapshot *topology.Snapshot, inventory *cover.Inventory, now time.Time) error {
@@ -2559,7 +2706,7 @@ func (c *RunController) growRun(run *v1.Run, snapshot *topology.Snapshot, now ti
 	// ledger (which already holds the base leases) and mints "Grow" leases; the
 	// run's width grows from those leases. The controller mints nothing.
 	cohort := strconv.Itoa(nextCohortForRun(c.State.Pods, run))
-	c.emitCohortPods(run, flattenPackNodes(plan), gpusPerPod, add/gpusPerPod, cohort, binder.LeaseReasonGrow, nil)
+	c.emitCohortPods(run, packPlacements(plan, gpusPerPod, c.nextGroupIndex(run)), gpusPerPod, add/gpusPerPod, cohort, binder.LeaseReasonGrow, nil)
 	return nil
 }
 

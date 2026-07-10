@@ -189,20 +189,42 @@ func PerPodPayer(plan cover.Plan, gpusPerPod int) ([]cover.Segment, error) {
 	return out, nil
 }
 
+// leaseLabels builds a minted Lease's labels. The group index is omitted only when
+// the caller has none (the phantom pending leases the plugin folds into its funding
+// arithmetic and never creates).
+func leaseLabels(runName, role, groupIndex string) map[string]string {
+	labels := map[string]string{
+		binder.LabelRunName: runName,
+		binder.LabelRunRole: role,
+	}
+	if groupIndex != "" {
+		labels[binder.LabelGroupIndex] = groupIndex
+	}
+	return labels
+}
+
 // PodLease builds the immutable Lease for one workload pod: gpusPerPod GPUs on
 // the node the scheduler actually bound it to, funded by seg. This is the
 // plugin's mint at PreBind — the single point a Lease becomes a fact. name must
 // be unique and stable for the pod (the plugin uses the pod's own name) so the
 // create is idempotent across PreBind retries.
 func PodLease(run *v1.Run, seg cover.Segment, node string, gpusPerPod int, name string, now time.Time, reason string) v1.Lease {
-	return PodLeaseWithRole(run, seg, node, gpusPerPod, name, now, reason, binder.RoleActive)
+	return PodLeaseWithRole(run, seg, node, gpusPerPod, name, now, reason, binder.RoleActive, "")
 }
 
-// PodLeaseWithRole is PodLease with an explicit slice role. A held spare mints an
-// identically-funded lease with RoleSpare so it sits out the gang's active width
-// (summarizeRunWidth skips spares) yet is real, funded, reclaimable capacity a
-// node-failure swap can land on.
-func PodLeaseWithRole(run *v1.Run, seg cover.Segment, node string, gpusPerPod int, name string, now time.Time, reason, role string) v1.Lease {
+// PodLeaseWithRole is PodLease with an explicit slice role and placement group. A
+// held spare mints an identically-funded lease with RoleSpare so it sits out the
+// gang's active width (summarizeRunWidth skips spares) yet is real, funded,
+// reclaimable capacity a node-failure swap can land on.
+//
+// groupIndex names the fast-fabric group the rank belongs to, copied from the pod the
+// plugin is binding. It is not decoration: pkg/resolver buckets a run's leases by it
+// to cut one group rather than the whole run, the elastic loop shrinks by it, and a
+// node-failure swap pairs a dead rank with the spare of its own group by it. Until
+// R28b this function stamped no group at all, every pod was stamped "0", and none of
+// those three could address anything. An empty groupIndex is accepted here only for
+// the plugin's in-memory phantom pending leases, which never reach the API.
+func PodLeaseWithRole(run *v1.Run, seg cover.Segment, node string, gpusPerPod int, name string, now time.Time, reason, role, groupIndex string) v1.Lease {
 	if reason == "" {
 		reason = "Start"
 	}
@@ -217,10 +239,7 @@ func PodLeaseWithRole(run *v1.Run, seg cover.Segment, node string, gpusPerPod in
 		ObjectMeta: v1.ObjectMeta{
 			Namespace: run.Namespace,
 			Name:      name,
-			Labels: map[string]string{
-				binder.LabelRunName: run.Name,
-				binder.LabelRunRole: role,
-			},
+			Labels:    leaseLabels(run.Name, role, groupIndex),
 		},
 		Spec: v1.LeaseSpec{
 			Owner:          seg.Owner,

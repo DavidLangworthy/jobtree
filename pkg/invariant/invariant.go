@@ -83,6 +83,18 @@ const (
 	// those two moments a healthy run legally holds less width than it reports.
 	WidthAssembled = "INV-WIDTH-ASSEMBLED"
 
+	// GroupStamped: every OPEN lease names the placement group it belongs to.
+	//
+	// pkg/resolver buckets a run's leases by it to cut ONE group rather than the whole
+	// run; the elastic loop shrinks by it; a node-failure swap pairs a dead rank with
+	// the spare of its own group by it. A lease with no group index makes all three
+	// address the wrong thing, and none of them can tell.
+	//
+	// Before R28b the sole committer stamped none, and three separate consumers
+	// papered over it with a "0" default. The result looked correct because every pod
+	// was stamped "0" too. This invariant is why that cannot come back.
+	GroupStamped = "INV-GROUP-STAMPED"
+
 	// ClosedMonotone: a Lease is an immutable fact. Its Spec never changes, its
 	// closure never reverts, and its recorded ending never moves. A reopened or
 	// re-stamped lease makes funding.Evaluate double-count a settled fact.
@@ -108,6 +120,7 @@ type Lease struct {
 	Name          string
 	RunKey        string
 	Closed        bool
+	GroupIndex    string
 	HasEnded      bool
 	EndedUnixNano int64
 	ClosureReason string
@@ -179,6 +192,15 @@ func CheckSteady(w World) []Violation {
 				})
 			}
 			continue
+		}
+		if l.GroupIndex == "" {
+			out = append(out, Violation{
+				ID:      GroupStamped,
+				Subject: "lease " + l.Name,
+				Detail: "open but names no placement group; the resolver, the elastic loop and the " +
+					"node-failure swap all address work by it, and all three would silently address " +
+					"the wrong ranks",
+			})
 		}
 		openByRun[l.RunKey] = append(openByRun[l.RunKey], l.Name)
 	}

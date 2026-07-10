@@ -21,7 +21,7 @@ func ids(vs []Violation) string {
 func TestTerminalRunHoldingAnOpenLeaseIsAViolation(t *testing.T) {
 	w := World{
 		Runs:   []Run{{Key: "default/train", Phase: "Failed", Terminal: true, KnownToLedger: true}},
-		Leases: []Lease{{Name: "l1", RunKey: "default/train", Closed: false}},
+		Leases: []Lease{{Name: "l1", RunKey: "default/train", Closed: false, GroupIndex: "0"}},
 	}
 	got := CheckSteady(w)
 	if len(got) != 1 || got[0].ID != TerminalPresent {
@@ -118,7 +118,7 @@ func TestPendingRunHoldingOpenLeasesIsLegal(t *testing.T) {
 	// Pending while it holds the leases it has and tops up the rest.
 	w := World{
 		Runs:   []Run{{Key: "default/train", Phase: "Pending", RunnableGPUs: 2, MinRunnableGPUs: 4, KnownToLedger: true}},
-		Leases: []Lease{{Name: "l1", RunKey: "default/train"}},
+		Leases: []Lease{{Name: "l1", RunKey: "default/train", GroupIndex: "0"}},
 	}
 	if got := CheckSteady(w); len(got) != 0 {
 		t.Fatalf("a run assembling its gang is legal, got [%s]", ids(got))
@@ -131,7 +131,7 @@ func TestTransitionCatchesTheWaysALeaseCanStopBeingAFact(t *testing.T) {
 		name  string
 		after Lease
 	}{
-		{"reopened", Lease{Name: "l1", Closed: false, SpecFingerprint: "A"}},
+		{"reopened", Lease{Name: "l1", Closed: false, GroupIndex: "0", SpecFingerprint: "A"}},
 		{"spec mutated", Lease{Name: "l1", Closed: true, HasEnded: true, EndedUnixNano: 100, ClosureReason: "Completed", SpecFingerprint: "B"}},
 		{"ending moved", Lease{Name: "l1", Closed: true, HasEnded: true, EndedUnixNano: 200, ClosureReason: "Completed", SpecFingerprint: "A"}},
 		{"reason rewritten", Lease{Name: "l1", Closed: true, HasEnded: true, EndedUnixNano: 100, ClosureReason: "Shrink", SpecFingerprint: "A"}},
@@ -149,13 +149,33 @@ func TestTransitionCatchesTheWaysALeaseCanStopBeingAFact(t *testing.T) {
 // bridge.apply legitimately creates a lease — and may even close it — within a
 // single pass. A new mint has no "before" to be monotone against.
 func TestTransitionExemptsNewMints(t *testing.T) {
-	before := World{Leases: []Lease{{Name: "old", Closed: false, SpecFingerprint: "A"}}}
+	before := World{Leases: []Lease{{Name: "old", Closed: false, GroupIndex: "0", SpecFingerprint: "A"}}}
 	after := World{Leases: []Lease{
 		{Name: "old", Closed: true, HasEnded: true, EndedUnixNano: 1, ClosureReason: "Swap", SpecFingerprint: "A"},
 		{Name: "fresh", Closed: true, HasEnded: true, EndedUnixNano: 2, ClosureReason: "Completed", SpecFingerprint: "Z"},
 	}}
 	if got := CheckTransition(before, after); len(got) != 0 {
 		t.Fatalf("closing an existing lease and minting a new one in one pass is legal, got [%s]", ids(got))
+	}
+}
+
+// An open lease with no placement group makes the resolver, the elastic loop and the
+// node-failure swap each address the wrong ranks, and none of them can tell. Before
+// R28b the sole committer stamped none and three consumers defaulted it to "0".
+func TestOpenLeaseWithNoPlacementGroupIsAViolation(t *testing.T) {
+	w := World{Leases: []Lease{{Name: "l1", RunKey: "default/train", Closed: false}}}
+	got := CheckSteady(w)
+	if len(got) != 1 || got[0].ID != GroupStamped {
+		t.Fatalf("want %s, got [%s]", GroupStamped, ids(got))
+	}
+}
+
+// A CLOSED lease is a settled fact; it is not addressed by anything, and old ledgers
+// legitimately hold pre-R28b closures. Only open leases are constrained.
+func TestClosedLeaseNeedsNoPlacementGroup(t *testing.T) {
+	w := World{Leases: []Lease{{Name: "l1", RunKey: "default/train", Closed: true, HasEnded: true, ClosureReason: "Completed"}}}
+	if got := CheckSteady(w); len(got) != 0 {
+		t.Fatalf("a settled lease is legal whatever it was labelled, got [%s]", ids(got))
 	}
 }
 

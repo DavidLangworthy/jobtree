@@ -40,6 +40,7 @@ func (c *RunController) snapshotWorld() invariant.World {
 			Name:            lease.Name,
 			RunKey:          keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name),
 			Closed:          lease.Status.Closed,
+			GroupIndex:      leaseGroupIndex(lease),
 			HasEnded:        lease.Status.Ended != nil && !lease.Status.Ended.IsZero(),
 			EndedUnixNano:   endedUnixNano(lease),
 			ClosureReason:   lease.Status.ClosureReason,

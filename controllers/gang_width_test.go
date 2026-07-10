@@ -62,7 +62,7 @@ func memberLease(slot int, role, reason string, now time.Time) v1.Lease {
 		ObjectMeta: v1.ObjectMeta{
 			Name:      "gang-lease-" + string(rune('a'+slot)),
 			Namespace: "default",
-			Labels:    map[string]string{binder.LabelRunName: "gang", binder.LabelRunRole: role},
+			Labels:    map[string]string{binder.LabelRunName: "gang", binder.LabelGroupIndex: "0", binder.LabelRunRole: role},
 		},
 		Spec: v1.LeaseSpec{
 			Owner:          "org:ai:team",
