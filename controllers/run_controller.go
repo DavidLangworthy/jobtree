@@ -2479,9 +2479,9 @@ func (c *RunController) emitSwapPod(run *v1.Run, groupIndex string, spareLease *
 			binder.LabelRunRole:    binder.RoleActive,
 		},
 		Annotations: map[string]string{
-			binder.AnnotationExpectedWidth: "1",
-			binder.AnnotationLeaseReason:   "Swap",
-			binder.AnnotationSwapNode:      node,
+			binder.AnnotationExpectedWidth:  "1",
+			binder.AnnotationLeaseReason:    "Swap",
+			binder.AnnotationSwapNode:       node,
 			binder.AnnotationPayerOwner:     spareLease.Spec.Owner,
 			binder.AnnotationPayerNamespace: spareLease.Spec.PaidByBudgetNamespace,
 			binder.AnnotationPayerBudget:    spareLease.Spec.PaidByBudget,
