@@ -177,7 +177,7 @@ func Evaluate(in Input) *Evaluation {
 		byName := make(map[string]*EnvelopeAccount, len(b.Spec.Envelopes))
 		for j := range b.Spec.Envelopes {
 			env := b.Spec.Envelopes[j]
-			key := EnvelopeKey{Budget: b.Name, Envelope: env.Name}
+			key := EnvelopeKey{Namespace: b.Namespace, Budget: b.Name, Envelope: env.Name}
 			acct := &EnvelopeAccount{
 				Key:          key,
 				Owner:        b.Spec.Owner,
@@ -516,7 +516,7 @@ func (ev *Evaluation) fill(in Input, facts []*leaseFact, envOrder []EnvelopeKey,
 		}
 		res.live = append(res.live, f)
 		lease := f.lease
-		envKey := EnvelopeKey{Budget: lease.Spec.PaidByBudget, Envelope: lease.Spec.PaidByEnvelope}
+		envKey := EnvelopeKey{Namespace: lease.Spec.PaidByBudgetNamespace, Budget: lease.Spec.PaidByBudget, Envelope: lease.Spec.PaidByEnvelope}
 		acct := ev.envelopes[envKey]
 		if acct == nil {
 			// No such envelope (deleted budget, empty payer): backed by
@@ -808,7 +808,7 @@ func (res *fillResult) accrue(ev *Evaluation, t0, t1 time.Time) {
 	for _, f := range res.live {
 		class := res.classes[f]
 		leaseHours := float64(f.width) * hours
-		envKey := EnvelopeKey{Budget: f.lease.Spec.PaidByBudget, Envelope: f.lease.Spec.PaidByEnvelope}
+		envKey := EnvelopeKey{Namespace: f.lease.Spec.PaidByBudgetNamespace, Budget: f.lease.Spec.PaidByBudget, Envelope: f.lease.Spec.PaidByEnvelope}
 		acct := ev.envelopes[envKey]
 		if acct != nil {
 			acct.HoursByClass[class] += leaseHours
@@ -865,7 +865,7 @@ func (res *fillResult) commit(ev *Evaluation) {
 	for _, f := range res.live {
 		class := res.classes[f]
 		ev.classes[f.name] = class
-		envKey := EnvelopeKey{Budget: f.lease.Spec.PaidByBudget, Envelope: f.lease.Spec.PaidByEnvelope}
+		envKey := EnvelopeKey{Namespace: f.lease.Spec.PaidByBudgetNamespace, Budget: f.lease.Spec.PaidByBudget, Envelope: f.lease.Spec.PaidByEnvelope}
 		acct := ev.envelopes[envKey]
 		if acct != nil {
 			acct.WidthByClass[class] += f.width

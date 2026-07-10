@@ -64,9 +64,15 @@ const (
 	// mints the lease from these instead of re-deriving a payer via cover, so
 	// continued/promised work keeps its attributed envelope (sponsor caps,
 	// lender attribution — R15).
-	AnnotationPayerOwner    = "rq.davidlangworthy.io/payer-owner"
-	AnnotationPayerBudget   = "rq.davidlangworthy.io/payer-budget"
-	AnnotationPayerEnvelope = "rq.davidlangworthy.io/payer-envelope"
+	AnnotationPayerOwner = "rq.davidlangworthy.io/payer-owner"
+	// AnnotationPayerNamespace is the namespace of AnnotationPayerBudget: Budgets
+	// are namespaced, so the budget name alone does not identify the envelope to
+	// charge (task #62). Empty on pods emitted before the field existed; the
+	// funding fold keys an empty namespace as its own value, so they keep matching
+	// their (legacy, empty-namespace) envelope rather than being re-pointed.
+	AnnotationPayerNamespace = "rq.davidlangworthy.io/payer-namespace"
+	AnnotationPayerBudget    = "rq.davidlangworthy.io/payer-budget"
+	AnnotationPayerEnvelope  = "rq.davidlangworthy.io/payer-envelope"
 	// LeaseReasonPromise marks a promised-but-unfunded activation pod (R3): its
 	// reservation came due against an exhausted (but present) envelope, so the
 	// controller pre-authorized the start instead of minting — the plugin skips
@@ -349,9 +355,10 @@ func (m *materializer) buildLease(groupIndex int, slots []nodeSlot, seg cover.Se
 			Interval: v1.LeaseInterval{
 				Start: v1.NewTime(m.now),
 			},
-			PaidByBudget:   seg.BudgetName,
-			PaidByEnvelope: seg.EnvelopeName,
-			Reason:         m.reason,
+			PaidByBudgetNamespace: seg.Namespace,
+			PaidByBudget:          seg.BudgetName,
+			PaidByEnvelope:        seg.EnvelopeName,
+			Reason:                m.reason,
 		},
 	}
 }

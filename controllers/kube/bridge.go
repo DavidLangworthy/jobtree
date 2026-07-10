@@ -497,7 +497,8 @@ func buildPod(manifest binder.PodManifest, run *v1.Run) *corev1.Pod {
 	}
 	for _, k := range []string{
 		binder.AnnotationExpectedWidth, binder.AnnotationLeaseReason, binder.AnnotationCohort,
-		binder.AnnotationSwapNode, binder.AnnotationPayerOwner, binder.AnnotationPayerBudget, binder.AnnotationPayerEnvelope,
+		binder.AnnotationSwapNode, binder.AnnotationPayerOwner, binder.AnnotationPayerNamespace,
+		binder.AnnotationPayerBudget, binder.AnnotationPayerEnvelope,
 	} {
 		if v, ok := manifest.Annotations[k]; ok {
 			annotations[k] = v

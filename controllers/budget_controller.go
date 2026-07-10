@@ -92,7 +92,7 @@ func (c *BudgetController) ReconcileBudget(budgetObj *v1.Budget, ev *funding.Eva
 	usage := make([]v1.EnvelopeUsage, 0, len(budgetObj.Spec.Envelopes))
 	for i := range budgetObj.Spec.Envelopes {
 		spec := &budgetObj.Spec.Envelopes[i]
-		acct := ev.Envelope(funding.EnvelopeKey{Budget: budgetObj.ObjectMeta.Name, Envelope: spec.Name})
+		acct := ev.Envelope(funding.EnvelopeKey{Namespace: budgetObj.ObjectMeta.Namespace, Budget: budgetObj.ObjectMeta.Name, Envelope: spec.Name})
 		if acct == nil {
 			continue
 		}
