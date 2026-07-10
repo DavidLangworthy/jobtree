@@ -339,6 +339,12 @@ func (b *Bridge) apply(ctx context.Context, snap *worldSnapshot) error {
 		if !existed {
 			created := res.DeepCopy()
 			created.ResourceVersion = ""
+			// Own the Reservation to its Run so a deleted Run's reservation is
+			// garbage-collected by the apiserver, not left for cleanupDeletedRun to
+			// find (R12). Unlike a Lease, a Reservation is a planning artifact with
+			// no funding to audit, so cascade-deletion is exactly right for it.
+			owner := state.Runs[keys.NamespacedKey(res.Spec.RunRef.Namespace, res.Spec.RunRef.Name)]
+			created.OwnerReferences = runOwnerReferences(owner)
 			status := res.Status
 			if err := b.Client.Create(ctx, created); err != nil {
 				return fmt.Errorf("create reservation %s: %w", key, err)
