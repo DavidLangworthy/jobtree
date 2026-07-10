@@ -14,7 +14,7 @@ to the design that it cannot drift far from reality.
 | `NodeFailure` | the node-failure / spare-swap / reclaim seam | no duplicate rank; exact-slot-only unfunded reclaim; no failed-node leak; no terminal immortal lease; phase is the join; ledger/workload plane agreement |
 | `LedgerCompaction` | the R4 pt2 settlement theorem for `pkg/funding/evaluate.go` | if `horizon <= now` and no retained lease starts before the horizon, replaying `summary + retained` matches full replay on funded lease-hours and the funded set at `Now` |
 | `LedgerCompactionStore` | the pt2b persisted-settlement store semantics | repeated settlement, time advance, and window movement preserve equivalence to full replay, provided window shifts invalidate or recompute the summary before reuse |
-| `LedgerCompactionAccounting` | the broader pt2b accounting surface: aggregate caps, full window identity, and lender/class carry-forward | persisted summary representation, one-shot round-trip equivalence, and representative seeded-fold steps for the owned and borrowed carry-forward cases |
+| `LedgerCompactionAccounting` | the broader pt2b accounting surface: aggregate caps, full window identity, and lender/class carry-forward | persisted summary representation and full stateful round-trip equivalence across settlement, time advance, window shifts, and summary repair; exact finite seeded-fold equivalence |
 
 ## Running
 
@@ -57,6 +57,23 @@ make ledger-compaction-accounting-seeded-fold-universal-check
 make ledger-compaction-accounting-witness-check
 make ledger-compaction-accounting-witness-counterexamples
 ```
+
+The stronger accounting rail checks the real `Init`/`Next` lifecycle rather
+than an injected one-shot state:
+
+```bash
+make ledger-compaction-accounting-stateful-check
+make ledger-compaction-accounting-stateful-counterexamples
+make ledger-compaction-accounting-stateful-apalache-check  # large VM
+```
+
+`AccountingInv` conjoins type safety, exact summary representation, and the
+full consumed/class/aggregate/lender/current-class round trip. TLC exhausts
+the finite model (5,386 distinct states, maximum depth 12). The negative
+controls reach stale summaries through ordinary actions, and Apalache reports
+no error through two transitions. The symbolic target defaults to a 10 GB
+heap and took about 12 minutes on a 16 GB VM, so it is intentionally not part
+of hosted CI.
 
 `LedgerCompaction` is the one-shot theorem for `settlementSafe` and
 `SettleAccrual`. `LedgerCompactionStore` is the stronger, stateful theorem for
@@ -136,6 +153,12 @@ design review:
   window start shift, and TLC finds stale owned-vs-unfunded class history.
 - `LedgerCompactionAccountingStaleLender.cfg` reuses a summary across a window
   end change, and TLC finds stale lender-hour history.
+- `LedgerCompactionAccountingStatefulStaleStart.cfg` reaches the stale class
+  history from the ordinary initial state via `AdvanceNow`, `SettleTo(1)`, and
+  `ShiftWindowStart`.
+- `LedgerCompactionAccountingStatefulStaleEnd.cfg` reaches stale lender
+  history from the ordinary initial state via two `AdvanceNow` steps,
+  `SettleTo(2)`, and `ShiftWindowEnd`.
 
 ## What is deliberately out of scope
 

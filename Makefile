@@ -181,10 +181,14 @@ cli-test:
 	go test ./cmd/kubectl-runs/...
 
 TLA2TOOLS := specs/.cache/tla2tools.jar
-TLC := java -XX:+UseParallelGC -cp .cache/tla2tools.jar tlc2.TLC -deadlock -workers auto
+# Isolate TLC metadata by Make target. Without this, fast consecutive checks
+# can choose the same timestamped directory and a negative rail can mistake
+# that startup failure for its expected invariant violation.
+TLC = java -XX:+UseParallelGC -cp .cache/tla2tools.jar tlc2.TLC -cleanup -metadir .cache/tlc/$@ -deadlock -workers auto
 APALACHE_VERSION ?= 0.58.3
 APALACHE := specs/.cache/apalache/bin/apalache-mc
 APALACHE_JVM_ARGS ?= -Xmx5500m
+APALACHE_STATEFUL_JVM_ARGS ?= -Xmx10000m
 
 $(TLA2TOOLS):
 	mkdir -p $(dir $(TLA2TOOLS))
@@ -277,3 +281,16 @@ ledger-compaction-accounting-witness-check: ledger-compaction-accounting-seeded-
 ledger-compaction-accounting-witness-counterexamples: $(TLA2TOOLS)
 	cd specs && ! $(TLC) -config LedgerCompactionAccountingStaleClassHours.cfg LedgerCompactionAccounting.tla
 	cd specs && ! $(TLC) -config LedgerCompactionAccountingStaleLender.cfg LedgerCompactionAccounting.tla
+
+.PHONY: ledger-compaction-accounting-stateful-check ledger-compaction-accounting-stateful-counterexamples ledger-compaction-accounting-stateful-apalache-check
+ledger-compaction-accounting-stateful-check: $(TLA2TOOLS)
+	cd specs && $(TLC) -config LedgerCompactionAccountingStateful.cfg LedgerCompactionAccounting.tla
+
+ledger-compaction-accounting-stateful-counterexamples: $(TLA2TOOLS)
+	cd specs && ! $(TLC) -config LedgerCompactionAccountingStatefulStaleStart.cfg LedgerCompactionAccounting.tla
+	cd specs && ! $(TLC) -config LedgerCompactionAccountingStatefulStaleEnd.cfg LedgerCompactionAccounting.tla
+
+# This symbolic lifecycle check needs a large VM. Keep its larger heap separate
+# from the ordinary Apalache rail, which is sized for standard CI machines.
+ledger-compaction-accounting-stateful-apalache-check: $(APALACHE)
+	cd specs && JVM_ARGS='$(APALACHE_STATEFUL_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=LedgerCompactionAccountingStateful.cfg --length=2 --no-deadlock LedgerCompactionAccounting.tla

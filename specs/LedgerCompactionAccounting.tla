@@ -63,6 +63,9 @@
 (* and a 12.5 GB run received SIGTERM near the VM limit. Apalache checks    *)
 (* the representative 0 -> 1 and 1 -> 2 steps. The exact finite universal   *)
 (* operator is checked with TLC by the dedicated SeededFoldUniversal config. *)
+(* The real Init/Next lifecycle is checked separately: TLC exhausts its      *)
+(* finite state graph, while Apalache checks bounded invariant preservation  *)
+(* through two transitions on a large VM.                                   *)
 (*                                                                          *)
 (* Implementation anchors                                                    *)
 (* ----------------------                                                    *)
@@ -638,7 +641,21 @@ Next ==
   \/ \E e \in Envs : \E en \in Ends : ShiftWindowEnd(e, en)
   \/ RepairSummary
 
+\* Negative-control sub-specs omit RepairSummary and the unrelated shift so
+\* TLC produces short stale-summary traces from the ordinary Init state.
+ReachableStaleStartNext ==
+  \/ AdvanceNow
+  \/ \E h \in Boundaries : SettleTo(h)
+  \/ \E e \in Envs : \E s \in Ticks : ShiftWindowStart(e, s)
+
+ReachableStaleEndNext ==
+  \/ AdvanceNow
+  \/ \E h \in Boundaries : SettleTo(h)
+  \/ \E e \in Envs : \E en \in Ends : ShiftWindowEnd(e, en)
+
 Spec == Init /\ [][Next]_vars
+ReachableStaleStartSpec == Init /\ [][ReachableStaleStartNext]_vars
+ReachableStaleEndSpec == Init /\ [][ReachableStaleEndNext]_vars
 StaleWindowSpec == InitStaleWindowWitness /\ [][Next]_vars
 OneShotNext == UNCHANGED vars
 OneShotSpec == OneShotInit /\ [][OneShotNext]_vars
@@ -669,5 +686,12 @@ TypeOK ==
   /\ leaseStart \in [LeaseIds -> Ticks]
   /\ leaseEnd \in [LeaseIds -> Ends]
   /\ \A l \in LeaseIds : leaseEnabled[l] => leaseStart[l] < leaseEnd[l]
+
+\* The named lifecycle obligation shared by the exact TLC rail and bounded
+\* Apalache rail.
+AccountingInv ==
+  /\ TypeOK
+  /\ SummaryRep
+  /\ StatefulRoundTrip
 
 =============================================================================

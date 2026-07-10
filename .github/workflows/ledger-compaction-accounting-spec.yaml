@@ -1,0 +1,39 @@
+name: Ledger Compaction Accounting Spec
+
+# The exact finite lifecycle and seeded-fold checks are fast under TLC. The
+# bounded stateful Apalache check needs a 10 GB heap and stays an opt-in
+# large-VM target rather than running on a standard hosted runner.
+on:
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - 'specs/LedgerCompaction*'
+      - 'specs/README.md'
+      - '.github/workflows/ledger-compaction-accounting-spec.yaml'
+      - 'Makefile'
+  push:
+    branches: [ main ]
+    paths:
+      - 'specs/LedgerCompaction*'
+      - 'specs/README.md'
+      - '.github/workflows/ledger-compaction-accounting-spec.yaml'
+      - 'Makefile'
+
+jobs:
+  tlc:
+    name: ledger accounting tlc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Check the stateful accounting invariant
+        run: make ledger-compaction-accounting-stateful-check
+      - name: Demonstrate reachable stale-summary counterexamples
+        run: make ledger-compaction-accounting-stateful-counterexamples
+      - name: Check exact seeded-fold and accounting witnesses
+        run: make ledger-compaction-accounting-witness-check
+      - name: Demonstrate one-shot accounting counterexamples
+        run: make ledger-compaction-accounting-witness-counterexamples

@@ -86,15 +86,42 @@ Continuation on a 16 GB Codespace reported:
   `2 states generated`, `1 distinct state found`, `0 states left on queue`,
   with no error.
 
-The exact finite universal check and the extra witnesses therefore remain on
-TLC. The summary representation, stateful round trip, and representative
-seeded-fold steps remain on Apalache/Z3.
+The accounting guarantee was then strengthened from one-shot states to the
+real transition system:
+
+- `AccountingInv` combines `TypeOK`, `SummaryRep`, and `StatefulRoundTrip` over
+  the ordinary `Init`/`Next` lifecycle.
+- `make ledger-compaction-accounting-stateful-check` completed under TLC with
+  `39,168 states generated`, `5,386 distinct states found`, a maximum depth of
+  12, and no error.
+- The reachable stale-start negative control follows `AdvanceNow`,
+  `SettleTo(1)`, and `ShiftWindowStart`, then violates
+  `ClassHoursRoundTrip`.
+- The reachable stale-end negative control follows two `AdvanceNow` steps,
+  `SettleTo(2)`, and `ShiftWindowEnd`, then violates `LenderRoundTrip`.
+- `make ledger-compaction-accounting-stateful-apalache-check` completed under
+  Apalache 0.58.3 with a 10 GB heap: `NoError` through computation length 2 in
+  11 minutes 54 seconds. This is an opt-in large-VM target.
+- A path-filtered GitHub Actions workflow runs the exact stateful and witness
+  TLC rails, including their negative controls. The large-VM Apalache target
+  remains outside hosted CI.
+- The shared TLC command now uses a cleaned metadata directory per Make target.
+  This prevents fast consecutive checks from mistaking a timestamp-directory
+  startup collision for the expected failure of a negative control.
+
+The exact finite universal check, full finite lifecycle, and extra witnesses
+therefore remain on TLC. The summary representation, bounded lifecycle
+preservation, stateful round trip, and representative seeded-fold steps also
+have Apalache/Z3 coverage.
 
 ## Next Work
 
-1. Revisit a direct Apalache universal proof only after an inliner/encoding
-   improvement or on a machine with materially more than 16 GB RAM.
-2. Decide whether the new exact TLC target belongs in a path-filtered CI
-   workflow once the recovered branch is ready to merge.
-3. Review the uncommitted Apalache `_apalache-out` directories in the old
-   Codespace before deleting it. They were intentionally not committed.
+1. Generalize the fixed two-lease history into a small nondeterministic family
+   of enabled flags, envelope ownership, borrowed status, and start/end times;
+   keep a separate exploration config if the exact state graph grows too much
+   for CI.
+2. Revisit a direct Apalache universal seeded-fold proof only after an
+   inliner/encoding improvement or on a machine with materially more than
+   16 GB RAM.
+3. Extend the abstraction to a third lease or another aggregate-membership
+   shape only after the generalized two-lease invariant stays tractable.
