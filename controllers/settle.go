@@ -140,12 +140,23 @@ func SettleLeases(state *ClusterState, now time.Time) Sweep {
 		if lease.Status.Closed {
 			continue
 		}
+		// An empty run name keys to "namespace/", which matches no real Run, so the
+		// orphan rule would reap it. The sole committer always names the run; a
+		// lease that does not is malformed, not orphaned — and this sweep DELETES
+		// pods, so it must not act on a key it cannot trust. Leave it (an omission
+		// pkg/invariant will count), never destroy on it.
+		if lease.Spec.RunRef.Name == "" {
+			continue
+		}
 		key := keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name)
 		if run, known := state.Runs[key]; !known || run == nil {
 			doomed[key] = SweepOrphanRun
 		}
 	}
 	for _, pod := range state.Pods {
+		if pod.Labels[binder.LabelRunName] == "" {
+			continue // malformed, not orphaned — see the lease loop above
+		}
 		key := keys.NamespacedKey(pod.Namespace, pod.Labels[binder.LabelRunName])
 		if run, known := state.Runs[key]; !known || run == nil {
 			doomed[key] = SweepOrphanRun
