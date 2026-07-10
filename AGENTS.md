@@ -101,6 +101,26 @@ reads as green. Four standard lenses always run and cannot be removed by the cal
 who forgets to ask about lease lifecycle would otherwise get a clean review — an unenforced obligation,
 which is the exact bug class the harness exists to catch.
 
+Three properties are load-bearing and easy to break by "simplifying" them:
+
+**Investigators write prose; a cheap model shapes it.** Forcing a thinking model to emit JSON while it
+reasons killed four skeptics mid-verdict — three had already decided, and one was the only dissent on
+its finding. The shaper repairs the **shape**, never the **substance**: it may not add, infer or invent,
+and must report `unsupported` rather than fabricate. Relax that and a lens which did no work gets
+laundered into a well-formed report, the validator passes, and the rail says green.
+
+**The skeptic panel is heterogeneous.** Three skeptics on one model are three samples of one
+distribution; they fail together. On 2026-07-09 all three reached for *"pre-existing, therefore not
+worsened"* and refuted a true finding. **Sonnet** reproduces, **Opus** traces, **Fable** weighs
+consequence.
+
+**And the vote is not a vote.** Heterogeneous judges are not exchangeable, so majority counting is
+unsound. A **reproduction confirms alone** — a compiled test that exhibits the bad state is a fact. A
+**refutation needs both** the trace *and* a reproduction that was tried and failed; absence of evidence
+counts only when somebody looked. The **consequence lens may veto a fix** without touching the finding:
+*"real bug, proposed fix is a reaper"* is a distinct outcome, and it has caught three. Everything else is
+`UNRESOLVED`.
+
 ## Things that are not valid reasons to dismiss a finding
 
 - *"The test suite passes."* It passed for every defect on the list.
@@ -114,6 +134,11 @@ which is the exact bug class the harness exists to catch.
   purpose is a finding in its own right, whatever the code did before.
 - *"Only some of the skeptics returned a verdict."* Silence is not consent in either direction. An
   under-quorum finding is `UNRESOLVED` and stays on the table.
+- *"The trace shows it cannot happen."* Not on its own. If nobody ran the code, nobody looked. The engine
+  is a simulator; a reproduction takes minutes.
+- *"A quorum refuted it."* A quorum has been wrong. Two judges later reverted the fix and watched the
+  reaper return. If a sibling finding says the same thing from another angle and never got a vote, the
+  refutation has not settled anything.
 
 ## Working rules
 

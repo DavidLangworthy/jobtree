@@ -17,7 +17,7 @@ statement about the authors. It is a statement about the *shape of the system*: 
 has a small number of load-bearing invariants that the type system does not encode,
 the compiler does not check, and a passing test suite does not establish.
 
-A reviewer who reads a diff and asks "does this look right?" will approve all six.
+A reviewer who reads a diff and asks "does this look right?" will approve every one of them.
 A reviewer who knows *where the invariants live* and *what their violations look
 like* will find them. This file is the second reviewer's map.
 
@@ -37,8 +37,8 @@ is never stored. So:
   *code paths*. Every new `return`, every new `continue`, every new early exit is a
   new opportunity to leave one undischarged.
 
-Read `controllers/run_controller.go:1384` — the comment there was written by the fix
-for specimen 1 and states the stakes precisely:
+Read the comment in `failGroupWithoutSpare` (`controllers/run_controller.go`). It was written
+by the fix for specimen 1 and states the stakes precisely:
 
 ```
 // The group is not runnable, so the spare it was holding can never cover it.
@@ -56,12 +56,16 @@ Ranked by defects-per-line historically. Start at the top and do not skip.
 
 | Rank | Location | Why |
 |---|---|---|
-| 1 | `controllers/run_controller.go` — `HandleNodeFailure`, `applyResolution`, `failGroupWithoutSpare`, `failRun`, `completeRun`, `shrinkRun` | Every one of the six specimens lived in this file. Multi-branch functions that close leases. |
+| 1 | `controllers/run_controller.go` — `HandleNodeFailure`, `applyResolution`, `failGroupWithoutSpare`, `failRun`, `reclaimSquatter`, `releaseRun` | Every specimen but one lived in this file. Multi-branch functions that close leases. |
 | 2 | Any function that writes `Lease.Status.Closed` | Only `controllers.CloseLease` may, and `hack/antifake/soleclose.go` fails the build otherwise. Zero allowlist. If you are here to add an exception, you are the finding. |
 | 3 | Any function that writes `run.Status.Phase` | Phase is a lattice **inside `HandleNodeFailure`** and a state machine everywhere else. That asymmetry has now produced the same bug seven times: see [history-run-phase-writers.md](history-run-phase-writers.md) and class **LAST-WRITER-WINS**. |
 | 4 | `controllers/kube/reconcilers.go` — `NodeReconciler` | Where a Kubernetes signal is translated into a claim about physical reality. See class **SIGNAL ≠ REALITY**. |
 | 5 | `pkg/resolver/` and its caller `applyResolution` | The resolver decides *who dies*. Its `Scope` filter means it sees a subset of leases; the caller then reasons about the whole run. |
 | 6 | The test that "proves" the change | See class **THE TEST ASSERTS THE BUG**. This is the one that gets everyone. |
+
+**Cite by name, not by line.** Every line number in an earlier draft of this file had rotted within a
+day. Name the function and quote the comment; both survive a rebase, and a reader who cannot find them
+has learned something too.
 
 Two structural facts make confirmation cheap, and you are expected to use them:
 
@@ -83,14 +87,14 @@ class is real.
 ### 1. IMMORTAL LEASE — an exit path that does not discharge its obligation
 
 **Tell.** A function with more than one `return`, where *some* returns are preceded by
-`closeLease`/`closeRunLeases` and others are not. Or: a status assignment to a terminal
+`CloseLease`/`releaseRun` and others are not. Or: a status assignment to a terminal
 phase (`RunPhaseFailed`, `RunPhaseComplete`) that is not accompanied by a closure call.
 Or: a new caller added to an existing function whose closure behaviour was correct only
 for the old callers.
 
 **Where.** Every branch of `HandleNodeFailure`. Every arm of `applyResolution`'s final
-`switch` (`run_controller.go:1612-1627`). `failRun`. `completeRun`. Any new helper
-factored out of one of these.
+`switch`. `failRun`. `completeRun`. `reclaimSquatter`. Any new helper factored out of one
+of these.
 
 **How to confirm.** Build a `ClusterState` in which the run reaches that branch. Drive
 `Reconcile` twenty times over twenty simulated hours. Assert the lease is closed. If it
@@ -101,10 +105,16 @@ failed active lease and left the run's **own spare** open forever. Reproduced by
 20 reconciles, 20 simulated hours, still open, still deriving `Owned`.
 
 **The suspects named here when this file was written were both real.** `applyResolution`'s
-terminal branch set `RunPhaseFailed` and never called `closeRunLeases`; `activeGPUsForRun`
-skipped spares, so a run whose last open lease was a spare took that branch and left it
-open forever. Both fixed in `98b602d`. Neither had a test. *Write the suspect down, then
-go and settle it — the note is not the work.*
+terminal branch set `RunPhaseFailed` and never swept the run's leases; `activeGPUsForRun`
+skipped spares, so a run whose last open lease was a spare took that branch and left it open
+forever. Both fixed. Neither had a test. *Write the suspect down, then go and settle it — the
+note is not the work.*
+
+**And a later specimen, worth more than the first.** The fix for a *different* immortal-lease
+finding made a dead pod-eviction live — and being live, it deleted the victim's whole pod set
+while closing one lease. The run was left `Running` with an open lease and **zero containers**,
+still open after twenty simulated hours. `INV-WIDTH-ASSEMBLED` counts *leases*, not pods, so the
+oracle was structurally blind to it. **A fix for this class can create this class.**
 
 ---
 
@@ -127,7 +137,7 @@ code — a two-line check, a `panic`, or making the statement true by constructi
 nothing to close."* True when written. A new caller made it false. The fix was not to
 update the comment — it was to make `failRun` **close the leases**, so the sentence
 became true by construction. That is the correct shape of every fix in this class.
-See `run_controller.go:702`.
+See `failRun`.
 
 ---
 
@@ -211,7 +221,8 @@ change affects both. **Sharing a machine is not sharing a slot.**
 
 **Specimen (R22).** The reclaim sweep compared `nodeFromSlot(slot)` against the spare's
 node set, so a node-failure swap for run A closed run B's funded, co-located lease
-unconditionally. See the comment now at `run_controller.go:1240-1252`, which also records
+unconditionally. See the comment beginning *"R22 — reclaim at SLOT granularity"* in
+`HandleNodeFailure`'s pass 2, which also records
 the correct ruling: an exact-slot conflict with *funded* work means **decline the swap**,
 because choosing between funded runs belongs to `pkg/resolver`, which ranks by class.
 
@@ -250,19 +261,25 @@ it swallows.
 **Tell.** Two code sites that perform the same multi-step obligation with slightly
 different steps. One gets fixed; the other does not.
 
-**Where.** `closeRunLeases` (`run_controller.go:1425`) closes a run's open leases. So
-does `cleanupDeletedRun` (`controllers/kube/reconcilers.go:98-105`) — hand-rolled, three
-raw field assignments, bypassing `closeLease` entirely. So does `applyResolution:1566`.
-Three implementations of "close a lease"; only one of them can be instrumented, metered,
-or fixed in a single place.
+**Where.** There were once three implementations of "close a lease": `closeLease`,
+`applyResolution`'s inline field assignments, and `cleanupDeletedRun`'s. Only one could be
+instrumented, metered, or fixed in a single place. All three are now `controllers.CloseLease`,
+and `hack/antifake/soleclose.go` fails the build on a fourth.
+
+Look next at the *other* cloned obligations: `leaseGroupIndex` existed twice (in `controllers`
+and in `pkg/resolver`) and **both defaulted a missing group to `"0"`**, which hid R28b for
+months. `groupIndexForPodIndex` is a second implementation of `pack.deriveGroups`, pinned to it
+by a test. Two implementations of one rule always drift; the question is only whether something
+notices.
 
 **How to confirm.** Add a side effect (a metric, a log, an event) to the canonical
 implementation. Grep for state changes that do not produce it. Anything that mutates
 `Status.Closed` without going through `closeLease` is a clone.
 
-**Specimen.** Both rogue sites above exist in `main` today. This is why the sole-closer
-AST lint (`hack/antifake/`) is a rail and not a style preference: it makes the clone
-*impossible to add*, rather than merely *discouraged*.
+**Specimen.** The two rogue closure sites shipped for months. This is why the sole-closer AST
+lint (`hack/antifake/soleclose.go`) is a rail and not a style preference: it makes the clone
+*impossible to add*, rather than merely *discouraged*. Zero allowlist — an allowlist is a door,
+and this class exists because doors keep being found.
 
 ---
 
@@ -299,7 +316,7 @@ did not write**.
    share an author's misconception. Check both against `docs/project/quota-semantics.md`
    and the concept docs, which are binding.
 
-4. **Mutate the fix.** Delete the line you are relying on — the `closeLease` call, the
+4. **Mutate the fix.** Delete the line you are relying on — the `CloseLease` call, the
    `handled = true`. Re-run the test that supposedly covers it. **If it still passes, the
    test does not test the fix.** This caught a real hole: an early version of the
    specimen-1 test passed against the bug, because a *different* post-loop sweep happened
@@ -334,8 +351,8 @@ Grep for `CloseLease(` and ask, at each site: *whose container is still running?
 
 **Where.** `HandleNodeFailure`'s reclaim of a squatter. `applyResolution`'s terminal branch (it drops
 the pods of `closedGroups`, but the sweep closes leases whose groups are not in that set).
-`failRun`. `closeRunLeases`. `removePodsForGroups`. `Bridge.apply`, which deletes exactly the Pods
-absent from `state.Pods` — that is the mechanism, and the reason forgetting is silent.
+`failRun`. `releaseRun`. `removePodsForGroups`. `removeRunPodsOnNodes`. `Bridge.apply`, which deletes
+exactly the Pods absent from `state.Pods` — that is the mechanism, and the reason forgetting is silent.
 
 **Why it is invisible.** Nothing crashes in either direction, and each direction lies in a different
 way:
@@ -349,11 +366,18 @@ way:
 assert on `state.Leases` *and* `state.Pods`. A test that only checks closure reasons will pass through
 either lie. Every eviction test in this repo must assert on both.
 
-**Specimen.** `HandleNodeFailure` reclaimed an unfunded squatter with `closeLease(other,
+**Specimen.** `HandleNodeFailure` reclaimed an unfunded squatter with `CloseLease(other,
 "ReclaimedBySpare", now)` and nothing else. Its container kept running on the exact `node#ordinal` that
 `emitSwapPod` targeted one line later. And a second, in the other direction: a terminally Failed run
 released every lease via `closeRunLeases` while `failRun` touched no pods at all, so its ranks kept
 holding GPUs the ledger had just handed back.
+
+**The eviction you cannot always perform.** A `PodManifest` names a machine, not a `node#ordinal`,
+so "delete the pods of this lease" is not expressible. Evicting at machine granularity means deleting
+containers that back the victim's *other* leases — and a run's funding class is per-**lease**, so one
+of those may be `Owned`. The correct move is then to **decline the swap**, exactly as the engine
+already does for a funded conflict: choosing between funded runs belongs to `pkg/resolver`. A repair
+that closes "all the victim's leases" is a reaper, and a judge's fix-probe caught it before it shipped.
 
 **The legal exception, which you must not reap.** The checkpoint-grace window is a *deliberate*
 half-plane state: `failGroupWithoutSpare` closes the dead group's lease, parks the run `Pending` with
@@ -369,7 +393,7 @@ The skeptic's job is to refute, and the default under uncertainty is `refuted=tr
 But the following are **not** valid refutations, and a skeptic offering one has failed
 the task:
 
-- **"The test suite passes."** See class 8. The suite passed for all six specimens.
+- **"The test suite passes."** See class 8. The suite passed for every specimen on this list.
 - **"Pre-existing, therefore the change does not worsen it."** Valid for a *regression*
   review; dangerous for a *correctness* review. On 2026-07-09 this refuted two true findings
   while concealing that the fix under review was **inert in production** — it keyed on a

@@ -1,7 +1,7 @@
 export const meta = {
   name: 'adversarial-review',
   description: 'Fail-closed adversarial review: a lens that produces no real work BLOCKS, it never reads as green',
-  whenToUse: 'Reviewing any change to the funding engine, the scheduler plugin, or another sole-committer path. Pass args: {context, commit, lenses:[{name,model,effort,prompt,questions}], minEvidence, skepticQuorum, refuteThreshold}. The four standard lenses always run; caller lenses are ADDITIONAL.',
+  whenToUse: 'Reviewing any change to the funding engine, the scheduler plugin, or another sole-committer path. Pass args: {context, commit, lenses:[{name,model,effort,prompt,questions}], minEvidence, skepticQuorum}. The four standard lenses always run; caller lenses are ADDITIONAL. There is no refuteThreshold: the skeptic panel is heterogeneous and its aggregation is asymmetric, not a vote count.',
   phases: [
     { title: 'Scout', detail: 'mechanically scan the diff for the taxonomy tells' },
     { title: 'Review', detail: 'standard + caller lenses investigate, cite evidence, and are validated' },
@@ -44,6 +44,21 @@ export const meta = {
 //      look, and how to confirm. It is mandatory reading, not background.
 //   7. A SCOUT phase greps the diff for each taxonomy tell and hands every lens
 //      a list of PRIORITY LEADS. "Where to look" should be computed, not recalled.
+//
+// THIRD-GENERATION (after a panel of three Opus skeptics refuted a TRUE finding, and
+// four more skeptics died holding verdicts they could not serialize):
+//
+//   8. INVESTIGATORS WRITE PROSE. A cheap model maps the prose onto the schema. Making
+//      a thinking model emit JSON while it reasons killed four judges mid-verdict; three
+//      of them had already decided. The shaper repairs the SHAPE and never the
+//      SUBSTANCE — it may not add, infer or invent, and must report `unsupported`
+//      rather than fabricate. Otherwise a lens that did no work gets laundered into a
+//      well-formed report and the fail-closed rail says GREEN.
+//   9. THE SKEPTIC PANEL IS HETEROGENEOUS AND THE VOTE IS NOT A VOTE. Three skeptics on
+//      one model are three samples of one distribution; they fail together. Sonnet
+//      reproduces, Opus traces, Fable weighs consequence. A reproduction CONFIRMS alone;
+//      a refutation needs BOTH the trace and a reproduction that was tried and failed;
+//      and the consequence lens may veto a FIX without touching the FINDING.
 // ---------------------------------------------------------------------------
 
 // The Workflow tool sometimes delivers `args` as a JSON-encoded string rather
@@ -62,7 +77,6 @@ if (!A.context) {
 }
 const MIN_EVIDENCE = A.minEvidence || 3
 const SKEPTIC_QUORUM = A.skepticQuorum || 3
-const REFUTE_THRESHOLD = A.refuteThreshold || 2
 const MAX_ATTEMPTS = 3
 const DIFF = A.commit ? `git show ${A.commit}` : 'git diff main...HEAD'
 
@@ -112,6 +126,9 @@ const REPORT_SCHEMA = {
   type: 'object', additionalProperties: false,
   required: ['summary', 'answers', 'evidence', 'findings'],
   properties: {
+    // The shaper sets this when the agent's prose does not support a required field.
+    // It must never invent one. A non-empty list invalidates the report.
+    unsupported: { type: 'array', items: { type: 'string' } },
     summary: { type: 'string', minLength: 200 },
     answers: {
       type: 'array',
@@ -170,8 +187,16 @@ const VERDICT_SCHEMA = {
   properties: {
     refuted: { type: 'boolean' },
     reasoning: { type: 'string', minLength: 120 },
-    reproduced: { type: 'string' },
+    // REPRODUCTION lens. `ranCode` is the honesty flag: a skeptic that argued instead
+    // of executing must say so, and its "not a defect" is then worth much less.
+    reproduced: { type: 'boolean' },
+    ranCode: { type: 'boolean' },
+    reproduction: { type: 'string' },
+    // CONSEQUENCE lens. A finding can be REAL and its proposed fix a REAPER. That is a
+    // distinct verdict, and a 3-way vote has no way to express it.
+    fixIsReaper: { type: 'boolean' },
     preExisting: { type: 'boolean' },
+    unsupported: { type: 'array', items: { type: 'string' } },
   },
 }
 
@@ -210,6 +235,9 @@ function degenerate(s, min) {
 // Returns null when valid, else the reason the report is rejected.
 function invalidReason(report, questions) {
   if (!report) return 'the agent produced no output at all'
+  if ((report.unsupported || []).length) {
+    return `the shaper could not support these required fields from the agent's own prose: ${report.unsupported.join(', ')}. It is forbidden to invent them.`
+  }
   if (degenerate(report.summary, 200)) return `summary is degenerate or too short: ${JSON.stringify((report.summary || '').slice(0, 60))}`
   const answers = report.answers || []
   if (answers.length < questions.length) {
@@ -228,6 +256,72 @@ function invalidReason(report, questions) {
     if (degenerate(f.failure_scenario, 120)) return `finding ${JSON.stringify(f.title.slice(0, 40))} has a degenerate failure_scenario`
   }
   return null
+}
+
+// ---------------------------------------------------------------------------
+// SHAPE THE OUTPUT, NEVER THE SUBSTANCE.
+//
+// Forcing a thinking model to emit JSON while it reasons is how four skeptics died on
+// 2026-07-09 with `StructuredOutput retry cap exceeded`. Three of them had ALREADY
+// REACHED A VERDICT — visible in their last tool call — and lost it to schema
+// validation. One of those was the only dissenting vote on its finding.
+//
+// So: the investigator writes PROSE. A cheap model maps the prose onto the schema.
+//
+// The line that must not be crossed: the shaper repairs the SHAPE. It never repairs
+// the SUBSTANCE. If it may invent, then a lens that did no work — `summary: "test"`,
+// a finding titled "a" — gets laundered into a well-formed report, the validator
+// passes, and the fail-closed rail says GREEN with a straight face. That is strictly
+// worse than the bug this harness exists to catch.
+//
+// Three things keep it honest:
+//   1. The shaper is forbidden to add, infer, complete or invent, and must report
+//      `unsupported` rather than fabricate. A non-empty `unsupported` is NOT a pass —
+//      it falls through to the retry, and then to BLOCKED.
+//   2. `invalidReason` still runs on the shaped object. Degenerate substance blocks.
+//   3. The Attest phase independently opens every cited file and checks the quote.
+//      A shaper cannot invent evidence without being caught by machinery that already
+//      exists and does not trust it.
+const SHAPE_RULES = `
+You are a FORMATTER, not an analyst. You are given an investigator's verbatim prose and
+a JSON schema. Map the prose onto the schema.
+
+ABSOLUTE RULES:
+- You may NOT add, infer, complete, summarize-beyond-the-text, or invent ANYTHING. Every
+  string you emit must be supported by text that is already present.
+- Do NOT improve the analysis. Do NOT fix its reasoning. Do NOT make a weak finding
+  sound strong, or a strong one sound hedged.
+- Copy evidence quotes EXACTLY as written, character for character. An independent agent
+  will open the files and check them.
+- If a REQUIRED field has no support in the prose, put its name in the 'unsupported'
+  array and leave the field at its most minimal legal value. Do not guess it.
+  It is far better to report a field as unsupported than to fabricate one.
+- If the prose is empty, a placeholder, or plainly did no work, say so via 'unsupported'.
+  Do not manufacture the appearance of work.
+`
+
+// think() runs an investigator on prose, then shapes the prose into the schema.
+// Returns { obj, raw } or null. `obj` may carry a non-empty `unsupported`, which the
+// caller must treat as invalid.
+async function think(prompt, schema, opts) {
+  let raw = null
+  try {
+    raw = await agent(prompt, { label: opts.label, phase: opts.phase, model: opts.model, effort: opts.effort })
+  } catch (err) {
+    return null
+  }
+  if (typeof raw !== 'string' || raw.trim().length < 80) return null
+
+  let obj = null
+  try {
+    obj = await agent(
+      `${SHAPE_RULES}\n\nSCHEMA:\n${JSON.stringify(schema)}\n\nINVESTIGATOR'S OUTPUT (verbatim, between the markers):\n<<<BEGIN\n${raw}\nEND>>>`,
+      { label: `shape:${opts.label}`, phase: opts.phase, model: 'sonnet', effort: 'low', schema })
+  } catch (err) {
+    return null
+  }
+  if (!obj) return null
+  return { obj, raw }
 }
 
 // ---------------------------------------------------------------------------
@@ -373,18 +467,13 @@ async function runLens(lens) {
     const prompt = `${RULES}\n${PLAYBOOK}\n${A.context}\n${leadBlock}\n${lens.prompt}\n${qBlock}` +
       `\nThe change under review: \`${DIFF}\`. Tag each finding with its playbook 'taxonomyClass' when one fits.\n` +
       (rejection ? `\n\nYOUR PREVIOUS ATTEMPT WAS REJECTED: ${rejection}\nDo the work this time. Read the code. Cite it.` : '')
-    let report = null
-    try {
-      report = await agent(prompt, {
-        label: attempt === 1 ? lens.name : `${lens.name}:retry${attempt - 1}`,
-        phase: 'Review',
-        model: lens.model || 'opus',
-        effort: lens.effort || 'high',
-        schema: REPORT_SCHEMA,
-      })
-    } catch (err) {
-      report = null
-    }
+    const shaped = await think(prompt, REPORT_SCHEMA, {
+      label: attempt === 1 ? lens.name : `${lens.name}:retry${attempt - 1}`,
+      phase: 'Review',
+      model: lens.model || 'opus',
+      effort: lens.effort || 'high',
+    })
+    const report = shaped ? shaped.obj : null
     const why = invalidReason(report, questions)
     if (!why) return { lens: lens.name, report, attempts: attempt }
     rejection = why
@@ -451,33 +540,119 @@ if (raised.length === 0) {
 // ---------------------------------------------------------------------------
 phase('Judge')
 
-const SKEPTIC_LENSES = [
-  'CODE TRACE: does the claimed behavior follow from the code as written? Trace every function on the path, quoting it. If the trace does not produce the claimed outcome, refute.',
-  'REPRODUCTION: write the scenario as a real test in a scratch copy and RUN it. The engine is pure — ClusterState plus a static clock is a simulator, so this is always possible for engine claims. Do not add files to the repo. If it does not reproduce, refute. If you did not actually run anything, say so and do NOT refute on that basis.',
-  'SCOPING: is the state reachable through the shipped control flow? And does it behave DIFFERENTLY before this change? If the pre-change code produces the same bad outcome and this change does not worsen its consequences OR ITS REACHABILITY, refute as pre-existing (set preExisting=true and say so explicitly). Note that making a dead path reachable IS worsening it.',
-  'SEVERITY: assume it is real — is the stated failure scenario actually what happens, or is the impact narrower/wider than claimed? For a lease leak, compute what it costs: which budget is charged, for how long, and what capacity is held.',
-  'TEST-ORACLE: does an existing test assert the behaviour the finding calls a bug? If so, that is NOT a refutation — it may mean the test encodes the defect (playbook class 8). Read the test\'s STIMULUS and ask whether it is legitimate. Rule on which is wrong: the code or the test.',
+// THE PANEL IS HETEROGENEOUS, AND THE VOTE IS NOT A VOTE.
+//
+// Three skeptics on one model, with three prompts, are three samples of ONE
+// distribution. They fail together, in correlated ways, because they share a prior.
+// That is how a quorum refuted a TRUE finding on 2026-07-09: all three reached for
+// "pre-existing, therefore not worsened", which is a valid move that happened to
+// conceal that the fix under review was inert in production.
+//
+// Different models do not share that reflex. But heterogeneous judges are not
+// EXCHANGEABLE, and majority voting assumes exchangeability. If the reproducer runs a
+// test and the tracer reads the code, counting them 1-1 asserts they are equally
+// likely to be right about this question, which is neither true nor well-defined.
+//
+// So each judge is paired to the lens it is actually good at, and the aggregation is
+// asymmetric:
+//
+//   A REPRODUCTION CONFIRMS, ALONE.      A compiled test that exhibits the bad state
+//                                        is a fact. No amount of tracing refutes it.
+//   A REFUTATION NEEDS BOTH.             The trace must show the code cannot produce
+//                                        it AND the reproduction must have been tried
+//                                        and failed. Absence of evidence counts only
+//                                        when somebody looked.
+//   THE CONSEQUENCE LENS MAY VETO A FIX  without touching the finding. "Real bug,
+//                                        proposed fix is a reaper" is a distinct and
+//                                        important outcome. It has caught three.
+//
+// Everything else is UNRESOLVED. Silence is not consent, in either direction.
+const SKEPTIC_PANEL = [
+  {
+    role: 'reproduce', model: 'sonnet', effort: 'high',
+    lens: `REPRODUCTION. The engine is pure: controllers.ClusterState plus a static clock IS a simulator,
+so an engine claim can always be tested. COPY the repo to a temp dir, write a Go test, RUN it, and paste
+the real output. Use a PRODUCTION-SHAPED fixture — a fixture richer than reality proves nothing about
+reality. Set ranCode=true only if you actually compiled and ran something. If you did not run anything,
+set ranCode=false and say so plainly: do NOT rule refuted on an argument you could have tested.
+Set reproduced=true only if you saw the bad state in test output with your own eyes.`,
+  },
+  {
+    role: 'trace', model: 'opus', effort: 'high',
+    lens: `CODE TRACE. Does the claimed behaviour follow from the code AS WRITTEN, in the CURRENT tree?
+Trace every function on the path and quote each. If a later commit changed it, name the line and say
+whether that closes the finding or merely moves it. A fix that is dead code in production is not a fix.
+Set refuted=true only if the trace shows the code cannot produce the claimed state.`,
+  },
+  {
+    role: 'consequence', model: 'fable', effort: 'high',
+    lens: `CONSEQUENCE AND REAPER-CHECK. First: assume it is real. Name the budget charged, the GPUs held,
+and for how long. Then INVERT: if we "fixed" this, what LEGAL state would the fix destroy?
+pkg/invariant's package doc lists four invariants rejected for exactly that reason — slot
+oversubscription is tolerated, a cordoned node's leases are healthy, a spare-only run is legal, a Running
+run mid-swap holds zero active leases. Set fixIsReaper=true if the obvious repair would destroy healthy
+work, and say which state it kills. A fix that reaps a healthy run is worse than the bug it repairs.
+You may confirm the finding AND veto its fix; those are different questions.`,
+  },
 ]
+
+// adjudicate applies the asymmetric rule above to whatever votes survived.
+function adjudicate(f, votes) {
+  const valid = votes.filter(Boolean)
+  const byRole = {}
+  valid.forEach(v => { byRole[v.role] = v })
+  const repro = byRole.reproduce
+  const trace = byRole.trace
+  const cons = byRole.consequence
+  const reaperWarning = cons && cons.fixIsReaper ? cons.reasoning : null
+
+  // A reproduction confirms, alone.
+  if (repro && repro.reproduced === true) {
+    return { finding: f, status: 'confirmed', why: 'reproduced by a compiled, running test', reaperWarning, votes: valid }
+  }
+  if (valid.length < SKEPTIC_QUORUM) {
+    return { finding: f, status: 'unresolved', why: `only ${valid.length}/${SKEPTIC_QUORUM} skeptics returned a usable verdict`, reaperWarning, votes: valid }
+  }
+
+  const traceRefutes = trace && trace.refuted === true
+  const reproTriedAndFailed = repro && repro.ranCode === true && repro.reproduced === false
+
+  if (traceRefutes && reproTriedAndFailed) {
+    return { finding: f, status: 'refuted', preExisting: !!trace.preExisting, reaperWarning, votes: valid }
+  }
+  if (traceRefutes && repro && repro.ranCode !== true) {
+    return {
+      finding: f, status: 'unresolved', reaperWarning, votes: valid,
+      why: 'the trace refutes it, but nobody ran the code. Absence of evidence counts only when somebody looked.',
+    }
+  }
+  // Fail closed: not refuted by BOTH the trace and a failed reproduction.
+  return { finding: f, status: 'confirmed', why: 'not refuted by both the trace and a failed reproduction', reaperWarning, votes: valid }
+}
 
 const judged = await pipeline(
   raised,
-  f => parallel(Array.from({ length: SKEPTIC_QUORUM }, (_, i) => async () => {
-    try {
-      const v = await agent(
-        `${RULES}\n${PLAYBOOK}\n${A.context}
+  f => parallel(SKEPTIC_PANEL.map(sk => async () => {
+    const shaped = await think(
+      `${RULES}\n${PLAYBOOK}\n${A.context}
 
 A reviewer raised this finding. Your job is to REFUTE it. Default to refuted=true when uncertain —
 only defects we are sure of are worth acting on. But do NOT refute by silence or hand-waving: give a
 concrete reason grounded in the code.
 
+Write PROSE. Do not produce JSON. Another agent will map what you write onto a schema, and it is
+forbidden to invent anything you did not say — so state every conclusion explicitly, including whether
+you ran code, whether it reproduced, and whether the obvious fix would be a reaper.
+
 THESE ARE NOT VALID REFUTATIONS (offering one is a task failure):
-  - "the test suite passes" — it passed for all six prior defects, and one suite ASSERTED the bug.
+  - "the test suite passes" — it passed for all seven prior defects, and one suite ASSERTED the bug.
   - "the comment says it cannot happen" — a comment is an assertion nothing runs.
   - "it would take an unusual sequence of events" — this scheduler runs for months. Node failures,
-    cordons, budget-window rollovers and controller restarts are all routine. State the sequence and
-    estimate whether a real cluster sees it in a year.
-  - "it is pre-existing" — that is not a refutation, it is a classification. Set preExisting=true,
-    explain, and refute ONLY if the change also leaves its consequences and reachability unchanged.
+    cordons, budget-window rollovers and controller restarts are all routine.
+  - "it is pre-existing" — a classification, not a refutation. Set preExisting=true, explain, and
+    refute ONLY if the change also leaves its consequences and its REACHABILITY unchanged. Making a
+    dead path reachable IS worsening it. And a change that fails to achieve its stated purpose is a
+    finding in its own right, whatever the code did before.
 
 FINDING: ${f.title}
 CLASS: ${f.taxonomyClass || '(untagged)'}
@@ -485,28 +660,16 @@ SEVERITY CLAIMED: ${f.severity}
 LOCATION: ${f.file}:${f.line}
 FAILURE SCENARIO: ${f.failure_scenario}
 
-Your lens — ${SKEPTIC_LENSES[i % SKEPTIC_LENSES.length]}
+Your lens — ${sk.lens}`,
+      VERDICT_SCHEMA,
+      { label: `judge:${sk.role}:${f.title.slice(0, 20)}`, phase: 'Judge', model: sk.model, effort: sk.effort })
 
-Return refuted=true only if this is not a real defect introduced or worsened by the change.`,
-        { label: `judge${i}:${f.title.slice(0, 24)}`, phase: 'Judge', model: 'opus', effort: 'high', schema: VERDICT_SCHEMA })
-      if (!v || degenerate(v.reasoning, 120)) return null // not a vote
-      return v
-    } catch (err) {
-      return null // a dead skeptic is NOT a refutation
-    }
-  })).then(votes => {
-    const valid = votes.filter(Boolean)
-    // Quorum first: silence is not consent in EITHER direction. Without a full
-    // quorum we cannot conclude the finding was refuted, so it stays on the table.
-    if (valid.length < SKEPTIC_QUORUM) {
-      return { finding: f, status: 'unresolved', reason: `only ${valid.length}/${SKEPTIC_QUORUM} skeptics returned a usable verdict`, votes: valid }
-    }
-    const refutations = valid.filter(v => v.refuted).length
-    if (refutations >= REFUTE_THRESHOLD) {
-      return { finding: f, status: 'refuted', preExisting: valid.some(v => v.preExisting), votes: valid }
-    }
-    return { finding: f, status: 'confirmed', votes: valid.filter(v => !v.refuted) }
-  })
+    if (!shaped) return null                                   // a dead skeptic is NOT a vote
+    const v = shaped.obj
+    if ((v.unsupported || []).length) return null              // nor is a fabricated one
+    if (degenerate(v.reasoning, 120)) return null
+    return { ...v, role: sk.role }
+  })).then(votes => adjudicate(f, votes))
 )
 
 const confirmed = judged.filter(Boolean).filter(j => j.status === 'confirmed')
@@ -525,10 +688,16 @@ return {
   blockedLenses: blocked.map(b => ({ lens: b.lens, reason: b.reason })),
   scoutLeads: leads,
   scoutDied: !scout,
-  confirmed: confirmed.map(j => ({ ...j.finding, evidence: j.votes.map(v => v.reproduced || v.reasoning) })),
-  unresolved: unresolved.map(j => ({ ...j.finding, why: j.reason })),
+  confirmed: confirmed.map(j => ({
+    ...j.finding,
+    why: j.why,
+    // A real finding whose obvious fix is a reaper. Read this before writing the fix.
+    reaperWarning: j.reaperWarning || null,
+    votes: j.votes.map(v => ({ role: v.role, refuted: v.refuted, ranCode: !!v.ranCode, reasoning: v.reasoning })),
+  })),
+  unresolved: unresolved.map(j => ({ ...j.finding, why: j.why, reaperWarning: j.reaperWarning || null })),
   // Refuted-as-pre-existing is surfaced, never buried: a defect the change did not
   // introduce is still a defect, and someone must decide to file it.
-  refuted: refuted.map(j => ({ title: j.finding.title, preExisting: !!j.preExisting })),
+  refuted: refuted.map(j => ({ title: j.finding.title, preExisting: !!j.preExisting, reaperWarning: j.reaperWarning || null })),
   summaries: good.map(g => ({ lens: g.lens, summary: g.report.summary })),
 }
