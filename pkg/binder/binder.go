@@ -141,6 +141,13 @@ type PodManifest struct {
 	Labels      map[string]string
 	Annotations map[string]string
 	Phase       string
+	// Hostname is the pod's stable rendezvous identity (R9 9A-1): the DNS name
+	// `<Hostname>.<run-service>.<ns>.svc` resolves to this pod under the run's
+	// headless Service. Empty means "use Name" — true for every normal pod, whose
+	// name is already its deterministic ordinal. A SWAP pod sets it explicitly to
+	// the ordinal of the member it replaces, so the replacement keeps that member's
+	// rank/address while carrying a fresh, unique object Name (apply diffs by name).
+	Hostname string
 	// Terminating is true when the API object carries a DeletionTimestamp: the
 	// kubelet is draining it and its GPUs are being reclaimed. The engine keeps
 	// it in the world (so apply neither re-creates its name nor re-issues the

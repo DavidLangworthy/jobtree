@@ -1354,8 +1354,10 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 		// Re-emit the group's pod as a SWAP onto the reclaimed spare node,
 		// stamped with the spare's funding provenance; the scheduler plugin binds
 		// it there (required node affinity) and mints the Swap lease from that
-		// provenance — the sole committer. We mint nothing here.
-		c.emitSwapPod(run, groupIndex, spareLease, now)
+		// provenance — the sole committer. We mint nothing here. It inherits the
+		// failed member's rendezvous hostname (R9 9A-1), so nodeName (the failed
+		// node) is passed to find the member being replaced.
+		c.emitSwapPod(run, groupIndex, spareLease, nodeName, now)
 		msg := fmt.Sprintf("group %s swapping to spare after node %s failure", groupIndex, nodeName)
 		// Running is the mildest outcome: it must not overwrite a sibling group's
 		// Failed or Pending, whichever order the leases happen to be in.
@@ -2462,15 +2464,23 @@ func nextCohortForRun(pods []binder.PodManifest, run *v1.Run) int {
 // spare node, carrying the spare's funding provenance (owner/budget/envelope) so
 // the plugin mints the Swap lease from it without re-funding. The controller
 // mints nothing.
-func (c *RunController) emitSwapPod(run *v1.Run, groupIndex string, spareLease *v1.Lease, now time.Time) {
+func (c *RunController) emitSwapPod(run *v1.Run, groupIndex string, spareLease *v1.Lease, failedNode string, now time.Time) {
 	slots := spareLease.Spec.Slice.Nodes
 	if len(slots) == 0 {
 		return
 	}
 	node := nodeFromSlot(slots[0])
+	// Inherit the rendezvous identity of the member that died on the failed node
+	// (R9 9A-1), and remove that dead pod so its stale DNS A record does not shadow
+	// the replacement. The swap pod keeps a fresh, UNIQUE object name — Bridge.apply
+	// diffs pods by name, so reusing the dead pod's name in the same pass would be a
+	// no-op collision — but serves the same `<hostname>.<svc>` address, so training
+	// ranks re-rendezvous to the same member with no reconfiguration.
+	hostname := c.takeOverFailedMember(run, groupIndex, failedNode)
 	c.State.Pods = append(c.State.Pods, binder.PodManifest{
 		Namespace: run.Namespace,
 		Name:      fmt.Sprintf("%s-g%s-swap-%d", run.Name, groupIndex, now.UnixNano()),
+		Hostname:  hostname,
 		NodeName:  node,
 		GPUs:      len(slots),
 		Labels: map[string]string{
@@ -2488,6 +2498,32 @@ func (c *RunController) emitSwapPod(run *v1.Run, groupIndex string, spareLease *
 			binder.AnnotationPayerEnvelope:  spareLease.Spec.PaidByEnvelope,
 		},
 	})
+}
+
+// takeOverFailedMember removes the run's Active pod that died on failedNode in group
+// and returns its rendezvous hostname for the swap replacement to inherit (R9 9A-1).
+// Removing it deletes the dead pod's stale DNS record (Bridge.apply deletes pods
+// absent from state.Pods) so it cannot shadow the replacement's `<hostname>.<svc>`.
+// Returns "" when no such pod is present — the pod already GC'd with its node — in
+// which case the swap takes a fresh identity and that rank re-rendezvous on the new
+// address (correct, just not name-stable for that one member).
+func (c *RunController) takeOverFailedMember(run *v1.Run, group, failedNode string) string {
+	for i := range c.State.Pods {
+		p := &c.State.Pods[i]
+		if p.Namespace != run.Namespace || p.Labels[binder.LabelRunName] != run.Name {
+			continue
+		}
+		if p.Labels[binder.LabelRunRole] != binder.RoleActive || podGroupIndex(p) != group || p.NodeName != failedNode {
+			continue
+		}
+		hostname := p.Name
+		if p.Hostname != "" {
+			hostname = p.Hostname
+		}
+		c.State.Pods = append(c.State.Pods[:i], c.State.Pods[i+1:]...)
+		return hostname
+	}
+	return ""
 }
 
 // intentPodShape returns the uniform (gpusPerPod, width) an intent gang emits.
