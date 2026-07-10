@@ -170,10 +170,14 @@ func classForTier(tier int) Class {
 }
 
 // EnvelopeKey identifies an envelope across budgets (envelope names repeat
-// between budgets of the same owner).
+// between budgets of the same owner). Namespace is part of the identity: Budgets
+// are namespaced, so two tenants can each own a Budget of the same name in their
+// own namespace — without it, their envelopes collide in the funding index and one
+// tenant silently charges (or shadows) the other's budget (Codex #1 / task #62).
 type EnvelopeKey struct {
-	Budget   string
-	Envelope string
+	Namespace string
+	Budget    string
+	Envelope  string
 }
 
 // claimKey identifies a claim: one run's demand on one envelope.

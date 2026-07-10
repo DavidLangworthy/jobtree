@@ -242,13 +242,14 @@ func PodLeaseWithRole(run *v1.Run, seg cover.Segment, node string, gpusPerPod in
 			Labels:    leaseLabels(run.Name, role, groupIndex),
 		},
 		Spec: v1.LeaseSpec{
-			Owner:          seg.Owner,
-			RunRef:         v1.RunReference{Name: run.Name, Namespace: run.Namespace},
-			Slice:          v1.LeaseSlice{Nodes: slots, Role: role},
-			Interval:       v1.LeaseInterval{Start: v1.NewTime(now)},
-			PaidByBudget:   seg.BudgetName,
-			PaidByEnvelope: seg.EnvelopeName,
-			Reason:         reason,
+			Owner:                 seg.Owner,
+			RunRef:                v1.RunReference{Name: run.Name, Namespace: run.Namespace},
+			Slice:                 v1.LeaseSlice{Nodes: slots, Role: role},
+			Interval:              v1.LeaseInterval{Start: v1.NewTime(now)},
+			PaidByBudgetNamespace: seg.Namespace,
+			PaidByBudget:          seg.BudgetName,
+			PaidByEnvelope:        seg.EnvelopeName,
+			Reason:                reason,
 		},
 	}
 }

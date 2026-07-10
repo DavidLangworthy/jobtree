@@ -360,7 +360,8 @@ func (m *gangManager) spareLeaseProvenanceValid(ctx context.Context, ns, runName
 		if l.Spec.Slice.Role != binder.RoleSpare {
 			continue
 		}
-		if l.Spec.Owner == seg.Owner && l.Spec.PaidByBudget == seg.BudgetName && l.Spec.PaidByEnvelope == seg.EnvelopeName {
+		if l.Spec.Owner == seg.Owner && l.Spec.PaidByBudgetNamespace == seg.Namespace &&
+			l.Spec.PaidByBudget == seg.BudgetName && l.Spec.PaidByEnvelope == seg.EnvelopeName {
 			return true
 		}
 	}

@@ -443,13 +443,14 @@ func (c *RunController) hypotheticalEvaluation(run *v1.Run, plan cover.Plan, now
 				Name:      fmt.Sprintf("%s-hypothetical-%d", run.Name, i),
 			},
 			Spec: v1.LeaseSpec{
-				Owner:          seg.Owner,
-				RunRef:         v1.RunReference{Name: run.Name, Namespace: run.Namespace},
-				Slice:          v1.LeaseSlice{Nodes: nodes, Role: binder.RoleActive},
-				Interval:       v1.LeaseInterval{Start: v1.NewTime(now)},
-				PaidByBudget:   seg.BudgetName,
-				PaidByEnvelope: seg.EnvelopeName,
-				Reason:         "Hypothetical",
+				Owner:                 seg.Owner,
+				RunRef:                v1.RunReference{Name: run.Name, Namespace: run.Namespace},
+				Slice:                 v1.LeaseSlice{Nodes: nodes, Role: binder.RoleActive},
+				Interval:              v1.LeaseInterval{Start: v1.NewTime(now)},
+				PaidByBudgetNamespace: seg.Namespace,
+				PaidByBudget:          seg.BudgetName,
+				PaidByEnvelope:        seg.EnvelopeName,
+				Reason:                "Hypothetical",
 			},
 		})
 	}
@@ -1121,12 +1122,14 @@ func (c *RunController) opportunisticCoverPlan(run *v1.Run, reservation *v1.Rese
 		// envelope the owner still has of the run's flavor so an exhausted
 		// (but present) budget coasts rather than failing.
 		if acct.Key.Envelope == reservation.Spec.PayingEnvelope {
+			segment.Namespace = acct.Key.Namespace
 			segment.BudgetName = acct.Key.Budget
 			segment.EnvelopeName = acct.Key.Envelope
 			found = true
 			break
 		}
 		if !found && acct.Spec.Flavor == run.Spec.Resources.GPUType {
+			segment.Namespace = acct.Key.Namespace
 			segment.BudgetName = acct.Key.Budget
 			segment.EnvelopeName = acct.Key.Envelope
 			found = true
@@ -2053,9 +2056,10 @@ func (c *RunController) emitIntentPods(run *v1.Run, packPlan pack.Plan) int {
 // Idempotent like emitIntentPods: it only tops up to the declared widths.
 func (c *RunController) emitPromisePods(run *v1.Run, packPlan pack.Plan, payer cover.Segment) int {
 	extra := map[string]string{
-		binder.AnnotationPayerOwner:    payer.Owner,
-		binder.AnnotationPayerBudget:   payer.BudgetName,
-		binder.AnnotationPayerEnvelope: payer.EnvelopeName,
+		binder.AnnotationPayerOwner:     payer.Owner,
+		binder.AnnotationPayerNamespace: payer.Namespace,
+		binder.AnnotationPayerBudget:    payer.BudgetName,
+		binder.AnnotationPayerEnvelope:  payer.EnvelopeName,
 	}
 	gpusPerPod, width := intentPodShape(run)
 	created := c.emitCohortPods(run, packPlacements(packPlan, gpusPerPod, 0), gpusPerPod, width, "0", binder.LeaseReasonPromise, extra)
@@ -2373,14 +2377,18 @@ func baseGangGPUsForRun(runKey string, leases []v1.Lease) int {
 // A surviving sibling pod is the authority; if every pod is gone, the open
 // leases the plugin already minted carry the same provenance durably.
 func (c *RunController) gangProvenance(run *v1.Run) (string, map[string]string) {
-	payer := func(owner, budget, envelope string) map[string]string {
+	payer := func(owner, namespace, budget, envelope string) map[string]string {
+		// namespace is intentionally NOT required: it is empty on legacy leases/pods
+		// minted before the field existed, and an empty payer-namespace keys the same
+		// legacy envelope, so their attribution is preserved rather than dropped.
 		if owner == "" || budget == "" || envelope == "" {
 			return nil
 		}
 		return map[string]string{
-			binder.AnnotationPayerOwner:    owner,
-			binder.AnnotationPayerBudget:   budget,
-			binder.AnnotationPayerEnvelope: envelope,
+			binder.AnnotationPayerOwner:     owner,
+			binder.AnnotationPayerNamespace: namespace,
+			binder.AnnotationPayerBudget:    budget,
+			binder.AnnotationPayerEnvelope:  envelope,
 		}
 	}
 	for i := range c.State.Pods {
@@ -2394,6 +2402,7 @@ func (c *RunController) gangProvenance(run *v1.Run) (string, map[string]string) 
 		if p.Annotations[binder.AnnotationLeaseReason] == binder.LeaseReasonPromise {
 			return binder.LeaseReasonPromise, payer(
 				p.Annotations[binder.AnnotationPayerOwner],
+				p.Annotations[binder.AnnotationPayerNamespace],
 				p.Annotations[binder.AnnotationPayerBudget],
 				p.Annotations[binder.AnnotationPayerEnvelope],
 			)
@@ -2409,7 +2418,7 @@ func (c *RunController) gangProvenance(run *v1.Run) (string, map[string]string) 
 			continue
 		}
 		if lease.Spec.Reason == binder.LeaseReasonPromise {
-			return binder.LeaseReasonPromise, payer(lease.Spec.Owner, lease.Spec.PaidByBudget, lease.Spec.PaidByEnvelope)
+			return binder.LeaseReasonPromise, payer(lease.Spec.Owner, lease.Spec.PaidByBudgetNamespace, lease.Spec.PaidByBudget, lease.Spec.PaidByEnvelope)
 		}
 	}
 	return "Start", nil
@@ -2470,12 +2479,13 @@ func (c *RunController) emitSwapPod(run *v1.Run, groupIndex string, spareLease *
 			binder.LabelRunRole:    binder.RoleActive,
 		},
 		Annotations: map[string]string{
-			binder.AnnotationExpectedWidth: "1",
-			binder.AnnotationLeaseReason:   "Swap",
-			binder.AnnotationSwapNode:      node,
-			binder.AnnotationPayerOwner:    spareLease.Spec.Owner,
-			binder.AnnotationPayerBudget:   spareLease.Spec.PaidByBudget,
-			binder.AnnotationPayerEnvelope: spareLease.Spec.PaidByEnvelope,
+			binder.AnnotationExpectedWidth:  "1",
+			binder.AnnotationLeaseReason:    "Swap",
+			binder.AnnotationSwapNode:       node,
+			binder.AnnotationPayerOwner:     spareLease.Spec.Owner,
+			binder.AnnotationPayerNamespace: spareLease.Spec.PaidByBudgetNamespace,
+			binder.AnnotationPayerBudget:    spareLease.Spec.PaidByBudget,
+			binder.AnnotationPayerEnvelope:  spareLease.Spec.PaidByEnvelope,
 		},
 	})
 }

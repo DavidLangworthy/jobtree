@@ -39,6 +39,7 @@ type Request struct {
 
 // Segment is a single envelope assignment.
 type Segment struct {
+	Namespace    string
 	BudgetName   string
 	EnvelopeName string
 	Owner        string
@@ -201,6 +202,7 @@ func (inv *Inventory) Plan(req Request) (Plan, error) {
 				}
 				admission.Take(acct.Key, take)
 				segments = append(segments, Segment{
+					Namespace:    acct.Key.Namespace,
 					BudgetName:   acct.Key.Budget,
 					EnvelopeName: acct.Key.Envelope,
 					Owner:        acct.Owner,

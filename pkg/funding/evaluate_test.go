@@ -108,13 +108,14 @@ func leaseOf(name, runName, payerOwner, budget, envelope string, width int, star
 			Labels:    map[string]string{"rq.davidlangworthy.io/group-index": "0"},
 		},
 		Spec: v1.LeaseSpec{
-			Owner:          payerOwner,
-			RunRef:         v1.RunReference{Name: runName, Namespace: "default"},
-			Slice:          v1.LeaseSlice{Nodes: nodes, Role: "Active"},
-			Interval:       v1.LeaseInterval{Start: v1.NewTime(start)},
-			PaidByBudget:   budget,
-			PaidByEnvelope: envelope,
-			Reason:         "Start",
+			Owner:                 payerOwner,
+			RunRef:                v1.RunReference{Name: runName, Namespace: "default"},
+			Slice:                 v1.LeaseSlice{Nodes: nodes, Role: "Active"},
+			Interval:              v1.LeaseInterval{Start: v1.NewTime(start)},
+			PaidByBudgetNamespace: "default", // budgetOf mints every fixture budget in "default"
+			PaidByBudget:          budget,
+			PaidByEnvelope:        envelope,
+			Reason:                "Start",
 		},
 	}
 	for _, opt := range opts {
@@ -155,7 +156,7 @@ func TestOwnerClaimFunded(t *testing.T) {
 	if got := classOf(t, ev, leases, "l1"); got != ClassOwned {
 		t.Fatalf("expected Owned, got %s", got)
 	}
-	acct := ev.Envelope(EnvelopeKey{Budget: "team-budget", Envelope: "west"})
+	acct := ev.Envelope(EnvelopeKey{Namespace: "default", Budget: "team-budget", Envelope: "west"})
 	if acct.FundedWidth() != 4 {
 		t.Errorf("expected funded width 4, got %d", acct.FundedWidth())
 	}
@@ -173,7 +174,7 @@ func TestOwnerClaimFunded(t *testing.T) {
 func TestLedgerCompactionRoundTrip(t *testing.T) {
 	horizon := base.Add(5 * time.Hour)
 	now := base.Add(10 * time.Hour)
-	westKey := EnvelopeKey{Budget: "team-budget", Envelope: "west"}
+	westKey := EnvelopeKey{Namespace: "default", Budget: "team-budget", Envelope: "west"}
 	budgets := []v1.Budget{budgetOf("team", "team-budget", nil, env("west", 8, withMaxHours(30)))}
 	runs := runsMap(runOf("old", "team", base, false), runOf("new", "team", horizon, false))
 	// Settled: 4 GPUs, base→horizon = 20 GPU-hours. Retained: 4 GPUs open from the
@@ -238,7 +239,7 @@ func TestLedgerCompactionRoundTrip(t *testing.T) {
 func TestLedgerCompactionFallsBackOnStraddle(t *testing.T) {
 	horizon := base.Add(5 * time.Hour)
 	now := base.Add(10 * time.Hour)
-	westKey := EnvelopeKey{Budget: "team-budget", Envelope: "west"}
+	westKey := EnvelopeKey{Namespace: "default", Budget: "team-budget", Envelope: "west"}
 	budgets := []v1.Budget{budgetOf("team", "team-budget", nil, env("west", 8))}
 	runs := runsMap(runOf("a", "team", base, false))
 	settled := leaseOf("settled", "a", "team", "team-budget", "west", 4, base, closedAt(horizon))
@@ -270,7 +271,7 @@ func TestLedgerCompactionFallsBackOnStraddle(t *testing.T) {
 func TestLedgerCompactionRefusesFutureHorizon(t *testing.T) {
 	now := base.Add(5 * time.Hour)
 	horizon := base.Add(8 * time.Hour)
-	westKey := EnvelopeKey{Budget: "team-budget", Envelope: "west"}
+	westKey := EnvelopeKey{Namespace: "default", Budget: "team-budget", Envelope: "west"}
 	budgets := []v1.Budget{budgetOf("team", "team-budget", nil, env("west", 8))}
 	runs := runsMap(runOf("ghost", "team", base, false))
 	// Live at Now (5h < 7h), yet effectiveEnd (7h) is at or before the horizon (8h).
@@ -444,7 +445,7 @@ func TestIntegralExhaustionDemotes(t *testing.T) {
 	if got := classOf(t, ev, leases, "l1"); got != ClassUnfunded {
 		t.Errorf("exhausted envelope should demote its claim, got %s", got)
 	}
-	acct := ev.Envelope(EnvelopeKey{Budget: "team-budget", Envelope: "west"})
+	acct := ev.Envelope(EnvelopeKey{Namespace: "default", Budget: "team-budget", Envelope: "west"})
 	if acct.ConsumedGPUHours > 8+1e-6 {
 		t.Errorf("no overdraft: consumed %v > cap 8", acct.ConsumedGPUHours)
 	}
@@ -476,7 +477,7 @@ func TestWindowReopenRefunds(t *testing.T) {
 	if got := classOf(t, ev, leases, "l1"); got != ClassOwned {
 		t.Errorf("renewed window should re-fund the claim, got %s", got)
 	}
-	acct := ev.Envelope(EnvelopeKey{Budget: "team-budget", Envelope: "west"})
+	acct := ev.Envelope(EnvelopeKey{Namespace: "default", Budget: "team-budget", Envelope: "west"})
 	if math.Abs(acct.ConsumedGPUHours-4) > 1e-6 {
 		t.Errorf("only in-window hours charge the integral: expected 4, got %v", acct.ConsumedGPUHours)
 	}
@@ -499,7 +500,7 @@ func TestPreWindowLeaseFundsWhenWindowOpens(t *testing.T) {
 	if got := classOf(t, ev, leases, "l1"); got != ClassOwned {
 		t.Errorf("lease should fund once the window opens, got %s", got)
 	}
-	acct := ev.Envelope(EnvelopeKey{Budget: "team-budget", Envelope: "west"})
+	acct := ev.Envelope(EnvelopeKey{Namespace: "default", Budget: "team-budget", Envelope: "west"})
 	if math.Abs(acct.ConsumedGPUHours-4) > 1e-6 {
 		t.Errorf("pre-window hours must not charge the integral: expected 4, got %v", acct.ConsumedGPUHours)
 	}
@@ -598,11 +599,11 @@ func TestAvailableWidthRecallsThroughAggregate(t *testing.T) {
 	// The owner outranks the family borrower everywhere, so it can recall
 	// the borrowed aggregate width on the empty member (west) and on the
 	// member the family currently holds (east) alike.
-	westKey := EnvelopeKey{Budget: "team-budget", Envelope: "west"}
+	westKey := EnvelopeKey{Namespace: "default", Budget: "team-budget", Envelope: "west"}
 	if got := ev.AvailableWidth(westKey, "team", base, "", false); got != 8 {
 		t.Errorf("owner should recall the family borrower's aggregate width on west, want 8, got %d", got)
 	}
-	eastKey := EnvelopeKey{Budget: "team-budget", Envelope: "east"}
+	eastKey := EnvelopeKey{Namespace: "default", Budget: "team-budget", Envelope: "east"}
 	if got := ev.AvailableWidth(eastKey, "team", base, "", false); got != 8 {
 		t.Errorf("owner should recall the family borrower on east too, want 8, got %d", got)
 	}
@@ -636,7 +637,7 @@ func TestAvailableWidthRecallAndSponsor(t *testing.T) {
 	leases := []v1.Lease{leaseOf("l-child", "child-train", "team", "team-budget", "west", 6, base)}
 	ev := Evaluate(Input{Budgets: budgets, Leases: leases, Runs: runsMap(childRun), Now: base.Add(time.Hour), Period: time.Hour})
 
-	key := EnvelopeKey{Budget: "team-budget", Envelope: "west"}
+	key := EnvelopeKey{Namespace: "default", Budget: "team-budget", Envelope: "west"}
 	// The owner sees the full envelope: the child's shared claim is
 	// recallable and does not count against an owner admission.
 	if got := ev.AvailableWidth(key, "team", base.Add(time.Hour), "", false); got != 8 {
@@ -672,7 +673,7 @@ func TestAvailableWidthNameTiebreak(t *testing.T) {
 	childRun := runOf("child-train", "team/child", base, false)
 	leases := []v1.Lease{leaseOf("l-child", "child-train", "team", "team-budget", "west", 8, base)}
 	ev := Evaluate(Input{Budgets: budgets, Leases: leases, Runs: runsMap(childRun), Now: base.Add(time.Hour)})
-	key := EnvelopeKey{Budget: "team-budget", Envelope: "west"}
+	key := EnvelopeKey{Namespace: "default", Budget: "team-budget", Envelope: "west"}
 
 	// Same tier (child), same admission second: a name-senior prospective
 	// outranks the sitting claim and recalls all 8.
@@ -693,7 +694,7 @@ func TestAvailableWidthNameTiebreak(t *testing.T) {
 func TestAvailableWidthIntegralLookahead(t *testing.T) {
 	budgets := []v1.Budget{budgetOf("team", "team-budget", nil, env("west", 8, withMaxHours(4)))}
 	ev := Evaluate(Input{Budgets: budgets, Now: base, Period: time.Hour})
-	key := EnvelopeKey{Budget: "team-budget", Envelope: "west"}
+	key := EnvelopeKey{Namespace: "default", Budget: "team-budget", Envelope: "west"}
 	// 4 GPU-hours remaining at a 1h period funds at most 4 GPUs of new work.
 	if got := ev.AvailableWidth(key, "team", base, "", false); got != 4 {
 		t.Errorf("admission lookahead should cap width at remaining/period = 4, got %d", got)
@@ -1027,5 +1028,55 @@ func TestPropertyDeterministic(t *testing.T) {
 					seed, acct.Key, acct.ConsumedGPUHours, other.ConsumedGPUHours)
 			}
 		}
+	}
+}
+
+// Codex #1 / task #62: two tenants each own a Budget named "team-budget" with an
+// envelope "west" in their OWN namespace. Before the namespace was part of the
+// funding key, their envelopes collided in envIndex — one overwrote the other, and
+// leases pointing at {team-budget, west} all charged the survivor. This pins that
+// the two envelopes stay distinct and each tenant's lease charges its own budget.
+func TestSameNamedBudgetsInDifferentNamespacesDoNotCollide(t *testing.T) {
+	nsBudget := func(ns, owner string) v1.Budget {
+		b := budgetOf(owner, "team-budget", nil, env("west", 8))
+		b.Namespace = ns
+		return b
+	}
+	nsLease := func(name, ns, owner string) v1.Lease {
+		l := leaseOf(name, "train", owner, "team-budget", "west", 4, base)
+		l.Namespace = ns
+		l.Spec.RunRef.Namespace = ns
+		l.Spec.PaidByBudgetNamespace = ns
+		return l
+	}
+	runNS := func(ns, owner string) *v1.Run {
+		r := runOf("train", owner, base, false)
+		r.Namespace = ns
+		return r
+	}
+
+	budgets := []v1.Budget{nsBudget("ns-a", "tenant-a"), nsBudget("ns-b", "tenant-b")}
+	leases := []v1.Lease{nsLease("la", "ns-a", "tenant-a"), nsLease("lb", "ns-b", "tenant-b")}
+	runs := runsMap(runNS("ns-a", "tenant-a"), runNS("ns-b", "tenant-b"))
+	ev := Evaluate(Input{Budgets: budgets, Leases: leases, Runs: runs, Now: base.Add(2 * time.Hour)})
+
+	// Each tenant's lease is funded by ITS OWN budget — not demoted to Unfunded by a
+	// collision, and not charged to the other tenant.
+	if got := classOf(t, ev, leases, "la"); got != ClassOwned {
+		t.Errorf("tenant-a's lease should be Owned by ns-a's budget, got %s", got)
+	}
+	if got := classOf(t, ev, leases, "lb"); got != ClassOwned {
+		t.Errorf("tenant-b's lease should be Owned by ns-b's budget, got %s", got)
+	}
+	// Both envelopes exist as DISTINCT accounts, each funding exactly its own 4 GPUs.
+	// Under the collision, one key would be missing and the other would show 4 (not 8),
+	// or a single account would absorb both tenants' width.
+	a := ev.Envelope(EnvelopeKey{Namespace: "ns-a", Budget: "team-budget", Envelope: "west"})
+	b := ev.Envelope(EnvelopeKey{Namespace: "ns-b", Budget: "team-budget", Envelope: "west"})
+	if a == nil || b == nil {
+		t.Fatalf("both namespaces' envelopes must exist as distinct accounts: ns-a=%v ns-b=%v", a, b)
+	}
+	if a.FundedWidth() != 4 || b.FundedWidth() != 4 {
+		t.Errorf("each envelope funds its own tenant's 4 GPUs; got ns-a=%d ns-b=%d", a.FundedWidth(), b.FundedWidth())
 	}
 }
