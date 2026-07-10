@@ -18,11 +18,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	"github.com/davidlangworthy/jobtree/controllers"
 	"github.com/davidlangworthy/jobtree/pkg/binder"
+	"github.com/davidlangworthy/jobtree/pkg/invariant"
 	"github.com/davidlangworthy/jobtree/pkg/keys"
+	"github.com/davidlangworthy/jobtree/pkg/metrics"
 	"github.com/davidlangworthy/jobtree/pkg/topology"
 )
 
@@ -108,10 +111,58 @@ func (b *Bridge) WithWorld(ctx context.Context, fn func(state *controllers.Clust
 	}
 	now := b.Clock.Now()
 	fnErr := fn(snap.state, now)
+	// After the engine — it is allowed to pass THROUGH illegal states, and only its
+	// return is a postcondition. Before apply — a lease this closes and a pod this
+	// drops must both reach the API in this same pass. Under the mutex, because a
+	// verdict taken outside it is a verdict about a world that has already moved.
+	b.reportSweep(ctx, controllers.SettleLeases(snap.state, now), snap)
 	if applyErr := b.apply(ctx, snap); applyErr != nil {
 		return applyErr
 	}
 	return fnErr
+}
+
+// reportSweep turns the sweep's repairs into the loudest signal each environment
+// can carry: a test failure in CI, a Warning event and a counter in production.
+//
+// The asymmetry is the point. In a test binary a terminal-run closure means a path
+// under test shirked a duty it owned, and the test that exercised it passed anyway
+// — that is precisely the failure mode pkg/invariant exists to end, so it must not
+// be survivable. In a cluster the same closure must never take the scheduler down:
+// it heals, it complains, and an operator alerts on jobtree_swept_leases_total.
+func (b *Bridge) reportSweep(ctx context.Context, sweep controllers.Sweep, snap *worldSnapshot) {
+	if sweep.Empty() {
+		return
+	}
+	log := ctrllog.FromContext(ctx)
+	for _, lease := range sweep.Leases {
+		metrics.IncSweptLease(lease.Rule)
+		log.Info("settle sweep closed a lease no path closed",
+			"lease", lease.Name, "namespace", lease.Namespace, "run", lease.RunKey, "rule", lease.Rule)
+		if run := snap.state.Runs[lease.RunKey]; run != nil && b.Recorder != nil {
+			b.Recorder.Eventf(run, corev1.EventTypeWarning, "LeaseSwept",
+				"closed lease %s left open by a %s run; it was charging its budget and holding its GPUs",
+				lease.Name, run.Status.Phase)
+		}
+	}
+	if sweep.Pods > 0 {
+		log.Info("settle sweep dropped orphaned pods", "count", sweep.Pods)
+	}
+
+	shirked := sweep.Shirked()
+	if len(shirked) == 0 || !invariant.UnderTest() {
+		return
+	}
+	violations := make([]invariant.Violation, 0, len(shirked))
+	for _, lease := range shirked {
+		violations = append(violations, invariant.Violation{
+			ID:      invariant.TerminalPresent,
+			Subject: "lease " + lease.Name,
+			Detail: fmt.Sprintf("the settle sweep had to close it: run %s is terminal and still held it open. "+
+				"Some path made that run terminal without calling releaseRun, and its own test passed", lease.RunKey),
+		})
+	}
+	invariant.Report("Bridge.SettleLeases", violations)
 }
 
 func (b *Bridge) load(ctx context.Context) (*worldSnapshot, error) {

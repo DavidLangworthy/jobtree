@@ -20,6 +20,7 @@ var (
 	reservationBacklog  = make(map[string]reservationBacklogEntry)
 	resolverActions     = make(map[string]float64)
 	invariantViolations = make(map[string]float64)
+	sweptLeases         = make(map[string]float64)
 	budgetData          = make(map[BudgetKey]BudgetUsage)
 	spareData           = make(map[string]float64)
 	elasticGrows        = make(map[string]float64)
@@ -172,6 +173,20 @@ func IncInvariantViolation(id string) {
 	mu.Unlock()
 }
 
+// IncSweptLease counts one lease the production sweep had to close because an
+// engine path left it open (controllers.SettleLeases). Alert on rule=terminal-run
+// at any nonzero value: it means a run died holding a lease, which nothing else
+// would ever have closed. rule=orphan-run races a Run deletion and is expected to
+// tick occasionally.
+func IncSweptLease(rule string) {
+	if rule == "" {
+		return
+	}
+	mu.Lock()
+	sweptLeases[rule]++
+	mu.Unlock()
+}
+
 // IncResolverAction increments the resolver action counter for the kind.
 func IncResolverAction(kind string) {
 	if kind == "" {
@@ -288,6 +303,7 @@ type MetricsSnapshot struct {
 	ReservationBacklog  map[string]ReservationBacklogValue
 	ResolverActions     map[string]float64
 	InvariantViolations map[string]float64
+	SweptLeases         map[string]float64
 	BudgetUsage         map[BudgetKey]BudgetUsage
 	SpareUsage          map[string]float64
 	ElasticGrows        map[string]float64
@@ -308,6 +324,7 @@ func Snapshot() MetricsSnapshot {
 		ReservationBacklog:  make(map[string]ReservationBacklogValue, len(reservationBacklog)),
 		ResolverActions:     make(map[string]float64, len(resolverActions)),
 		InvariantViolations: make(map[string]float64, len(invariantViolations)),
+		SweptLeases:         make(map[string]float64, len(sweptLeases)),
 		BudgetUsage:         make(map[BudgetKey]BudgetUsage, len(budgetData)),
 		SpareUsage:          make(map[string]float64, len(spareData)),
 		ElasticGrows:        make(map[string]float64, len(elasticGrows)),
@@ -351,6 +368,10 @@ func Snapshot() MetricsSnapshot {
 		snap.InvariantViolations[id] = count
 	}
 
+	for rule, count := range sweptLeases {
+		snap.SweptLeases[rule] = count
+	}
+
 	for key, usage := range budgetData {
 		snap.BudgetUsage[key] = usage
 	}
@@ -389,6 +410,7 @@ func Reset() {
 	reservationBacklog = make(map[string]reservationBacklogEntry)
 	resolverActions = make(map[string]float64)
 	invariantViolations = make(map[string]float64)
+	sweptLeases = make(map[string]float64)
 	budgetData = make(map[BudgetKey]BudgetUsage)
 	spareData = make(map[string]float64)
 	elasticGrows = make(map[string]float64)
@@ -475,6 +497,11 @@ func WritePrometheus(w io.Writer) {
 	writeHeader(buf, "jobtree_invariant_violations_total", "Engine invariant violations (pkg/invariant). Any nonzero value is a bug: the engine reached a state its own postconditions call illegal.", "counter")
 	for _, id := range sortedKeys(snap.InvariantViolations) {
 		writeSample(buf, "jobtree_invariant_violations_total", map[string]string{"invariant": id}, formatFloat(snap.InvariantViolations[id]))
+	}
+
+	writeHeader(buf, "jobtree_swept_leases_total", "Leases closed by the production settle sweep because an engine path left them open. Nonzero rule=terminal-run is a bug.", "counter")
+	for _, rule := range sortedKeys(snap.SweptLeases) {
+		writeSample(buf, "jobtree_swept_leases_total", map[string]string{"rule": rule}, formatFloat(snap.SweptLeases[rule]))
 	}
 
 	writeHeader(buf, "jobtree_resolver_actions_total", "Structural actions performed by the resolver.", "counter")
