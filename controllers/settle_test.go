@@ -58,9 +58,12 @@ func TestSweepClosesTheLeasesOfATerminalRun(t *testing.T) {
 	}
 }
 
-// A Run object that no longer exists. cleanupDeletedRun owns this, and it races a
-// pod reconcile by construction — so the sweep repairs it and accuses nobody.
-func TestSweepClosesTheLeasesOfADeletedRunWithoutBlamingAnyone(t *testing.T) {
+// A Run object that no longer exists. Under R12 step 1 the orphan rule is
+// REPORT-ONLY: an absent Run can be a fake of one incomplete world load (A4), so
+// the sweep records the lease and touches nothing. cleanupDeletedRun (and, once it
+// lands, R12's finalizer) is what actually closes a deleted run's leases; the
+// sweep must never destroy on an absence.
+func TestSweepReportsADeletedRunsLeaseWithoutClosingIt(t *testing.T) {
 	now := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
 	state := settleState(now,
 		map[string]*v1.Run{},
@@ -68,17 +71,24 @@ func TestSweepClosesTheLeasesOfADeletedRunWithoutBlamingAnyone(t *testing.T) {
 		[]binder.PodManifest{tpPod("ghost-active-0", "ghost", "node-a")})
 
 	sweep := SettleLeases(state, now)
-	if len(sweep.Leases) != 1 || sweep.Leases[0].Rule != SweepOrphanRun {
-		t.Fatalf("a lease naming no Run must be swept as an orphan, got %+v", sweep.Leases)
+
+	// Observed, not acted.
+	if len(sweep.Observed) != 1 || sweep.Observed[0].Rule != SweepOrphanRun {
+		t.Fatalf("an orphan lease must be OBSERVED, got observed=%+v", sweep.Observed)
 	}
-	if closed, reason := closureOf(state, "ghost-0"); !closed || reason != "SweptOrphanRun" {
-		t.Errorf("closed=%v reason=%q", closed, reason)
+	if len(sweep.Leases) != 0 {
+		t.Fatalf("the orphan rule must not CLOSE anything, got %+v", sweep.Leases)
 	}
-	if len(state.Pods) != 0 {
-		t.Errorf("the deleted run's containers must go with its leases, got %v", state.Pods)
+	// The lease stays open and the pod stays put — the omission a human can see,
+	// not the destruction of a job that a wrong load only made look deleted.
+	if closed, _ := closureOf(state, "ghost-0"); closed {
+		t.Errorf("orphan-run must leave the lease open (report-only), but it was closed")
+	}
+	if len(state.Pods) != 1 {
+		t.Errorf("orphan-run must not drop the pod, got %v", state.Pods)
 	}
 	if len(sweep.Shirked()) != 0 {
-		t.Errorf("an orphan closure races a Run deletion and must not be reported as a shirked duty")
+		t.Errorf("an orphan observation is never a shirked duty")
 	}
 }
 

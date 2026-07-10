@@ -148,16 +148,17 @@ func TestWithWorldSweepIsSilentOnAHealthyWorld(t *testing.T) {
 	}
 }
 
-// A Run deleted out from under its lease. The sweep repairs it — and does NOT
-// report it, because a Run delete and a reconcile of one of its pods race by
-// construction. Reporting it would make cleanupDeletedRun's ordinary operation
-// fail every envtest that deletes a Run.
-func TestWithWorldSweepsAnOrphanedLeaseWithoutAccusingAnyone(t *testing.T) {
+// A Run deleted out from under its lease. Under R12 step 1 the orphan rule is
+// REPORT-ONLY: the bridge must LEAVE the lease open (an absent Run can be a fake of
+// one incomplete load) and accuse nobody. Closing it here would let a single bad
+// load destroy a live job; the durable close comes from cleanupDeletedRun / R12's
+// finalizer, on positive evidence the Run is really gone.
+func TestWithWorldLeavesAnOrphanedLeaseOpenAndAccusesNobody(t *testing.T) {
 	seen := captureReport(t)
 
 	lease := openLeaseOn("ghost-lease", "ghost", "node-a")
 	c := fake.NewClientBuilder().WithScheme(testScheme()).
-		WithObjects(healthyNode("node-a", 4), lease). // no Run: it is really gone
+		WithObjects(healthyNode("node-a", 4), lease). // no Run: absent from this load
 		WithStatusSubresource(&v1.Run{}, &v1.Lease{}).
 		Build()
 	bridge := &Bridge{Client: c, APIReader: c, Clock: controllers.RealClock{}}
@@ -170,10 +171,10 @@ func TestWithWorldSweepsAnOrphanedLeaseWithoutAccusingAnyone(t *testing.T) {
 	if err := c.Get(context.Background(), types.NamespacedName{Name: "ghost-lease", Namespace: "default"}, &got); err != nil {
 		t.Fatalf("get lease: %v", err)
 	}
-	if !got.Status.Closed || got.Status.ClosureReason != "SweptOrphanRun" {
-		t.Fatalf("an orphaned lease must be closed as one: closed=%v reason=%q", got.Status.Closed, got.Status.ClosureReason)
+	if got.Status.Closed {
+		t.Fatalf("orphan-run is report-only: the lease must stay OPEN, but it was closed as %q", got.Status.ClosureReason)
 	}
 	if len(*seen) != 0 {
-		t.Fatalf("an orphan closure races a Run deletion; it accuses nobody, got %v", *seen)
+		t.Fatalf("an orphan observation accuses nobody, got %v", *seen)
 	}
 }

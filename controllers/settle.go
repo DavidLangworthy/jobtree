@@ -62,11 +62,14 @@ const (
 	// SweepOrphanRun: no Run object exists for the lease at all. The Run was
 	// deleted and cleanupDeletedRun has not run, or did not finish.
 	//
-	// Unlike the rule above, this one is NOT a test failure. A Run delete and a
-	// reconcile of one of its pods race by construction: the bridge can load a
-	// world in which the Run is already gone from the API and its cleanup has not
-	// yet been observed. Closing the lease there is correct and is not evidence
-	// that anybody forgot anything.
+	// REPORT-ONLY (R12 step 1). Unlike terminal-run, this rule does NOT close the
+	// lease or drop the pod — it only records the lease in Sweep.Observed. Its
+	// premise is the ABSENCE of a Run, and an absence a single incomplete world
+	// load can fake (spec-brief A4), so acting on it risks reaping a live job. Nor
+	// is it a test failure: a Run delete and a pod reconcile race by construction.
+	// R12's Run finalizer holds the Run in the API until its leases close, making
+	// this state unreachable — at which point this rule and its reporting are
+	// deleted (R12 verification item #5).
 	SweepOrphanRun = "orphan-run"
 )
 
@@ -90,17 +93,30 @@ func closureReasonFor(rule string) string {
 	return "SweptTerminalRun"
 }
 
-// Sweep is what one pass of SettleLeases had to repair.
+// Sweep is what one pass of SettleLeases found.
 type Sweep struct {
-	// Leases is every lease the sweep closed, in the order it found them.
+	// Leases is every lease the sweep CLOSED — terminal-run only. In order found.
 	Leases []SweptLease
-	// Pods is how many containers it dropped alongside them.
+	// Pods is how many containers it dropped alongside those closures.
 	Pods int
+	// Observed is every orphan-run lease the sweep DID NOT touch. Until R12's Run
+	// finalizer makes "an open lease whose Run is absent" an unreachable state, the
+	// sweep only COUNTS this — it does not close the lease or drop the pod. An
+	// absent Run in one world load is not proof the Run was deleted (spec-brief A4:
+	// the load may be incomplete), and acting on that guess can destroy a live,
+	// funded, multi-day job. Left open, the lease leaks — and the sweep REPORTS it
+	// (a Warning-less log line + jobtree_swept_leases_total{rule=orphan-run}) so an
+	// operator can alert on it. (pkg/invariant does NOT catch it: its projection
+	// iterates state.Runs, and an orphan's Run is absent, so it is never checked;
+	// R26's ledger auditor is what will formalize this cross-plane check.) An
+	// omission a human can see, not a destructive action nobody chose.
+	Observed []SweptLease
 }
 
-// Shirked reports whether the sweep closed a lease that some engine path owned and
-// forgot. Only SweepTerminalRun qualifies: SweepOrphanRun races a Run deletion by
-// construction and accuses nobody.
+// Shirked reports the leases the sweep closed because a path that owned them
+// forgot — i.e. every terminal-run closure. Orphan-run is report-only (Observed)
+// and never appears here; it races a Run deletion by construction and accuses
+// nobody.
 func (s Sweep) Shirked() []SweptLease {
 	var out []SweptLease
 	for _, l := range s.Leases {
@@ -111,59 +127,36 @@ func (s Sweep) Shirked() []SweptLease {
 	return out
 }
 
-// Empty reports whether the sweep found nothing to do, which is the only state a
-// correct engine ever leaves behind.
-func (s Sweep) Empty() bool { return len(s.Leases) == 0 && s.Pods == 0 }
+// Empty reports whether the sweep found nothing at all — nothing closed, nothing
+// dropped, nothing to report. The only state a correct engine leaves behind.
+func (s Sweep) Empty() bool {
+	return len(s.Leases) == 0 && s.Pods == 0 && len(s.Observed) == 0
+}
 
-// SettleLeases retires every run that is terminal or gone, in BOTH planes: it
-// closes the run's open leases and drops the run's pods.
+// SettleLeases retires every TERMINAL run in both planes — closes its open leases
+// and drops its pods — and merely REPORTS every orphan-run lease without touching
+// it.
 //
-// Both, always. Closing a lease while its container keeps running hands the GPU
-// back to the ledger and leaves something sitting on it — the engine then plans
-// new work onto that GPU and the kube-scheduler can never bind it. That is not a
-// milder failure than the immortal lease; it is the same lie told backwards, and a
-// sweep that told it would be a reaper. Bridge.apply deletes exactly the pods
-// absent from State.Pods, so dropping them here is what deletes them.
+// Terminal acts, orphan only observes, and the asymmetry is the whole point.
+// A terminal run rests on POSITIVE evidence: a Run object whose own phase says
+// Failed or Completed. Nothing reconciles a corpse, so its open lease is a real
+// immortal lease and closing it is safe. An orphan rests on the ABSENCE of a Run,
+// which a single incomplete load can fake — so acting on it could reap a live job.
+// Report-only restores the pre-R27c property that a wrong world causes an omission
+// (a leaked lease the sweep reports and R26 will audit) rather than an action (work
+// destroyed). R12's finalizer makes the orphan state unreachable and this can go.
+//
+// For terminal runs, both planes, always: closing a lease while its container keeps
+// running hands the GPU back to the ledger with something still sitting on it, and
+// the engine then plans new work onto a GPU the kube-scheduler can never bind — the
+// same lie told backwards. Bridge.apply deletes exactly the pods absent from
+// State.Pods, so dropping them here is what deletes them.
 func SettleLeases(state *ClusterState, now time.Time) Sweep {
-	doomed := map[string]string{} // run key -> rule
-
+	terminal := map[string]bool{} // run key -> terminal (act: close + drop)
 	for key, run := range state.Runs {
 		if run != nil && (run.Status.Phase == RunPhaseFailed || run.Status.Phase == RunPhaseComplete) {
-			doomed[key] = SweepTerminalRun
+			terminal[key] = true
 		}
-	}
-	// A lease or a pod whose Run object does not exist at all. Both planes are
-	// consulted, because a Run can be deleted after its pods bound and before its
-	// leases were minted, or the other way round.
-	for i := range state.Leases {
-		lease := &state.Leases[i]
-		if lease.Status.Closed {
-			continue
-		}
-		// An empty run name keys to "namespace/", which matches no real Run, so the
-		// orphan rule would reap it. The sole committer always names the run; a
-		// lease that does not is malformed, not orphaned — and this sweep DELETES
-		// pods, so it must not act on a key it cannot trust. Leave it (an omission
-		// pkg/invariant will count), never destroy on it.
-		if lease.Spec.RunRef.Name == "" {
-			continue
-		}
-		key := keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name)
-		if run, known := state.Runs[key]; !known || run == nil {
-			doomed[key] = SweepOrphanRun
-		}
-	}
-	for _, pod := range state.Pods {
-		if pod.Labels[binder.LabelRunName] == "" {
-			continue // malformed, not orphaned — see the lease loop above
-		}
-		key := keys.NamespacedKey(pod.Namespace, pod.Labels[binder.LabelRunName])
-		if run, known := state.Runs[key]; !known || run == nil {
-			doomed[key] = SweepOrphanRun
-		}
-	}
-	if len(doomed) == 0 {
-		return Sweep{}
 	}
 
 	var sweep Sweep
@@ -172,24 +165,38 @@ func SettleLeases(state *ClusterState, now time.Time) Sweep {
 		if lease.Status.Closed {
 			continue
 		}
-		key := keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name)
-		rule, gone := doomed[key]
-		if !gone {
+		// An empty run name keys to "namespace/", which matches no real Run. The
+		// sole committer always names the run; a lease that does not is malformed,
+		// not orphaned — leave it entirely alone, and do not even report it as an
+		// orphan (a key the sweep cannot trust is not evidence of anything).
+		if lease.Spec.RunRef.Name == "" {
 			continue
 		}
-		// The ledger records WHY, not merely that. A month from now the difference
-		// between a lease swept off a corpse and one swept off a deleted run is the
-		// difference between a bug report and a race.
-		CloseLease(lease, closureReasonFor(rule), now)
-		sweep.Leases = append(sweep.Leases, SweptLease{
-			Namespace: lease.Namespace, Name: lease.Name, RunKey: key, Rule: rule,
-		})
+		key := keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name)
+		switch {
+		case terminal[key]:
+			// The ledger records WHY. A terminal-run closure is a bug report: some
+			// path made the run terminal without calling releaseRun.
+			CloseLease(lease, closureReasonFor(SweepTerminalRun), now)
+			sweep.Leases = append(sweep.Leases, SweptLease{
+				Namespace: lease.Namespace, Name: lease.Name, RunKey: key, Rule: SweepTerminalRun,
+			})
+		default:
+			if run, known := state.Runs[key]; !known || run == nil {
+				// Orphan: report only. Do NOT close it, do NOT drop its pod.
+				sweep.Observed = append(sweep.Observed, SweptLease{
+					Namespace: lease.Namespace, Name: lease.Name, RunKey: key, Rule: SweepOrphanRun,
+				})
+			}
+		}
 	}
 
+	// Pods: drop only those of a TERMINAL run. An orphan run's pods are left in
+	// place exactly as its lease is — the sweep does not destroy on an absence.
 	kept := state.Pods[:0]
 	for _, pod := range state.Pods {
 		key := keys.NamespacedKey(pod.Namespace, pod.Labels[binder.LabelRunName])
-		if _, gone := doomed[key]; gone {
+		if pod.Labels[binder.LabelRunName] != "" && terminal[key] {
 			sweep.Pods++
 			continue
 		}

@@ -29,11 +29,14 @@ would leave `orphan-run` exactly as dangerous as it is today while looking like 
 Sequence, decided (David, 2026-07-10 — *"move implementing the correct solution ahead of
 duct taping something that can't work"*):
 
-1. **Demote `orphan-run` to report-only now.** It must not close a lease or delete a pod.
-   Count it, log it, leave the lease open. That restores the pre-R27c property that a
-   wrong world causes an *omission* (a lease leaks, `pkg/invariant` counts it) rather than
-   an *action* (work is destroyed). `terminal-run` keeps acting: it rests on the positive
-   evidence of a Run object whose phase says `Failed`.
+1. **✅ Demote `orphan-run` to report-only.** *(Done — see `controllers/settle.go`
+   `Sweep.Observed`, and `Bridge.reportSweep`.)* It no longer closes a lease or drops a
+   pod; it records the lease in `Sweep.Observed`, which the bridge logs and counts
+   (`jobtree_swept_leases_total{rule=orphan-run}`) and never panics on. That restores the
+   pre-R27c property that a wrong world causes an *omission* (a leaked lease the sweep
+   reports — note `pkg/invariant` does NOT catch it, its projection is keyed on
+   `state.Runs`; R26's auditor will) rather than an *action* (work destroyed). `terminal-run`
+   keeps acting: it rests on the positive evidence of a Run object whose phase says `Failed`.
 2. **Land R12.** The finalizer closes leases with reason `RunDeleted` before the Run goes.
 3. **Delete the `orphan-run` rule entirely**, with a test asserting its premise is now
    unreachable. Do not leave it in "just in case": a rule that cannot fire is a rule
