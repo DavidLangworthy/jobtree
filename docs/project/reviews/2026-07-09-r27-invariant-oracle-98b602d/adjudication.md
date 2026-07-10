@@ -26,10 +26,10 @@ Raw data: `adjudication.json`.
 | **F3** | **critical** | **fixed** | 3–0 | `8a1dc2c`'s `leaseGroupIndex`. Confirmed by driving a production-shaped lease. |
 | **F4** | high | **still present** | 3–0 | **Reproduced. Fixed here.** See below. |
 | **F5** | medium | **still present** | 3–0 | **Reproduced. Fixed here.** See below. |
-| **F6** | low | **still present** | 2–0 | Reproduced. Deferred → task #54, with the panel's own warning attached. |
+| **F6** | low | **still present** | 2–0 | Reproduced. **Resolved as intended behaviour** in `e681a96`: the comment that framed a semantic choice as an optimisation is replaced, and the reasons are written down. A dead judge held a `not-a-defect` verdict on this one, so treat the 2–0 as 2–1. |
 | **F7** | high | **still present** | 2–0 | **Reproduced. Fixed here.** |
 | **F8** | medium | **fixed** | 3–0 | `b4f6a6d`. Two judges independently reverted the fix and watched the reaper return. **The earlier quorum's refutation was wrong.** |
-| **F9** | low | **still present** | 2–0 | Half fixed by `b4f6a6d` (grow coverage, verified load-bearing). The pod-plane half is fixed here; the coverage gap it named is now covered by `controllers/two_plane_test.go`. |
+| **F9** | low | **still present** | 2–0 | Half fixed by `b4f6a6d` (grow coverage, verified load-bearing). The pod-plane half is fixed by `9f6a744`; the coverage gap it named is covered by `controllers/two_plane_test.go`. |
 
 ## What F4 and F5 actually were: a defect I introduced
 
@@ -69,9 +69,11 @@ granularity, because a `PodManifest` names a machine and not an ordinal. So:
 - and if any of those leases is **funded**, **decline the swap** rather than evict it, exactly as the
   code already does for a funded conflict. Choosing between funded runs belongs to `pkg/resolver`.
 
-`R28b` remains the durable fix: give the packer's groups real identity in both planes, and the eviction
-becomes slot-granular. Until then this is honest and conservative — it declines more swaps rather than
-destroying work.
+`R28b` was the durable fix, and it landed in `e681a96`: the packer's groups now reach the ledger and the
+pods, so "the pods of this group" means one group rather than the whole run. The node-scoped eviction
+and its funded-sibling guard stay — a `PodManifest` still names a machine and not an ordinal, so
+same-machine co-ranks cannot be separated, and the guard is what keeps a coarse eviction from becoming
+a reaper.
 
 ## F7: `closeRunLeases` → `releaseRun`
 
@@ -119,3 +121,24 @@ CONSEQUENCE**, with asymmetric aggregation — a reproduction confirms alone, a 
 trace and a failed reproduction, and the consequence lens may veto a *fix* without touching the
 *finding*. Majority voting over non-exchangeable judges is not sound, and this run's `ranCode` flag was
 a workaround, not a solution.
+
+---
+
+## Closing the last of it
+
+**Task #52** ("the reclaimSquatter questions the review never adjudicated") is closed. It existed
+because five findings from the original run reached 0/3 or 2/3 skeptics. All five are now settled:
+
+| Was #52's | Verdict | Where it went |
+|---|---|---|
+| group-granular eviction, slot-granular conflict (high) | still present | fixed in `9f6a744`; root cause fixed in `e681a96` |
+| victim's other-group leases left open on a Pending run (medium) | **not a defect** | the legal half-assembled-gang state; the run re-adopts and reuses the lease |
+| malleable-above-min victim Running with pods deleted (medium) | still present | fixed in `9f6a744` |
+| stale `ev` blast radius (low) | still present, **intended** | documented in `e681a96`; task #54 |
+| tests omit the pod plane and grow leases (low) | half fixed | now covered |
+
+**Task #49 / R28b** is closed by `e681a96`. **Task #54** is closed by the same commit, as a written
+ruling rather than a code change — the panel's own mutation of the "obvious fix" failed a genuinely
+funded victim, and the reasons are now in the source above `ev := c.evaluate(now)`.
+
+Nothing from this review remains open.
