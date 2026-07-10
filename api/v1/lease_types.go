@@ -28,6 +28,15 @@ type LeaseSpec struct {
 	CompPath []string      `json:"compPath,omitempty"`
 	Slice    LeaseSlice    `json:"slice"`
 	Interval LeaseInterval `json:"interval"`
+	// PaidByBudgetNamespace scopes PaidByBudget: Budgets are namespaced, so the
+	// budget name alone does not identify one — two tenants can each own a Budget
+	// of the same name in their own namespace. The funding index keys on all three
+	// (namespace, budget, envelope); without the namespace their envelopes collide
+	// and one tenant charges the other (Codex #1 / task #62). Empty on leases
+	// written before the field existed; the funding fold treats an empty namespace
+	// as its own key, so legacy leases keep matching legacy (empty-namespace)
+	// index entries and are not silently re-pointed.
+	PaidByBudgetNamespace string `json:"paidByBudgetNamespace,omitempty"`
 	// PaidByBudget scopes PaidByEnvelope: envelope names are only unique
 	// within one budget, and one owner can hold several budgets. Empty on
 	// leases written before the field existed; those fall back to

@@ -244,6 +244,7 @@ func (j *JobTree) PreBind(ctx context.Context, _ fwk.CycleState, pod *corev1.Pod
 		// attributed envelope.
 		seg = cover.Segment{
 			Owner:        pod.Annotations[binder.AnnotationPayerOwner],
+			Namespace:    pod.Annotations[binder.AnnotationPayerNamespace],
 			BudgetName:   pod.Annotations[binder.AnnotationPayerBudget],
 			EnvelopeName: pod.Annotations[binder.AnnotationPayerEnvelope],
 		}
