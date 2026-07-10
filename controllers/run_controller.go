@@ -1347,7 +1347,7 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 		CloseLease(lease, "NodeFailure", now)
 		// Free the held spare's pod on the reclaimed node so the bridge deletes it
 		// and the swap pod (which hard-targets that node) can bind there.
-		c.removeSparePodOnNodes(run, spareNodes)
+		c.removeSparePodOnNodes(run, leaseGroupIndex(spareLease), spareNodes)
 		// Re-emit the group's pod as a SWAP onto the reclaimed spare node,
 		// stamped with the spare's funding provenance; the scheduler plugin binds
 		// it there (required node affinity) and mints the Swap lease from that
@@ -1435,6 +1435,14 @@ func (c *RunController) failGroupWithoutSpare(run *v1.Run, runKey string, lease,
 	// adoption skips terminal runs.
 	if spareLease != nil {
 		CloseLease(spareLease, "SwapDeclined", now)
+		// Drop the spare's held pod too, exactly as the accepted-swap path does.
+		// Closing the lease alone is a half-plane action: the ledger frees the
+		// GPUs while the placeholder container keeps holding them. Left running,
+		// it strands GPUs the ledger calls free, and if the run re-admits inside
+		// its checkpoint grace the pod lingers forever, invisible to every
+		// invariant (INV-LEASE-HAS-POD fires only at zero pods). Adversarial
+		// review 2026-07-10, c74e0ef: reproduced holding 2 GPUs 20h post-recovery.
+		c.removeSparePodOnNodes(run, leaseGroupIndex(spareLease), leaseNodeNames(spareLease))
 		c.emit(run, EventTypeWarning, "SpareReleased", fmt.Sprintf(
 			"released the spare held for group %s: the group lost node %s and cannot use it",
 			leaseGroupIndex(lease), nodeName))
@@ -2120,16 +2128,26 @@ func (c *RunController) consumedSpareCount(run *v1.Run) int {
 	return n
 }
 
-// removeSparePodOnNodes drops the run's held-spare pod manifest bound to one of
-// nodes (the reclaimed spare node) so the bridge deletes the real spare Pod,
-// freeing its GPU for the swap pod that hard-targets that node. Removes at most
-// one spare (the swap consumes one held slot).
-func (c *RunController) removeSparePodOnNodes(run *v1.Run, nodes []string) {
+// removeSparePodOnNodes drops the run's held-spare pod manifest for group, bound
+// to one of nodes (the reclaimed spare node), so the bridge deletes the real spare
+// Pod, freeing its GPU for the swap pod that hard-targets that node. Removes at
+// most one spare (the swap consumes one held slot).
+//
+// group matters: R28b (e681a96) stamps every spare pod with its placement group,
+// and two groups' spares can legally co-locate on one machine (pkg/pack assigns
+// spare domains per-group with no cross-group exclusion). Matching on node alone
+// deleted whichever spare the API listed first — stranding the swapping group's own
+// pod and freeing a sibling group's, a class-5 identity coarsening. Key on the
+// group the caller is actually retiring.
+func (c *RunController) removeSparePodOnNodes(run *v1.Run, group string, nodes []string) {
 	want := buildNodeSet(nodes)
 	for i := range c.State.Pods {
 		p := &c.State.Pods[i]
 		if p.Namespace != run.Namespace || p.Labels[binder.LabelRunName] != run.Name ||
 			p.Labels[binder.LabelRunRole] != binder.RoleSpare {
+			continue
+		}
+		if podGroupIndex(p) != group {
 			continue
 		}
 		if p.NodeName == "" || want[p.NodeName] == 0 {
@@ -2262,6 +2280,16 @@ func leaseGroupIndex(lease *v1.Lease) string {
 		return ""
 	}
 	return lease.Labels[binder.LabelGroupIndex]
+}
+
+// podGroupIndex is the spare/active pod counterpart of leaseGroupIndex: the
+// placement group R28b stamps onto every emitted pod. Missing reads as "" (the
+// same convention leaseGroupIndex uses), so a lease and its pod compare equal.
+func podGroupIndex(p *binder.PodManifest) string {
+	if p.Labels == nil {
+		return ""
+	}
+	return p.Labels[binder.LabelGroupIndex]
 }
 
 // runnableGPUsForRun is the run's TOTAL live width: every open, non-spare lease,
