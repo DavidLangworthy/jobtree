@@ -31,6 +31,7 @@
 (* - two ranked leases, each assigned to one envelope and either owned or    *)
 (*   borrowed;                                                               *)
 (* - safe admission of either lease after a persisted summary exists;       *)
+(* - safe closure at Now, with settled closure history immutable afterward; *)
 (* - per-envelope `ConsumedGPUHours`, per-envelope `HoursByClass`,           *)
 (*   per-cap aggregate consumed hours, and per-owner lender hours;           *)
 (* - a persisted summary store keyed by the full window identity used when   *)
@@ -40,9 +41,9 @@
 (* ----------------------------------                                        *)
 (* We keep only two leases and unit-width ticks. The SMT configs fix one      *)
 (* representative owned-then-borrowed history, while the generalized TLC     *)
-(* config ranges both leases over 625 canonical histories. A dynamic TLC     *)
-(* config reaches that same family through ordered admission actions. This   *)
-(* keeps each proof rail tractable while exercising the missing surfaces:    *)
+(* config ranges both leases over 625 canonical histories. Dynamic TLC       *)
+(* configs reach that family through ordered admission and closure actions.  *)
+(* This keeps each rail tractable while exercising the missing surfaces:     *)
 (*                                                                          *)
 (* - aggregate-cap depletion can differ by envelope membership,              *)
 (* - a window-start OR window-end change can stale the summary, and          *)
@@ -715,6 +716,41 @@ BackdatedAdmitLease(l, newEnv, newBorrowed, newStart, newEnd) ==
   /\ newEnd <= horizon
   /\ InstallLease(l, newEnv, newBorrowed, newStart, newEnd)
 
+\* Close an admitted lease at Now. An open lease can only coexist with a
+\* valid summary while its start is at or after the horizon, so closing at a
+\* later Now cannot modify the compacted prefix.
+CloseLeaseAtNow(l) ==
+  /\ l \in LeaseIds
+  /\ leaseEnabled[l]
+  /\ leaseEnd[l] = NoEnd
+  /\ leaseStart[l] < now
+  /\ horizon < now
+  /\ leaseEnd' = [leaseEnd EXCEPT ![l] = now]
+  /\ UNCHANGED <<now, horizon, summaryValid, windowStart, windowEnd,
+                 summaryWindowStart, summaryWindowEnd, summaryConsumed,
+                 summaryClassHours, summaryAggregate, summaryLender,
+                 leaseEnabled, leaseEnv, leaseBorrowed, leaseStart>>
+
+AdmitOpenLease(l, newEnv, newBorrowed, newStart) ==
+  AdmitLease(l, newEnv, newBorrowed, newStart, NoEnd)
+
+\* Mutation: change a closure timestamp after that lease has already been
+\* folded into a live summary. Historical closure fields are immutable unless
+\* the summary is invalidated or repaired.
+RewriteSettledLeaseEnd(l, newEnd) ==
+  /\ l \in LeaseIds
+  /\ leaseEnabled[l]
+  /\ summaryValid
+  /\ leaseEnd[l] <= horizon
+  /\ newEnd \in Ends
+  /\ newEnd # leaseEnd[l]
+  /\ leaseStart[l] < newEnd
+  /\ leaseEnd' = [leaseEnd EXCEPT ![l] = newEnd]
+  /\ UNCHANGED <<now, horizon, summaryValid, windowStart, windowEnd,
+                 summaryWindowStart, summaryWindowEnd, summaryConsumed,
+                 summaryClassHours, summaryAggregate, summaryLender,
+                 leaseEnabled, leaseEnv, leaseBorrowed, leaseStart>>
+
 Next ==
   \/ AdvanceNow
   \/ \E h \in Boundaries : SettleTo(h)
@@ -730,6 +766,10 @@ DynamicNext ==
            \E s \in Ticks :
              \E en \in Ends : AdmitLease(l, e, b, s, en)
 
+ClosureNext ==
+  \/ DynamicNext
+  \/ \E l \in LeaseIds : CloseLeaseAtNow(l)
+
 BackdatedAdmissionNext ==
   \/ AdvanceNow
   \/ \E h \in Boundaries : SettleTo(h)
@@ -738,6 +778,16 @@ BackdatedAdmissionNext ==
          \E b \in BOOLEAN :
            \E s \in Ticks :
              \E en \in Ends : BackdatedAdmitLease(l, e, b, s, en)
+
+HistoricalClosureRewriteNext ==
+  \/ AdvanceNow
+  \/ \E h \in Boundaries : SettleTo(h)
+  \/ \E l \in LeaseIds :
+       \E e \in Envs :
+         \E b \in BOOLEAN :
+           \E s \in Ticks : AdmitOpenLease(l, e, b, s)
+  \/ \E l \in LeaseIds : CloseLeaseAtNow(l)
+  \/ \E l \in LeaseIds : \E en \in Ends : RewriteSettledLeaseEnd(l, en)
 
 \* Negative-control sub-specs omit RepairSummary and the unrelated shift so
 \* TLC produces short stale-summary traces from the ordinary Init state.
@@ -755,6 +805,9 @@ Spec == Init /\ [][Next]_vars
 GeneralizedSpec == GeneralizedInit /\ [][Next]_vars
 DynamicSpec == DynamicInit /\ [][DynamicNext]_vars
 BackdatedAdmissionSpec == DynamicInit /\ [][BackdatedAdmissionNext]_vars
+ClosureSpec == DynamicInit /\ [][ClosureNext]_vars
+HistoricalClosureRewriteSpec ==
+  DynamicInit /\ [][HistoricalClosureRewriteNext]_vars
 ReachableStaleStartSpec == Init /\ [][ReachableStaleStartNext]_vars
 ReachableStaleEndSpec == Init /\ [][ReachableStaleEndNext]_vars
 StaleWindowSpec == InitStaleWindowWitness /\ [][Next]_vars

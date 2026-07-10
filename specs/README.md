@@ -14,7 +14,7 @@ to the design that it cannot drift far from reality.
 | `NodeFailure` | the node-failure / spare-swap / reclaim seam | no duplicate rank; exact-slot-only unfunded reclaim; no failed-node leak; no terminal immortal lease; phase is the join; ledger/workload plane agreement |
 | `LedgerCompaction` | the R4 pt2 settlement theorem for `pkg/funding/evaluate.go` | if `horizon <= now` and no retained lease starts before the horizon, replaying `summary + retained` matches full replay on funded lease-hours and the funded set at `Now` |
 | `LedgerCompactionStore` | the pt2b persisted-settlement store semantics | repeated settlement, time advance, and window movement preserve equivalence to full replay, provided window shifts invalidate or recompute the summary before reuse |
-| `LedgerCompactionAccounting` | the broader pt2b accounting surface: aggregate caps, full window identity, lender/class carry-forward, and post-summary lease admission | persisted summary representation and full stateful round-trip equivalence across settlement, time advance, window shifts, summary repair, and safe dynamic admission for both a representative SMT history and 625 canonical two-lease histories; exact finite seeded-fold equivalence |
+| `LedgerCompactionAccounting` | the broader pt2b accounting surface: aggregate caps, full window identity, lender/class carry-forward, and dynamic lease admission/closure | persisted summary representation and full stateful round-trip equivalence across settlement, time advance, window shifts, summary repair, safe admission, and close-at-Now for both a representative SMT history and 625 canonical two-lease histories; exact finite seeded-fold equivalence |
 
 ## Running
 
@@ -66,6 +66,8 @@ make ledger-compaction-accounting-stateful-check
 make ledger-compaction-accounting-generalized-check
 make ledger-compaction-accounting-dynamic-check
 make ledger-compaction-accounting-dynamic-counterexample
+make ledger-compaction-accounting-closure-check
+make ledger-compaction-accounting-closure-counterexample
 make ledger-compaction-accounting-stateful-counterexamples
 make ledger-compaction-accounting-stateful-apalache-check  # large VM
 ```
@@ -93,6 +95,14 @@ same 2,252,746 distinct generalized states, maximum depth 15, and no invariant
 error in about three minutes. The backdated mutation follows `AdvanceNow`,
 `SettleTo(1)`, then installs a lease covering `[0, 1)` without invalidating the
 summary; TLC immediately reports a `SummaryRep` violation.
+
+The closure rail admits open leases with the abstract `NoEnd`, advances time,
+and may close either lease at `Now`. TLC generates 17,872,816 states, finds the
+same 2,252,746 distinct generalized states, reaches depth 14, and reports no
+error in about three minutes. Its mutation closes a lease at 1, settles it into
+horizon 1, then rewrites that historical end to 2; `SummaryRep` fails
+immediately. Thus an open retained lease may close safely, but closure metadata
+is immutable once folded into a live summary unless that summary is repaired.
 
 `LedgerCompaction` is the one-shot theorem for `settlementSafe` and
 `SettleAccrual`. `LedgerCompactionStore` is the stronger, stateful theorem for
@@ -183,6 +193,9 @@ design review:
   at horizon 1 and then retroactively installs a lease that already ended at
   that horizon; TLC finds that the persisted summary no longer represents the
   settled prefix.
+- `LedgerCompactionAccountingHistoricalClosureRewrite.cfg` admits and closes a
+  lease, settles it into horizon 1, then changes its end from 1 to 2; TLC finds
+  the live summary still contains history that is no longer settled.
 
 ## What is deliberately out of scope
 

@@ -63,3 +63,17 @@ jobs:
         run: make ledger-compaction-accounting-dynamic-check
       - name: Demonstrate the backdated-admission counterexample
         run: make ledger-compaction-accounting-dynamic-counterexample
+
+  closure:
+    name: dynamic ledger closure tlc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Check safe close-at-Now
+        run: make ledger-compaction-accounting-closure-check
+      - name: Demonstrate the historical closure-rewrite counterexample
+        run: make ledger-compaction-accounting-closure-counterexample

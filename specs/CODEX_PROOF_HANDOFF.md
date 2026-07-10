@@ -141,18 +141,32 @@ Dynamic post-summary admission is also checked:
   summary.
 - A separate parallel CI job runs the dynamic proof and its mutation.
 
-The exact finite universal check, fixed/generalized/dynamic finite lifecycles,
-and extra witnesses therefore remain on TLC. The summary representation,
-bounded lifecycle preservation, stateful round trip, and representative
-seeded-fold steps also have Apalache/Z3 coverage.
+Dynamic closure and historical immutability are checked as well:
+
+- `CloseLeaseAtNow` changes an admitted open lease from `NoEnd` to `now`. It
+  requires `leaseStart < now` and `horizon < now`, so the close remains wholly
+  in the uncompacted suffix.
+- `make ledger-compaction-accounting-closure-check` completed under TLC in
+  2 minutes 56 seconds: `17,872,816 states generated`, `2,252,746 distinct
+  states found`, maximum depth 14, zero states left on the queue, and no error.
+- The historical-rewrite mutation follows `AdmitOpenLease`, `AdvanceNow`,
+  `CloseLeaseAtNow`, `SettleTo(1)`, and `RewriteSettledLeaseEnd(1, 2)`, then
+  violates `SummaryRep`. Once a closure is folded into the summary, its end is
+  immutable unless the summary is invalidated or repaired.
+- A separate parallel CI job runs the closure proof and its mutation.
+
+The exact finite universal check, fixed/generalized/dynamic admission/closure
+lifecycles, and extra witnesses therefore remain on TLC. The summary
+representation, bounded lifecycle preservation, stateful round trip, and
+representative seeded-fold steps also have Apalache/Z3 coverage.
 
 ## Next Work
 
-1. Add a dynamic close action for an admitted open lease. Require a monotonic
-   end at `Now`, and add a negative control for a closure backdated behind the
-   persisted horizon.
-2. Extend the abstraction to a third ranked lease or another aggregate-
-   membership shape now that the generalized two-lease invariant is tractable.
+1. Extend the abstraction to a third ranked lease in a separate exploration
+   config. Start with two representative leases plus one canonical variable
+   lease to measure state growth before attempting the full 25^3 family.
+2. Add another aggregate-membership shape after the third-lease rail remains
+   tractable.
 3. Revisit a direct Apalache universal seeded-fold proof only after an
    inliner/encoding improvement or on a machine with materially more than
    16 GB RAM.
