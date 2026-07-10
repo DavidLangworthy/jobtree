@@ -121,6 +121,16 @@ counts only when somebody looked. The **consequence lens may veto a fix** withou
 *"real bug, proposed fix is a reaper"* is a distinct outcome, and it has caught three. Everything else is
 `UNRESOLVED`.
 
+### Report the attribution, every time
+
+Each run returns `attribution`: raised/confirmed per lens, the same aggregated by the lens's **model**,
+and per skeptic role the counts of `votes`, `ranCode`, `decisive` and `reaperVetoes`. The number that
+matters is **`confirmedFoundByExactlyOneLens`** — the defects only one lens saw.
+
+Put it in the archive record, and call out two things by name: any confirmed finding the **Fable lens
+missed that an Opus lens caught**, and any **reaper veto** the other roles did not notice. We are
+measuring whether the models earn their seats rather than assuming it. One review is an anecdote; say so.
+
 ## Things that are not valid reasons to dismiss a finding
 
 - *"The test suite passes."* It passed for every defect on the list.

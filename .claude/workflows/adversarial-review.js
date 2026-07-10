@@ -375,6 +375,32 @@ the thing itself.`,
     ],
   },
   {
+    // Deliberately a DIFFERENT MODEL from the other three. Lens diversity decorrelates
+    // reasoning; model diversity decorrelates the prior underneath it. This lens also
+    // asks the question none of the others can: not "is this a bug" but "would fixing
+    // it break something that is legal". It exists to be measured — see attribution().
+    name: 'std:consequence-and-reapers',
+    model: 'fable', effort: 'high',
+    prompt: `TASK: two questions the other lenses structurally cannot ask.
+
+(a) HALF-PLANE ACTIONS (playbook class 9). This system holds one GPU with two claims: a Lease in the
+ledger and a Pod in the workload. A change that moves one without the other lies, and lies differently
+in each direction — an open lease with no pod bills a budget for nothing; a pod with no open lease holds
+a GPU the ledger has handed back, so the engine plans work onto it that can never bind.
+
+(b) REAPERS. For every defect this change fixes, and every defect you find in it, ask what LEGAL state
+the obvious repair would destroy. pkg/invariant's package doc lists four invariants rejected for exactly
+that reason. A fix that reaps a healthy run is worse than the bug it repairs. This has happened three
+times on this path, and each time the "obvious" fix looked correct.`,
+    questions: [
+      'For every site the change closes a Lease: whose container is still running? For every site it deletes a Pod: whose lease is still open? Name each pairing. Bridge.apply deletes exactly the pods absent from state.Pods, which is why forgetting is silent.',
+      'The checkpoint-grace window is a DELIBERATE, bounded half-plane state: the run parks Pending with a deadline and its containers keep running so they can write a checkpoint. Does the change reach it? Any sweep or cull that does is a reaper. Check the exemption keys on the deadline or on non-terminality, not on a phase name that could change.',
+      'Take each fix in this change. State, concretely, the legal state its repair would destroy if applied one step more aggressively. (Example: "close all the victim\'s leases" evicts funded work, because funding class is per-LEASE and one run can hold an Owned and an Unfunded lease at once.) If you cannot name one, say so — but look first at pkg/invariant\'s four rejected invariants.',
+      'Does the change add or strengthen an INVARIANT? If so, find a legal state this engine really produces that would trip it. An invariant that is wrong is not a weaker safety net; it is a reaper that panics CI on healthy code and argues for a fix that rebuilds a shipped corruption.',
+      'Assume every finding you raised is real. For each: which budget is charged, how many GPUs are held, and for how long? An immortal lease is invisible — nothing crashes, nothing is logged, the cluster quietly gets smaller and someone quietly gets poorer. Quantify it.',
+    ],
+  },
+  {
     name: 'std:test-integrity',
     model: 'opus', effort: 'xhigh',
     prompt: `TASK: determine whether the TESTS IN THIS CHANGE ASSERT THE BUG (playbook class 8).
@@ -524,11 +550,14 @@ const good = attested.filter(r => r && !r.blocked)
 blocked.forEach(b => log(`BLOCKED lens "${b.lens}": ${b.reason}`))
 good.forEach(g => log(`lens "${g.lens}": ${g.report.findings.length} finding(s), ${g.report.evidence.length} citations verified`))
 
-const raised = good.flatMap(g => g.report.findings.map(f => ({ ...f, lens: g.lens })))
+const lensModel = {}
+ALL_LENSES.forEach(l => { lensModel[l.name] = l.model || 'opus' })
+const raised = good.flatMap(g => g.report.findings.map(f => ({ ...f, lens: g.lens, lensModel: lensModel[g.lens] || 'unknown' })))
 
 if (raised.length === 0) {
   return {
     verdict: blocked.length ? 'BLOCKED — a lens produced no verifiable work; this is NOT a green review' : 'GREEN',
+    attribution: { byLens: {}, byModel: {}, skepticRoles: {}, confirmedFoundByExactlyOneLens: {}, note: 'no findings raised; nothing to attribute' },
     blockedLenses: blocked.map(b => ({ lens: b.lens, reason: b.reason })),
     scoutLeads: leads,
     scoutDied: !scout,
@@ -683,8 +712,78 @@ if (blocked.length) verdict = 'BLOCKED — a lens produced no verifiable work; t
 else if (confirmed.length) verdict = 'DEFECTS CONFIRMED'
 else if (unresolved.length) verdict = 'UNRESOLVED — findings could not be adjudicated; do not treat as green'
 
+// ---------------------------------------------------------------------------
+// ATTRIBUTION. Which lens (and which MODEL) actually earns its place?
+//
+// This exists to answer an empirical question with data instead of taste: is one
+// Fable worth three Opus? Does the reproduction lens change verdicts, or merely
+// confirm what the tracer already said? Nobody should guess. Every review appends a
+// row, and after a handful of reviews the answer is arithmetic.
+//
+// Two things are counted, and they are different:
+//   raised/confirmed per LENS   — who FINDS the defects
+//   decisive per SKEPTIC ROLE   — whose verdict CHANGED the outcome
+//
+// A skeptic role is 'decisive' when removing its vote would flip the finding's status
+// under the same asymmetric rule. A reproduction that reproduced is always decisive
+// (it confirms alone). A consequence veto is decisive for the FIX, never the finding.
+function attribution() {
+  const byLens = {}
+  const byModel = {}
+  const note = (bucket, key, field) => {
+    if (!key) return
+    bucket[key] = bucket[key] || { raised: 0, confirmed: 0, unresolved: 0, refuted: 0 }
+    bucket[key][field]++
+  }
+  raised.forEach(f => { note(byLens, f.lens, 'raised'); note(byModel, f.lensModel, 'raised') })
+  const statusOf = { confirmed: 'confirmed', unresolved: 'unresolved', refuted: 'refuted' }
+  judged.filter(Boolean).forEach(j => {
+    const st = statusOf[j.status]
+    if (!st) return
+    note(byLens, j.finding.lens, st)
+    note(byModel, j.finding.lensModel, st)
+  })
+
+  const roles = {}
+  judged.filter(Boolean).forEach(j => {
+    ;(j.votes || []).forEach(v => {
+      roles[v.role] = roles[v.role] || { votes: 0, ranCode: 0, decisive: 0, reaperVetoes: 0 }
+      roles[v.role].votes++
+      if (v.ranCode) roles[v.role].ranCode++
+      if (v.fixIsReaper) roles[v.role].reaperVetoes++
+    })
+    const repro = (j.votes || []).find(v => v.role === 'reproduce')
+    if (j.status === 'confirmed' && repro && repro.reproduced === true) {
+      roles.reproduce.decisive++            // it confirmed alone
+    }
+    if (j.status === 'refuted') {
+      // a refutation needs BOTH; both are decisive
+      if (roles.trace) roles.trace.decisive++
+      if (roles.reproduce) roles.reproduce.decisive++
+    }
+  })
+
+  // Findings that ONLY one lens saw. This is the number that answers the question.
+  const seenBy = {}
+  raised.forEach(f => {
+    const k = `${f.file}:${f.line}`
+    seenBy[k] = seenBy[k] || new Set()
+    seenBy[k].add(f.lens)
+  })
+  const soleFinder = {}
+  judged.filter(Boolean).filter(j => j.status === 'confirmed').forEach(j => {
+    const k = `${j.finding.file}:${j.finding.line}`
+    if (seenBy[k] && seenBy[k].size === 1) {
+      soleFinder[j.finding.lens] = (soleFinder[j.finding.lens] || 0) + 1
+    }
+  })
+
+  return { byLens, byModel, skepticRoles: roles, confirmedFoundByExactlyOneLens: soleFinder }
+}
+
 return {
   verdict,
+  attribution: attribution(),
   blockedLenses: blocked.map(b => ({ lens: b.lens, reason: b.reason })),
   scoutLeads: leads,
   scoutDied: !scout,
