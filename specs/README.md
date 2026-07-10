@@ -37,9 +37,9 @@ make node-failure-spec-counterexamples
 That seam has its own path-filtered CI workflow because the relevant Go files
 change on a different cadence from the rest of the design-level specs.
 
-`LedgerCompaction`, `LedgerCompactionStore`, and
-`LedgerCompactionAccounting` are checked with Apalache rather than TLC. They
-are bounded equivalence proofs, not just reachability searches:
+The primary equivalence rails for `LedgerCompaction`,
+`LedgerCompactionStore`, and `LedgerCompactionAccounting` are checked with
+Apalache. They are bounded equivalence proofs, not just reachability searches:
 
 ```bash
 make ledger-compaction-apalache-check
@@ -48,10 +48,12 @@ make ledger-compaction-accounting-apalache-check
 make ledger-compaction-accounting-apalache-counterexamples
 ```
 
-The accounting companion also has a small TLC witness rail for cheap,
-representative one-shot properties that do not need SMT:
+The accounting companion also has a TLC rail for the exact finite universal
+seeded-fold property and for cheap representative one-shot properties that do
+not need SMT:
 
 ```bash
+make ledger-compaction-accounting-seeded-fold-universal-check
 make ledger-compaction-accounting-witness-check
 make ledger-compaction-accounting-witness-counterexamples
 ```
@@ -78,8 +80,12 @@ keeping a fixed two-lease history for SMT tractability.
 One important result of that broader model: the naive "add the newly settled
 chunk onto the old summary" law is false once depletion-sensitive accounting is
 included. The checked theorem is therefore a seeded replay law. On the current
-VM, Apalache discharges that theorem as two representative steps (`0 -> 1` and
-`1 -> 2`) rather than one universally quantified invariant.
+rail, Apalache discharges the substantive theorem as two representative steps
+(`0 -> 1` and `1 -> 2`), while TLC checks the exact finite universally
+quantified operator. A direct Apalache retry on a 16 GB VM exhausted a 10 GB
+heap during preprocessing; a 12.5 GB run reached bounded checking but then
+received SIGTERM near the VM limit. Keep the exact universal check on TLC until
+the Apalache encoding or available proof memory changes.
 
 Together the compaction specs reproduce the failure shapes that mattered in the
 design review:

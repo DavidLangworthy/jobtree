@@ -61,7 +61,7 @@ Repaired window shifts must preserve stale out-of-window history as
 `Unfunded` class-hours. The old session made that explicit with shifted start
 and shifted end expected states in `LedgerCompactionAccounting.tla`.
 
-## Verification Recovered From Session
+## Verification Recovered And Continued
 
 The old session reported:
 
@@ -75,11 +75,26 @@ The old session reported:
 The new extra witness checks were deliberately kept on TLC because the session
 cap was killing one-shot Apalache runs that were otherwise simple.
 
+Continuation on a 16 GB Codespace reported:
+
+- `make ledger-compaction-accounting-apalache-check` with
+  `APALACHE_JVM_ARGS=-Xmx10000m` passed all four accounting obligations.
+- Direct `SeededSettlementFold` did not complete under Apalache 0.58.3. A
+  10 GB heap exhausted during preprocessing; a 12.5 GB run reached bounded
+  checking but then received SIGTERM near the VM limit.
+- `LedgerCompactionAccountingSeededFoldUniversal.cfg` completed under TLC:
+  `2 states generated`, `1 distinct state found`, `0 states left on queue`,
+  with no error.
+
+The exact finite universal check and the extra witnesses therefore remain on
+TLC. The summary representation, stateful round trip, and representative
+seeded-fold steps remain on Apalache/Z3.
+
 ## Next Work
 
-1. Retry universal `SeededSettlementFold` in
-   `specs/LedgerCompactionAccounting.tla` on the larger VM.
-2. Decide whether the new witness checks should remain TLC-based or move back
-   to Apalache without making the rail brittle.
+1. Revisit a direct Apalache universal proof only after an inliner/encoding
+   improvement or on a machine with materially more than 16 GB RAM.
+2. Decide whether the new exact TLC target belongs in a path-filtered CI
+   workflow once the recovered branch is ready to merge.
 3. Review the uncommitted Apalache `_apalache-out` directories in the old
    Codespace before deleting it. They were intentionally not committed.

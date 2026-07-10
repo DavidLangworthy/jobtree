@@ -1,6 +1,7 @@
 bin/
 dist/
 specs/.cache/
+_apalache-out/
 specs/states/
 
 # Claude Code local state (workflows/ IS tracked and shared)

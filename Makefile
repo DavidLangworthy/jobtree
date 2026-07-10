@@ -260,7 +260,14 @@ ledger-compaction-accounting-apalache-counterexamples: $(APALACHE)
 	cd specs && ! JVM_ARGS='$(APALACHE_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=LedgerCompactionAccountingStaleWindow.cfg --length=1 --no-deadlock LedgerCompactionAccounting.tla
 	cd specs && ! JVM_ARGS='$(APALACHE_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=LedgerCompactionAccountingStaleEnd.cfg --length=1 --no-deadlock LedgerCompactionAccounting.tla
 
-ledger-compaction-accounting-witness-check: $(TLA2TOOLS)
+# The exact bounded universal seeded-fold property is cheap for TLC. Its direct
+# Apalache encoding exhausts a 10 GB heap and receives SIGTERM near the VM
+# limit with a 12.5 GB heap, so keep it out of the ordinary SMT rail.
+.PHONY: ledger-compaction-accounting-seeded-fold-universal-check
+ledger-compaction-accounting-seeded-fold-universal-check: $(TLA2TOOLS)
+	cd specs && $(TLC) -config LedgerCompactionAccountingSeededFoldUniversal.cfg LedgerCompactionAccounting.tla
+
+ledger-compaction-accounting-witness-check: ledger-compaction-accounting-seeded-fold-universal-check $(TLA2TOOLS)
 	cd specs && $(TLC) -config LedgerCompactionAccountingClassHours.cfg LedgerCompactionAccounting.tla
 	cd specs && $(TLC) -config LedgerCompactionAccountingLender.cfg LedgerCompactionAccounting.tla
 	cd specs && $(TLC) -config LedgerCompactionAccountingCompositional.cfg LedgerCompactionAccounting.tla
