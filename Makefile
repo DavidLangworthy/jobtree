@@ -282,12 +282,18 @@ ledger-compaction-accounting-witness-counterexamples: $(TLA2TOOLS)
 	cd specs && ! $(TLC) -config LedgerCompactionAccountingStaleClassHours.cfg LedgerCompactionAccounting.tla
 	cd specs && ! $(TLC) -config LedgerCompactionAccountingStaleLender.cfg LedgerCompactionAccounting.tla
 
-.PHONY: ledger-compaction-accounting-stateful-check ledger-compaction-accounting-stateful-counterexamples ledger-compaction-accounting-stateful-apalache-check ledger-compaction-accounting-generalized-check
+.PHONY: ledger-compaction-accounting-stateful-check ledger-compaction-accounting-stateful-counterexamples ledger-compaction-accounting-stateful-apalache-check ledger-compaction-accounting-generalized-check ledger-compaction-accounting-dynamic-check ledger-compaction-accounting-dynamic-counterexample
 ledger-compaction-accounting-stateful-check: $(TLA2TOOLS)
 	cd specs && $(TLC) -config LedgerCompactionAccountingStateful.cfg LedgerCompactionAccounting.tla
 
 ledger-compaction-accounting-generalized-check: $(TLA2TOOLS)
 	cd specs && $(TLC) -config LedgerCompactionAccountingGeneralized.cfg LedgerCompactionAccounting.tla
+
+ledger-compaction-accounting-dynamic-check: $(TLA2TOOLS)
+	cd specs && $(TLC) -config LedgerCompactionAccountingDynamic.cfg LedgerCompactionAccounting.tla
+
+ledger-compaction-accounting-dynamic-counterexample: $(TLA2TOOLS)
+	cd specs && ! $(TLC) -config LedgerCompactionAccountingBackdatedAdmission.cfg LedgerCompactionAccounting.tla
 
 ledger-compaction-accounting-stateful-counterexamples: $(TLA2TOOLS)
 	cd specs && ! $(TLC) -config LedgerCompactionAccountingStatefulStaleStart.cfg LedgerCompactionAccounting.tla

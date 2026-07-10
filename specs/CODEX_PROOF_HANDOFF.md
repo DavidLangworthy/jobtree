@@ -124,16 +124,33 @@ invariant:
 - The path-filtered accounting workflow runs this exploration as a separate
   parallel job so the fixed-history witness rail stays fast.
 
-The exact finite universal check, fixed and generalized finite lifecycles, and
-extra witnesses therefore remain on TLC. The summary representation, bounded
-lifecycle preservation, stateful round trip, and representative seeded-fold
-steps also have Apalache/Z3 coverage.
+Dynamic post-summary admission is also checked:
+
+- `DynamicInit` starts with both canonical lease slots disabled.
+- `AdmitLease` may enable either slot with any envelope, owned/borrowed
+  attribution, and valid interval, but requires `newStart >= now` and
+  `newStart >= horizon`; the persisted prefix is therefore immutable.
+- `make ledger-compaction-accounting-dynamic-check` completed under TLC in
+  2 minutes 57 seconds: `17,028,864 states generated`, `2,252,746 distinct
+  states found`, maximum depth 15, zero states left on the queue, and no error.
+  The distinct-state count matches the generalized family; admission adds
+  checked edges and deeper construction paths without escaping that family.
+- The backdated mutation follows `AdvanceNow`, `SettleTo(1)`, and
+  `BackdatedAdmitLease(1, 1, FALSE, 0, 1)`, then violates `SummaryRep`. This
+  demonstrates that retroactive admission must invalidate or repair a live
+  summary.
+- A separate parallel CI job runs the dynamic proof and its mutation.
+
+The exact finite universal check, fixed/generalized/dynamic finite lifecycles,
+and extra witnesses therefore remain on TLC. The summary representation,
+bounded lifecycle preservation, stateful round trip, and representative
+seeded-fold steps also have Apalache/Z3 coverage.
 
 ## Next Work
 
-1. Add a dynamic lease-admission action after settlement. Require a newly
-   enabled lease to start at or after the persisted horizon, and add a negative
-   control showing why a backdated lease must invalidate or repair the summary.
+1. Add a dynamic close action for an admitted open lease. Require a monotonic
+   end at `Now`, and add a negative control for a closure backdated behind the
+   persisted horizon.
 2. Extend the abstraction to a third ranked lease or another aggregate-
    membership shape now that the generalized two-lease invariant is tractable.
 3. Revisit a direct Apalache universal seeded-fold proof only after an

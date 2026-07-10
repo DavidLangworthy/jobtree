@@ -14,7 +14,7 @@ to the design that it cannot drift far from reality.
 | `NodeFailure` | the node-failure / spare-swap / reclaim seam | no duplicate rank; exact-slot-only unfunded reclaim; no failed-node leak; no terminal immortal lease; phase is the join; ledger/workload plane agreement |
 | `LedgerCompaction` | the R4 pt2 settlement theorem for `pkg/funding/evaluate.go` | if `horizon <= now` and no retained lease starts before the horizon, replaying `summary + retained` matches full replay on funded lease-hours and the funded set at `Now` |
 | `LedgerCompactionStore` | the pt2b persisted-settlement store semantics | repeated settlement, time advance, and window movement preserve equivalence to full replay, provided window shifts invalidate or recompute the summary before reuse |
-| `LedgerCompactionAccounting` | the broader pt2b accounting surface: aggregate caps, full window identity, and lender/class carry-forward | persisted summary representation and full stateful round-trip equivalence across settlement, time advance, window shifts, and summary repair for both a representative SMT history and 625 canonical two-lease histories; exact finite seeded-fold equivalence |
+| `LedgerCompactionAccounting` | the broader pt2b accounting surface: aggregate caps, full window identity, lender/class carry-forward, and post-summary lease admission | persisted summary representation and full stateful round-trip equivalence across settlement, time advance, window shifts, summary repair, and safe dynamic admission for both a representative SMT history and 625 canonical two-lease histories; exact finite seeded-fold equivalence |
 
 ## Running
 
@@ -64,6 +64,8 @@ than an injected one-shot state:
 ```bash
 make ledger-compaction-accounting-stateful-check
 make ledger-compaction-accounting-generalized-check
+make ledger-compaction-accounting-dynamic-check
+make ledger-compaction-accounting-dynamic-counterexample
 make ledger-compaction-accounting-stateful-counterexamples
 make ledger-compaction-accounting-stateful-apalache-check  # large VM
 ```
@@ -83,6 +85,14 @@ attribution, and all six valid bounded start/end intervals. TLC exhausts the
 resulting lifecycle graph: 15,637,584 states generated, 2,252,746 distinct
 states, maximum depth 12, zero states left on the queue, and no invariant
 error. It runs as a separate parallel job in the path-filtered workflow.
+
+The dynamic rail starts with two empty lease slots and admits either slot in
+any order. A safe admission must start at or after `Now` and therefore at or
+after the persisted horizon. TLC generates 17,028,864 states and finds the
+same 2,252,746 distinct generalized states, maximum depth 15, and no invariant
+error in about three minutes. The backdated mutation follows `AdvanceNow`,
+`SettleTo(1)`, then installs a lease covering `[0, 1)` without invalidating the
+summary; TLC immediately reports a `SummaryRep` violation.
 
 `LedgerCompaction` is the one-shot theorem for `settlementSafe` and
 `SettleAccrual`. `LedgerCompactionStore` is the stronger, stateful theorem for
@@ -169,6 +179,10 @@ design review:
 - `LedgerCompactionAccountingStatefulStaleEnd.cfg` reaches stale lender
   history from the ordinary initial state via two `AdvanceNow` steps,
   `SettleTo(2)`, and `ShiftWindowEnd`.
+- `LedgerCompactionAccountingBackdatedAdmission.cfg` creates an empty summary
+  at horizon 1 and then retroactively installs a lease that already ended at
+  that horizon; TLC finds that the persisted summary no longer represents the
+  settled prefix.
 
 ## What is deliberately out of scope
 

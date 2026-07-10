@@ -30,6 +30,7 @@
 (*   the same number as total consumed hours;                                *)
 (* - two ranked leases, each assigned to one envelope and either owned or    *)
 (*   borrowed;                                                               *)
+(* - safe admission of either lease after a persisted summary exists;       *)
 (* - per-envelope `ConsumedGPUHours`, per-envelope `HoursByClass`,           *)
 (*   per-cap aggregate consumed hours, and per-owner lender hours;           *)
 (* - a persisted summary store keyed by the full window identity used when   *)
@@ -39,8 +40,9 @@
 (* ----------------------------------                                        *)
 (* We keep only two leases and unit-width ticks. The SMT configs fix one      *)
 (* representative owned-then-borrowed history, while the generalized TLC     *)
-(* config ranges both leases over 625 canonical histories. This keeps each   *)
-(* proof rail tractable while still exercising the three missing surfaces:   *)
+(* config ranges both leases over 625 canonical histories. A dynamic TLC     *)
+(* config reaches that same family through ordered admission actions. This   *)
+(* keeps each proof rail tractable while exercising the missing surfaces:    *)
 (*                                                                          *)
 (* - aggregate-cap depletion can differ by envelope membership,              *)
 (* - a window-start OR window-end change can stale the summary, and          *)
@@ -227,6 +229,12 @@ GeneralizedInit ==
   /\ summaryAggregate = ZeroAggregate
   /\ summaryLender = ZeroLender
   /\ CanonicalLeaseFamily
+
+\* Dynamic admission starts with both lease slots empty. CanonicalLeaseFamily
+\* then fixes all otherwise-irrelevant disabled fields.
+DynamicInit ==
+  /\ GeneralizedInit
+  /\ leaseEnabled = [l \in LeaseIds |-> FALSE]
 
 \* Two settled leases accrue before the window moves: an owned env-1 lease and a
 \* borrowed env-2 lease. If the caller keeps the summary valid across the window
@@ -668,12 +676,68 @@ RepairSummary ==
   /\ UNCHANGED <<now, horizon, windowStart, windowEnd, leaseEnabled, leaseEnv,
                  leaseBorrowed, leaseStart, leaseEnd>>
 
+InstallLease(l, newEnv, newBorrowed, newStart, newEnd) ==
+  /\ leaseEnabled' = [leaseEnabled EXCEPT ![l] = TRUE]
+  /\ leaseEnv' = [leaseEnv EXCEPT ![l] = newEnv]
+  /\ leaseBorrowed' = [leaseBorrowed EXCEPT ![l] = newBorrowed]
+  /\ leaseStart' = [leaseStart EXCEPT ![l] = newStart]
+  /\ leaseEnd' = [leaseEnd EXCEPT ![l] = newEnd]
+  /\ UNCHANGED <<now, horizon, summaryValid, windowStart, windowEnd,
+                 summaryWindowStart, summaryWindowEnd, summaryConsumed,
+                 summaryClassHours, summaryAggregate, summaryLender>>
+
+\* A newly admitted lease cannot reach into the compacted prefix. Requiring
+\* its start at or after Now also places it at or after horizon because
+\* TypeOK maintains horizon <= now.
+AdmitLease(l, newEnv, newBorrowed, newStart, newEnd) ==
+  /\ l \in LeaseIds
+  /\ ~leaseEnabled[l]
+  /\ newEnv \in Envs
+  /\ newBorrowed \in BOOLEAN
+  /\ newStart \in Ticks
+  /\ newEnd \in Ends
+  /\ horizon <= newStart
+  /\ now <= newStart
+  /\ newStart < newEnd
+  /\ InstallLease(l, newEnv, newBorrowed, newStart, newEnd)
+
+\* Mutation: install an already-ended lease behind a live summary without
+\* invalidating or repairing it. The negative rail must reject this action.
+BackdatedAdmitLease(l, newEnv, newBorrowed, newStart, newEnd) ==
+  /\ l \in LeaseIds
+  /\ ~leaseEnabled[l]
+  /\ summaryValid
+  /\ newEnv \in Envs
+  /\ newBorrowed \in BOOLEAN
+  /\ newStart \in Ticks
+  /\ newEnd \in Ends
+  /\ newStart < newEnd
+  /\ newEnd <= horizon
+  /\ InstallLease(l, newEnv, newBorrowed, newStart, newEnd)
+
 Next ==
   \/ AdvanceNow
   \/ \E h \in Boundaries : SettleTo(h)
   \/ \E e \in Envs : \E s \in Ticks : ShiftWindowStart(e, s)
   \/ \E e \in Envs : \E en \in Ends : ShiftWindowEnd(e, en)
   \/ RepairSummary
+
+DynamicNext ==
+  \/ Next
+  \/ \E l \in LeaseIds :
+       \E e \in Envs :
+         \E b \in BOOLEAN :
+           \E s \in Ticks :
+             \E en \in Ends : AdmitLease(l, e, b, s, en)
+
+BackdatedAdmissionNext ==
+  \/ AdvanceNow
+  \/ \E h \in Boundaries : SettleTo(h)
+  \/ \E l \in LeaseIds :
+       \E e \in Envs :
+         \E b \in BOOLEAN :
+           \E s \in Ticks :
+             \E en \in Ends : BackdatedAdmitLease(l, e, b, s, en)
 
 \* Negative-control sub-specs omit RepairSummary and the unrelated shift so
 \* TLC produces short stale-summary traces from the ordinary Init state.
@@ -689,6 +753,8 @@ ReachableStaleEndNext ==
 
 Spec == Init /\ [][Next]_vars
 GeneralizedSpec == GeneralizedInit /\ [][Next]_vars
+DynamicSpec == DynamicInit /\ [][DynamicNext]_vars
+BackdatedAdmissionSpec == DynamicInit /\ [][BackdatedAdmissionNext]_vars
 ReachableStaleStartSpec == Init /\ [][ReachableStaleStartNext]_vars
 ReachableStaleEndSpec == Init /\ [][ReachableStaleEndNext]_vars
 StaleWindowSpec == InitStaleWindowWitness /\ [][Next]_vars
