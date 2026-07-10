@@ -828,7 +828,13 @@ func seedSwapLease(t *testing.T, runName string) {
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "default",
 			Name:      swapPod.Name + "-lease",
-			Labels:    map[string]string{binder.LabelRunName: runName, binder.LabelRunRole: binder.RoleActive},
+			// Mirror the sole committer: PreBind copies the pod's placement group onto
+			// the lease it mints, and refuses to mint at all if the pod has none (R28b).
+			Labels: map[string]string{
+				binder.LabelRunName:    runName,
+				binder.LabelGroupIndex: swapPod.Labels[binder.LabelGroupIndex],
+				binder.LabelRunRole:    binder.RoleActive,
+			},
 		},
 		Spec: v1.LeaseSpec{
 			Owner:          swapPod.Annotations[binder.AnnotationPayerOwner],

@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -36,6 +37,18 @@ type RunReconciler struct {
 	Bridge *Bridge
 }
 
+// FundingClosureFinalizer holds a Run in the API until its open leases are closed
+// (reason RunDeleted) and its pods dropped. Its whole purpose is to make one state
+// unreachable: "an open lease whose Run is absent." Because finalizers are honored
+// even by `kubectl delete --force --grace-period=0`, a deleted Run can NEVER escape
+// its accounting — the funding fact is closed and audited, not silently cascade-lost
+// (which is why a Lease is finalizer-closed here, never owner-ref'd to the Run).
+//
+// It also retires R27c's report-only orphan-run sweep rule: with the Run held until
+// closure, the sweep can no longer observe a lease whose Run has vanished (R12
+// verification item #5). See docs/project/remediation/R12-ownerrefs-finalizers.md.
+const FundingClosureFinalizer = "rq.davidlangworthy.io/funding-closure"
+
 // pendingRunResync re-drives runs parked as Pending without a reservation
 // (invalid request, no matching domain, planning failure): no watch event
 // announces that their blocker went away, so they poll.
@@ -52,15 +65,58 @@ const runningRunResync = 5 * time.Minute
 const waitingRunResync = 30 * time.Second
 
 func (r *RunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	key := keys.NamespacedKey(req.Namespace, req.Name)
+
+	// Finalizer lifecycle is a metadata concern, and WithWorld's apply writes only
+	// status — so the add/remove are direct Updates that bracket the engine. Read
+	// the object uncached (APIReader) to see its DeletionTimestamp and finalizers.
+	var run v1.Run
+	if err := r.Bridge.APIReader.Get(ctx, req.NamespacedName, &run); err != nil {
+		if apierrors.IsNotFound(err) {
+			// Truly gone — the finalizer already ran, or this is a pre-R12 Run with
+			// no finalizer. Backstop: release anything left behind. Lease events
+			// mapped to the missing run (and the watch replay after a restart) also
+			// land here, so orphans converge to cleaned up.
+			return ctrl.Result{}, r.Bridge.WithWorld(ctx, func(state *controllers.ClusterState, now time.Time) error {
+				cleanupDeletedRun(state, key, req.Namespace, req.Name, now)
+				return nil
+			})
+		}
+		return ctrl.Result{}, err
+	}
+
+	if run.DeletionTimestamp != nil {
+		// Being deleted, held by our finalizer. Close the accounting IN-STATE so
+		// WithWorld's apply writes the closures to the API, and only THEN drop the
+		// finalizer — so the leases are provably closed before the Run object can
+		// vanish, even under --force --grace-period=0.
+		if !controllerutil.ContainsFinalizer(&run, FundingClosureFinalizer) {
+			return ctrl.Result{}, nil
+		}
+		if err := r.Bridge.WithWorld(ctx, func(state *controllers.ClusterState, now time.Time) error {
+			cleanupDeletedRun(state, key, req.Namespace, req.Name, now)
+			return nil
+		}); err != nil {
+			return ctrl.Result{}, err // keep the finalizer: accounting is not yet closed
+		}
+		controllerutil.RemoveFinalizer(&run, FundingClosureFinalizer)
+		return ctrl.Result{}, r.Bridge.Client.Update(ctx, &run)
+	}
+
+	// A live Run without our finalizer: install it before admitting, so a delete
+	// that races admission still gets funding-closure. Adding it bumps no
+	// generation; fall through and admit in the same pass (WithWorld reloads).
+	if !controllerutil.ContainsFinalizer(&run, FundingClosureFinalizer) {
+		controllerutil.AddFinalizer(&run, FundingClosureFinalizer)
+		if err := r.Bridge.Client.Update(ctx, &run); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
 	var parked, running, waiting bool
 	err := r.Bridge.WithWorld(ctx, func(state *controllers.ClusterState, now time.Time) error {
-		key := keys.NamespacedKey(req.Namespace, req.Name)
 		run, ok := state.Runs[key]
 		if !ok {
-			// The run is gone: release what it left behind. Both the
-			// deletion event itself and lease events mapped to the
-			// missing run (including the watch replay after a manager
-			// restart) land here, so orphans converge to cleaned up.
 			cleanupDeletedRun(state, key, req.Namespace, req.Name, now)
 			return nil
 		}
@@ -90,7 +146,6 @@ func (r *RunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 // reservations that belonged to a Run that no longer exists; otherwise the
 // leases keep charging the budget and occupying nodes forever.
 func cleanupDeletedRun(state *controllers.ClusterState, runKey, namespace, name string, now time.Time) {
-	ended := v1.NewTime(now)
 	for i := range state.Leases {
 		lease := &state.Leases[i]
 		if lease.Status.Closed {
@@ -100,9 +155,10 @@ func cleanupDeletedRun(state *controllers.ClusterState, runKey, namespace, name 
 		if leaseRun != runKey {
 			continue
 		}
-		lease.Status.Closed = true
-		lease.Status.Ended = &ended
-		lease.Status.ClosureReason = "RunDeleted"
+		// The sole closer. This used to hand-roll the same three assignments,
+		// which is how a closure could be half-stamped and why nothing could be
+		// instrumented in one place. hack/antifake now forbids the clone.
+		controllers.CloseLease(lease, "RunDeleted", now)
 	}
 	kept := state.Pods[:0]
 	for _, pod := range state.Pods {
@@ -171,9 +227,27 @@ func (r *RunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		DeleteFunc:  func(event.DeleteEvent) bool { return true },
 		GenericFunc: func(event.GenericEvent) bool { return false },
 	}
+	// The primary watch fires on spec changes (generation) — a status write rewrites
+	// float GPU-hour fields every reconcile and must NOT re-trigger, or the single
+	// serial worker churns — AND on the object ENTERING deletion. A finalizer turns
+	// a delete into a metadata-only update that bumps no generation, so the
+	// generation gate alone would strand the Run Terminating, its finalizer forever
+	// unremoved (R12). The delete of a run WITHOUT the finalizer is a real Delete
+	// event, which GenerationChangedPredicate already passes.
+	runPrimary := predicate.Or(
+		predicate.GenerationChangedPredicate{},
+		predicate.Funcs{
+			CreateFunc:  func(event.CreateEvent) bool { return false },
+			DeleteFunc:  func(event.DeleteEvent) bool { return false },
+			GenericFunc: func(event.GenericEvent) bool { return false },
+			UpdateFunc: func(e event.UpdateEvent) bool {
+				return e.ObjectOld.GetDeletionTimestamp() == nil && e.ObjectNew.GetDeletionTimestamp() != nil
+			},
+		},
+	)
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("run").
-		For(&v1.Run{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		For(&v1.Run{}, builder.WithPredicates(runPrimary)).
 		Watches(&v1.Lease{}, handler.EnqueueRequestsFromMapFunc(leaseToRun)).
 		Watches(&v1.Budget{}, handler.EnqueueRequestsFromMapFunc(r.budgetToRuns),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
@@ -318,42 +392,78 @@ type NodeReconciler struct {
 	Bridge *Bridge
 }
 
-func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+// fenced re-reads the Node from the UNCACHED APIReader and reports whether jobtree
+// may move a rank off it. It answers only on a FENCING ASSERTION: the Node object is
+// gone, or it carries the out-of-service taint. Both make Pod GC force-delete the
+// containers, so the rank is provably stopped.
+//
+// A cordon is not a failure — it means "place nothing new here", which Filter and the
+// default scheduler already honour. NotReady is not a failure either: it means we
+// cannot HEAR the kubelet, not that its containers stopped. Acting on either starts a
+// second live copy of a rank that is still running (R21).
+func (r *NodeReconciler) fenced(ctx context.Context, name types.NamespacedName) (bool, error) {
 	var node corev1.Node
-	deleted := false
-	if err := r.Bridge.APIReader.Get(ctx, req.NamespacedName, &node); err != nil {
+	if err := r.Bridge.APIReader.Get(ctx, name, &node); err != nil {
 		if !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, err
+			return false, err
 		}
-		deleted = true // a deleted node is a failed node
+		return true, nil // a deleted node is a fenced node
 	}
+	if nodeFailed(&node) {
+		return true, nil
+	}
+	if !nodeReady(&node) {
+		// Visible, and nothing else. An operator (or a fencing agent) decides whether
+		// the machine is dead by deleting the Node or tainting it out-of-service.
+		log.FromContext(ctx).Info("node is NotReady; taking no action (a swap needs a fencing assertion: delete the Node or taint it "+taintOutOfService+")",
+			"node", name.Name)
+	}
+	return false, nil
+}
 
-	// R21 + the stale-event flake (#36). Re-read decides, and it decides on FENCING,
-	// not on schedulability and not on a NotReady timer.
+func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	// Cheap filter, outside the lock: most node events are cordons, NotReady flaps
+	// and status heartbeats, and none of those is a fencing assertion. Skipping them
+	// here keeps the bridge mutex — which serializes every engine decision in the
+	// process — free for work that matters.
 	//
-	// `nodeUsable` is false for a cordoned node, and driving HandleNodeFailure off
-	// it swapped a healthy rank onto a spare while the original pod kept running --
-	// two live copies of the same rank. A cordon means "place nothing new here",
-	// which Filter and the default scheduler already honour; jobtree needs to do
-	// nothing. NotReady is likewise not a failure: it means we cannot HEAR the
-	// kubelet, not that its containers stopped. See nodeFailed.
-	//
-	// Re-checking here rather than trusting the enqueue is what makes a replayed
-	// event harmless: a stale NotReady is no longer a failure at all, and a stale
-	// delete is re-confirmed against the uncached APIReader above. That closes #36
-	// rather than narrowing it.
-	if !deleted && !nodeFailed(&node) {
-		if !nodeReady(&node) {
-			// Visible, and nothing else. An operator (or a fencing agent) decides
-			// whether the machine is dead by deleting the Node or tainting it
-			// out-of-service; only then does jobtree move the rank.
-			log.FromContext(ctx).Info("node is NotReady; taking no action (a swap needs a fencing assertion: delete the Node or taint it "+taintOutOfService+")",
-				"node", req.Name)
-		}
-		return ctrl.Result{}, nil
+	// This read decides NOTHING. It is a filter, not a verdict.
+	if ok, err := r.fenced(ctx, req.NamespacedName); err != nil || !ok {
+		return ctrl.Result{}, err
 	}
 
 	err := r.Bridge.WithWorld(ctx, func(state *controllers.ClusterState, now time.Time) error {
+		// THE VERDICT, RE-TAKEN UNDER THE LOCK. This is the whole point.
+		//
+		// The filter above ran before WithWorld acquired the bridge mutex, and a node
+		// reconcile can sit on that mutex for seconds behind a slow admission pass.
+		// In that window the world moves: a Node deleted a moment ago is recreated
+		// under the same name — a kubelet re-registering, an operator replacing a
+		// machine, a test rebuilding its fixture — and the scheduler plugin mints
+		// fresh leases on it.
+		//
+		// The stale verdict then closes the leases of a node that is alive and
+		// carrying work, with reason NodeFailure. The gang loses a rank it never lost,
+		// and if the spare has not been minted yet it is "without spare coverage" and
+		// the run is failed or parked. That is a live-node data loss, and it is what
+		// task #36 was. The old code re-read the node ABOVE this call and its comment
+		// claimed that "closes #36 rather than narrowing it" — but the re-read was
+		// outside the critical section, so it narrowed the window instead of closing
+		// it. A check that races the thing it guards is a comment, not a guard.
+		//
+		// Re-reading here costs one uncached GET per genuine fencing event, which is
+		// rare by construction, and it is the only read whose answer cannot change
+		// before it is used.
+		stillFenced, err := r.fenced(ctx, req.NamespacedName)
+		if err != nil {
+			return err
+		}
+		if !stillFenced {
+			log.FromContext(ctx).Info("node was fenced when the event fired and is alive now; taking no action",
+				"node", req.Name)
+			return nil
+		}
+
 		rc := controllers.NewRunController(state, staticClock{now})
 		rc.Period = r.Bridge.Period
 		rc.Recorder = r.Bridge.recorderFor()

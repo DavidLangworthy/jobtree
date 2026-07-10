@@ -55,7 +55,7 @@ mechanical, no design needed (implement straight from the audit — Opus/Sonnet)
 | Spec | Finding | Design | Code | Verify |
 |---|---|---|---|---|
 | [R11](R11-status-conditions.md) | No `status.conditions` anywhere | ✅ | ⏳ Opus | ⏳ Sonnet |
-| [R12](R12-ownerrefs-finalizers.md) | Zero ownerRefs/finalizers; hand-rolled GC | ✅ | ⏳ Opus | ⏳ Sonnet |
+| [R12](R12-ownerrefs-finalizers.md) | Zero ownerRefs/finalizers; hand-rolled GC — **promoted to P1**, it retires R27c's `orphan-run` sweep rule | ✅ | ⏳ Opus | ⏳ Sonnet |
 | [R13](R13-lease-rename.md) | `Lease` collides with `coordination.k8s.io/Lease` | ✅ | ⏳ Opus | ⏳ Sonnet |
 | [R14](R14-crd-validation.md) | Near-zero CRD validation; webhook-only immutability | ✅ | ⏳ Opus | ⏳ Sonnet |
 
@@ -133,6 +133,14 @@ The P0 specs share machinery and must be implemented as a set, in this order:
 
 ## P2–P5 sequencing (roughly priority order, with the real couplings)
 
+- **R12 is promoted to P1 and runs ahead of any hardening of R27c's sweep.** The sweep's
+  `orphan-run` rule infers a Run's deletion from the silence of a `List` and then destroys
+  work — closing leases and deleting pods. That premise cannot be made sound by reading
+  harder; the Run finalizer makes it *unreachable*, because a finalized Run stays in the
+  API, and in `List`, until its leases are closed. Demote `orphan-run` to report-only,
+  land R12, then delete the rule. Implementing only R12's ownerReference half fixes
+  nothing here: the finalizer is the mechanism. (David, 2026-07-10: *"move implementing
+  the correct solution ahead of duct taping something that can't work."*)
 - **R9 is the pivotal fork** — Option A (finish JobSet lowering) *subsumes* R8 and
   part of gang co-termination; Option B (direct-inject rendezvous) leaves R8
   separate. Decide R9's A/B before starting R8, since it determines whether R8 is

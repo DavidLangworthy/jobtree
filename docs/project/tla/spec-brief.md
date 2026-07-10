@@ -352,6 +352,34 @@ Environment assumptions first (the survey's checklist: write them down):
   No fairness on partition healing. A genuinely dead node whose object is never deleted
   and never tainted never swaps: the run stalls. That is the accepted trade (R21
   amendment, "What it costs"), and the model must exhibit the stall rather than "fix" it.
+- **A4 — the world load is complete.** `state.Runs` contains every `Run` that exists.
+  Added after this brief was written, and it is the most dangerous assumption in the
+  list, because §1.1's atomicity choice makes it *unrepresentable*: the world IS the
+  state variable, there is no separate "what the controller believes the world is", and
+  so no TLC run can ever produce a counterexample to it. A2 hides it; this line is here
+  so nobody mistakes that for safety.
+
+  It became load-bearing with R27c (`controllers/settle.go`, `c74e0ef`). `SettleLeases`
+  runs on every `WithWorld` pass and closes the leases — and deletes the pods — of every
+  run that is terminal *or absent from `state.Runs`*. Before it, a world missing a live
+  Run caused an OMISSION: a lease leaked, a budget billed for an idle GPU, and
+  `pkg/invariant` counted it. After it, the same world causes an ACTION: a funded
+  multi-day training job is closed out of the ledger and its containers are deleted.
+  Identical premise, identical probability, and the blast radius moved from an
+  accounting error to destroyed work.
+
+  Like A1, this is a trust placed in something outside the engine — here `Bridge.load`'s
+  `APIReader.List` — that the engine cannot verify from the inside. Unlike A1, jobtree
+  *could* check it: a loader that refuses to hand the sweep a world in which some open
+  lease names a Run the load did not return is a fail-closed loader, and the cost of
+  being wrong in that direction is a lease that leaks for one reconcile. Prefer leaking
+  a lease for thirty seconds over deleting somebody's week.
+
+  §6 gains `SweepStaleWorld.cfg`, which RELAXES A4 (the loader may omit one live Run) and
+  is expected to FAIL, exactly as A1's lying-fencer config does. Its purpose is not to
+  find a bug in the design; it is to make the size of this assumption visible to whoever
+  reads a green run. See task #56. Run deletion is not otherwise modeled in v1, so the
+  `orphan-run` sweep rule has no counterpart in `NodeFailure` today.
 
 ### Safety
 
@@ -664,7 +692,7 @@ name R9 and the admission race.
 
 **What a green run proves.** That the *design* — the fencing rule, the slot-granular
 funded-aware reclaim, the phase join, the two-plane eviction obligation, at
-`WithWorld` granularity, under assumptions A1–A3 — has no reachable state violating §4
+`WithWorld` granularity, under assumptions A1–A4 — has no reachable state violating §4
 within §8's bounds. That is the same class of claim `BudgetConservation` already makes,
 and it has already earned its keep once: that spec's result is load-bearing in two
 production comments (`reconcilers.go:29-32`, `bridge.go:50-52`).
@@ -702,6 +730,13 @@ half-exist:
   names must map onto symmetric model values, and any trace exceeding the model's
   constants (a fourth node, a third group) must be *rejected loudly, not clamped
   silently* — a clamped trace validates nothing and reads as green.
+
+A green run says NOTHING about A4, and cannot. The world load is the model's ground
+truth rather than one of its actors, so an incomplete load is not a behavior the spec
+admits. That is a hole in the *modeling boundary*, not in the checked design, and it is
+the hole through which `SettleLeases` could delete funded work: the sweep is correct on
+every world it is shown, and its safety rests entirely on being shown the real one. The
+rail for it is a fail-closed `Bridge.load`, not TLC.
 
 What trace validation still would not catch, stated plainly: paths no test exercises
 (R25's spare-only node had no test, hence would have produced no trace — the corpus is

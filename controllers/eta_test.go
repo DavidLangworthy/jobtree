@@ -12,7 +12,7 @@ import (
 func etaPod(name, eta string) binder.PodManifest {
 	return binder.PodManifest{
 		Namespace: keys.DefaultNamespace, Name: name, Phase: "Running",
-		Labels:      map[string]string{binder.LabelRunName: "job", binder.LabelRunRole: binder.RoleActive},
+		Labels:      map[string]string{binder.LabelRunName: "job", binder.LabelGroupIndex: "0", binder.LabelRunRole: binder.RoleActive},
 		Annotations: map[string]string{binder.EtaAnnotation: eta},
 	}
 }

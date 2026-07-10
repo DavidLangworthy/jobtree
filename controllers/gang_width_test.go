@@ -62,7 +62,7 @@ func memberLease(slot int, role, reason string, now time.Time) v1.Lease {
 		ObjectMeta: v1.ObjectMeta{
 			Name:      "gang-lease-" + string(rune('a'+slot)),
 			Namespace: "default",
-			Labels:    map[string]string{binder.LabelRunName: "gang", binder.LabelRunRole: role},
+			Labels:    map[string]string{binder.LabelRunName: "gang", binder.LabelGroupIndex: "0", binder.LabelRunRole: role},
 		},
 		Spec: v1.LeaseSpec{
 			Owner:          "org:ai:team",
@@ -178,6 +178,7 @@ func TestReconcileDoesNotAdoptSpareOnlyLeases(t *testing.T) {
 	state := gangWidthState()
 	state.Leases = append(state.Leases, memberLease(0, binder.RoleSpare, "Start", now))
 
+	mirrorPods(state)
 	controller := NewRunController(state, runClock{now: now})
 	if err := controller.Reconcile("default", "gang"); err != nil {
 		t.Fatalf("reconcile failed: %v", err)
@@ -210,6 +211,7 @@ func TestReconcileDoesNotAdoptOnGrowLeasesAlone(t *testing.T) {
 	run := state.Runs["default/gang"]
 	run.Status.CheckpointDeadline = &deadline
 
+	mirrorPods(state)
 	controller := NewRunController(state, runClock{now: now})
 	if err := controller.Reconcile("default", "gang"); err != nil {
 		t.Fatalf("reconcile failed: %v", err)
@@ -234,6 +236,7 @@ func TestSwapLeasesCountTowardGangWidth(t *testing.T) {
 	// The fourth member was swapped onto a spare after its node failed.
 	state.Leases = append(state.Leases, memberLease(3, binder.RoleActive, "Swap", now))
 
+	mirrorPods(state)
 	controller := NewRunController(state, runClock{now: now})
 	if err := controller.Reconcile("default", "gang"); err != nil {
 		t.Fatalf("reconcile failed: %v", err)
@@ -261,6 +264,7 @@ func TestMalleableRunAdoptsAtMinWidth(t *testing.T) {
 	deadline := v1.NewTime(now.Add(time.Hour))
 	run.Status.CheckpointDeadline = &deadline
 
+	mirrorPods(state)
 	controller := NewRunController(state, runClock{now: now})
 	if err := controller.Reconcile("default", "gang"); err != nil {
 		t.Fatalf("reconcile failed: %v", err)

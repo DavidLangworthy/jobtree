@@ -120,6 +120,12 @@ func (c *RunController) Reconcile(namespace, name string) error {
 		return fmt.Errorf("run %s/%s not found", namespace, name)
 	}
 
+	// The oracle. Deferred so it runs on EVERY return, including the error
+	// returns: Bridge.WithWorld applies the state diff even when the engine
+	// fails, so a half-applied admission is still a state someone must live in.
+	before := c.snapshotWorld()
+	defer c.checkInvariants("RunController.Reconcile", before)
+
 	flavor := run.Spec.Resources.GPUType
 	start := time.Now()
 	result := "noop"
@@ -522,24 +528,10 @@ func (c *RunController) runGangComplete(run *v1.Run) bool {
 // run's pods, and records the terminal phase.
 func (c *RunController) completeRun(run *v1.Run, now time.Time) {
 	runKey := keys.NamespacedKey(run.Namespace, run.Name)
-	for i := range c.State.Leases {
-		lease := &c.State.Leases[i]
-		if lease.Status.Closed {
-			continue
-		}
-		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
-			continue
-		}
-		closeLease(lease, "Completed", now)
-	}
-	kept := c.State.Pods[:0]
-	for _, pod := range c.State.Pods {
-		if pod.Namespace == run.Namespace && pod.Labels[binder.LabelRunName] == run.Name {
-			continue
-		}
-		kept = append(kept, pod)
-	}
-	c.State.Pods = kept
+	// The success path has always retired both planes. It now says so with the same
+	// function every failure path uses, rather than a second copy of the loop: two
+	// implementations of one obligation is how the failure paths came to do half.
+	c.releaseRun(run, "Completed", now)
 	run.Status.Phase = RunPhaseComplete
 	run.Status.Message = "run completed: all active pods succeeded"
 	run.Status.PendingReservation = nil
@@ -699,7 +691,7 @@ func (c *RunController) failRun(run *v1.Run, msg string) {
 	run.Status.EarliestStart = nil
 	run.Status.FollowDeadline = nil
 	run.Status.CheckpointDeadline = nil
-	if closed := c.closeRunLeases(run, "RunFailed", c.Clock.Now()); closed > 0 {
+	if closed := c.releaseRun(run, "RunFailed", c.Clock.Now()); closed > 0 {
 		c.emit(run, EventTypeWarning, "LeasesReleased", fmt.Sprintf(
 			"released %d open lease(s) still held by the failed run", closed))
 	}
@@ -739,6 +731,9 @@ func (c *RunController) releasePendingReservations(run *v1.Run, now time.Time) {
 // that fails to activate is recorded on its status and does not block later
 // reservations; the collected errors are returned as an aggregate.
 func (c *RunController) ActivateReservations(now time.Time) error {
+	before := c.snapshotWorld()
+	defer c.checkInvariants("RunController.ActivateReservations", before)
+
 	dueKeys := make([]string, 0, len(c.State.Reservations))
 	for key := range c.State.Reservations {
 		dueKeys = append(dueKeys, key)
@@ -1187,6 +1182,14 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 	if now.IsZero() {
 		now = c.Clock.Now()
 	}
+
+	// Deferred, so the oracle sees the state only on RETURN. Mid-method this
+	// function legitimately violates INV-TERMINAL-PRESENT: it marks a run Failed
+	// inside the lease loop and sweeps that run's remaining leases only after the
+	// loop, precisely so the outcome cannot depend on lease order.
+	before := c.snapshotWorld()
+	defer c.checkInvariants("RunController.HandleNodeFailure", before)
+
 	handled := false
 	phases := runPhaseTracker{}
 
@@ -1209,7 +1212,7 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 		if !leaseContainsNode(lease, nodeName) {
 			continue
 		}
-		closeLease(lease, "NodeFailure", now)
+		CloseLease(lease, "NodeFailure", now)
 		handled = true
 		// A run whose only stake on the node was a held spare loses its fault
 		// tolerance here, silently, without any change to its phase. Say so.
@@ -1217,13 +1220,41 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 		if run := c.State.Runs[spareKey]; run != nil {
 			c.emit(run, EventTypeWarning, "SpareLostToNodeFailure", fmt.Sprintf(
 				"the spare held for group %s died with node %s; the group is no longer covered",
-				lease.Labels[binder.LabelGroupIndex], nodeName))
+				leaseGroupIndex(lease), nodeName))
 		}
 	}
 
-	// The funding derivation, computed once: pass 2 needs it to decide whether an
-	// exact-slot conflict may be reclaimed. Class is derived, never stored
-	// (quota-semantics Decision 3), so this is the only way to know.
+	// The funding derivation, taken ONCE, against the world as it was BEFORE this
+	// failure was handled. That is a SEMANTIC CHOICE, not an optimisation, and the
+	// comment that used to sit here implied otherwise.
+	//
+	// Pass 2 closes leases as it runs — the swap closes the spare and the failed
+	// active, failGroupWithoutSpare closes a dead group's, reclaimSquatter closes a
+	// squatter's — and closing a lease frees budget. So a squatter this evaluation
+	// calls Unfunded can derive a FUNDED class in the world the failure itself
+	// produces, once a co-tenant's lease dies with the node. An adversarial panel
+	// reproduced exactly that (finding F6).
+	//
+	// We reclaim it anyway, deliberately:
+	//
+	//   - Re-evaluating per iteration would make the outcome depend on the order of
+	//     c.State.Leases. That is playbook class 3, the defect this file has now
+	//     shipped seven times. One evaluation per failure is what makes pass 2
+	//     commutative.
+	//   - The funded status such a squatter acquires is an artifact of a co-tenant's
+	//     death, and it evaporates the moment that run re-admits. Sparing it means
+	//     failing a genuinely funded victim to protect work that is about to be
+	//     unfunded again — which is precisely what a judge's mutation of the
+	//     "refresh ev" fix did.
+	//   - The error is one-directional and safe. A stale ev can only make us reclaim
+	//     work that is about to be funded; it can never make us evict a lease this
+	//     evaluation calls funded, because that path declines the swap.
+	//   - The reclaimed run is demoted, not killed, and re-admits when capacity
+	//     returns (quota-semantics R14). The state is legal and self-correcting.
+	//
+	// Class is derived, never stored (quota-semantics Decision 3), so an evaluation
+	// is the only way to know. Tracked as task #54. Do not "fix" this without a
+	// ruling recorded in docs/project/quota-semantics.md.
 	ev := c.evaluate(now)
 
 	// Pass 2 — active leases on the failed node.
@@ -1238,9 +1269,9 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 		handled = true
 		runKey := keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name)
 		run := c.State.Runs[runKey]
-		groupIndex := lease.Labels[binder.LabelGroupIndex]
+		groupIndex := leaseGroupIndex(lease)
 		if run == nil {
-			closeLease(lease, "NodeFailure", now)
+			CloseLease(lease, "NodeFailure", now)
 			continue
 		}
 
@@ -1276,7 +1307,7 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 			otherKey := keys.NamespacedKey(other.Spec.RunRef.Namespace, other.Spec.RunRef.Name)
 			if otherKey == runKey {
 				// Our own stale lease on the spare's slots: safe to clear.
-				closeLease(other, "ReclaimedBySpare", now)
+				CloseLease(other, "ReclaimedBySpare", now)
 				continue
 			}
 			// Another run holds the exact slots the swap needs. Whether we may take
@@ -1292,7 +1323,22 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 			// work merely for sharing a machine.
 			class, classified := ev.Class(other)
 			if classified && class == funding.ClassUnfunded {
-				closeLease(other, "ReclaimedBySpare", now)
+				// phases, not a bare write: this victim may ALSO be a casualty of the
+				// same node failure, in which case failGroupWithoutSpare has its own
+				// verdict on its phase and the worst one must win, whatever order the
+				// leases happen to sit in.
+				//
+				// It can also REFUSE. Deleting the squatter's container means deleting
+				// every container it holds on that node — the pod plane cannot address
+				// a slot — and if one of those backs a FUNDED lease of the same run we
+				// would be evicting paid-for work. Decline, as for any funded conflict.
+				if c.reclaimSquatter(other, otherKey, now, phases, ev) {
+					continue
+				}
+				crossRunConflict = true
+				c.emit(run, EventTypeWarning, "SwapSlotConflict", fmt.Sprintf(
+					"spare slots for group %s are squatted by %s, whose funded work shares the node; "+
+						"declining the swap rather than evicting it", groupIndex, otherKey))
 				continue
 			}
 			crossRunConflict = true
@@ -1310,11 +1356,11 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 		}
 
 		spareNodes := leaseNodeNames(spareLease)
-		closeLease(spareLease, "Swap", now)
-		closeLease(lease, "NodeFailure", now)
+		CloseLease(spareLease, "Swap", now)
+		CloseLease(lease, "NodeFailure", now)
 		// Free the held spare's pod on the reclaimed node so the bridge deletes it
 		// and the swap pod (which hard-targets that node) can bind there.
-		c.removeSparePodOnNodes(run, spareNodes)
+		c.removeSparePodOnNodes(run, leaseGroupIndex(spareLease), spareNodes)
 		// Re-emit the group's pod as a SWAP onto the reclaimed spare node,
 		// stamped with the spare's funding provenance; the scheduler plugin binds
 		// it there (required node affinity) and mints the Swap lease from that
@@ -1340,7 +1386,7 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 		if run == nil {
 			continue
 		}
-		if closed := c.closeRunLeases(run, "RunFailed", now); closed > 0 {
+		if closed := c.releaseRun(run, "RunFailed", now); closed > 0 {
 			c.emit(run, EventTypeWarning, "LeasesReleased", fmt.Sprintf(
 				"released %d open lease(s) held by the failed run", closed))
 		}
@@ -1392,7 +1438,7 @@ func (t runPhaseTracker) apply(run *v1.Run, runKey, phase, msg string) bool {
 // no-spare path, non-nil when the swap was declined because another funded run
 // holds the spare's exact slots.
 func (c *RunController) failGroupWithoutSpare(run *v1.Run, runKey string, lease, spareLease *v1.Lease, nodeName string, now time.Time, phases runPhaseTracker) {
-	closeLease(lease, "NodeFailure", now)
+	CloseLease(lease, "NodeFailure", now)
 
 	// The group is not runnable, so the spare it was holding can never cover it.
 	// Leaving that lease open charges the run's budget for GPUs it will never use
@@ -1401,10 +1447,18 @@ func (c *RunController) failGroupWithoutSpare(run *v1.Run, runKey string, lease,
 	// closes it: failRun only edited status, completeRun runs on success, and
 	// adoption skips terminal runs.
 	if spareLease != nil {
-		closeLease(spareLease, "SwapDeclined", now)
+		CloseLease(spareLease, "SwapDeclined", now)
+		// Drop the spare's held pod too, exactly as the accepted-swap path does.
+		// Closing the lease alone is a half-plane action: the ledger frees the
+		// GPUs while the placeholder container keeps holding them. Left running,
+		// it strands GPUs the ledger calls free, and if the run re-admits inside
+		// its checkpoint grace the pod lingers forever, invisible to every
+		// invariant (INV-LEASE-HAS-POD fires only at zero pods). Adversarial
+		// review 2026-07-10, c74e0ef: reproduced holding 2 GPUs 20h post-recovery.
+		c.removeSparePodOnNodes(run, leaseGroupIndex(spareLease), leaseNodeNames(spareLease))
 		c.emit(run, EventTypeWarning, "SpareReleased", fmt.Sprintf(
 			"released the spare held for group %s: the group lost node %s and cannot use it",
-			lease.Labels[binder.LabelGroupIndex], nodeName))
+			leaseGroupIndex(lease), nodeName))
 	}
 
 	if grace := checkpointGrace(run); grace > 0 {
@@ -1432,10 +1486,192 @@ func (c *RunController) failGroupWithoutSpare(run *v1.Run, runKey string, lease,
 	c.emit(run, EventTypeWarning, "NodeFailureNoSpare", msg)
 }
 
-// closeRunLeases closes every open lease the run still holds and reports how many.
-// A terminally failed run holding an open lease charges its budget forever and
-// keeps the ledger marking its GPUs occupied.
-func (c *RunController) closeRunLeases(run *v1.Run, reason string, now time.Time) int {
+// reclaimSquatter evicts an unfunded run from the slots a swap needs — in BOTH
+// planes, because a lease and a pod are two different claims on one GPU.
+//
+// Closing the lease alone was a ledger-only eviction. The victim's container kept
+// running on the exact node#ordinal the swap then targeted, so the ledger said
+// the slot was free while the kubelet disagreed; and the victim itself went on
+// reporting Running forever, holding nothing, a zombie no reconcile would ever
+// visit. (Its phase was never touched, so the width invariant caught it.)
+//
+// Demote, do not kill: unfunded work is reclaimable by definition, and
+// quota-semantics R14 says it requeues and re-admits when capacity returns. A run
+// that keeps enough width to run stays Running.
+//
+// It takes the phases tracker, and that is not decoration. THE VICTIM MAY ALSO BE
+// A VICTIM OF THE NODE FAILURE ITSELF: an unfunded run can hold a rank on the
+// dead node AND squat on the spare's slots, an oversubscription the engine
+// explicitly tolerates (see the comment above buildSlotSet). Then two writers
+// reach for its phase in one pass — failGroupWithoutSpare writes Failed through
+// the tracker, this writes Pending — and without the fold the winner is whichever
+// lease `c.State.Leases` happened to store last. Failed is terminal, so in half
+// the orderings a reclaimable run was permanently killed instead of requeued.
+//
+// The tracker's lattice (Running < Pending < Failed) makes the fold commutative:
+// the worst verdict wins, whatever the order. This is the SEVENTH defect of this
+// exact class on this path; see docs/project/history-run-phase-writers.md, which
+// is also the argument for why this parameter is passed rather than remembered.
+// It returns false when the eviction cannot be made two-plane-consistent without
+// touching FUNDED work. The caller must then decline the swap, exactly as it does
+// for a funded conflict: choosing between funded runs belongs to pkg/resolver,
+// which ranks by class.
+func (c *RunController) reclaimSquatter(lease *v1.Lease, victimKey string, now time.Time, phases runPhaseTracker, ev *funding.Evaluation) bool {
+	// THE POD PLANE CANNOT ADDRESS A SLOT.
+	//
+	// The conflict is detected at node#ordinal granularity (leaseOccupiesSlots), but
+	// binder.PodManifest carries NodeName and GPUs, not ordinals, and every pod the
+	// controller emits is labelled group "0" (emitCohortPods hardcodes it), while
+	// every lease the plugin mints has no group at all. So "delete the pods of this
+	// lease" is not expressible. See R28b.
+	//
+	// The previous shape asked removePodsForGroups for group "0" and got THE WHOLE
+	// RUN's pods, while closing exactly ONE lease. The victim was left holding open
+	// leases with no containers behind them — billing forever, invisible to the
+	// width invariant, which counts leases and not pods. Reproduced: an unfunded run
+	// Running with an open lease and zero pods, still open after 20 simulated hours.
+	//
+	// So evict at the finest granularity the pod plane CAN express — the node — and
+	// close exactly the leases whose containers are being deleted. Both planes drop
+	// together, or neither does.
+	nodes := nodesOfSlots(lease.Spec.Slice.Nodes)
+	doomed := c.openRunLeasesOnNodes(victimKey, nodes)
+
+	// FAIL CLOSED. A run's funding class is per-LEASE, not per-run: one run can hold
+	// an Owned lease and an Unfunded lease at once. Deleting the victim's pods on
+	// this node would kill the containers of every lease above — and if any of them
+	// is funded, that is somebody's paid-for work, and evicting it is the resolver's
+	// call, not this function's. Decline the swap instead.
+	//
+	// (ev is the derivation taken once before pass 2, and pass 2 closes leases as it
+	// runs, so a squatter this calls Unfunded may be funded in the post-closure world.
+	// That is a known low-severity staleness, tracked separately; it errs toward
+	// reclaiming, never toward evicting a lease this evaluation calls funded.)
+	for _, other := range doomed {
+		if other == lease {
+			continue
+		}
+		class, classified := ev.Class(other)
+		if !classified || class != funding.ClassUnfunded {
+			return false
+		}
+	}
+
+	for _, other := range doomed {
+		CloseLease(other, "ReclaimedBySpare", now)
+	}
+
+	victim := c.State.Runs[victimKey]
+	if victim == nil {
+		// The Run object is already gone; its leases are the only thing left, and
+		// they are now closed. cleanupDeletedRun sweeps its pods.
+		return true
+	}
+	c.removeRunPodsOnNodes(victimKey, nodes)
+
+	if runnableGPUsForRun(victimKey, c.State.Leases) >= minRunnableGPUs(victim) {
+		// Still wide enough to make progress: an unfunded malleable run that lost
+		// one group above its minimum keeps running, and the leases it still holds
+		// still have their containers — we deleted only the pods on the nodes whose
+		// leases we closed. Nothing to record in the tracker: Running is the
+		// lattice's bottom, and a later Failed from the node-failure path must still
+		// be able to override it.
+		victim.Status.Width = summarizeRunWidth(victim, c.State.Leases)
+		return true
+	}
+
+	msg := "reclaimed by a node-failure swap; will re-admit when capacity allows"
+	if phases.apply(victim, victimKey, RunPhasePending, msg) {
+		// Only clear the reservation pointers when this verdict actually stuck. If
+		// a worse verdict already landed for this run in this pass, the run is
+		// terminal and the sweep owns it.
+		victim.Status.PendingReservation = nil
+		victim.Status.EarliestStart = nil
+	}
+	victim.Status.Width = summarizeRunWidth(victim, c.State.Leases)
+	c.emit(victim, EventTypeWarning, "ReclaimedBySpare", fmt.Sprintf(
+		"unfunded work on slots %v was reclaimed to cover a node failure", lease.Spec.Slice.Nodes))
+	return true
+}
+
+// openRunLeasesOnNodes lists the run's OPEN leases — any role — holding at least one
+// slot on any of the given nodes. These are exactly the leases whose containers a
+// node-scoped pod removal would delete, which is why the two must move together.
+func (c *RunController) openRunLeasesOnNodes(runKey string, nodes map[string]int) []*v1.Lease {
+	var out []*v1.Lease
+	for i := range c.State.Leases {
+		lease := &c.State.Leases[i]
+		if lease.Status.Closed {
+			continue
+		}
+		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
+			continue
+		}
+		for _, slot := range lease.Spec.Slice.Nodes {
+			if nodes[nodeFromSlot(slot)] > 0 {
+				out = append(out, lease)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// removeRunPodsOnNodes deletes the run's pods on the given nodes. Node granularity is
+// forced: a PodManifest names a machine, not a node#ordinal, so a container cannot be
+// matched to the exact slot it occupies. R28b is what makes finer possible.
+func (c *RunController) removeRunPodsOnNodes(runKey string, nodes map[string]int) {
+	kept := c.State.Pods[:0]
+	for _, pod := range c.State.Pods {
+		sameRun := keys.NamespacedKey(pod.Namespace, pod.Labels[binder.LabelRunName]) == runKey
+		if sameRun && pod.NodeName != "" && nodes[pod.NodeName] > 0 {
+			continue
+		}
+		kept = append(kept, pod)
+	}
+	c.State.Pods = kept
+}
+
+// removeAllRunPods deletes every pod of the run. A TERMINAL run's containers must
+// stop: releaseRun hands its GPUs back to the ledger, and Bridge.apply deletes
+// exactly the pods absent from State.Pods — so a pod left behind keeps holding a GPU
+// the ledger now calls free. The engine then plans new work onto it and the
+// kube-scheduler can never bind it.
+//
+// This is completeRun's cull, which the success path has always done, applied to the
+// failure paths, which never did.
+func (c *RunController) removeAllRunPods(run *v1.Run) {
+	kept := c.State.Pods[:0]
+	for _, pod := range c.State.Pods {
+		if pod.Namespace == run.Namespace && pod.Labels[binder.LabelRunName] == run.Name {
+			continue
+		}
+		kept = append(kept, pod)
+	}
+	c.State.Pods = kept
+}
+
+// releaseRun retires a TERMINAL run in BOTH planes: it closes every lease the run
+// still holds, and deletes every pod. It reports how many leases it closed.
+//
+// Both, or neither. A terminal run holding an open lease charges its budget forever
+// and keeps the ledger marking its GPUs occupied — the immortal-lease class. And a
+// terminal run whose LEASES are closed but whose PODS survive is the same lie told
+// backwards: Bridge.apply deletes exactly the pods absent from State.Pods, so a pod
+// left behind keeps holding a GPU the ledger has just handed back. The engine then
+// plans new work onto that GPU and the kube-scheduler can never bind it.
+//
+// The success path has always done both (completeRun closes the leases and culls the
+// pods). Every failure path did only half, for as long as this file has existed. This
+// function is why a fourth caller cannot repeat that: the pod cull is not a step a
+// caller may forget, it is inside the only function that closes a terminal run's
+// leases.
+//
+// CALL IT ONLY ON A TERMINAL RUN. The checkpoint-grace window is a deliberate,
+// bounded half-plane state: failGroupWithoutSpare parks the run Pending with a
+// CheckpointDeadline and leaves its containers running SO THEY CAN WRITE A
+// CHECKPOINT. It closes the dead group's lease and calls nothing here.
+func (c *RunController) releaseRun(run *v1.Run, reason string, now time.Time) int {
 	runKey := keys.NamespacedKey(run.Namespace, run.Name)
 	closed := 0
 	for i := range c.State.Leases {
@@ -1446,9 +1682,11 @@ func (c *RunController) closeRunLeases(run *v1.Run, reason string, now time.Time
 		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
 			continue
 		}
-		closeLease(lease, reason, now)
+		CloseLease(lease, reason, now)
 		closed++
 	}
+	// The other plane. Not optional, not a caller's responsibility.
+	c.removeAllRunPods(run)
 	return closed
 }
 
@@ -1575,10 +1813,7 @@ func (c *RunController) applyResolution(result resolver.Result, now time.Time) {
 		if lease == nil || lease.Status.Closed {
 			continue
 		}
-		ended := v1.NewTime(now)
-		lease.Status.Closed = true
-		lease.Status.Ended = &ended
-		lease.Status.ClosureReason = action.Reason
+		CloseLease(lease, action.Reason, now)
 		// Counted here, not during planning: a resolver result can be
 		// discarded (e.g. the lottery errors), and only applied actions
 		// should show up in metrics.
@@ -1621,9 +1856,34 @@ func (c *RunController) applyResolution(result resolver.Result, now time.Time) {
 		if run == nil {
 			continue
 		}
-		active := activeGPUsForRun(runKey, c.State.Leases)
+		// The old test here was `activeGPUsForRun(...) > 0`, which said a fixed-width
+		// gang missing half its groups is "Running". It is not: "start together or
+		// not at all". The lottery cuts group-by-group, so a deficit smaller than a
+		// fixed run's width cuts a strict subset of its groups — and the run then
+		// reported healthy while making no progress and charging a budget for its
+		// surviving ranks, forever. Nothing repairs a fixed-width Running run:
+		// reconcileElasticRun returns immediately for a non-malleable run, and
+		// topUpActiveGang is only reachable pre-Running.
+		//
+		// The width is TOTAL runnable width — base gang plus grow — not base-gang
+		// width. Measuring the base gang here was a reaper, and it was caught by
+		// reading the resolver rather than by any test: the lottery's own guard
+		// (pkg/resolver/resolver.go:503) permits a cut while `Remaining - grp.GPUs
+		// >= MinTotalGPUs`, and `Remaining` counts grow leases. So the resolver may
+		// legitimately cut a malleable run's BASE group while its grow ranks still
+		// cover the declared minimum. Comparing base width against a total-GPU
+		// minimum then failed a run that was, by the resolver's own reckoning, still
+		// runnable — and swept its surviving leases.
+		//
+		// baseGangGPUsForRun remains right for ADOPTION (run_controller.go:203),
+		// where a run reconstructing itself from leases after a restart must not
+		// reach "width" on grow leases alone. That is a different question: this run
+		// already assembled, and 96 live ranks are 96 live ranks whatever funding
+		// provenance minted them.
+		allocated := runnableGPUsForRun(runKey, c.State.Leases)
+		expected := minRunnableGPUs(run)
 		switch {
-		case active > 0:
+		case allocated >= expected:
 			run.Status.Phase = RunPhaseRunning
 			run.Status.Message = "shrunk by resolver"
 			c.emit(run, EventTypeWarning, "ResolverShrink", run.Status.Message)
@@ -1633,9 +1893,37 @@ func (c *RunController) applyResolution(result resolver.Result, now time.Time) {
 			run.Status.PendingReservation = nil
 			run.Status.EarliestStart = nil
 			c.emit(run, EventTypeWarning, "ResolverReclaimed", run.Status.Message)
+		case run.Status.CheckpointDeadline != nil && now.Before(run.Status.CheckpointDeadline.Time):
+			// The run is inside an unexpired checkpoint-grace window: an earlier
+			// capacity loss parked it Pending and promised its containers stay up
+			// until the deadline SO THEY CAN WRITE A CHECKPOINT (releaseRun's
+			// contract; failGroupWithoutSpare sets the deadline). Reaping it here —
+			// the default branch's releaseRun deletes every pod — destroys the very
+			// checkpoint the grace exists to save, minutes before the deadline the
+			// engine itself set. Honor the deadline, not the phase (adversarial
+			// review 2026-07-10, c74e0ef: reproduced ending a funded run 25 minutes
+			// early). Hold it parked; Reconcile fails it the moment the deadline
+			// passes (run_controller.go:167).
+			run.Status.Phase = RunPhasePending
+			run.Status.Message = "resolver cut during checkpoint grace; holding containers until the deadline"
+			c.emit(run, EventTypeWarning, "ResolverGraceHeld", run.Status.Message)
 		default:
 			run.Status.Phase = RunPhaseFailed
 			run.Status.Message = "ended by resolver"
+			// A terminal run holds no open lease. This was the one terminal-failing
+			// path that never swept: failRun and HandleNodeFailure both close what
+			// the run still holds, and this branch did not. The resolver only sees
+			// leases inside the reservation's scope, and a run's spare can lie
+			// outside it — so a scoped cut could end a run while its out-of-scope
+			// spare stayed open forever, charging its budget and holding healthy
+			// GPUs. The immortal-lease class, reached by a third door.
+			//
+			// Closing them here also returns the capacity the deficit was chasing:
+			// a dead gang's surviving ranks were still occupying the ledger.
+			if closed := c.releaseRun(run, "RunFailed", now); closed > 0 {
+				c.emit(run, EventTypeWarning, "LeasesReleased", fmt.Sprintf(
+					"released %d open lease(s) still held by the failed run", closed))
+			}
 			c.emit(run, EventTypeWarning, "ResolverEnded", run.Status.Message)
 		}
 		run.Status.Width = summarizeRunWidth(run, c.State.Leases)
@@ -1680,25 +1968,6 @@ func totalFreeInScope(snapshot *topology.Snapshot, scope map[string]string) int 
 			continue
 		}
 		total += dom.FreeGPUs()
-	}
-	return total
-}
-
-func activeGPUsForRun(runKey string, leases []v1.Lease) int {
-	total := 0
-	for i := range leases {
-		lease := leases[i]
-		if lease.Status.Closed {
-			continue
-		}
-		key := keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name)
-		if key != runKey {
-			continue
-		}
-		if lease.Spec.Slice.Role == binder.RoleSpare {
-			continue
-		}
-		total += len(lease.Spec.Slice.Nodes)
 	}
 	return total
 }
@@ -1784,7 +2053,7 @@ func expectedSpareTotal(run *v1.Run, plan *pack.Plan) int32 {
 // tops up the pods that do not yet exist.
 func (c *RunController) emitIntentPods(run *v1.Run, packPlan pack.Plan) int {
 	gpusPerPod, width := intentPodShape(run)
-	created := c.emitCohortPods(run, flattenPackNodes(packPlan), gpusPerPod, width, "0", "Start", nil)
+	created := c.emitCohortPods(run, packPlacements(packPlan, gpusPerPod, 0), gpusPerPod, width, "0", "Start", nil)
 	created += c.emitSparePods(run, packPlan, gpusPerPod, "Start", nil)
 	return created
 }
@@ -1802,7 +2071,7 @@ func (c *RunController) emitPromisePods(run *v1.Run, packPlan pack.Plan, payer c
 		binder.AnnotationPayerEnvelope: payer.EnvelopeName,
 	}
 	gpusPerPod, width := intentPodShape(run)
-	created := c.emitCohortPods(run, flattenPackNodes(packPlan), gpusPerPod, width, "0", binder.LeaseReasonPromise, extra)
+	created := c.emitCohortPods(run, packPlacements(packPlan, gpusPerPod, 0), gpusPerPod, width, "0", binder.LeaseReasonPromise, extra)
 	created += c.emitSparePods(run, packPlan, gpusPerPod, binder.LeaseReasonPromise, extra)
 	return created
 }
@@ -1824,7 +2093,7 @@ func (c *RunController) emitSparePods(run *v1.Run, packPlan pack.Plan, gpusPerPo
 	if count <= 0 {
 		return 0
 	}
-	advisory := flattenSpareNodes(packPlan)
+	placements := sparePlacements(packPlan, gpusPerPod)
 	existing := 0
 	for i := range c.State.Pods {
 		p := &c.State.Pods[i]
@@ -1836,8 +2105,14 @@ func (c *RunController) emitSparePods(run *v1.Run, packPlan pack.Plan, gpusPerPo
 	created := 0
 	for i := existing; i < count; i++ {
 		node := ""
-		if len(advisory) > 0 {
-			node = advisory[i%len(advisory)]
+		// A spare belongs to the group it covers: that is how findSpareLease pairs it
+		// with the rank it will replace.
+		group := "0"
+		if len(placements) > 0 {
+			node = placements[i%len(placements)].Node
+			if i < len(placements) {
+				group = placements[i].Group
+			}
 		}
 		created++
 		annotations := map[string]string{
@@ -1855,7 +2130,7 @@ func (c *RunController) emitSparePods(run *v1.Run, packPlan pack.Plan, gpusPerPo
 			Labels: map[string]string{
 				binder.LabelRunName:    run.Name,
 				binder.LabelRunRole:    binder.RoleSpare,
-				binder.LabelGroupIndex: "0",
+				binder.LabelGroupIndex: group,
 			},
 			Annotations: annotations,
 		})
@@ -1880,16 +2155,26 @@ func (c *RunController) consumedSpareCount(run *v1.Run) int {
 	return n
 }
 
-// removeSparePodOnNodes drops the run's held-spare pod manifest bound to one of
-// nodes (the reclaimed spare node) so the bridge deletes the real spare Pod,
-// freeing its GPU for the swap pod that hard-targets that node. Removes at most
-// one spare (the swap consumes one held slot).
-func (c *RunController) removeSparePodOnNodes(run *v1.Run, nodes []string) {
+// removeSparePodOnNodes drops the run's held-spare pod manifest for group, bound
+// to one of nodes (the reclaimed spare node), so the bridge deletes the real spare
+// Pod, freeing its GPU for the swap pod that hard-targets that node. Removes at
+// most one spare (the swap consumes one held slot).
+//
+// group matters: R28b (e681a96) stamps every spare pod with its placement group,
+// and two groups' spares can legally co-locate on one machine (pkg/pack assigns
+// spare domains per-group with no cross-group exclusion). Matching on node alone
+// deleted whichever spare the API listed first — stranding the swapping group's own
+// pod and freeing a sibling group's, a class-5 identity coarsening. Key on the
+// group the caller is actually retiring.
+func (c *RunController) removeSparePodOnNodes(run *v1.Run, group string, nodes []string) {
 	want := buildNodeSet(nodes)
 	for i := range c.State.Pods {
 		p := &c.State.Pods[i]
 		if p.Namespace != run.Namespace || p.Labels[binder.LabelRunName] != run.Name ||
 			p.Labels[binder.LabelRunRole] != binder.RoleSpare {
+			continue
+		}
+		if podGroupIndex(p) != group {
 			continue
 		}
 		if p.NodeName == "" || want[p.NodeName] == 0 {
@@ -1898,18 +2183,6 @@ func (c *RunController) removeSparePodOnNodes(run *v1.Run, nodes []string) {
 		c.State.Pods = append(c.State.Pods[:i], c.State.Pods[i+1:]...)
 		return
 	}
-}
-
-// flattenSpareNodes lists the nodes pack chose for a run's spare placements, in
-// group order — the advisory targets for spare intent pods.
-func flattenSpareNodes(plan pack.Plan) []string {
-	var nodes []string
-	for _, g := range plan.Groups {
-		for _, np := range g.SparePlacements {
-			nodes = append(nodes, np.Node)
-		}
-	}
-	return nodes
 }
 
 // cohortPodName is the deterministic name of a cohort's i-th Active intent pod.
@@ -1934,7 +2207,7 @@ func cohortPodName(run *v1.Run, cohort string, i int) string {
 // top-up re-emits a member that went missing from the MIDDLE of the cohort, and
 // a count-based scan would then rebuild the wrong index (creating a duplicate of
 // the last pod while the missing one never returns).
-func (c *RunController) emitCohortPods(run *v1.Run, advisory []string, gpusPerPod, count int, cohort, reason string, extra map[string]string) int {
+func (c *RunController) emitCohortPods(run *v1.Run, placements []podPlacement, gpusPerPod, count int, cohort, reason string, extra map[string]string) int {
 	if gpusPerPod <= 0 || count <= 0 {
 		return 0
 	}
@@ -1954,8 +2227,16 @@ func (c *RunController) emitCohortPods(run *v1.Run, advisory []string, gpusPerPo
 			continue
 		}
 		node := ""
-		if len(advisory) > 0 {
-			node = advisory[i%len(advisory)]
+		// The group is AUTHORITATIVE and the node is a hint, so they are resolved
+		// differently. When the plan is in hand the pod takes its planned group; when
+		// it is not — topUpActiveGang re-emitting a rank whose plan is long gone — the
+		// group is recomputed from the Run spec, which is what the packer laid out.
+		group := groupIndexForPodIndex(run, i, gpusPerPod)
+		if len(placements) > 0 {
+			node = placements[i%len(placements)].Node
+			if i < len(placements) {
+				group = placements[i].Group
+			}
 		}
 		created++
 		annotations := map[string]string{
@@ -1976,7 +2257,7 @@ func (c *RunController) emitCohortPods(run *v1.Run, advisory []string, gpusPerPo
 			Labels: map[string]string{
 				binder.LabelRunName:    run.Name,
 				binder.LabelRunRole:    binder.RoleActive,
-				binder.LabelGroupIndex: "0",
+				binder.LabelGroupIndex: group,
 			},
 			Annotations: annotations,
 		})
@@ -2008,6 +2289,64 @@ func minRunnableGPUs(run *v1.Run) int {
 		return int(run.Spec.Malleable.MinTotalGPUs)
 	}
 	return expectedActiveGPUs(run)
+}
+
+// leaseGroupIndex is the ONE way to ask which placement group a Lease belongs to.
+//
+// It reads the label and does not invent one. Before R28b the sole committer stamped
+// no group index at all, so this defaulted to "0" — and because every pod was ALSO
+// stamped "0", the default looked harmless while it silently merged every group of
+// every run into one. The resolver's lottery cut whole runs instead of groups, the
+// elastic loop shrank in whole-run units, and a reclaim that asked for "the pods of
+// this group" got the pods of the entire run.
+//
+// The default is gone. A persisted Lease with no group index is a bug in the mint,
+// and pkg/invariant's INV-GROUP-STAMPED fails the build rather than papering over it.
+func leaseGroupIndex(lease *v1.Lease) string {
+	if lease.Labels == nil {
+		return ""
+	}
+	return lease.Labels[binder.LabelGroupIndex]
+}
+
+// podGroupIndex is the spare/active pod counterpart of leaseGroupIndex: the
+// placement group R28b stamps onto every emitted pod. Missing reads as "" (the
+// same convention leaseGroupIndex uses), so a lease and its pod compare equal.
+func podGroupIndex(p *binder.PodManifest) string {
+	if p.Labels == nil {
+		return ""
+	}
+	return p.Labels[binder.LabelGroupIndex]
+}
+
+// runnableGPUsForRun is the run's TOTAL live width: every open, non-spare lease,
+// whatever minted it. It answers "how many ranks are running right now", which is
+// the question a run's PHASE turns on.
+//
+// This is not baseGangGPUsForRun, and confusing the two is a reaper in both
+// directions. Use this one to judge whether a run that has already assembled is
+// still runnable; use baseGangGPUsForRun to judge whether a run is assembling.
+//
+//	runnable  — phase decisions (applyResolution) and the width invariant
+//	base gang — adoption, which must not reach width on grow leases alone
+//
+// The resolver agrees with this one: its lottery guard (pkg/resolver/resolver.go:503)
+// permits a cut while `Remaining - grp.GPUs >= MinTotalGPUs`, and `Remaining`
+// counts grow leases. Judging the phase on base width alone therefore failed
+// malleable runs the resolver had deliberately left runnable.
+func runnableGPUsForRun(runKey string, leases []v1.Lease) int {
+	total := 0
+	for i := range leases {
+		lease := &leases[i]
+		if lease.Status.Closed || lease.Spec.Slice.Role == binder.RoleSpare {
+			continue
+		}
+		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
+			continue
+		}
+		total += len(lease.Spec.Slice.Nodes)
+	}
+	return total
 }
 
 // baseGangGPUsForRun is the run's BASE-gang active width: open, non-spare leases
@@ -2166,16 +2505,148 @@ func intentPodShape(run *v1.Run) (gpusPerPod, width int) {
 	return 1, int(run.Spec.Resources.TotalGPUs)
 }
 
-// flattenPackNodes lists the nodes pack chose, in placement order, for use as
-// advisory per-pod placement hints.
-func flattenPackNodes(plan pack.Plan) []string {
-	var nodes []string
-	for _, g := range plan.Groups {
-		for _, np := range g.NodePlacements {
-			nodes = append(nodes, np.Node)
+// podPlacement is one intent pod's ADVISORY node and its AUTHORITATIVE group.
+//
+// The node is a hint: the bridge turns it into soft affinity and the scheduler
+// decides. The group is not a hint. It names which fast-fabric gang the rank belongs
+// to, and the resolver, the elastic loop and the node-failure swap all address work
+// by it. Before R28b the packer computed groups and every pod was stamped "0", so
+// none of those three could address anything.
+type podPlacement struct {
+	Node  string
+	Group string
+}
+
+// groupGPUsFor is the run's declared fast-fabric group size, in GPUs. Unset means
+// one group: the whole gang.
+func groupGPUsFor(run *v1.Run) int {
+	if len(run.Spec.Roles) > 0 && run.Spec.Roles[0].GroupGPUs != nil {
+		if g := int(*run.Spec.Roles[0].GroupGPUs); g > 0 {
+			return g
 		}
 	}
-	return nodes
+	if run.Spec.Locality != nil && run.Spec.Locality.GroupGPUs != nil {
+		if g := int(*run.Spec.Locality.GroupGPUs); g > 0 {
+			return g
+		}
+	}
+	return expectedActiveGPUs(run)
+}
+
+// groupSizesFor mirrors pack.deriveGroups: consecutive groups of groupGPUs, the last
+// possibly short. It is duplicated here rather than exported from pkg/pack because
+// this side must answer the question WITHOUT a plan — topUpActiveGang re-emits a lost
+// pod long after the plan that placed it is gone, and the group it stamps must match
+// the one the packer chose. The two are pinned together by a test.
+func groupSizesFor(run *v1.Run) []int {
+	total := expectedActiveGPUs(run)
+	size := groupGPUsFor(run)
+	if total <= 0 || size <= 0 {
+		return nil
+	}
+	var sizes []int
+	for remaining := total; remaining > 0; {
+		n := size
+		if n > remaining {
+			n = remaining
+		}
+		sizes = append(sizes, n)
+		remaining -= n
+	}
+	return sizes
+}
+
+// groupIndexForPodIndex answers "which group does the i-th pod of the base gang
+// belong to?" from the Run spec alone. Pods are emitted in group order, gpusPerPod at
+// a time, exactly as the packer lays groups out.
+func groupIndexForPodIndex(run *v1.Run, i, gpusPerPod int) string {
+	sizes := groupSizesFor(run)
+	if len(sizes) == 0 || gpusPerPod <= 0 {
+		return "0"
+	}
+	offset := i * gpusPerPod
+	for idx, size := range sizes {
+		if offset < size {
+			return strconv.Itoa(idx)
+		}
+		offset -= size
+	}
+	// More pods than the spec's width: the last group owns the overflow rather than
+	// inventing a group the packer never planned.
+	return strconv.Itoa(len(sizes) - 1)
+}
+
+// nextGroupIndex is one past the highest group index the run currently occupies, in
+// EITHER plane. An elastic grow appends new groups; it must not renumber the ones the
+// gang is already running on, or a later swap would address the wrong ranks.
+func (c *RunController) nextGroupIndex(run *v1.Run) int {
+	runKey := keys.NamespacedKey(run.Namespace, run.Name)
+	highest := -1
+	note := func(raw string) {
+		if idx, err := strconv.Atoi(raw); err == nil && idx > highest {
+			highest = idx
+		}
+	}
+	for i := range c.State.Leases {
+		lease := &c.State.Leases[i]
+		if lease.Status.Closed {
+			continue
+		}
+		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) == runKey {
+			note(leaseGroupIndex(lease))
+		}
+	}
+	for _, pod := range c.State.Pods {
+		if keys.NamespacedKey(pod.Namespace, pod.Labels[binder.LabelRunName]) == runKey {
+			note(pod.Labels[binder.LabelGroupIndex])
+		}
+	}
+	return highest + 1
+}
+
+// packPlacements turns a pack.Plan into one podPlacement per intent pod, in the order
+// the pods are emitted. groupOffset shifts the plan's group numbering, which an
+// elastic grow needs so its new groups sit above the base gang's.
+func packPlacements(plan pack.Plan, gpusPerPod, groupOffset int) []podPlacement {
+	if gpusPerPod <= 0 {
+		return nil
+	}
+	var out []podPlacement
+	for _, g := range plan.Groups {
+		group := strconv.Itoa(g.GroupIndex + groupOffset)
+		for _, np := range g.NodePlacements {
+			n := np.GPUs / gpusPerPod
+			if n < 1 {
+				n = 1
+			}
+			for k := 0; k < n; k++ {
+				out = append(out, podPlacement{Node: np.Node, Group: group})
+			}
+		}
+	}
+	return out
+}
+
+// sparePlacements does the same for the spares the packer reserved beside each group.
+// A spare belongs to the group it covers: that is how findSpareLease matches them.
+func sparePlacements(plan pack.Plan, gpusPerPod int) []podPlacement {
+	if gpusPerPod <= 0 {
+		return nil
+	}
+	var out []podPlacement
+	for _, g := range plan.Groups {
+		group := strconv.Itoa(g.GroupIndex)
+		for _, sp := range g.SparePlacements {
+			n := sp.GPUs / gpusPerPod
+			if n < 1 {
+				n = 1
+			}
+			for k := 0; k < n; k++ {
+				out = append(out, podPlacement{Node: sp.Node, Group: group})
+			}
+		}
+	}
+	return out
 }
 
 func (c *RunController) reconcileElasticRun(run *v1.Run, snapshot *topology.Snapshot, inventory *cover.Inventory, now time.Time) error {
@@ -2276,7 +2747,7 @@ func (c *RunController) growRun(run *v1.Run, snapshot *topology.Snapshot, now ti
 	// ledger (which already holds the base leases) and mints "Grow" leases; the
 	// run's width grows from those leases. The controller mints nothing.
 	cohort := strconv.Itoa(nextCohortForRun(c.State.Pods, run))
-	c.emitCohortPods(run, flattenPackNodes(plan), gpusPerPod, add/gpusPerPod, cohort, binder.LeaseReasonGrow, nil)
+	c.emitCohortPods(run, packPlacements(plan, gpusPerPod, c.nextGroupIndex(run)), gpusPerPod, add/gpusPerPod, cohort, binder.LeaseReasonGrow, nil)
 	return nil
 }
 
@@ -2321,10 +2792,10 @@ func (c *RunController) shrinkRun(run *v1.Run, target int32, ev *funding.Evaluat
 			continue
 		}
 		for _, lease := range grp.Active {
-			closeLease(lease, "Shrink", now)
+			CloseLease(lease, "Shrink", now)
 		}
 		for _, lease := range grp.Spares {
-			closeLease(lease, "Shrink", now)
+			CloseLease(lease, "Shrink", now)
 		}
 		freed += int32(grp.ActiveGPUs)
 		removed[strconv.Itoa(grp.Index)] = struct{}{}
@@ -2443,13 +2914,7 @@ func collectElasticGroups(runKey string, leases []v1.Lease, ev *funding.Evaluati
 		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
 			continue
 		}
-		idxStr := "0"
-		if lease.Labels != nil {
-			if val, ok := lease.Labels[binder.LabelGroupIndex]; ok {
-				idxStr = val
-			}
-		}
-		idx, err := strconv.Atoi(idxStr)
+		idx, err := strconv.Atoi(leaseGroupIndex(lease))
 		if err != nil {
 			continue
 		}
@@ -2486,22 +2951,6 @@ func borrowedGPUsForRun(ev *funding.Evaluation, run *v1.Run) int32 {
 		return 0
 	}
 	return acct.GPUs[funding.ClassBorrowed]
-}
-
-func leaseActive(lease *v1.Lease, now time.Time) bool {
-	if lease.Status.Closed {
-		return false
-	}
-	if now.Before(lease.Spec.Interval.Start.Time) {
-		return false
-	}
-	if lease.Spec.Interval.End != nil && !now.Before(lease.Spec.Interval.End.Time) {
-		return false
-	}
-	if lease.Status.Ended != nil && !now.Before(lease.Status.Ended.Time) {
-		return false
-	}
-	return true
 }
 
 func (c *RunController) removePodsForGroups(runKey string, groups map[string]struct{}) {
@@ -2558,7 +3007,7 @@ func findSpareLease(leases []v1.Lease, runKey, group string) (*v1.Lease, int) {
 		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) != runKey {
 			continue
 		}
-		if lease.Labels[binder.LabelGroupIndex] != group {
+		if leaseGroupIndex(lease) != group {
 			continue
 		}
 		return lease, idx
@@ -2594,6 +3043,21 @@ func leaseOccupiesSlots(lease *v1.Lease, slots map[string]struct{}) bool {
 	return false
 }
 
+// nodesOfSlots maps node#ordinal SLOTS to the set of MACHINES they sit on.
+//
+// The conversion is explicit and named because the two are different keys and this
+// file has shipped a defect from confusing them (R22 compared machines where slots
+// were meant). buildNodeSet below takes machines already; handing it slots yields a
+// set that matches nothing, silently — which is exactly what the first draft of
+// reclaimSquatter's node-scoped eviction did, closing no lease at all.
+func nodesOfSlots(slots []string) map[string]int {
+	counts := make(map[string]int, len(slots))
+	for _, slot := range slots {
+		counts[nodeFromSlot(slot)]++
+	}
+	return counts
+}
+
 func buildNodeSet(nodes []string) map[string]int {
 	counts := make(map[string]int, len(nodes))
 	for _, node := range nodes {
@@ -2602,16 +3066,21 @@ func buildNodeSet(nodes []string) map[string]int {
 	return counts
 }
 
-func leasesOverlap(lease *v1.Lease, nodes map[string]int) bool {
-	for _, slot := range lease.Spec.Slice.Nodes {
-		if _, ok := nodes[nodeFromSlot(slot)]; ok {
-			return true
-		}
-	}
-	return false
-}
-
-func closeLease(lease *v1.Lease, reason string, now time.Time) {
+// CloseLease is the SOLE CLOSER. Every transition of a Lease from open to closed
+// in this repository goes through this function, and hack/antifake enforces that
+// mechanically: no other non-test file may assign Lease.Status.Closed, .Ended, or
+// .ClosureReason.
+//
+// The rule exists because closure used to be cloned. applyResolution and
+// cleanupDeletedRun each hand-rolled the same three assignments, so a closure
+// could be half-stamped — Closed without Ended, which makes funding.effectiveEnd
+// bill the lease to its START instant so it accrues nothing for its entire life —
+// and no single place could be instrumented, metered, or fixed. Three
+// implementations of one obligation is three chances to drift.
+//
+// Closing is idempotent: a lease already closed keeps its original ending and
+// reason. A Lease is an immutable fact, and the first closure is the true one.
+func CloseLease(lease *v1.Lease, reason string, now time.Time) {
 	if lease.Status.Closed {
 		return
 	}

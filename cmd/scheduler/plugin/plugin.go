@@ -19,6 +19,7 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -295,6 +296,10 @@ func (j *JobTree) PreBind(ctx context.Context, _ fwk.CycleState, pod *corev1.Pod
 	if role == "" {
 		role = binder.RoleActive
 	}
+	groupIndex, err := mintGroupIndex(pod)
+	if err != nil {
+		return fwk.NewStatus(fwk.Error, "jobtree: "+err.Error())
+	}
 	// Include the run's per-incarnation nonce in the lease name so a delete +
 	// resubmit of a same-named Run mints a fresh OPEN lease rather than colliding
 	// with the prior incarnation's closed lease (the ABA hazard, R2). A same-
@@ -304,7 +309,7 @@ func (j *JobTree) PreBind(ctx context.Context, _ fwk.CycleState, pod *corev1.Pod
 	if nonce := pod.Annotations[binder.AnnotationRunNonce]; nonce != "" {
 		leaseName = pod.Name + "-" + nonce + "-lease"
 	}
-	lease := admission.PodLeaseWithRole(run, seg, nodeName, gpusPerPod, leaseName, time.Now().UTC(), pod.Annotations[binder.AnnotationLeaseReason], role)
+	lease := admission.PodLeaseWithRole(run, seg, nodeName, gpusPerPod, leaseName, time.Now().UTC(), pod.Annotations[binder.AnnotationLeaseReason], role, groupIndex)
 	if err := j.client.Create(ctx, &lease); err != nil && !apierrors.IsAlreadyExists(err) {
 		return fwk.NewStatus(fwk.Error, fmt.Sprintf("jobtree: mint lease for %s: %v", pod.Name, err))
 	}
@@ -350,4 +355,27 @@ func isSparePod(pod *corev1.Pod) bool {
 // re-derivation per §9; wiring it through PostFilter is a later increment).
 func (j *JobTree) PostFilter(_ context.Context, _ fwk.CycleState, _ *corev1.Pod, _ fwk.NodeToStatusReader) (*fwk.PostFilterResult, *fwk.Status) {
 	return nil, fwk.NewStatus(fwk.Unschedulable, "jobtree: reclaim not wired (PLUGIN-6)")
+}
+
+// ErrNoPlacementGroup is returned when a pod reaching PreBind carries no placement
+// group. It is a typed sentinel because the caller must not distinguish it by message
+// text — that is how R25's leaked spare lease stayed invisible.
+var ErrNoPlacementGroup = errors.New("pod carries no placement group")
+
+// mintGroupIndex reads the placement group a lease must be stamped with, and FAILS
+// CLOSED when the pod carries none (R28b).
+//
+// Every pod jobtree emits carries one. A pod that does not is either not ours, or the
+// relic of a mint path that forgot. Minting a lease without it silently merges the
+// run's groups into one: pkg/resolver then cuts whole runs instead of groups, the
+// elastic loop shrinks in whole-run units, and a reclaim asking for "the pods of this
+// group" gets the pods of the entire run. The ledger cannot detect that lie, so refuse
+// it here — the way the R5/R6 provenance gates refuse forged funding.
+func mintGroupIndex(pod *corev1.Pod) (string, error) {
+	group := pod.Labels[binder.LabelGroupIndex]
+	if group == "" {
+		return "", fmt.Errorf("%w: %s/%s has no %s label; refusing to mint a lease with no placement group",
+			ErrNoPlacementGroup, pod.Namespace, pod.Name, binder.LabelGroupIndex)
+	}
+	return group, nil
 }
