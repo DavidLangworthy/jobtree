@@ -37,9 +37,10 @@
 (*                                                                          *)
 (* Why the abstraction is still small                                        *)
 (* ----------------------------------                                        *)
-(* We keep only two leases and unit-width ticks, and we fix them to one      *)
-(* representative owned-then-borrowed history. That keeps the SMT encoding   *)
-(* tractable while still exercising the three missing surfaces:              *)
+(* We keep only two leases and unit-width ticks. The SMT configs fix one      *)
+(* representative owned-then-borrowed history, while the generalized TLC     *)
+(* config ranges both leases over 625 canonical histories. This keeps each   *)
+(* proof rail tractable while still exercising the three missing surfaces:   *)
 (*                                                                          *)
 (* - aggregate-cap depletion can differ by envelope membership,              *)
 (* - a window-start OR window-end change can stale the summary, and          *)
@@ -176,6 +177,25 @@ CapContains(c, e) == (c = 1) \/ (c = 2 /\ e = 1)
 OwnerOfEnv(e) == e
 ClassOfLease(l) == IF leaseBorrowed[l] THEN Borrowed ELSE Owned
 
+\* Each enabled lease ranges over both envelopes, owned/borrowed attribution,
+\* and every valid interval in the bounded clock. Disabled leases use one
+\* canonical shape because their other fields cannot affect evaluation. This
+\* leaves 25 shapes per lease, or 625 two-lease initial histories.
+CanonicalLeaseFamily ==
+  /\ leaseEnabled \in [LeaseIds -> BOOLEAN]
+  /\ leaseEnv \in [LeaseIds -> Envs]
+  /\ leaseBorrowed \in [LeaseIds -> BOOLEAN]
+  /\ leaseStart \in [LeaseIds -> Ticks]
+  /\ leaseEnd \in [LeaseIds -> Ends]
+  /\ \A l \in LeaseIds :
+       \/ /\ leaseEnabled[l]
+          /\ leaseStart[l] < leaseEnd[l]
+       \/ /\ ~leaseEnabled[l]
+          /\ leaseEnv[l] = 1
+          /\ ~leaseBorrowed[l]
+          /\ leaseStart[l] = 0
+          /\ leaseEnd[l] = 1
+
 Init ==
   /\ now = 0
   /\ horizon = 0
@@ -193,6 +213,20 @@ Init ==
   /\ leaseBorrowed = [l \in LeaseIds |-> l = 2]
   /\ leaseStart = [l \in LeaseIds |-> IF l = 1 THEN 0 ELSE 1]
   /\ leaseEnd = [l \in LeaseIds |-> IF l = 1 THEN 1 ELSE 2]
+
+GeneralizedInit ==
+  /\ now = 0
+  /\ horizon = 0
+  /\ summaryValid = FALSE
+  /\ windowStart = [e \in Envs |-> 0]
+  /\ windowEnd = [e \in Envs |-> NoEnd]
+  /\ summaryWindowStart = [e \in Envs |-> 0]
+  /\ summaryWindowEnd = [e \in Envs |-> NoEnd]
+  /\ summaryConsumed = ZeroConsumed
+  /\ summaryClassHours = ZeroClassHours
+  /\ summaryAggregate = ZeroAggregate
+  /\ summaryLender = ZeroLender
+  /\ CanonicalLeaseFamily
 
 \* Two settled leases accrue before the window moves: an owned env-1 lease and a
 \* borrowed env-2 lease. If the caller keeps the summary valid across the window
@@ -654,6 +688,7 @@ ReachableStaleEndNext ==
   \/ \E e \in Envs : \E en \in Ends : ShiftWindowEnd(e, en)
 
 Spec == Init /\ [][Next]_vars
+GeneralizedSpec == GeneralizedInit /\ [][Next]_vars
 ReachableStaleStartSpec == Init /\ [][ReachableStaleStartNext]_vars
 ReachableStaleEndSpec == Init /\ [][ReachableStaleEndNext]_vars
 StaleWindowSpec == InitStaleWindowWitness /\ [][Next]_vars
@@ -693,5 +728,9 @@ AccountingInv ==
   /\ TypeOK
   /\ SummaryRep
   /\ StatefulRoundTrip
+
+GeneralizedAccountingInv ==
+  /\ AccountingInv
+  /\ CanonicalLeaseFamily
 
 =============================================================================

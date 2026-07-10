@@ -109,19 +109,33 @@ real transition system:
   This prevents fast consecutive checks from mistaking a timestamp-directory
   startup collision for the expected failure of a negative control.
 
-The exact finite universal check, full finite lifecycle, and extra witnesses
-therefore remain on TLC. The summary representation, bounded lifecycle
-preservation, stateful round trip, and representative seeded-fold steps also
-have Apalache/Z3 coverage.
+The fixed lease history was then generalized without weakening the lifecycle
+invariant:
+
+- `CanonicalLeaseFamily` gives each lease one canonical disabled shape or 24
+  enabled shapes: two envelopes, owned/borrowed attribution, and six valid
+  bounded start/end intervals. The cross-product contains 625 initial
+  histories.
+- `GeneralizedAccountingInv` checks `AccountingInv` plus preservation of that
+  family over the ordinary lifecycle actions.
+- `make ledger-compaction-accounting-generalized-check` completed under TLC in
+  2 minutes 42 seconds: `15,637,584 states generated`, `2,252,746 distinct
+  states found`, maximum depth 12, zero states left on the queue, and no error.
+- The path-filtered accounting workflow runs this exploration as a separate
+  parallel job so the fixed-history witness rail stays fast.
+
+The exact finite universal check, fixed and generalized finite lifecycles, and
+extra witnesses therefore remain on TLC. The summary representation, bounded
+lifecycle preservation, stateful round trip, and representative seeded-fold
+steps also have Apalache/Z3 coverage.
 
 ## Next Work
 
-1. Generalize the fixed two-lease history into a small nondeterministic family
-   of enabled flags, envelope ownership, borrowed status, and start/end times;
-   keep a separate exploration config if the exact state graph grows too much
-   for CI.
-2. Revisit a direct Apalache universal seeded-fold proof only after an
+1. Add a dynamic lease-admission action after settlement. Require a newly
+   enabled lease to start at or after the persisted horizon, and add a negative
+   control showing why a backdated lease must invalidate or repair the summary.
+2. Extend the abstraction to a third ranked lease or another aggregate-
+   membership shape now that the generalized two-lease invariant is tractable.
+3. Revisit a direct Apalache universal seeded-fold proof only after an
    inliner/encoding improvement or on a machine with materially more than
    16 GB RAM.
-3. Extend the abstraction to a third lease or another aggregate-membership
-   shape only after the generalized two-lease invariant stays tractable.

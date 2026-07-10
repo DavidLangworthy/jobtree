@@ -14,7 +14,7 @@ to the design that it cannot drift far from reality.
 | `NodeFailure` | the node-failure / spare-swap / reclaim seam | no duplicate rank; exact-slot-only unfunded reclaim; no failed-node leak; no terminal immortal lease; phase is the join; ledger/workload plane agreement |
 | `LedgerCompaction` | the R4 pt2 settlement theorem for `pkg/funding/evaluate.go` | if `horizon <= now` and no retained lease starts before the horizon, replaying `summary + retained` matches full replay on funded lease-hours and the funded set at `Now` |
 | `LedgerCompactionStore` | the pt2b persisted-settlement store semantics | repeated settlement, time advance, and window movement preserve equivalence to full replay, provided window shifts invalidate or recompute the summary before reuse |
-| `LedgerCompactionAccounting` | the broader pt2b accounting surface: aggregate caps, full window identity, and lender/class carry-forward | persisted summary representation and full stateful round-trip equivalence across settlement, time advance, window shifts, and summary repair; exact finite seeded-fold equivalence |
+| `LedgerCompactionAccounting` | the broader pt2b accounting surface: aggregate caps, full window identity, and lender/class carry-forward | persisted summary representation and full stateful round-trip equivalence across settlement, time advance, window shifts, and summary repair for both a representative SMT history and 625 canonical two-lease histories; exact finite seeded-fold equivalence |
 
 ## Running
 
@@ -63,6 +63,7 @@ than an injected one-shot state:
 
 ```bash
 make ledger-compaction-accounting-stateful-check
+make ledger-compaction-accounting-generalized-check
 make ledger-compaction-accounting-stateful-counterexamples
 make ledger-compaction-accounting-stateful-apalache-check  # large VM
 ```
@@ -74,6 +75,14 @@ controls reach stale summaries through ordinary actions, and Apalache reports
 no error through two transitions. The symbolic target defaults to a 10 GB
 heap and took about 12 minutes on a 16 GB VM, so it is intentionally not part
 of hosted CI.
+
+The generalized TLC target replaces the fixed lease assignment with 625
+canonical initial histories. Each lease is either disabled, with irrelevant
+fields canonicalized, or enabled across both envelopes, owned/borrowed
+attribution, and all six valid bounded start/end intervals. TLC exhausts the
+resulting lifecycle graph: 15,637,584 states generated, 2,252,746 distinct
+states, maximum depth 12, zero states left on the queue, and no invariant
+error. It runs as a separate parallel job in the path-filtered workflow.
 
 `LedgerCompaction` is the one-shot theorem for `settlementSafe` and
 `SettleAccrual`. `LedgerCompactionStore` is the stronger, stateful theorem for
@@ -91,8 +100,9 @@ representative properties that are cheap to evaluate directly:
 The first two models intentionally abstract to one envelope, one greedy
 capacity dimension, and discrete ticks. `LedgerCompactionAccounting` widens the
 surface to two envelopes, one shared aggregate bucket plus one env-local
-aggregate bucket, full window identity, and lender/class buckets while still
-keeping a fixed two-lease history for SMT tractability.
+aggregate bucket, full window identity, and lender/class buckets. Its SMT rail
+keeps a fixed two-lease history for tractability; its TLC rail exhausts the
+canonical two-lease history family.
 
 One important result of that broader model: the naive "add the newly settled
 chunk onto the old summary" law is false once depletion-sensitive accounting is
