@@ -216,6 +216,7 @@ spec-counterexamples: $(TLA2TOOLS)
 # dedicated, path-filtered CI workflow rather than the global verify gate.
 node-failure-spec-check: $(TLA2TOOLS)
 	cd specs && $(TLC) -config NodeFailure.cfg NodeFailure.tla
+	cd specs && $(TLC) -config NodeFailureTopUp.cfg NodeFailure.tla
 
 node-failure-spec-counterexamples: $(TLA2TOOLS)
 	cd specs && ! $(TLC) -config NodeFailureR21.cfg NodeFailure.tla
@@ -224,6 +225,8 @@ node-failure-spec-counterexamples: $(TLA2TOOLS)
 	cd specs && ! $(TLC) -config NodeFailureDeclinedSwap.cfg NodeFailure.tla
 	cd specs && ! $(TLC) -config NodeFailureLastWriter.cfg NodeFailure.tla
 	cd specs && ! $(TLC) -config NodeFailureHalfPlane.cfg NodeFailure.tla
+	cd specs && ! $(TLC) -config NodeFailureCountTopUp.cfg NodeFailure.tla
+	cd specs && ! $(TLC) -config NodeFailureConsumedCount.cfg NodeFailure.tla
 
 node-failure-spec-pdf:
 	python3 -c 'import reportlab' >/dev/null 2>&1 || \

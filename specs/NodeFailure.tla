@@ -40,6 +40,26 @@
 (* - `NodeFailureDeclinedSwap.cfg` -> `TerminalHoldsNothing`                *)
 (* - `NodeFailureLastWriter.cfg`   -> `PhaseIsJoin`                         *)
 (* - `NodeFailureHalfPlane.cfg`    -> `PlaneAgreement`                      *)
+(* - `NodeFailureCountTopUp.cfg`   -> `NoDuplicateSpareName`                *)
+(* - `NodeFailureConsumedCount.cfg`-> `ConsumedSpareStaysConsumed`          *)
+(*                                                                          *)
+(* Spare top-up extension (#91 / fuzzer deletePod)                          *)
+(* ----------------------------------------------                          *)
+(* `TopUpSpares` adds emitSparePods' re-provisioning loop                   *)
+(* (controllers/run_controller.go:2423-2489) plus the fuzzer's external     *)
+(* pod deletion.  Spares carry a run-level INDEX (the model's analogue of   *)
+(* sparePodName(run, i)); a top-up chooses which indices to fill:           *)
+(*                                                                          *)
+(* - `CountBasedTopUp = TRUE`  -> the pre-#91 defect: fill indices          *)
+(*   existing..count-1, so an out-of-order loss rebuilds a name a survivor  *)
+(*   still owns (two pods, then two leases, of one name).                   *)
+(* - `ConsumedSpareByName = FALSE` -> the code as of #91's fix: presence is *)
+(*   keyed by name, but consumption (consumedSpareCount, go:2502) is a raw  *)
+(*   COUNT that truncates the index range from the TOP.  A swap that        *)
+(*   consumed a LOW index leaves that index inside the truncated range and  *)
+(*   its pod absent, so the top-up resurrects the consumed spare.           *)
+(* - `ConsumedSpareByName = TRUE` -> the intended design: skip indices      *)
+(*   whose lease closed with reason "Swap", by name.                        *)
 (*                                                                          *)
 (* TLC did reproduce the historical bug classes.  It did not, by itself,    *)
 (* prove a new implementation bug in Go.  The main open modeling question   *)
@@ -102,7 +122,11 @@ CONSTANTS
   SparePassFirst,
   ReleaseSpareOnDecline,
   TrackedPhases,
-  EvictBothPlanes
+  EvictBothPlanes,
+  TopUpSpares,
+  CountBasedTopUp,
+  ConsumedSpareByName,
+  ExternalDeletes
 
 ASSUME
   /\ Capacity \in Nat
@@ -112,6 +136,10 @@ ASSUME
   /\ ReleaseSpareOnDecline \in BOOLEAN
   /\ TrackedPhases \in BOOLEAN
   /\ EvictBothPlanes \in BOOLEAN
+  /\ TopUpSpares \in BOOLEAN
+  /\ CountBasedTopUp \in BOOLEAN
+  /\ ConsumedSpareByName \in BOOLEAN
+  /\ ExternalDeletes \in BOOLEAN
 
 NoNode == "NoNode"
 NoSlot == <<NoNode, 99>>
@@ -145,9 +173,14 @@ PrimaryPlacement(rg) ==
   ELSE IF rg = <<"C", 0>> THEN <<"n2", 1>>
   ELSE NoSlot
 
+\* The <<"A", 1>> spare exists only in the top-up universe: two spares of one
+\* run with distinct run-level indices are the precondition for the #91
+\* count-vs-name confusion, and gating it keeps the legacy cfgs' state space
+\* byte-identical.
 SparePlacement(rg) ==
   IF rg = <<"A", 0>> THEN <<"n2", 0>>
   ELSE IF rg = <<"C", 0>> THEN <<"n3", 0>>
+  ELSE IF TopUpSpares /\ rg = <<"A", 1>> THEN <<"n3", 1>>
   ELSE NoSlot
 
 InitialPhase == [r \in Runs |-> "Running"]
@@ -178,6 +211,16 @@ GroupOf(x) == x[2]
 KindOf(x) == x[3]
 RoleOf(x) == IF KindOf(x) = "Spare" THEN "Spare" ELSE "Active"
 SlotNode(s) == s[1]
+
+\* Run-level spare indexing: the model's analogue of sparePodName(run, i).
+\* sparePlacements (controllers/run_controller.go:3023-3041) walks plan.Groups
+\* in ascending group order, so a run's i-th spare NAME belongs to its i-th
+\* spare-bearing group.  SpareIndex/SpareAt make that bijection explicit.
+SpareIds == {x \in Ids : KindOf(x) = "Spare"}
+DeclaredSpareGroups(r) == {g \in Groups : SparePlacement(<<r, g>>) # NoSlot}
+RunSpares(r) == {s \in SpareIds : RunOf(s) = r /\ GroupOf(s) \in DeclaredSpareGroups(r)}
+SpareIndex(s) == Cardinality({g \in DeclaredSpareGroups(RunOf(s)) : g < GroupOf(s)})
+SpareAt(r, i) == CHOOSE s \in RunSpares(r) : SpareIndex(s) = i
 
 Severity(p) ==
   IF p = "Running" THEN 0
@@ -220,12 +263,20 @@ VARIABLES
   todo,
   phaseWrites,
   expectedPhase,
-  handledNodes
+  handledNodes,
+  \* A SECOND pod object / lease claiming a spare name a survivor still owns —
+  \* what the #91 count-based top-up manufactures.  podState/leaseOpen are
+  \* keyed by identity and cannot express two live objects of one name, so the
+  \* duplicate gets its own plane.  "Gone"/FALSE everywhere means no duplicate
+  \* exists (the only reachable state when the fill is present-by-name).
+  dupPodState,
+  dupLeaseOpen
 
 vars ==
   << nodeState, runPhase, graceLeft, leaseOpen, leaseSlot, leaseReason,
      podState, podSlot, machinePods, closeClass, closeAgainst,
-     busy, failedNode, todo, phaseWrites, expectedPhase, handledNodes >>
+     busy, failedNode, todo, phaseWrites, expectedPhase, handledNodes,
+     dupPodState, dupLeaseOpen >>
 
 Init ==
   /\ nodeState = [n \in Nodes |-> "Ready"]
@@ -261,6 +312,8 @@ Init ==
   /\ phaseWrites = [r \in Runs |-> {}]
   /\ expectedPhase = [r \in Runs |-> UnknownPhase]
   /\ handledNodes = {}
+  /\ dupPodState = [p \in Ids |-> "Gone"]
+  /\ dupLeaseOpen = [p \in Ids |-> FALSE]
 
 FailureSignal(n) ==
   IF RequireFence
@@ -303,7 +356,7 @@ StartFailureSweep(n) ==
   /\ phaseWrites' = [r \in Runs |-> {}]
   /\ expectedPhase' = [r \in Runs |-> UnknownPhase]
   /\ UNCHANGED << nodeState, runPhase, graceLeft, leaseOpen, leaseSlot, leaseReason,
-                  podState, podSlot, machinePods, closeClass, closeAgainst, handledNodes >>
+                  podState, podSlot, machinePods, closeClass, closeAgainst, handledNodes, dupPodState, dupLeaseOpen >>
 
 \* Pass 1 over spare leases on the failed node:
 \* controllers/run_controller.go:1193-1222.
@@ -321,7 +374,7 @@ ProcessSpare(l) ==
      ELSE /\ UNCHANGED << leaseOpen, leaseReason, podState, machinePods >>
   /\ UNCHANGED << nodeState, runPhase, graceLeft, leaseSlot, podSlot,
                   closeClass, closeAgainst, busy, failedNode, phaseWrites,
-                  expectedPhase, handledNodes >>
+                  expectedPhase, handledNodes, dupPodState, dupLeaseOpen >>
 
 \* Active lease with a usable spare and no funded exact-slot blocker.
 \* This folds together the exact-slot reclaim test, the close-old / consume-
@@ -384,7 +437,7 @@ ProcessActiveSwap(l) ==
               IF rr = r THEN "Running"
               ELSE IF rr \in victimRuns THEN "Pending"
               ELSE runPhase[rr]]
-  /\ UNCHANGED << nodeState, graceLeft, busy, failedNode, expectedPhase, handledNodes >>
+  /\ UNCHANGED << nodeState, graceLeft, busy, failedNode, expectedPhase, handledNodes, dupPodState, dupLeaseOpen >>
 
 \* Active lease whose spare's exact target slot is held by funded work, so the
 \* swap declines and the group falls back to the no-spare verdict path:
@@ -429,7 +482,7 @@ ProcessActiveDecline(l) ==
      THEN UNCHANGED runPhase
      ELSE runPhase' = [rr \in Runs |-> IF rr = r THEN verdict ELSE runPhase[rr]]
   /\ UNCHANGED << nodeState, graceLeft, leaseSlot, podSlot, closeClass,
-                  closeAgainst, busy, failedNode, expectedPhase, handledNodes >>
+                  closeAgainst, busy, failedNode, expectedPhase, handledNodes, dupPodState, dupLeaseOpen >>
 
 \* Active lease with no held spare at all, or a swap lease revisited after its
 \* source active was already closed.  This abstracts the direct
@@ -458,7 +511,7 @@ ProcessActiveNoSpare(l) ==
      THEN UNCHANGED runPhase
      ELSE runPhase' = [rr \in Runs |-> IF rr = r THEN verdict ELSE runPhase[rr]]
   /\ UNCHANGED << nodeState, graceLeft, leaseSlot, podSlot, closeClass,
-                  closeAgainst, busy, failedNode, expectedPhase, handledNodes >>
+                  closeAgainst, busy, failedNode, expectedPhase, handledNodes, dupPodState, dupLeaseOpen >>
 
 DropClosedWorkItem(l) ==
   /\ busy
@@ -467,7 +520,7 @@ DropClosedWorkItem(l) ==
   /\ todo' = todo \ {l}
   /\ UNCHANGED << nodeState, runPhase, graceLeft, leaseOpen, leaseSlot, leaseReason,
                   podState, podSlot, machinePods, closeClass, closeAgainst,
-                  busy, failedNode, phaseWrites, expectedPhase, handledNodes >>
+                  busy, failedNode, phaseWrites, expectedPhase, handledNodes, dupPodState, dupLeaseOpen >>
 
 \* Post-pass fold and failed-run sweep:
 \* controllers/run_controller.go:1330-1452.
@@ -510,7 +563,8 @@ FinishFailureSweep ==
          THEN "Gone"
          ELSE podState[p]]
   /\ machinePods' = machinePods \ stopped
-  /\ UNCHANGED << nodeState, graceLeft, leaseSlot, podSlot, closeClass, closeAgainst >>
+  /\ UNCHANGED << nodeState, graceLeft, leaseSlot, podSlot, closeClass, closeAgainst,
+                  dupPodState, dupLeaseOpen >>
 
 \* The controller emits a swap pod but does not mint the replacement lease.
 \* Mint happens later at scheduler PreBind:
@@ -527,7 +581,99 @@ MintSwap(l) ==
   /\ machinePods' = machinePods \cup {l}
   /\ UNCHANGED << nodeState, runPhase, graceLeft, leaseSlot, podSlot,
                   closeClass, closeAgainst, busy, failedNode, todo,
-                  phaseWrites, expectedPhase, handledNodes >>
+                  phaseWrites, expectedPhase, handledNodes, dupPodState, dupLeaseOpen >>
+
+\* emitSparePods' re-provisioning loop (controllers/run_controller.go:2423-2489),
+\* the missing action this extension exists for.  One atomic step per reconcile
+\* pass, outside a failure sweep (the controller is single-threaded per run).
+\* Faithfulness notes:
+\* - count = declared - consumedSpareCount, where consumption is the set of
+\*   spare leases closed with reason "Swap" (go:2502-2513);
+\* - presence is by NAME over live spare pods, including a duplicate object
+\*   that claims the name (Go's `present` map is keyed on p.Name);
+\* - the three fill policies are the knobs documented in the header;
+\* - emitting a name whose owner pod is still live manufactures a DUPLICATE
+\*   object (Bridge/API identity is the name); emitting a name whose owner is
+\*   gone recreates that identity as a fresh Intent pod at its placement.
+NamePresent(s) == podState[s] # "Gone" \/ dupPodState[s] # "Gone"
+
+TopUpSpare(r) ==
+  LET spares == RunSpares(r)
+      declared == Cardinality(spares)
+      consumed == Cardinality({s \in spares : leaseReason[s] = "Swap"})
+      count == declared - consumed
+      presentIdx == {SpareIndex(s) : s \in {t \in spares : NamePresent(t)}}
+      existing == Cardinality({s \in spares : NamePresent(s)})
+      fill ==
+        IF CountBasedTopUp
+        THEN {i \in 0..(count - 1) : existing <= i}
+        ELSE IF ConsumedSpareByName
+        THEN {i \in 0..(declared - 1) :
+                i \notin presentIdx /\ leaseReason[SpareAt(r, i)] # "Swap"}
+        ELSE {i \in 0..(count - 1) : i \notin presentIdx}
+      targets == {SpareAt(r, i) : i \in fill}
+      dupTargets == {s \in targets : podState[s] # "Gone"}
+      refills == targets \ dupTargets
+  IN
+  /\ TopUpSpares
+  /\ ~busy
+  /\ runPhase[r] # "Failed"
+  /\ targets # {}
+  /\ podState' = [p \in Ids |-> IF p \in refills THEN "Intent" ELSE podState[p]]
+  /\ podSlot' = [p \in Ids |-> IF p \in refills THEN SparePlacement(<<r, GroupOf(p)>>) ELSE podSlot[p]]
+  /\ dupPodState' = [p \in Ids |-> IF p \in dupTargets THEN "Intent" ELSE dupPodState[p]]
+  /\ UNCHANGED << nodeState, runPhase, graceLeft, leaseOpen, leaseSlot, leaseReason,
+                  machinePods, closeClass, closeAgainst, busy, failedNode, todo,
+                  phaseWrites, expectedPhase, handledNodes, dupLeaseOpen >>
+
+\* The plugin binds a re-emitted spare intent pod and mints its RoleSpare lease
+\* at PreBind, the same mint window MintSwap models.  Re-binding a name whose
+\* own lease is still open (an externally deleted pod) is idempotent on the
+\* lease plane — the named lease simply continues.
+MintSpare(s) ==
+  /\ TopUpSpares
+  /\ ~busy
+  /\ s \in SpareIds
+  /\ podState[s] = "Intent"
+  /\ podSlot[s] # NoSlot
+  /\ nodeState[SlotNode(podSlot[s])] = "Ready"
+  /\ leaseOpen' = [leaseOpen EXCEPT ![s] = TRUE]
+  /\ leaseSlot' = [leaseSlot EXCEPT ![s] = podSlot[s]]
+  /\ leaseReason' = [leaseReason EXCEPT ![s] = "None"]
+  /\ podState' = [podState EXCEPT ![s] = "Bound"]
+  /\ machinePods' = machinePods \cup {s}
+  /\ UNCHANGED << nodeState, runPhase, graceLeft, podSlot, closeClass, closeAgainst,
+                  busy, failedNode, todo, phaseWrites, expectedPhase, handledNodes,
+                  dupPodState, dupLeaseOpen >>
+
+\* The duplicate pod binds too: nothing at PreBind knows the name is already
+\* owned, so the mint goes through and the second lease of the name appears —
+\* the INV-CLOSED-MONOTONE precondition in the Go oracle.
+MintDupSpare(s) ==
+  /\ TopUpSpares
+  /\ ~busy
+  /\ dupPodState[s] = "Intent"
+  /\ SparePlacement(<<RunOf(s), GroupOf(s)>>) # NoSlot
+  /\ nodeState[SlotNode(SparePlacement(<<RunOf(s), GroupOf(s)>>))] = "Ready"
+  /\ dupPodState' = [dupPodState EXCEPT ![s] = "Bound"]
+  /\ dupLeaseOpen' = [dupLeaseOpen EXCEPT ![s] = TRUE]
+  /\ UNCHANGED << nodeState, runPhase, graceLeft, leaseOpen, leaseSlot, leaseReason,
+                  podState, podSlot, machinePods, closeClass, closeAgainst,
+                  busy, failedNode, todo, phaseWrites, expectedPhase, handledNodes >>
+
+\* The quiescence fuzzer's deletePod: a spare or swap pod lost out of order,
+\* outside any failure sweep.  Nothing closes the lease — that is the real
+\* (known) eviction-reaper gap, modeled faithfully rather than papered over.
+ExternalDeletePod(p) ==
+  /\ ExternalDeletes
+  /\ ~busy
+  /\ KindOf(p) \in {"Spare", "Swap"}
+  /\ podState[p] \in {"Intent", "Bound"}
+  /\ podState' = [podState EXCEPT ![p] = "Gone"]
+  /\ machinePods' = machinePods \ {p}
+  /\ UNCHANGED << nodeState, runPhase, graceLeft, leaseOpen, leaseSlot, leaseReason,
+                  podSlot, closeClass, closeAgainst, busy, failedNode, todo,
+                  phaseWrites, expectedPhase, handledNodes, dupPodState, dupLeaseOpen >>
 
 Cordon(n) ==
   /\ ~busy
@@ -535,7 +681,7 @@ Cordon(n) ==
   /\ nodeState' = [nodeState EXCEPT ![n] = "Cordoned"]
   /\ UNCHANGED << runPhase, graceLeft, leaseOpen, leaseSlot, leaseReason,
                   podState, podSlot, machinePods, closeClass, closeAgainst,
-                  busy, failedNode, todo, phaseWrites, expectedPhase, handledNodes >>
+                  busy, failedNode, todo, phaseWrites, expectedPhase, handledNodes, dupPodState, dupLeaseOpen >>
 
 MarkNotReady(n) ==
   /\ ~busy
@@ -543,7 +689,7 @@ MarkNotReady(n) ==
   /\ nodeState' = [nodeState EXCEPT ![n] = "NotReady"]
   /\ UNCHANGED << runPhase, graceLeft, leaseOpen, leaseSlot, leaseReason,
                   podState, podSlot, machinePods, closeClass, closeAgainst,
-                  busy, failedNode, todo, phaseWrites, expectedPhase, handledNodes >>
+                  busy, failedNode, todo, phaseWrites, expectedPhase, handledNodes, dupPodState, dupLeaseOpen >>
 
 FenceNode(n) ==
   /\ ~busy
@@ -552,7 +698,7 @@ FenceNode(n) ==
   /\ machinePods' = {p \in machinePods : podSlot[p] = NoSlot \/ SlotNode(podSlot[p]) # n}
   /\ UNCHANGED << runPhase, graceLeft, leaseOpen, leaseSlot, leaseReason,
                   podState, podSlot, closeClass, closeAgainst,
-                  busy, failedNode, todo, phaseWrites, expectedPhase, handledNodes >>
+                  busy, failedNode, todo, phaseWrites, expectedPhase, handledNodes, dupPodState, dupLeaseOpen >>
 
 DeleteNode(n) ==
   /\ ~busy
@@ -561,7 +707,7 @@ DeleteNode(n) ==
   /\ machinePods' = {p \in machinePods : podSlot[p] = NoSlot \/ SlotNode(podSlot[p]) # n}
   /\ UNCHANGED << runPhase, graceLeft, leaseOpen, leaseSlot, leaseReason,
                   podState, podSlot, closeClass, closeAgainst,
-                  busy, failedNode, todo, phaseWrites, expectedPhase, handledNodes >>
+                  busy, failedNode, todo, phaseWrites, expectedPhase, handledNodes, dupPodState, dupLeaseOpen >>
 
 Next ==
   \/ \E n \in Nodes: Cordon(n) \/ MarkNotReady(n) \/ FenceNode(n) \/ DeleteNode(n)
@@ -569,6 +715,8 @@ Next ==
   \/ \E l \in Ids: MintSwap(l)
   \/ \E l \in Ids: DropClosedWorkItem(l) \/ ProcessSpare(l) \/ ProcessActiveSwap(l) \/ ProcessActiveDecline(l) \/ ProcessActiveNoSpare(l)
   \/ FinishFailureSweep
+  \/ \E r \in Runs: TopUpSpare(r)
+  \/ \E l \in Ids: MintSpare(l) \/ MintDupSpare(l) \/ ExternalDeletePod(l)
 
 Spec == Init /\ [][Next]_vars
 
@@ -590,6 +738,8 @@ TypeOK ==
   /\ phaseWrites \in [Runs -> SUBSET RunPhases]
   /\ expectedPhase \in [Runs -> ExpectedPhases]
   /\ handledNodes \subseteq Nodes
+  /\ dupPodState \in [Ids -> PodStates]
+  /\ dupLeaseOpen \in [Ids -> BOOLEAN]
 
 \* R21 / fencing bug class: never two machine-live copies of one rank.
 NoDuplicateRank ==
@@ -640,5 +790,36 @@ PlaneAgreement ==
        /\ podState[p] = "Bound"
        /\ RoleOf(p) = "Active"
        => leaseOpen[p]
+
+\* #91 bug class: a pod name (and therefore a lease name) is owned by at most
+\* one live object.  This is the precondition of the Go oracle's
+\* INV-CLOSED-MONOTONE: two pods, then two open leases, of one name is what a
+\* count-based top-up manufactures under out-of-order spare loss.
+NoDuplicateSpareName ==
+  \A s \in SpareIds:
+    /\ ~(podState[s] # "Gone" /\ dupPodState[s] # "Gone")
+    /\ ~(leaseOpen[s] /\ dupLeaseOpen[s])
+
+\* consumedSpareCount's contract (controllers/run_controller.go:2498-2501): a
+\* spare consumed by a swap is gone for good — its funded capacity now carries
+\* the swapped-in active work — so no live pod and no open lease may ever wear
+\* its name again.
+ConsumedSpareStaysConsumed ==
+  \A s \in SpareIds:
+    leaseReason[s] = "Swap" =>
+      /\ podState[s] = "Gone"
+      /\ dupPodState[s] = "Gone"
+      /\ ~leaseOpen[s]
+
+\* INV-WIDTH-ASSEMBLED-style accounting for the spare plane: live spare pods
+\* (duplicates included) plus swap-consumed spares never exceed the declared
+\* spare width — the base gang's cover funds exactly `declared` spares.
+SpareWidthAccounted ==
+  \A r \in Runs:
+    LET spares == RunSpares(r)
+        live == Cardinality({s \in spares : podState[s] # "Gone"})
+                  + Cardinality({s \in spares : dupPodState[s] # "Gone"})
+        consumed == Cardinality({s \in spares : leaseReason[s] = "Swap"})
+    IN live + consumed <= Cardinality(spares)
 
 =============================================================================
