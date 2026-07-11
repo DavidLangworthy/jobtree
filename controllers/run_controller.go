@@ -153,6 +153,21 @@ func (c *RunController) Reconcile(namespace, name string) error {
 	if run.Status.Phase != RunPhaseFailed {
 		c.closeWorklessSpareLeases(run, now)
 		c.recoverEvictedRanks(run)
+		// A Running gang that dropped BELOW its minimum runnable width and cannot
+		// self-heal — no pod in flight and no open lease for the missing rank to
+		// re-emit from (a node-failure swap pod evicted before it minted, or an evicted
+		// rank whose lease was also gone) — is no longer running. Demote to Pending so
+		// the assembly path re-provisions the missing members (or it waits for
+		// capacity); leaving it Running below width with nothing awaiting a mint is the
+		// INV-WIDTH-ASSEMBLED reaper. recoverEvictedRanks ran just above, so a pod in
+		// flight (activePodGPUs > runnable) means recovery is already under way — only
+		// demote when it is not. Falls through to the assembly path below, not returns.
+		if run.Status.Phase == RunPhaseRunning &&
+			runnableGPUsForRun(key, c.State.Leases) < minRunnableGPUs(run) && !c.awaitingMint(run) {
+			run.Status.Phase = RunPhasePending
+			run.Status.Message = "lost a rank (eviction/node failure) it cannot re-emit; re-assembling"
+			run.Status.Width = summarizeRunWidth(run, c.State.Leases)
+		}
 	}
 
 	// The failure edge (R9 9A-3), BEFORE completion: a terminally Failed active pod
@@ -732,6 +747,37 @@ func (c *RunController) closeWorklessSpareLeases(run *v1.Run, now time.Time) int
 		closed++
 	}
 	return closed
+}
+
+// awaitingMint mirrors the oracle's INV-WIDTH-ASSEMBLED gate (snapshotWorld): a run
+// has a pod in flight ahead of its lease when its active (non-spare) pods OUTNUMBER
+// its open active leases — the ordinary pod-first mint window. A gang below width WITH
+// a pod awaiting a mint is recovering; only one that is NOT is the width reaper the
+// eviction demote must resolve. Counts, not GPU-sums, and no terminating filter —
+// identical to the projection, so the demote fires exactly when the invariant would.
+func (c *RunController) awaitingMint(run *v1.Run) bool {
+	runKey := keys.NamespacedKey(run.Namespace, run.Name)
+	activePods := 0
+	for i := range c.State.Pods {
+		p := &c.State.Pods[i]
+		if p.Labels[binder.LabelRunRole] == binder.RoleSpare {
+			continue
+		}
+		if p.Namespace == run.Namespace && p.Labels[binder.LabelRunName] == run.Name {
+			activePods++
+		}
+	}
+	openLeases := 0
+	for i := range c.State.Leases {
+		l := &c.State.Leases[i]
+		if l.Status.Closed || l.Spec.Slice.Role == binder.RoleSpare {
+			continue
+		}
+		if keys.NamespacedKey(l.Spec.RunRef.Namespace, l.Spec.RunRef.Name) == runKey {
+			openLeases++
+		}
+	}
+	return activePods > openLeases
 }
 
 // activePodGPUs sums the GPUs of a run's active (non-spare) pods, bound or pending.

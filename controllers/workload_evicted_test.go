@@ -5,6 +5,7 @@ import (
 	"time"
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
+	"github.com/davidlangworthy/jobtree/pkg/binder"
 	"github.com/davidlangworthy/jobtree/pkg/keys"
 )
 
@@ -65,5 +66,41 @@ func TestHealthyGangIsNotSeenAsEvicted(t *testing.T) {
 	c := NewRunController(state, runClock{now: now})
 	if detected, _ := c.recoverEvictedRanks(run); detected {
 		t.Fatalf("a full gang (pod GPUs == lease GPUs) was misread as having an evicted member")
+	}
+}
+
+// #90 tail: a Running gang that dropped below its minimum runnable width with NO pod
+// awaiting a mint — a rank fully lost (no lease to re-emit from, no pod in flight),
+// e.g. a node-failure swap that only partly covered the gang — is the
+// INV-WIDTH-ASSEMBLED reaper (Running, missing a rank, every survivor billing). It
+// must demote to Pending so the assembly path re-provisions, not sit Running below
+// width.
+func TestRunningGangBelowMinWithNoMintInFlightReAssembles(t *testing.T) {
+	now := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
+	run := nfRun("job", "org:ai:team", 2, now) // min 2
+	run.Status.Phase = RunPhaseRunning
+	key := keys.NamespacedKey(run.Namespace, run.Name)
+	state := &ClusterState{
+		Nodes:   nodeFailureNodes(),
+		Budgets: []v1.Budget{nfBudget("team", "org:ai:team")},
+		Runs:    map[string]*v1.Run{key: run},
+		Leases: []v1.Lease{ // only ONE of the two ranks survives
+			nfLeaseGroup("m0", "job", "org:ai:team", "team", "0", []string{"node-a#0"}, binder.RoleActive, now),
+		},
+	}
+	mirrorPods(state) // one pod for the one open lease: runnable 1, no pod in flight
+	c := NewRunController(state, runClock{now: now})
+	if got := runnableGPUsForRun(key, state.Leases); got != 1 {
+		t.Fatalf("setup: want runnable 1 of min 2, got %d", got)
+	}
+	if err := c.Reconcile(keys.DefaultNamespace, "job"); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	run = state.Runs[key]
+	if run.Status.Phase == RunPhaseRunning &&
+		runnableGPUsForRun(key, state.Leases) < minRunnableGPUs(run) && !c.awaitingMint(run) {
+		t.Fatalf("a Running gang below its minimum with no pod awaiting a mint is the "+
+			"INV-WIDTH-ASSEMBLED reaper; it must demote/re-assemble, phase=%s runnable=%d",
+			run.Status.Phase, runnableGPUsForRun(key, state.Leases))
 	}
 }

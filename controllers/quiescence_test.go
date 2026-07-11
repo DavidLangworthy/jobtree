@@ -259,18 +259,31 @@ func (w *qWorld) pickNodeWithCapacity(gpus int) string {
 	return free[w.rng.Intn(len(free))]
 }
 
-// NOTE: an EXTERNAL pod-deletion event (drain / eviction / preemption / GC) is a
-// legal thing the real world does. The engine now RECOVERS it — recoverEvictedRanks
-// re-emits an evicted active rank in place from its still-open lease, and
-// closeWorklessSpareLeases reaps an evicted spare (#90), both pinned by the
-// TestEvicted* unit tests. Wiring `w.deletePod()` into step() as case 10 is the
-// exhaustive proof, but the fuzzer still reaches an EXOTIC tail the core recovery
-// does not yet cover: a node-failure SWAP pod evicted BEFORE it mints, combined with
-// every node deleted, leaves a run Running with zero open leases and zero pods —
-// nothing to re-emit FROM — which refutes INV-WIDTH-ASSEMBLED (not the workless-lease
-// reaper #90 fixes). Closing that tail (a run that loses ALL its ranks must
-// re-assemble or fail, not sit Running-empty) is tracked on #90; the deletePod event
-// re-enables here once it lands, and the driver proves the whole thing at once.
+// deletePod is an EXTERNAL pod deletion — a node drain, an eviction, a preemption
+// by another scheduler, or GC of a finished pod. The kube API can make a pod vanish
+// out from under a run at any time; the controller repairs it (recoverEvictedRanks
+// re-emits an evicted active rank from its still-open lease; closeWorklessSpareLeases
+// reaps an evicted spare; a gang that lost every rank demotes to Pending — #90). This
+// event is the whole reason the eviction reaper stayed hidden behind 800 green seeds:
+// the driver could not delete a pod. Delete one, reconcile its run, and let the
+// oracle judge the repaired state.
+func (w *qWorld) deletePod() {
+	if len(w.state.Pods) == 0 {
+		return
+	}
+	idx := w.rng.Intn(len(w.state.Pods))
+	pod := w.state.Pods[idx]
+	w.state.Pods = append(w.state.Pods[:idx], w.state.Pods[idx+1:]...)
+	w.logf("external delete pod %s (run=%s group=%s role=%s)", pod.Name,
+		pod.Labels[binder.LabelRunName], pod.Labels[binder.LabelGroupIndex], pod.Labels[binder.LabelRunRole])
+	key := keys.NamespacedKey(pod.Namespace, pod.Labels[binder.LabelRunName])
+	if run := w.state.Runs[key]; run != nil {
+		if err := w.c.Reconcile(run.Namespace, run.Name); err != nil {
+			w.logf("  reconcile after eviction -> %v", err)
+		}
+	}
+}
+
 func qBudgetFor(owner string) string {
 	if owner == qOwnerAlpha {
 		return "alpha"
