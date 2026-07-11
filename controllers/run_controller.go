@@ -2287,16 +2287,28 @@ func (c *RunController) emitSparePods(run *v1.Run, packPlan pack.Plan, gpusPerPo
 		return 0
 	}
 	placements := sparePlacements(packPlan, gpusPerPod)
-	existing := 0
+	// Presence is keyed by pod NAME, not a raw count of surviving spares — the same
+	// fix emitCohortPods carries for the active cohort (R2), which the spare path
+	// never got (#91). A count-based scan re-emits indices `existing..count`, so a
+	// spare that went missing OUT OF ORDER (an eviction, or removeSparePodOnNodes
+	// closing the wrong sibling when two spares share a group/node) makes it rebuild
+	// an index a survivor still owns: two pods, then two leases, of one name — which
+	// CheckTransition reads as a closure-reason rewrite (INV-CLOSED-MONOTONE). Fill
+	// only the genuinely-missing indices instead.
+	present := make(map[string]bool, count)
 	for i := range c.State.Pods {
 		p := &c.State.Pods[i]
 		if p.Namespace == run.Namespace && p.Labels[binder.LabelRunName] == run.Name &&
 			p.Labels[binder.LabelRunRole] == binder.RoleSpare {
-			existing++
+			present[p.Name] = true
 		}
 	}
 	created := 0
-	for i := existing; i < count; i++ {
+	for i := 0; i < count; i++ {
+		name := sparePodName(run, i)
+		if present[name] {
+			continue
+		}
 		node := ""
 		// A spare belongs to the group it covers: that is how findSpareLease pairs it
 		// with the rank it will replace.
@@ -2317,7 +2329,7 @@ func (c *RunController) emitSparePods(run *v1.Run, packPlan pack.Plan, gpusPerPo
 		}
 		c.State.Pods = append(c.State.Pods, binder.PodManifest{
 			Namespace: run.Namespace,
-			Name:      fmt.Sprintf("%s-spare-%d", run.Name, i),
+			Name:      name,
 			NodeName:  node, // advisory only; the bridge turns this into soft affinity
 			GPUs:      gpusPerPod,
 			Labels: map[string]string{
@@ -2329,6 +2341,13 @@ func (c *RunController) emitSparePods(run *v1.Run, packPlan pack.Plan, gpusPerPo
 		})
 	}
 	return created
+}
+
+// sparePodName is the deterministic name of a run's i-th spare intent pod — the
+// spare counterpart of cohortPodName. Presence in emitSparePods is keyed by it so a
+// top-up never rebuilds an index a surviving spare still owns (#91).
+func sparePodName(run *v1.Run, i int) string {
+	return fmt.Sprintf("%s-spare-%d", run.Name, i)
 }
 
 // consumedSpareCount is how many of a run's spares have been promoted by a
