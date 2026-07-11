@@ -160,7 +160,13 @@ func waitForRunPhase(t *testing.T, name, phase string) *v1.Run {
 	t.Helper()
 	var run v1.Run
 	// A phase that never arrives says nothing about why. Dump the ledger on the way
-	// out, so the next occurrence of task #39 is evidence rather than a timeout.
+	// out, so the next occurrence of task #39 is evidence rather than a timeout. That
+	// task's one CI timeout was investigated (correctness closeout Phase 3) and NOT
+	// reproduced: 60 stress runs under -race, incl. GOMAXPROCS=2, zero hangs; the real
+	// Pending->Running latency is ~0.7-0.9s, a ~35-40x margin under this 30s bound. It
+	// reads as a transient shared-runner stall, not a jobtree deadlock. The richer dump
+	// below is so a recurrence can distinguish "lease present, run not adopted" (a real
+	// bug) from "no lease / no reconcile" (infra) — do not just bump the timeout.
 	reached := false
 	defer func() {
 		if !reached {
@@ -331,6 +337,19 @@ func seedPluginLeases(t *testing.T, runName string) []v1.Lease {
 // from inside that unwind would replace the real failure with a confusing one.
 func dumpRunLedger(t *testing.T, runName string) {
 	t.Helper()
+
+	// The run's OWN status first: on a phase timeout (task #39) the diagnostic
+	// question is "did a reconcile fire but not count a lease?" vs "did no reconcile
+	// fire?". Logging the run's Phase/Message/Width beside the lease list below makes
+	// that distinguishable — a lease present here while the run still reports the
+	// pre-lease "scheduling N GPUs" message is the former (a real adoption bug); an
+	// empty lease list is the latter (nothing minted yet / no reconcile).
+	var run v1.Run
+	if err := kubeClient.Get(suiteCtx, types.NamespacedName{Namespace: "default", Name: runName}, &run); err == nil {
+		t.Logf("run %s: phase=%q message=%q width=%+v", runName, run.Status.Phase, run.Status.Message, run.Status.Width)
+	} else {
+		t.Logf("run %s: cannot get run: %v", runName, err)
+	}
 
 	var leases v1.LeaseList
 	if err := kubeClient.List(suiteCtx, &leases, client.MatchingLabels{binder.LabelRunName: runName}); err != nil {
