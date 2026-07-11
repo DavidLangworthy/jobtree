@@ -254,6 +254,30 @@ func PodLeaseWithRole(run *v1.Run, seg cover.Segment, node string, gpusPerPod in
 	}
 }
 
+// StampGangIdentity records durable gang identity on a freshly-minted lease: the
+// admission cohort it belongs to (base gang "0", or an elastic-grow step) and the
+// exact pod it funds. Without this a Lease carries no cohort and no pod name, so
+// gang membership after a scheduler restart is recoverable only by string-parsing
+// the lease name (lossy under the ABA nonce). The sole committer stamps it at mint
+// so restart reconstruction (R2 pt3) and a staleness-robust cache fold (R4 pt1b) can
+// key gang identity off the lease itself. One function so the plugin and its test
+// simulator cannot drift.
+func StampGangIdentity(lease *v1.Lease, cohort, podName string) {
+	if cohort == "" {
+		cohort = "0"
+	}
+	if lease.Labels == nil {
+		lease.Labels = map[string]string{}
+	}
+	lease.Labels[binder.LabelCohort] = cohort
+	if podName != "" {
+		if lease.Annotations == nil {
+			lease.Annotations = map[string]string{}
+		}
+		lease.Annotations[binder.AnnotationPodName] = podName
+	}
+}
+
 // --- helpers moved from controllers/run_controller.go (admission-only) ---
 
 func planPlacement(run *v1.Run, snapshot *topology.Snapshot, totalGPUs, spares int) (pack.Plan, error) {

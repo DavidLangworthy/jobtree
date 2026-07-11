@@ -17,6 +17,14 @@ const (
 	LabelGroupIndex = "rq.davidlangworthy.io/group-index"
 	// LabelRunRole marks whether a pod is active or a spare.
 	LabelRunRole = "rq.davidlangworthy.io/role"
+	// LabelCohort records, on the minted LEASE, the admission cohort the pod
+	// belonged to (base gang "0", or an elastic-grow step). Until this, a Lease
+	// carried no cohort — LeaseReasonGrow was the only (indirect) proxy — so gang
+	// membership after a scheduler restart could only be recovered by string-parsing
+	// the lease name. The sole committer stamps it at mint so restart reconstruction
+	// (R2 pt3) and a staleness-robust cache fold (R4 pt1b) can key gang identity off
+	// the lease itself.
+	LabelCohort = "rq.davidlangworthy.io/cohort"
 )
 
 // Lease roles are facts about the slice (R15): Active work versus held
@@ -53,6 +61,12 @@ const (
 	// so a grow funds its delta incrementally on top of the base leases rather
 	// than re-gating the already-bound base gang.
 	AnnotationCohort = "rq.davidlangworthy.io/cohort"
+	// AnnotationPodName records, on the minted LEASE, the exact pod it was minted
+	// for. A lease's name is <pod>[-<nonce>]-lease, so the pod is recoverable only by
+	// string-parsing (and the nonce makes that lossy). The sole committer stamps the
+	// pod name durably so restart reconstruction can map a lease back to its gang
+	// member without parsing (R2 pt3).
+	AnnotationPodName = "rq.davidlangworthy.io/pod-name"
 	// AnnotationSwapNode pins a node-failure SWAP pod to the specific spare node
 	// the controller reclaimed for it (a required placement, not the soft
 	// advisory hint normal pods carry): a swap must land on that held capacity.
@@ -97,6 +111,22 @@ const (
 	// while staying deterministic across PreBind retries of the same one.
 	AnnotationRunNonce = "rq.davidlangworthy.io/run-nonce"
 )
+
+// LeaseCohort is the admission cohort a lease was minted for — the base gang is the
+// literal "0" (an unstamped legacy lease, and an absent label, both read as "0"), an
+// elastic-grow step its own number. Stamped by admission.StampGangIdentity at mint so
+// gang membership is recoverable from the lease (R2 pt3 / R4 pt1b).
+func LeaseCohort(lease *v1.Lease) string {
+	if c := lease.Labels[LabelCohort]; c != "" {
+		return c
+	}
+	return "0"
+}
+
+// LeasePodName is the pod a lease was minted for, or "" on an unstamped legacy lease.
+func LeasePodName(lease *v1.Lease) string {
+	return lease.Annotations[AnnotationPodName]
+}
 
 // Request gathers the context required to materialize pods and leases for a Run.
 type Request struct {
