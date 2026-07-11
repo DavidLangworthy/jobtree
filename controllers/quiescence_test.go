@@ -260,15 +260,17 @@ func (w *qWorld) pickNodeWithCapacity(gpus int) string {
 }
 
 // NOTE: an EXTERNAL pod-deletion event (drain / eviction / preemption / GC) is a
-// legal thing the real world does and this driver deliberately does NOT yet do —
-// wiring it in refutes INV-LEASE-HAS-POD today, because a Running run whose active
-// pod is evicted on a healthy node is never repaired (topUpActiveGang runs only on
-// pre-Running assembly, 9A-3 Retry of a *Failed* pod, and reservation activation —
-// never on a Running run's externally-lost pod). The lease then bills a budget for
-// a pod that no longer exists. That reconciliation gap is tracked as its own task;
-// the eviction event lands together with the engine fix that closes it, so the
-// driver goes from "cannot reach the state" straight to "reaches it and it is
-// legal because the engine now repairs it".
+// legal thing the real world does. The engine now RECOVERS it — recoverEvictedRanks
+// re-emits an evicted active rank in place from its still-open lease, and
+// closeWorklessSpareLeases reaps an evicted spare (#90), both pinned by the
+// TestEvicted* unit tests. Wiring `w.deletePod()` into step() as case 10 is the
+// exhaustive proof, but the fuzzer still reaches an EXOTIC tail the core recovery
+// does not yet cover: a node-failure SWAP pod evicted BEFORE it mints, combined with
+// every node deleted, leaves a run Running with zero open leases and zero pods —
+// nothing to re-emit FROM — which refutes INV-WIDTH-ASSEMBLED (not the workless-lease
+// reaper #90 fixes). Closing that tail (a run that loses ALL its ranks must
+// re-assemble or fail, not sit Running-empty) is tracked on #90; the deletePod event
+// re-enables here once it lands, and the driver proves the whole thing at once.
 func qBudgetFor(owner string) string {
 	if owner == qOwnerAlpha {
 		return "alpha"

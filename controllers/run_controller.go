@@ -139,6 +139,22 @@ func (c *RunController) Reconcile(namespace, name string) error {
 
 	now := c.Clock.Now()
 
+	// The eviction edge (#90), for any non-terminal run and BEFORE the phase logic: a
+	// pod externally deleted (drain / eviction / preemption / GC — GONE, not Failed)
+	// leaves an open lease with no container, billing a budget for nothing. Reap a
+	// workless SPARE lease (a spare is not re-provisioned — losing it is degraded
+	// fault-tolerance, not a stalled gang), and re-emit an evicted ACTIVE rank in place
+	// from its still-open lease (GPU-sum, lease-relative — malleable-aware and
+	// granularity-agnostic). No early return and no phase gate: this only tops up the
+	// pod plane, so a member lost in ANY phase (assembling, adopted, running) is
+	// restored before the completion gate below can mistake it for a finished one, and
+	// the assembly/adoption logic then runs on a consistent world. RunPhaseComplete
+	// already returned above; a Failed run's planes are the release path's.
+	if run.Status.Phase != RunPhaseFailed {
+		c.closeWorklessSpareLeases(run, now)
+		c.recoverEvictedRanks(run)
+	}
+
 	// The failure edge (R9 9A-3), BEFORE completion: a terminally Failed active pod
 	// means the gang cannot just "complete", and under the default Fail policy the
 	// run must fail and stop charging its budget rather than hang Running forever.
@@ -648,6 +664,89 @@ func (c *RunController) handleWorkloadFailure(run *v1.Run, now time.Time) (handl
 	// Fail (default), or Retry exhausted.
 	c.failWorkload(run, fmt.Sprintf("active pod %s terminally failed; failing the gang", failed.Name), now)
 	return true, "failed"
+}
+
+// recoverEvictedRanks re-emits a Running gang's active members whose pods were
+// EXTERNALLY deleted — a node drain, an eviction, a preemption, GC — as distinct
+// from a pod that FAILED (handleWorkloadFailure, a crash) or a NODE that was deleted
+// (HandleNodeFailure). The signal is GPU-sum, LEASE-RELATIVE: the run's open active
+// leases (its CURRENT allocation — so this is malleable-aware for free) cover more
+// GPUs than its active pods do, which means a rank's container is gone while its
+// lease stays open, billing a budget for a pod that no longer exists.
+//
+// GPU-sum, never pod-object COUNT: a pod legitimately carries many GPUs
+// (chunk-granular), and intentPodShape's "width" is a 1-pod-per-GPU count, so a
+// count comparison false-fires on every chunk-granular or multi-slot fixture. The
+// GPU-sum sign is also the right one: during the ordinary mint window pods precede
+// their leases (pod-GPUs >= lease-GPUs), and a malleable shrink drops both planes
+// together (#59) — only an eviction leaves lease-GPUs > pod-GPUs.
+//
+// Recovery is IN-PLACE: topUpActiveGang re-emits the missing rank through the same
+// emitCohortPods path the base gang uses (emitIntentPods), recovering provenance
+// from the still-open lease and re-minting it idempotently under the same
+// deterministic name — NO lease is closed. Eviction is a displacement, not a crash.
+// The caller runs this BEFORE the completion gate so an evicted member is never
+// mistaken for a finished one (runGangComplete counts only the pods present).
+// Returns (detected, podsEmitted).
+func (c *RunController) recoverEvictedRanks(run *v1.Run) (detected bool, created int) {
+	runKey := keys.NamespacedKey(run.Namespace, run.Name)
+	if runnableGPUsForRun(runKey, c.State.Leases) <= c.activePodGPUs(run) {
+		return false, 0 // every open active lease still has its container
+	}
+	return true, c.topUpActiveGang(run)
+}
+
+// closeWorklessSpareLeases closes a non-terminal run's open SPARE leases whose held
+// pod was externally deleted (drain / eviction / GC). An open lease with no container
+// bills for nothing; but a SPARE — unlike an active rank (recoverEvictedRanks) — is
+// not re-provisioned here: it exists only to cover a future node failure, so losing
+// it is a degraded-fault-tolerance loss, not a stalled gang, and the assembly path
+// re-holds one when the plan still wants it and capacity allows. Detected GPU-sum
+// (open spare-lease GPUs > spare-pod GPUs) so a spare that still has its pod is never
+// closed; the mint window is pod-first, so an open spare lease always had a pod.
+// Returns the leases closed.
+func (c *RunController) closeWorklessSpareLeases(run *v1.Run, now time.Time) int {
+	runKey := keys.NamespacedKey(run.Namespace, run.Name)
+	budget := 0
+	for i := range c.State.Pods {
+		p := &c.State.Pods[i]
+		if p.Namespace == run.Namespace && p.Labels[binder.LabelRunName] == run.Name &&
+			p.Labels[binder.LabelRunRole] == binder.RoleSpare {
+			budget += p.GPUs
+		}
+	}
+	closed := 0
+	for i := range c.State.Leases {
+		l := &c.State.Leases[i]
+		if l.Status.Closed || l.Spec.Slice.Role != binder.RoleSpare {
+			continue
+		}
+		if keys.NamespacedKey(l.Spec.RunRef.Namespace, l.Spec.RunRef.Name) != runKey {
+			continue
+		}
+		if budget >= len(l.Spec.Slice.Nodes) {
+			budget -= len(l.Spec.Slice.Nodes) // a surviving spare pod still covers this lease
+			continue
+		}
+		CloseLease(l, "WorkloadEvicted", now)
+		closed++
+	}
+	return closed
+}
+
+// activePodGPUs sums the GPUs of a run's active (non-spare) pods, bound or pending.
+func (c *RunController) activePodGPUs(run *v1.Run) int {
+	total := 0
+	for i := range c.State.Pods {
+		p := &c.State.Pods[i]
+		if p.Namespace != run.Namespace || p.Labels[binder.LabelRunName] != run.Name {
+			continue
+		}
+		if p.Labels[binder.LabelRunRole] != binder.RoleSpare {
+			total += p.GPUs
+		}
+	}
+	return total
 }
 
 // failWorkload drives the failure edge (R9 9A-3): terminal Failed, close the run's
