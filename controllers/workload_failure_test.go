@@ -38,7 +38,7 @@ func roledFailureWorld(policy string, retries int32, phases []string) (*ClusterS
 				Slice: v1.LeaseSlice{Nodes: []string{node + "#0"}, Role: binder.RoleActive}},
 		})
 		state.Pods = append(state.Pods, binder.PodManifest{
-			Namespace: keys.DefaultNamespace, Name: name, NodeName: node, Phase: phase,
+			Namespace: keys.DefaultNamespace, Name: name, NodeName: node, Phase: phase, GPUs: 1,
 			Labels: map[string]string{binder.LabelRunName: "job", binder.LabelGroupIndex: "0", binder.LabelRunRole: binder.RoleActive},
 		})
 	}

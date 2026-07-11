@@ -36,7 +36,7 @@ func completionWorld(activePhases []string, sparePhase string) (*ClusterState, s
 	}
 	mkPod := func(name, role, phase string) binder.PodManifest {
 		return binder.PodManifest{
-			Namespace: keys.DefaultNamespace, Name: name, Phase: phase,
+			Namespace: keys.DefaultNamespace, Name: name, Phase: phase, GPUs: 1,
 			Labels: map[string]string{binder.LabelRunName: "job", binder.LabelGroupIndex: "0", binder.LabelRunRole: role},
 		}
 	}

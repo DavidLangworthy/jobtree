@@ -22,11 +22,14 @@ func TestCompleteCommandFinishesRunAndClosesLeases(t *testing.T) {
 		Status:     v1.RunStatus{Phase: "Running"},
 	}
 	lease := v1.Lease{
-		ObjectMeta: v1.ObjectMeta{Namespace: "default", Name: "job-lease", Labels: map[string]string{binder.LabelRunName: "job"}},
+		ObjectMeta: v1.ObjectMeta{Namespace: "default", Name: "job-lease",
+			// A real minted lease names its placement group (R28) — a group-less open
+			// lease is the INV-GROUP-STAMPED reaper on its own.
+			Labels: map[string]string{binder.LabelRunName: "job", binder.LabelGroupIndex: "0", binder.LabelRunRole: binder.RoleActive}},
 		Spec: v1.LeaseSpec{
 			Owner:  "org:team",
 			RunRef: v1.RunReference{Name: "job", Namespace: "default"},
-			Slice:  v1.LeaseSlice{Nodes: []string{"node-a#0"}, Role: binder.RoleActive},
+			Slice:  v1.LeaseSlice{Nodes: []string{"node-a#0", "node-a#1", "node-a#2", "node-a#3"}, Role: binder.RoleActive},
 		},
 	}
 	state := &controllers.ClusterState{
@@ -34,8 +37,10 @@ func TestCompleteCommandFinishesRunAndClosesLeases(t *testing.T) {
 		Reservations: map[string]*v1.Reservation{},
 		Leases:       []v1.Lease{lease},
 		Pods: []binder.PodManifest{{
-			Namespace: "default", Name: "job-p0", Phase: "Running",
-			Labels: map[string]string{binder.LabelRunName: "job", binder.LabelRunRole: binder.RoleActive},
+			// A real Running gang's pod carries its GPUs and its group; a healthy run
+			// covers its width so the eviction edge (#90) sees nothing missing.
+			Namespace: "default", Name: "job-p0", Phase: "Running", GPUs: 4,
+			Labels: map[string]string{binder.LabelRunName: "job", binder.LabelGroupIndex: "0", binder.LabelRunRole: binder.RoleActive},
 		}},
 	}
 	if err := store.Save(statePath, state); err != nil {

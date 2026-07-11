@@ -259,16 +259,31 @@ func (w *qWorld) pickNodeWithCapacity(gpus int) string {
 	return free[w.rng.Intn(len(free))]
 }
 
-// NOTE: an EXTERNAL pod-deletion event (drain / eviction / preemption / GC) is a
-// legal thing the real world does and this driver deliberately does NOT yet do —
-// wiring it in refutes INV-LEASE-HAS-POD today, because a Running run whose active
-// pod is evicted on a healthy node is never repaired (topUpActiveGang runs only on
-// pre-Running assembly, 9A-3 Retry of a *Failed* pod, and reservation activation —
-// never on a Running run's externally-lost pod). The lease then bills a budget for
-// a pod that no longer exists. That reconciliation gap is tracked as its own task;
-// the eviction event lands together with the engine fix that closes it, so the
-// driver goes from "cannot reach the state" straight to "reaches it and it is
-// legal because the engine now repairs it".
+// deletePod is an EXTERNAL pod deletion — a node drain, an eviction, a preemption
+// by another scheduler, or GC of a finished pod. The kube API can make a pod vanish
+// out from under a run at any time; the controller repairs it (recoverEvictedRanks
+// re-emits an evicted active rank from its still-open lease; closeWorklessSpareLeases
+// reaps an evicted spare; a gang that lost every rank demotes to Pending — #90). This
+// event is the whole reason the eviction reaper stayed hidden behind 800 green seeds:
+// the driver could not delete a pod. Delete one, reconcile its run, and let the
+// oracle judge the repaired state.
+func (w *qWorld) deletePod() {
+	if len(w.state.Pods) == 0 {
+		return
+	}
+	idx := w.rng.Intn(len(w.state.Pods))
+	pod := w.state.Pods[idx]
+	w.state.Pods = append(w.state.Pods[:idx], w.state.Pods[idx+1:]...)
+	w.logf("external delete pod %s (run=%s group=%s role=%s)", pod.Name,
+		pod.Labels[binder.LabelRunName], pod.Labels[binder.LabelGroupIndex], pod.Labels[binder.LabelRunRole])
+	key := keys.NamespacedKey(pod.Namespace, pod.Labels[binder.LabelRunName])
+	if run := w.state.Runs[key]; run != nil {
+		if err := w.c.Reconcile(run.Namespace, run.Name); err != nil {
+			w.logf("  reconcile after eviction -> %v", err)
+		}
+	}
+}
+
 func qBudgetFor(owner string) string {
 	if owner == qOwnerAlpha {
 		return "alpha"
