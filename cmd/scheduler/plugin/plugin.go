@@ -311,6 +311,10 @@ func (j *JobTree) PreBind(ctx context.Context, _ fwk.CycleState, pod *corev1.Pod
 		leaseName = pod.Name + "-" + nonce + "-lease"
 	}
 	lease := admission.PodLeaseWithRole(run, seg, nodeName, gpusPerPod, leaseName, time.Now().UTC(), pod.Annotations[binder.AnnotationLeaseReason], role, groupIndex)
+	// Durable gang identity on the lease (R2 pt3 / R4 pt1b foundation): the cohort it
+	// belongs to and the exact pod it funds, so a scheduler restart can rebuild gang
+	// membership from the leases alone rather than string-parsing the lease name.
+	admission.StampGangIdentity(&lease, cohortOf(pod), pod.Name)
 	if err := j.client.Create(ctx, &lease); err != nil && !apierrors.IsAlreadyExists(err) {
 		return fwk.NewStatus(fwk.Error, fmt.Sprintf("jobtree: mint lease for %s: %v", pod.Name, err))
 	}

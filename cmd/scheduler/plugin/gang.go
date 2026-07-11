@@ -97,10 +97,20 @@ func newGangManager(reader client.Reader, clock func() time.Time) *gangManager {
 // independent gangs that assemble and fund separately.
 func gangKey(pod *corev1.Pod) string {
 	k := keys.NamespacedKey(pod.Namespace, pod.Labels[binder.LabelRunName])
-	if c := pod.Annotations[binder.AnnotationCohort]; c != "" && c != "0" {
+	if c := cohortOf(pod); c != "0" {
 		return k + "#" + c
 	}
 	return k
+}
+
+// cohortOf is a pod's admission cohort, normalized so the base gang is always the
+// literal "0" (an absent annotation and "0" are the same cohort). The plugin stamps
+// this onto the minted lease so gang membership is recoverable from the lease.
+func cohortOf(pod *corev1.Pod) string {
+	if c := pod.Annotations[binder.AnnotationCohort]; c != "" {
+		return c
+	}
+	return "0"
 }
 
 // isGrowCohort reports whether the pod belongs to an elastic-grow cohort (funded
