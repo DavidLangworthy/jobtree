@@ -198,7 +198,16 @@ func (w *qWorld) mintPending() {
 		}
 		node := pod.NodeName
 		if node == "" {
-			node = qNodes()[w.rng.Intn(3)].Name
+			// The real scheduler's NodeResourcesFit filter binds a pod only to a
+			// node with the GPUs free. A uniformly random pick over the STATIC node
+			// list fabricated the impossible — an oversubscribed node, or a node
+			// already deleted — in a large fraction of states, and a generator that
+			// lies finds nothing but its own lies. Pick a live node with room, or
+			// leave the pod Pending (Unschedulable), exactly as PreBind would.
+			node = w.pickNodeWithCapacity(pod.GPUs)
+			if node == "" {
+				continue
+			}
 		}
 		seg := cover.Segment{
 			Owner:        pod.Annotations[binder.AnnotationPayerOwner],
@@ -223,6 +232,43 @@ func (w *qWorld) mintPending() {
 	}
 }
 
+// pickNodeWithCapacity chooses a live node whose free GPUs (capacity minus the
+// GPUs already claimed by open leases on it) can hold `gpus`, or "" when none can
+// — the scheduler's fit filter, modelled. Occupancy is counted per node from open
+// leases' slots, which is faithful to how the plugin lays chunk-local slots down.
+func (w *qWorld) pickNodeWithCapacity(gpus int) string {
+	used := map[string]int{}
+	for i := range w.state.Leases {
+		l := &w.state.Leases[i]
+		if l.Status.Closed {
+			continue
+		}
+		for _, slot := range l.Spec.Slice.Nodes {
+			used[nodeFromSlot(slot)]++
+		}
+	}
+	var free []string
+	for _, n := range w.state.Nodes {
+		if int(n.GPUs)-used[n.Name] >= gpus {
+			free = append(free, n.Name)
+		}
+	}
+	if len(free) == 0 {
+		return ""
+	}
+	return free[w.rng.Intn(len(free))]
+}
+
+// NOTE: an EXTERNAL pod-deletion event (drain / eviction / preemption / GC) is a
+// legal thing the real world does and this driver deliberately does NOT yet do —
+// wiring it in refutes INV-LEASE-HAS-POD today, because a Running run whose active
+// pod is evicted on a healthy node is never repaired (topUpActiveGang runs only on
+// pre-Running assembly, 9A-3 Retry of a *Failed* pod, and reservation activation —
+// never on a Running run's externally-lost pod). The lease then bills a budget for
+// a pod that no longer exists. That reconciliation gap is tracked as its own task;
+// the eviction event lands together with the engine fix that closes it, so the
+// driver goes from "cannot reach the state" straight to "reaches it and it is
+// legal because the engine now repairs it".
 func qBudgetFor(owner string) string {
 	if owner == qOwnerAlpha {
 		return "alpha"
@@ -339,7 +385,7 @@ func (w *qWorld) fail(format string, args ...any) {
 
 // step applies one randomly chosen legal event and asserts the oracle after it.
 func (w *qWorld) step() {
-	switch w.rng.Intn(10) {
+	switch w.rng.Intn(11) {
 	case 0, 1:
 		w.submitRun()
 	case 2, 3, 4:
@@ -352,7 +398,7 @@ func (w *qWorld) step() {
 		w.succeedPods()
 	case 8:
 		w.tightenBudget()
-	case 9:
+	case 9, 10:
 		d := []time.Duration{time.Minute, 5 * time.Minute, 20 * time.Minute}[w.rng.Intn(3)]
 		w.tick(d)
 		w.logf("clock +%s", d)

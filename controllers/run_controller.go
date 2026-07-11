@@ -1470,8 +1470,34 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 			}
 			otherKey := keys.NamespacedKey(other.Spec.RunRef.Namespace, other.Spec.RunRef.Name)
 			if otherKey == runKey {
-				// Our own stale lease on the spare's slots: safe to clear.
+				// Our own stale lease on the spare's slots. Clearing it must move
+				// BOTH planes: close the lease AND drop the pod holding the slot, or
+				// the pod is stranded on the swap target — it keeps its real
+				// nvidia.com/gpu claim, and the swap pod (hard-pinned to this node)
+				// can never bind, while INV-LEASE-HAS-POD stays green because it is
+				// coarse (the run still has other pods). That is the same half-plane
+				// reclaimSquatter was built to avoid, on the same-run door.
+				//
+				// The pod plane addresses NODES, not slots (chunk-local ordinals mean
+				// two same-run leases can share a slot STRING on physically distinct
+				// GPUs — this is how the branch is even reachable). So dropping the
+				// node's pods is only safe when no OTHER open same-run lease shares
+				// the node; if one does, its container is a sibling's and not ours to
+				// delete. Fail closed exactly as reclaimSquatter does: drop the pod
+				// only when provably safe, else close the lease alone (no worse than
+				// before, never evicting a sibling's live rank).
+				nodes := nodesOfSlots(other.Spec.Slice.Nodes)
+				podDropSafe := true
+				for _, d := range c.openRunLeasesOnNodes(runKey, nodes) {
+					if d != other && d != spareLease && d != lease {
+						podDropSafe = false
+						break
+					}
+				}
 				CloseLease(other, "ReclaimedBySpare", now)
+				if podDropSafe {
+					c.removeRunPodsOnNodes(runKey, nodes)
+				}
 				continue
 			}
 			// Another run holds the exact slots the swap needs. Whether we may take
@@ -2740,27 +2766,21 @@ func groupGPUsFor(run *v1.Run) int {
 	return expectedActiveGPUs(run)
 }
 
-// groupSizesFor mirrors pack.deriveGroups: consecutive groups of groupGPUs, the last
-// possibly short. It is duplicated here rather than exported from pkg/pack because
-// this side must answer the question WITHOUT a plan — topUpActiveGang re-emits a lost
-// pod long after the plan that placed it is gone, and the group it stamps must match
-// the one the packer chose. The two are pinned together by a test.
+// groupSizesFor is the run's active GPUs laid into fast-fabric groups — the same
+// layout the packer produces, because it calls the packer's own pack.DeriveGroups.
+// topUpActiveGang re-emits a lost pod long after the plan that placed it is gone,
+// and the group it stamps must match the one the packer chose; sharing one function
+// is what guarantees it (they used to be two copies — R27 #61).
 func groupSizesFor(run *v1.Run) []int {
 	total := expectedActiveGPUs(run)
 	size := groupGPUsFor(run)
 	if total <= 0 || size <= 0 {
 		return nil
 	}
-	var sizes []int
-	for remaining := total; remaining > 0; {
-		n := size
-		if n > remaining {
-			n = remaining
-		}
-		sizes = append(sizes, n)
-		remaining -= n
-	}
-	return sizes
+	// One grouping rule, in pkg/pack. This side used to carry a copy so it could
+	// answer without a plan, but pack.DeriveGroups needs no plan either — total and
+	// size are all it takes — so the copy was pure drift risk (R27 #61). Delegate.
+	return pack.DeriveGroups(total, &size)
 }
 
 // groupIndexForPodIndex answers "which group does the i-th pod of the base gang
@@ -3008,12 +3028,18 @@ func (c *RunController) shrinkRun(run *v1.Run, target int32, ev *funding.Evaluat
 		removed[strconv.Itoa(grp.Index)] = struct{}{}
 	}
 
-	if current-freed > target {
-		return fmt.Errorf("insufficient groups available to reach target width")
-	}
-
+	// Both planes drop together. The pods of any group whose leases we closed
+	// must go with them, even when we FALL SHORT of the exact target: returning
+	// the shortfall error before removing them stranded the closed groups' pods —
+	// the ledger freed the GPUs (leases closed) while the containers kept holding
+	// them. That is the same half-plane class as the SwapDeclined fix, a different
+	// door. Remove first, then report the shortfall.
 	if len(removed) > 0 {
 		c.removePodsForGroups(runKey, removed)
+	}
+
+	if current-freed > target {
+		return fmt.Errorf("insufficient groups available to reach target width")
 	}
 	return nil
 }

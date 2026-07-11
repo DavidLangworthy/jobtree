@@ -2,9 +2,26 @@ package controllers
 
 import (
 	"strings"
+	"testing"
 
 	"github.com/davidlangworthy/jobtree/pkg/binder"
+	"github.com/davidlangworthy/jobtree/pkg/invariant"
 )
+
+// assertSteady backstops an engine-path unit test with the oracle: after the
+// specific outcome a test asserts, the resulting state must ALSO be one the
+// invariants call legal. A test that checks only the outcome it expected is blind
+// to the state it did not — the reaper that survives is the one nobody thought to
+// assert against. This is the CheckSteady projection (INV-LEASE-HAS-POD,
+// INV-TERMINAL-NO-PODS, INV-WIDTH-ASSEMBLED, INV-GROUP-STAMPED, …), the same one
+// the bridge runs on every engine return, applied at the end of a unit test that
+// drives applyResolution / a swap / a release directly. (R27 #61 pt4.)
+func assertSteady(t *testing.T, c *RunController, context string) {
+	t.Helper()
+	for _, v := range invariant.CheckSteady(c.snapshotWorld()) {
+		t.Errorf("%s left an illegal state the outcome assertions missed: %s: %s", context, v.ID, v.Detail)
+	}
+}
 
 // mirrorPods gives a lease-only fixture the workload plane it would really have.
 //

@@ -152,6 +152,20 @@ func (b *Bridge) reportSweep(ctx context.Context, sweep controllers.Sweep, snap 
 		log.Info("settle sweep dropped a terminal run's pods", "count", sweep.Pods)
 	}
 
+	// A Shirked closure is fail-loud under test on purpose: a terminal run holding
+	// an open lease almost always means a path made the run terminal without calling
+	// releaseRun, and its own test passed anyway — the exact failure pkg/invariant
+	// exists to end. There is ONE known benign trigger: a mint-after-terminal race,
+	// where a pod already in the kube-scheduler's PreBind window mints its lease just
+	// after the controller failed its run and dropped the rest of its pods. The plugin
+	// is the sole committer and deliberately does not read run.Status.Phase (that would
+	// be a hot-path API Get on every PreBind — R4), so it cannot refuse that mint, and
+	// a single loaded snapshot cannot tell a freshly-minted lease from one genuinely
+	// forgotten. We keep the accusation loud rather than scope it away: a real shirk is
+	// far likelier and far more dangerous than this narrow race, production heals the
+	// race correctly (the sweep closes the lease, jobtree_swept_leases_total counts it),
+	// and if it ever actually flakes a test the fix belongs at the failure path fencing
+	// its pending pods, not in weakening this net. (R27 #61.)
 	shirked := sweep.Shirked()
 	if len(shirked) == 0 || !invariant.UnderTest() {
 		return
