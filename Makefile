@@ -1,4 +1,4 @@
-.PHONY: verify fmt-check vet test-race golden-clean build-bins helm-assert krew-validate test envtest fmt generate manifests verify-generate spec-check spec-counterexamples helm-lint cli-build cli-test antifake kind-up kind-down e2e-build e2e-load e2e-image e2e-bins e2e-build-fast build-flags-agree e2e
+.PHONY: verify fmt-check vet test-race golden-clean build-bins helm-assert krew-validate test envtest fmt generate manifests verify-generate spec-check spec-counterexamples node-failure-spec-check node-failure-spec-counterexamples node-failure-spec-pdf ledger-compaction-apalache-check ledger-compaction-apalache-counterexamples ledger-compaction-store-apalache-check ledger-compaction-store-apalache-counterexamples ledger-compaction-accounting-apalache-check ledger-compaction-accounting-apalache-counterexamples ledger-compaction-accounting-witness-check ledger-compaction-accounting-witness-counterexamples helm-lint cli-build cli-test antifake kind-up kind-down e2e-build e2e-load e2e-image e2e-bins e2e-build-fast build-flags-agree e2e
 
 # ---------------------------------------------------------------------------
 # `make verify` is THE gate. CI runs exactly this target and nothing else, so a
@@ -181,11 +181,25 @@ cli-test:
 	go test ./cmd/kubectl-runs/...
 
 TLA2TOOLS := specs/.cache/tla2tools.jar
-TLC := java -XX:+UseParallelGC -cp .cache/tla2tools.jar tlc2.TLC -deadlock -workers auto
+# Isolate TLC metadata by Make target. Without this, fast consecutive checks
+# can choose the same timestamped directory and a negative rail can mistake
+# that startup failure for its expected invariant violation.
+TLC = java -XX:+UseParallelGC -cp .cache/tla2tools.jar tlc2.TLC -cleanup -metadir .cache/tlc/$@ -deadlock -workers auto
+APALACHE_VERSION ?= 0.58.3
+APALACHE := specs/.cache/apalache/bin/apalache-mc
+APALACHE_JVM_ARGS ?= -Xmx5500m
+APALACHE_STATEFUL_JVM_ARGS ?= -Xmx10000m
 
 $(TLA2TOOLS):
 	mkdir -p $(dir $(TLA2TOOLS))
 	curl -fsSL -o $(TLA2TOOLS) https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar
+
+$(APALACHE):
+	mkdir -p specs/.cache/apalache
+	if [ ! -x $(APALACHE) ]; then \
+		curl -fsSL -o specs/.cache/apalache.tgz https://github.com/apalache-mc/apalache/releases/download/v$(APALACHE_VERSION)/apalache.tgz; \
+		tar -xzf specs/.cache/apalache.tgz -C specs/.cache/apalache --strip-components=1; \
+	fi
 
 # Model-check the design-level specs (the entry gate for the Kubernetes port).
 spec-check: $(TLA2TOOLS)
@@ -197,3 +211,101 @@ spec-check: $(TLA2TOOLS)
 spec-counterexamples: $(TLA2TOOLS)
 	cd specs && ! $(TLC) -config ReservationLifecycleBug.cfg ReservationLifecycle.tla
 	cd specs && ! $(TLC) -config BudgetConservationRacy.cfg BudgetConservation.tla
+
+# The node-failure spec is intentionally scoped to one seam and is checked by a
+# dedicated, path-filtered CI workflow rather than the global verify gate.
+node-failure-spec-check: $(TLA2TOOLS)
+	cd specs && $(TLC) -config NodeFailure.cfg NodeFailure.tla
+
+node-failure-spec-counterexamples: $(TLA2TOOLS)
+	cd specs && ! $(TLC) -config NodeFailureR21.cfg NodeFailure.tla
+	cd specs && ! $(TLC) -config NodeFailureR22.cfg NodeFailure.tla
+	cd specs && ! $(TLC) -config NodeFailureR25.cfg NodeFailure.tla
+	cd specs && ! $(TLC) -config NodeFailureDeclinedSwap.cfg NodeFailure.tla
+	cd specs && ! $(TLC) -config NodeFailureLastWriter.cfg NodeFailure.tla
+	cd specs && ! $(TLC) -config NodeFailureHalfPlane.cfg NodeFailure.tla
+
+node-failure-spec-pdf:
+	python3 -c 'import reportlab' >/dev/null 2>&1 || \
+		( echo "::error::python package reportlab is required for node-failure-spec-pdf"; exit 1 )
+	python3 hack/specs/render_markdown_pdf.py specs/NodeFailure.md dist/node-failure-spec.pdf
+
+# The ledger-compaction theorems are checked with Apalache rather than TLC:
+# the obligations are bounded equivalence proofs over histories and persisted
+# summary states, not just reachability searches.
+ledger-compaction-apalache-check: $(APALACHE)
+	cd specs && JVM_ARGS='$(APALACHE_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=LedgerCompaction.cfg --length=1 --no-deadlock LedgerCompaction.tla
+	cd specs && JVM_ARGS='$(APALACHE_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=LedgerCompactionStore.cfg --length=4 --no-deadlock LedgerCompactionStore.tla
+	cd specs && JVM_ARGS='$(APALACHE_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=LedgerCompactionAccountingSummaryRep.cfg --length=1 --no-deadlock LedgerCompactionAccounting.tla
+	cd specs && JVM_ARGS='$(APALACHE_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=LedgerCompactionAccountingRoundTrip.cfg --length=1 --no-deadlock LedgerCompactionAccounting.tla
+	cd specs && JVM_ARGS='$(APALACHE_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=LedgerCompactionAccountingSeededFold01.cfg --length=1 --no-deadlock LedgerCompactionAccounting.tla
+	cd specs && JVM_ARGS='$(APALACHE_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=LedgerCompactionAccountingSeededFold12.cfg --length=1 --no-deadlock LedgerCompactionAccounting.tla
+
+ledger-compaction-apalache-counterexamples: $(APALACHE)
+	cd specs && ! JVM_ARGS='$(APALACHE_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=LedgerCompactionStraddle.cfg --length=1 --no-deadlock LedgerCompaction.tla
+	cd specs && ! JVM_ARGS='$(APALACHE_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=LedgerCompactionFutureHorizon.cfg --length=1 --no-deadlock LedgerCompaction.tla
+	cd specs && ! JVM_ARGS='$(APALACHE_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=LedgerCompactionStoreStaleWindow.cfg --length=4 --no-deadlock LedgerCompactionStore.tla
+	cd specs && ! JVM_ARGS='$(APALACHE_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=LedgerCompactionAccountingStaleWindow.cfg --length=1 --no-deadlock LedgerCompactionAccounting.tla
+	cd specs && ! JVM_ARGS='$(APALACHE_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=LedgerCompactionAccountingStaleEnd.cfg --length=1 --no-deadlock LedgerCompactionAccounting.tla
+
+ledger-compaction-store-apalache-check: $(APALACHE)
+	cd specs && JVM_ARGS='$(APALACHE_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=LedgerCompactionStore.cfg --length=4 --no-deadlock LedgerCompactionStore.tla
+
+ledger-compaction-store-apalache-counterexamples: $(APALACHE)
+	cd specs && ! JVM_ARGS='$(APALACHE_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=LedgerCompactionStoreStaleWindow.cfg --length=4 --no-deadlock LedgerCompactionStore.tla
+
+ledger-compaction-accounting-apalache-check: $(APALACHE)
+	cd specs && JVM_ARGS='$(APALACHE_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=LedgerCompactionAccountingSummaryRep.cfg --length=1 --no-deadlock LedgerCompactionAccounting.tla
+	cd specs && JVM_ARGS='$(APALACHE_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=LedgerCompactionAccountingRoundTrip.cfg --length=1 --no-deadlock LedgerCompactionAccounting.tla
+	cd specs && JVM_ARGS='$(APALACHE_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=LedgerCompactionAccountingSeededFold01.cfg --length=1 --no-deadlock LedgerCompactionAccounting.tla
+	cd specs && JVM_ARGS='$(APALACHE_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=LedgerCompactionAccountingSeededFold12.cfg --length=1 --no-deadlock LedgerCompactionAccounting.tla
+
+ledger-compaction-accounting-apalache-counterexamples: $(APALACHE)
+	cd specs && ! JVM_ARGS='$(APALACHE_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=LedgerCompactionAccountingStaleWindow.cfg --length=1 --no-deadlock LedgerCompactionAccounting.tla
+	cd specs && ! JVM_ARGS='$(APALACHE_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=LedgerCompactionAccountingStaleEnd.cfg --length=1 --no-deadlock LedgerCompactionAccounting.tla
+
+# The exact bounded universal seeded-fold property is cheap for TLC. Its direct
+# Apalache encoding exhausts a 10 GB heap and receives SIGTERM near the VM
+# limit with a 12.5 GB heap, so keep it out of the ordinary SMT rail.
+.PHONY: ledger-compaction-accounting-seeded-fold-universal-check
+ledger-compaction-accounting-seeded-fold-universal-check: $(TLA2TOOLS)
+	cd specs && $(TLC) -config LedgerCompactionAccountingSeededFoldUniversal.cfg LedgerCompactionAccounting.tla
+
+ledger-compaction-accounting-witness-check: ledger-compaction-accounting-seeded-fold-universal-check $(TLA2TOOLS)
+	cd specs && $(TLC) -config LedgerCompactionAccountingClassHours.cfg LedgerCompactionAccounting.tla
+	cd specs && $(TLC) -config LedgerCompactionAccountingLender.cfg LedgerCompactionAccounting.tla
+	cd specs && $(TLC) -config LedgerCompactionAccountingCompositional.cfg LedgerCompactionAccounting.tla
+	cd specs && $(TLC) -config LedgerCompactionAccountingRepairedStart.cfg LedgerCompactionAccounting.tla
+	cd specs && $(TLC) -config LedgerCompactionAccountingRepairedEnd.cfg LedgerCompactionAccounting.tla
+
+ledger-compaction-accounting-witness-counterexamples: $(TLA2TOOLS)
+	cd specs && ! $(TLC) -config LedgerCompactionAccountingStaleClassHours.cfg LedgerCompactionAccounting.tla
+	cd specs && ! $(TLC) -config LedgerCompactionAccountingStaleLender.cfg LedgerCompactionAccounting.tla
+
+.PHONY: ledger-compaction-accounting-stateful-check ledger-compaction-accounting-stateful-counterexamples ledger-compaction-accounting-stateful-apalache-check ledger-compaction-accounting-generalized-check ledger-compaction-accounting-dynamic-check ledger-compaction-accounting-dynamic-counterexample ledger-compaction-accounting-closure-check ledger-compaction-accounting-closure-counterexample
+ledger-compaction-accounting-stateful-check: $(TLA2TOOLS)
+	cd specs && $(TLC) -config LedgerCompactionAccountingStateful.cfg LedgerCompactionAccounting.tla
+
+ledger-compaction-accounting-generalized-check: $(TLA2TOOLS)
+	cd specs && $(TLC) -config LedgerCompactionAccountingGeneralized.cfg LedgerCompactionAccounting.tla
+
+ledger-compaction-accounting-dynamic-check: $(TLA2TOOLS)
+	cd specs && $(TLC) -config LedgerCompactionAccountingDynamic.cfg LedgerCompactionAccounting.tla
+
+ledger-compaction-accounting-dynamic-counterexample: $(TLA2TOOLS)
+	cd specs && ! $(TLC) -config LedgerCompactionAccountingBackdatedAdmission.cfg LedgerCompactionAccounting.tla
+
+ledger-compaction-accounting-closure-check: $(TLA2TOOLS)
+	cd specs && $(TLC) -config LedgerCompactionAccountingClosure.cfg LedgerCompactionAccounting.tla
+
+ledger-compaction-accounting-closure-counterexample: $(TLA2TOOLS)
+	cd specs && ! $(TLC) -config LedgerCompactionAccountingHistoricalClosureRewrite.cfg LedgerCompactionAccounting.tla
+
+ledger-compaction-accounting-stateful-counterexamples: $(TLA2TOOLS)
+	cd specs && ! $(TLC) -config LedgerCompactionAccountingStatefulStaleStart.cfg LedgerCompactionAccounting.tla
+	cd specs && ! $(TLC) -config LedgerCompactionAccountingStatefulStaleEnd.cfg LedgerCompactionAccounting.tla
+
+# This symbolic lifecycle check needs a large VM. Keep its larger heap separate
+# from the ordinary Apalache rail, which is sized for standard CI machines.
+ledger-compaction-accounting-stateful-apalache-check: $(APALACHE)
+	cd specs && JVM_ARGS='$(APALACHE_STATEFUL_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=LedgerCompactionAccountingStateful.cfg --length=2 --no-deadlock LedgerCompactionAccounting.tla

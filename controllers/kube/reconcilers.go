@@ -504,6 +504,18 @@ func nodeReady(node *corev1.Node) bool {
 	return false
 }
 
+// SAFETY-CRITICAL SEMANTICS.
+//
+// This fencing decision is modeled in:
+//   - specs/NodeFailure.tla
+//   - specs/NodeFailure.md
+//
+// If you change what qualifies as node failure here, update that spec and rerun:
+//   - make node-failure-spec-check
+//   - make node-failure-spec-counterexamples
+//
+// The path-scoped CI rail is .github/workflows/node-failure-spec.yaml.
+//
 // nodeFailed reports whether a node has been FENCED: something that can actually
 // know has asserted the machine is dead. It is deliberately neither the negation of
 // nodeUsable nor the negation of nodeReady.

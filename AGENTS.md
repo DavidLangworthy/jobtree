@@ -152,6 +152,8 @@ measuring whether the models earn their seats rather than assuming it. One revie
 
 ## Working rules
 
+- After completing and verifying repository changes, commit them and push the current working branch
+  unless the user explicitly requests otherwise.
 - **Never `git checkout -- <file>` to undo a scratch edit.** It restores to `HEAD`, not to what you had a
   minute ago, and it has silently destroyed uncommitted work here. Copy the file first, or commit.
 - Sub-agents must never run mutating git commands, and must never spawn sub-agents.
