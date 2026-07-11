@@ -2766,27 +2766,21 @@ func groupGPUsFor(run *v1.Run) int {
 	return expectedActiveGPUs(run)
 }
 
-// groupSizesFor mirrors pack.deriveGroups: consecutive groups of groupGPUs, the last
-// possibly short. It is duplicated here rather than exported from pkg/pack because
-// this side must answer the question WITHOUT a plan — topUpActiveGang re-emits a lost
-// pod long after the plan that placed it is gone, and the group it stamps must match
-// the one the packer chose. The two are pinned together by a test.
+// groupSizesFor is the run's active GPUs laid into fast-fabric groups — the same
+// layout the packer produces, because it calls the packer's own pack.DeriveGroups.
+// topUpActiveGang re-emits a lost pod long after the plan that placed it is gone,
+// and the group it stamps must match the one the packer chose; sharing one function
+// is what guarantees it (they used to be two copies — R27 #61).
 func groupSizesFor(run *v1.Run) []int {
 	total := expectedActiveGPUs(run)
 	size := groupGPUsFor(run)
 	if total <= 0 || size <= 0 {
 		return nil
 	}
-	var sizes []int
-	for remaining := total; remaining > 0; {
-		n := size
-		if n > remaining {
-			n = remaining
-		}
-		sizes = append(sizes, n)
-		remaining -= n
-	}
-	return sizes
+	// One grouping rule, in pkg/pack. This side used to carry a copy so it could
+	// answer without a plan, but pack.DeriveGroups needs no plan either — total and
+	// size are all it takes — so the copy was pure drift risk (R27 #61). Delegate.
+	return pack.DeriveGroups(total, &size)
 }
 
 // groupIndexForPodIndex answers "which group does the i-th pod of the base gang

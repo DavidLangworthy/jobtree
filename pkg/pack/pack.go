@@ -95,8 +95,8 @@ func planSingleDomain(snapshot *topology.Snapshot, req Request) (Plan, error) {
 	if candidate == nil {
 		return Plan{}, &PlanError{Reason: FailureReasonInsufficientTopology, Msg: "no single domain can satisfy request"}
 	}
-	groups := deriveGroups(req.TotalGPUs, req.GroupGPUs)
-	// Symmetric with planWithGroups: deriveGroups returns empty for GroupGPUs<=0.
+	groups := DeriveGroups(req.TotalGPUs, req.GroupGPUs)
+	// Symmetric with planWithGroups: DeriveGroups returns empty for GroupGPUs<=0.
 	// Run.Validate rejects that at admission, so this is unreachable in production —
 	// but without the guard a caller that bypasses validation gets a silently
 	// vacuous "success" (Plan with zero placements). Fail closed instead.
@@ -125,7 +125,7 @@ func planSingleDomain(snapshot *topology.Snapshot, req Request) (Plan, error) {
 }
 
 func planWithGroups(snapshot *topology.Snapshot, req Request) (Plan, error) {
-	groups := deriveGroups(req.TotalGPUs, req.GroupGPUs)
+	groups := DeriveGroups(req.TotalGPUs, req.GroupGPUs)
 	if len(groups) == 0 {
 		return Plan{}, &PlanError{Reason: FailureReasonInvalidRequest, Msg: "no groups derived"}
 	}
@@ -335,7 +335,13 @@ func allocateInDomain(domain *topology.Domain, amount int) ([]NodeAllocation, er
 	return allocs, nil
 }
 
-func deriveGroups(total int, groupSizePtr *int) []int {
+// DeriveGroups lays `total` GPUs into consecutive fast-fabric groups of groupSize
+// (the last possibly short); a nil groupSize means one group of the whole gang.
+// It is exported because the controller's re-emit path (topUpActiveGang, via
+// groupSizesFor/groupIndexForPodIndex) must derive the SAME grouping from the Run
+// spec alone, long after the plan that placed the gang is gone. One function, so
+// the two callers cannot drift — the reason a second copy existed at all.
+func DeriveGroups(total int, groupSizePtr *int) []int {
 	if groupSizePtr == nil {
 		return []int{total}
 	}

@@ -123,6 +123,7 @@ func TestResolverEndingARunReleasesTheLeasesItStillHolds(t *testing.T) {
 			t.Fatalf("reconcile #%d reopened the spare", i+1)
 		}
 	}
+	assertSteady(t, c, "resolver ended a run (release path)")
 }
 
 // fixedWidthTwoGroups: 4 GPUs, no Malleable, two groups of 2.
@@ -193,6 +194,7 @@ func TestResolverNeverReportsAFixedWidthGangRunningBelowItsWidth(t *testing.T) {
 			t.Errorf("the surviving group's lease outlived the failed run: closed=%v reason=%q", closed, reason)
 		}
 	}
+	assertSteady(t, c, "fixed-width gang cut below its width")
 }
 
 // The converse, and the reason the gate is minRunnableGPUs rather than the run's
@@ -204,6 +206,7 @@ func TestResolverKeepsAMalleableRunRunningAtItsMinimum(t *testing.T) {
 	state := fixedWidthTwoGroups(now)
 	run := state.Runs["default/run"]
 	run.Spec.Malleable = &v1.RunMalleability{MinTotalGPUs: 2, MaxTotalGPUs: 4, StepGPUs: 2}
+	mirrorPods(state) // the surviving group keeps a running pod behind its open lease
 	c := NewRunController(state, runClock{now: now})
 
 	if got := minRunnableGPUs(run); got != 2 {
@@ -230,6 +233,7 @@ func TestResolverKeepsAMalleableRunRunningAtItsMinimum(t *testing.T) {
 	if got := baseGangGPUsForRun("default/run", state.Leases); got != 2 {
 		t.Errorf("expected the run to hold its 2-GPU minimum, holds %d", got)
 	}
+	assertSteady(t, c, "malleable run kept at its minimum")
 }
 
 // The reaper regression. The lottery's own guard (pkg/resolver/resolver.go:503)
@@ -256,6 +260,7 @@ func TestResolverKeepsAMalleableRunRunningWhenGrowWidthCoversItsMinimum(t *testi
 		Runs:    map[string]*v1.Run{"default/run": run},
 		Leases:  []v1.Lease{base, grow},
 	}
+	mirrorPods(state) // the surviving grow group keeps a running pod behind its open lease
 	c := NewRunController(state, runClock{now: now})
 
 	if got := baseGangGPUsForRun("default/run", state.Leases); got != 2 {
@@ -284,6 +289,7 @@ func TestResolverKeepsAMalleableRunRunningWhenGrowWidthCoversItsMinimum(t *testi
 	if got := baseGangGPUsForRun("default/run", state.Leases); got != 0 {
 		t.Errorf("setup: the base gang should be gone, got %d — the test is not exercising the split", got)
 	}
+	assertSteady(t, c, "malleable run kept running on grow leases")
 }
 
 // prodLease builds a lease shaped like the ones the SOLE COMMITTER actually mints:
@@ -351,6 +357,7 @@ func TestReclaimedSquatterIsEvictedInBothPlanesWithAProductionShapedLease(t *tes
 	if closed, reason := closureOf(state, "spare"); !closed || reason != "Swap" {
 		t.Errorf("the swap proceeds: spare closed=%v reason=%q", closed, reason)
 	}
+	assertSteady(t, c, "reclaimed squatter (production-shaped lease)")
 }
 
 // Reclaiming an unfunded squatter is an eviction, and an eviction has to happen
@@ -412,4 +419,5 @@ func TestReclaimedSquatterIsEvictedInBothPlanes(t *testing.T) {
 	if run := state.Runs["default/run"]; run.Status.Phase != RunPhaseRunning {
 		t.Errorf("the swap keeps the covered run Running, got %s (%s)", run.Status.Phase, run.Status.Message)
 	}
+	assertSteady(t, c, "reclaimed unfunded squatter")
 }

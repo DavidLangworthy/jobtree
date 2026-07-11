@@ -65,4 +65,6 @@ func TestResolverCutDuringCheckpointGraceDoesNotReapBeforeTheDeadline(t *testing
 	if len(state.Pods) == 0 {
 		t.Fatalf("every pod was deleted mid-grace: the checkpoint the window exists to save is destroyed")
 	}
+	// The oracle must also find the post-cut state legal, not just the fields above.
+	assertSteady(t, c, "resolver cut inside checkpoint grace")
 }
