@@ -186,6 +186,15 @@ func (w *qWorld) mintPending() {
 	for i := range w.state.Leases {
 		minted[w.state.Leases[i].Name] = true
 	}
+	// A lease Create fires the owning run's watch, so the real controller ALWAYS
+	// reconciles a run the instant one of its leases is minted — the same coupling
+	// deletePod models after a pod delete. Collect the runs a mint touched and
+	// reconcile each once at the end, so the oracle judges the state the watch would
+	// leave, not the bare-mint transient before the controller has seen it (a run that
+	// a swap mint restored to only part of its width, whose demote-below-min repair
+	// lives in Reconcile).
+	touched := map[string]bool{}
+	var touchedRuns []*v1.Run
 	for i := range w.state.Pods {
 		pod := &w.state.Pods[i]
 		name := pod.Name + "-lease"
@@ -229,6 +238,16 @@ func (w *qWorld) mintPending() {
 			pod.Annotations[binder.AnnotationLeaseReason], pod.Labels[binder.LabelRunRole], group)
 		w.state.Leases = append(w.state.Leases, lease)
 		w.logf("mint %s -> %s on %s (role=%s group=%s)", pod.Name, name, node, lease.Spec.Slice.Role, group)
+		if rk := keys.NamespacedKey(run.Namespace, run.Name); !touched[rk] {
+			touched[rk] = true
+			touchedRuns = append(touchedRuns, run)
+		}
+	}
+	// Deterministic order (mint order), never map iteration — CI replays the same 800.
+	for _, run := range touchedRuns {
+		if err := w.c.Reconcile(run.Namespace, run.Name); err != nil {
+			w.logf("  reconcile after mint %s/%s -> %v", run.Namespace, run.Name, err)
+		}
 	}
 }
 
@@ -413,10 +432,12 @@ func (w *qWorld) step() {
 		w.succeedPods()
 	case 8:
 		w.tightenBudget()
-	case 9, 10:
+	case 9:
 		d := []time.Duration{time.Minute, 5 * time.Minute, 20 * time.Minute}[w.rng.Intn(3)]
 		w.tick(d)
 		w.logf("clock +%s", d)
+	case 10:
+		w.deletePod()
 	}
 	w.check("step")
 }
