@@ -194,3 +194,32 @@ func fakeNode(name, region, cluster, fabric string, gpus int) topology.SourceNod
 func intPtr(v int) *int {
 	return &v
 }
+
+// DeriveGroups is the single grouping rule the controller's re-emit path shares (it
+// is exported for exactly that — see groupSizesFor). This exhaustive contract check
+// pins its invariants so a change that would drift the two callers apart fails here:
+// the sizes sum to total, none exceeds groupSize, only the last may be short, and a
+// nil groupSize means one group. (R27 #61 pt2.)
+func TestDeriveGroupsContract(t *testing.T) {
+	if got := DeriveGroups(10, nil); len(got) != 1 || got[0] != 10 {
+		t.Fatalf("DeriveGroups(10, nil) = %v, want [10] (one group)", got)
+	}
+	for total := 1; total <= 64; total++ {
+		for size := 1; size <= 64; size++ {
+			groups := DeriveGroups(total, &size)
+			sum := 0
+			for i, g := range groups {
+				if g <= 0 || g > size {
+					t.Fatalf("DeriveGroups(%d,%d): group %d = %d, want (0,%d]", total, size, i, g, size)
+				}
+				if g < size && i != len(groups)-1 {
+					t.Fatalf("DeriveGroups(%d,%d): only the LAST group may be short, group %d = %d", total, size, i, g)
+				}
+				sum += g
+			}
+			if sum != total {
+				t.Fatalf("DeriveGroups(%d,%d) sums to %d, want %d", total, size, sum, total)
+			}
+		}
+	}
+}
