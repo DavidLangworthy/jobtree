@@ -169,17 +169,46 @@ func (m *gangManager) decide(ctx context.Context, pod *corev1.Pod) (fundable boo
 	if isGrowCohort(pod) {
 		world.Quantity = int32(podInt(pod, binder.AnnotationExpectedWidth, 1) * g.gpusPerPod)
 	}
-	// Fold other gangs' not-yet-minted commitments into the ledger so two
-	// gangs cannot both fund against the same free capacity. A phantom whose
-	// real lease already exists (minted[i]) is skipped: loadWorld's List already
-	// counts the real lease, so folding the phantom too would double-count (R1).
+	// Fold other gangs' not-yet-minted commitments into the ledger so two gangs
+	// cannot both fund against the same free capacity.
+	//
+	// STALENESS-ROBUST (R4 pt1b): skip a phantom only when its REAL lease is actually
+	// present in the loaded snapshot — NOT by the in-memory minted flag. The flag flips
+	// the instant we Create the lease, but a reader (a direct read AFTER the write, or
+	// an eventually-consistent CACHE that has not yet caught it) may not see that real
+	// lease yet; skipping the phantom then leaves the capacity counted by NEITHER the
+	// phantom nor the (missing) real lease, and the two gangs double-fund. That is the
+	// exact hazard that reverted R4 pt1b's first cache. Keying off the snapshot makes
+	// the fold correct for the direct reader AND unblocks the informer cache: whether
+	// the real lease is visible is a property of the world we actually replayed.
+	//
+	// A phantom is matched to its real lease by the pod that claimed its slot (the
+	// in-memory assigned map is reliable — it is set by our own claimPayer) and the
+	// durable pod-name identity stamped on the minted lease (Phase 4/5).
+	present := map[string]bool{}
+	for i := range world.Leases {
+		l := &world.Leases[i]
+		if l.Status.Closed {
+			continue
+		}
+		if pn := binder.LeasePodName(l); pn != "" {
+			present[pn] = true
+		}
+	}
 	for k, other := range m.gangs {
 		if k == key {
 			continue
 		}
+		// Which pod claimed each phantom slot (reverse of assigned).
+		slotPod := make([]string, len(other.pending))
+		for pn, idx := range other.assigned {
+			if idx >= 0 && idx < len(slotPod) {
+				slotPod[idx] = pn
+			}
+		}
 		for i, pl := range other.pending {
-			if i < len(other.minted) && other.minted[i] {
-				continue
+			if pod := slotPod[i]; pod != "" && present[pod] {
+				continue // this slot's real lease is in the snapshot; it already counts
 			}
 			world.Leases = append(world.Leases, pl)
 		}
@@ -360,7 +389,16 @@ func (m *gangManager) Reconstruct(ctx context.Context) error {
 							g.payers = append(g.payers, seg)
 							g.minted = append(g.minted, false)
 						}
-						g.pending = pendingLeases(run, deltaPayers, gpusPerPod, m.clock())
+						// pending must align with payers (full width), not just the delta:
+						// the staleness-robust fold indexes phantoms by the pod that claimed
+						// each slot, and the minted slots (0..claimed-1) carry the assigned
+						// pods. A delta-only pending would misalign, so the fold would read a
+						// delta phantom against a MINTED pod's slot, see its real lease
+						// present, and wrongly skip the survivor's phantom — letting another
+						// gang take the survivor's capacity. Full-width pending: the minted
+						// slots' phantoms are skipped (their real lease is present), the delta
+						// slots' (no assigned pod) are folded.
+						g.pending = pendingLeases(run, g.payers, gpusPerPod, m.clock())
 					}
 				}
 				// If the delta cannot fund now (capacity gone / budget tightened), the
