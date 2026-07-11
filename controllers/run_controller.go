@@ -2424,23 +2424,47 @@ func (c *RunController) emitSparePods(run *v1.Run, packPlan pack.Plan, gpusPerPo
 	if gpusPerPod <= 0 || packPlan.TotalSpares <= 0 || packPlan.TotalSpares%gpusPerPod != 0 {
 		return 0
 	}
-	// A spare consumed by a node-failure swap (its lease closed with reason
-	// "Swap") is not re-provisioned: that funded capacity now carries the
-	// swapped-in active work. Only genuinely-missing spares are topped up.
-	count := packPlan.TotalSpares/gpusPerPod - c.consumedSpareCount(run)
-	if count <= 0 {
+	// A spare consumed by a node-failure swap (its lease closed with reason "Swap")
+	// is not re-provisioned: that funded capacity now carries the swapped-in active
+	// work. Retire the consumed spares by NAME — the exact indices — never by a
+	// truncated count. `findSpareLease` picks a spare by GROUP, and sparePlacements
+	// can seat several spares per group, so a swap consumes an ARBITRARY index, not
+	// the highest. The old `0..(declared-consumed)-1` loop truncated the index range
+	// from the top, so when a LOW index was the one consumed it re-checked that index,
+	// found its pod gone, and re-created the consumed spare (over-provisioning funded
+	// capacity) — while a genuinely-missing HIGH index past the truncated bound was
+	// never refilled (TLA NodeFailureConsumedCount / ConsumedSpareStaysConsumed).
+	// Phase 4 stamps every minted lease with its pod name, so a closed-"Swap" spare
+	// lease names precisely the index to retire.
+	declared := packPlan.TotalSpares / gpusPerPod
+	runKey := keys.NamespacedKey(run.Namespace, run.Name)
+	retired := make(map[string]bool)
+	unnamedConsumed := 0 // legacy leases with no pod-name identity: retire by count only
+	for i := range c.State.Leases {
+		l := &c.State.Leases[i]
+		if l.Status.Closed && l.Spec.Slice.Role == binder.RoleSpare && l.Status.ClosureReason == "Swap" &&
+			keys.NamespacedKey(l.Spec.RunRef.Namespace, l.Spec.RunRef.Name) == runKey {
+			if pn := binder.LeasePodName(l); pn != "" {
+				retired[pn] = true
+			} else {
+				unnamedConsumed++
+			}
+		}
+	}
+	// The live spare count to maintain: declared minus every swap-consumed slot.
+	target := declared - len(retired) - unnamedConsumed
+	if target <= 0 {
 		return 0
 	}
 	placements := sparePlacements(packPlan, gpusPerPod)
 	// Presence is keyed by pod NAME, not a raw count of surviving spares — the same
 	// fix emitCohortPods carries for the active cohort (R2), which the spare path
-	// never got (#91). A count-based scan re-emits indices `existing..count`, so a
-	// spare that went missing OUT OF ORDER (an eviction, or removeSparePodOnNodes
-	// closing the wrong sibling when two spares share a group/node) makes it rebuild
-	// an index a survivor still owns: two pods, then two leases, of one name — which
-	// CheckTransition reads as a closure-reason rewrite (INV-CLOSED-MONOTONE). Fill
-	// only the genuinely-missing indices instead.
-	present := make(map[string]bool, count)
+	// never got (#91). Filling by name means a spare that went missing OUT OF ORDER
+	// (an eviction, or removeSparePodOnNodes closing the wrong sibling when two spares
+	// share a group/node) never makes it rebuild an index a survivor still owns: two
+	// pods, then two leases, of one name — which CheckTransition reads as a
+	// closure-reason rewrite (INV-CLOSED-MONOTONE).
+	present := make(map[string]bool, target)
 	for i := range c.State.Pods {
 		p := &c.State.Pods[i]
 		if p.Namespace == run.Namespace && p.Labels[binder.LabelRunName] == run.Name &&
@@ -2448,10 +2472,15 @@ func (c *RunController) emitSparePods(run *v1.Run, packPlan pack.Plan, gpusPerPo
 			present[p.Name] = true
 		}
 	}
+	// Emit exactly enough to reach `target` live spares, filling the lowest indices
+	// that are neither alive nor retired. The cap also bounds the legacy unnamed-
+	// consumed fallback (no identity to retire a specific index) so it can never
+	// over-provision past `target`.
+	toCreate := target - len(present)
 	created := 0
-	for i := 0; i < count; i++ {
+	for i := 0; i < declared && created < toCreate; i++ {
 		name := sparePodName(run, i)
-		if present[name] {
+		if present[name] || retired[name] {
 			continue
 		}
 		node := ""
@@ -2466,7 +2495,7 @@ func (c *RunController) emitSparePods(run *v1.Run, packPlan pack.Plan, gpusPerPo
 		}
 		created++
 		annotations := map[string]string{
-			binder.AnnotationExpectedWidth: strconv.Itoa(count),
+			binder.AnnotationExpectedWidth: strconv.Itoa(target),
 			binder.AnnotationLeaseReason:   reason,
 		}
 		for k, v := range extra {
