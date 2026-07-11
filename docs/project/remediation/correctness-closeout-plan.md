@@ -16,11 +16,14 @@ larger item has a correctness *sub-part*, only that sub-part is in this plan.
 
 A change reaches "done" in this plan only when all of the following hold:
 
-1. **The metamorphic oracle is green with EVERY legal event.** The quiescence driver
-   (`controllers/quiescence_test.go`, `pkg/invariant`) runs its full 800 seeds green
-   with the external pod-deletion (eviction) event **enabled** — `step()` case 10,
-   `w.deletePod()`, currently disabled. Turning this on is both a fix (Phase 1) and the
-   standing regression net for every phase after it.
+1. **The metamorphic oracle is green with EVERY legal event.** ✅ **MET.** The quiescence
+   driver (`controllers/quiescence_test.go`, `pkg/invariant`) runs its full 800 seeds
+   green with the external pod-deletion (eviction) event **enabled** — `step()` case 10,
+   `w.deletePod()`. Closing it also required a driver-honesty fix: `mintPending` now
+   reconciles each run whose lease it minted (a lease Create fires the run's watch in the
+   real controller, exactly as `deletePod` already reconciles after a pod delete), so the
+   oracle judges the post-watch state, not a bare-mint transient. Net mutation-verified:
+   disabling the Phase-1 demote rule reddens the fuzzer at seed 86.
 2. **Each confirmed or plausible correctness bug is fixed with a mutation-verified
    test** (revert the fix → the test goes red), or is *executably cleared* (a
    reproduction attempt shows the feared behavior cannot occur).
@@ -41,7 +44,7 @@ A change reaches "done" in this plan only when all of the following hold:
 |---|---|---|---|
 | Duplicate spare mint → `INV-CLOSED-MONOTONE` | confirmed | **fixed** (PR #93, `emitSparePods` name-keyed) | this doc, Phase 0 |
 | Evicted rank never re-emitted (workless lease bills forever) | confirmed | **core fixed** (PR #93, `recoverEvictedRanks`) | this doc, Phase 0/1 |
-| Run that loses ALL ranks sits `Running`-empty (`INV-WIDTH-ASSEMBLED`) | confirmed | **open** — blocks the eviction fuzzer | Phase 1 |
+| Run that loses ALL ranks sits `Running`-empty (`INV-WIDTH-ASSEMBLED`) | confirmed | **fixed** (Phase-1 demote rule) — fuzzer gate CLOSED: `deletePod` enabled, 800 seeds green | Phase 1 |
 | `AggregateCap` flavor-blind attach → cross-flavor mis-count | plausible | **open, unproven** | Phase 2, `R4-plugin-hotpath.md` / `quota-semantics.md` |
 | `TestETAMirroredFromPodAnnotation` intermittent hang | liveness? | **open, undiagnosed** | Phase 3 |
 | Scheduler-restart gang wedge (R2 pt3) | liveness (confirmed) | **fixed** (PR #98, `Reconstruct`) | Phase 5, `R2-gang-recovery.md` |
