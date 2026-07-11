@@ -193,9 +193,20 @@ func Evaluate(in Input) *Evaluation {
 			cap := b.Spec.AggregateCaps[j]
 			acct := &aggregateAccount{spec: cap}
 			for _, name := range cap.Envelopes {
-				if env, ok := byName[name]; ok {
-					env.aggregates = append(env.aggregates, acct)
+				env, ok := byName[name]
+				if !ok {
+					continue
 				}
+				// A flavored cap bounds ONE flavor's usage. Attaching it to an envelope
+				// of a DIFFERENT flavor makes every downstream consumer (fillClaim,
+				// accrue, aggregateAvailable) sum that envelope's width/hours into the
+				// cap — a cross-flavor mis-count that lets a flavored cap be exceeded or
+				// spuriously refuse. The attach is the single choke point (all consumers
+				// walk env.aggregates with no flavor awareness), so filter here.
+				if cap.Flavor != "" && env.Spec.Flavor != cap.Flavor {
+					continue
+				}
+				env.aggregates = append(env.aggregates, acct)
 			}
 		}
 	}
