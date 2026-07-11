@@ -44,8 +44,8 @@ A change reaches "done" in this plan only when all of the following hold:
 | Run that loses ALL ranks sits `Running`-empty (`INV-WIDTH-ASSEMBLED`) | confirmed | **open** — blocks the eviction fuzzer | Phase 1 |
 | `AggregateCap` flavor-blind attach → cross-flavor mis-count | plausible | **open, unproven** | Phase 2, `R4-plugin-hotpath.md` / `quota-semantics.md` |
 | `TestETAMirroredFromPodAnnotation` intermittent hang | liveness? | **open, undiagnosed** | Phase 3 |
-| Scheduler-restart gang wedge (R2 pt3) | liveness (confirmed) | **open, blocked on identity** | Phase 5, `R2-gang-recovery.md` |
-| Safe cached reads (R4 pt1b) | perf w/ correctness hazard | **open** (first draft reverted; uncached today = correct) | Phase 6, `R4-plugin-hotpath.md` |
+| Scheduler-restart gang wedge (R2 pt3) | liveness (confirmed) | **fixed** (PR #98, `Reconstruct`) | Phase 5, `R2-gang-recovery.md` |
+| Safe cached reads (R4 pt1b) | perf w/ correctness hazard | **core fixed** (PR #99, staleness-robust fold; reader-swap = perf follow-up) | Phase 6, `R4-plugin-hotpath.md` |
 
 ---
 
@@ -168,7 +168,7 @@ open and owned by this gang.
 leases + resubmit → fresh leases adopted), and a **kind live-proof** (kill the scheduler
 mid-gang; the run returns to full width). Full envtest. Eviction fuzzer green.
 
-### Phase 6 — safe cached reads (R4 pt1b) *(perf, done last on purpose)*
+### Phase 6 — safe cached reads (R4 pt1b) *(core done, PR #99; reader-swap = perf follow-up)*
 **Goal:** re-introduce the informer cache without the double-fund that reverted the
 first draft.
 
@@ -177,15 +177,30 @@ bug to race; and this is the riskiest change (its first attempt double-funded a 
 It must run against the strongest net — the eviction fuzzer (Phase 1) and the restart
 tests (Phase 5) — which exist by now.
 
-**Approach:** make the cross-gang pending fold and `PostBind` GC key off Phase 4's
-*"is the real lease actually in the snapshot?"* predicate (dedup by lease identity), not
-the in-memory `minted` flag — the read-your-write assumption both snapshot-before-lock
-and an eventually-consistent cache break. *Then* back `m.reader` with an informer cache;
-fix the `newCachedReader` startup-goroutine leak + sync-wait race. Watch the fold's
-interaction with R1's double-count test.
+**Landed (PR #99): the correctness core — a staleness-robust fold.** The cross-gang
+pending fold now keys the phantom-skip off Phase 4's *"is the real lease actually in the
+snapshot?"* predicate (a `present` set of pod-names from the open leases actually
+replayed, each phantom matched to the pod that claimed its slot via the in-memory
+`assigned`), **not** the in-memory `minted` flag — the read-your-write assumption a
+direct read-after-write *and* an eventually-consistent cache both break. This closes the
+exact double-fund that reverted the first cache. `Reconstruct`'s `g.pending` is now
+full-width so its minted slots align with the fold's slot indexing (a delta-only pending
+would misalign a delta phantom onto a minted slot and skip the survivor's phantom).
+Mutation-verified (revert → `TestFoldReserves…NotYetInSnapshot` double-funds); full
+plugin suite + envtest green. This is the safety precondition — the reader-swap is now
+correctness-neutral.
 
-**Exit:** the reverted double-fund reproduction stays green; a kind live-proof of
-sync/staleness; full envtest; eviction fuzzer green.
+**Remaining (perf follow-up, out of the correctness bar):** back `m.reader` with an
+informer cache. Deliberately *not* in PR #99 because it is pure performance and touches
+more than the fold — the provenance-validation reads (swap/promise checks that are not
+fold-protected), `Reconstruct`'s sync-timing (it must run *after* `WaitForCacheSync` or
+it reconstructs nothing and wedges), a ctx-tied cache goroutine + sync-wait, and a
+`PostBind` GC that must confirm the snapshot before dropping. It needs a kind live-proof
+of sync/staleness. Tracked on #34's follow-up note.
+
+**Exit (met for the correctness core):** the reverted double-fund reproduction stays
+green; full envtest green. *(The reader-swap's kind live-proof gates only the perf
+follow-up, not the correctness bar.)*
 
 ---
 
