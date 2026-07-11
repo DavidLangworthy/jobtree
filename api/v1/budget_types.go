@@ -169,21 +169,21 @@ func (b *Budget) validate() error {
 	if len(b.Spec.Envelopes) == 0 {
 		return fmt.Errorf("spec.envelopes must not be empty")
 	}
-	envelopeNames := make(map[string]struct{}, len(b.Spec.Envelopes))
+	envelopeFlavors := make(map[string]string, len(b.Spec.Envelopes))
 	for i := range b.Spec.Envelopes {
 		if err := b.Spec.Envelopes[i].Validate(); err != nil {
 			return fmt.Errorf("envelope[%d]: %w", i, err)
 		}
 		name := b.Spec.Envelopes[i].Name
-		if _, dup := envelopeNames[name]; dup {
+		if _, dup := envelopeFlavors[name]; dup {
 			return fmt.Errorf("envelope[%d]: duplicate envelope name %q", i, name)
 		}
-		envelopeNames[name] = struct{}{}
+		envelopeFlavors[name] = b.Spec.Envelopes[i].Flavor
 	}
 	capNames := make(map[string]struct{}, len(b.Spec.AggregateCaps))
 	for i := range b.Spec.AggregateCaps {
 		cap := &b.Spec.AggregateCaps[i]
-		if err := cap.validate(envelopeNames); err != nil {
+		if err := cap.validate(envelopeFlavors); err != nil {
 			return fmt.Errorf("aggregateCap[%d]: %w", i, err)
 		}
 		if _, dup := capNames[cap.Name]; dup {
@@ -194,8 +194,8 @@ func (b *Budget) validate() error {
 	return nil
 }
 
-// validate checks the cap against the budget's declared envelope names.
-func (a *AggregateCap) validate(declared map[string]struct{}) error {
+// validate checks the cap against the budget's declared envelopes (name -> flavor).
+func (a *AggregateCap) validate(declared map[string]string) error {
 	if a.Name == "" {
 		return fmt.Errorf("name is required")
 	}
@@ -207,8 +207,16 @@ func (a *AggregateCap) validate(declared map[string]struct{}) error {
 	}
 	seen := make(map[string]struct{}, len(a.Envelopes))
 	for _, ref := range a.Envelopes {
-		if _, ok := declared[ref]; !ok {
+		flavor, ok := declared[ref]
+		if !ok {
 			return fmt.Errorf("references unknown envelope %q", ref)
+		}
+		// A flavored cap must only name envelopes of its own flavor: it bounds ONE
+		// flavor's usage, and naming a different-flavor envelope would make the funding
+		// math sum the wrong flavor into the cap (the attach loop in pkg/funding now
+		// also skips such a mismatch defensively). Reject it at admission.
+		if flavor != a.Flavor {
+			return fmt.Errorf("references envelope %q of flavor %q, but the cap's flavor is %q", ref, flavor, a.Flavor)
 		}
 		if _, dup := seen[ref]; dup {
 			return fmt.Errorf("references envelope %q more than once", ref)
