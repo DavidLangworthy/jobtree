@@ -241,6 +241,138 @@ func (m *gangManager) claimPayer(pod *corev1.Pod) (cover.Segment, int, bool) {
 // decision. A held spare uses it to allow itself once the active gang has
 // funded (its base cover already paid for the spares), rather than gating the
 // active width. decided is false until the active completer runs decide.
+// Reconstruct rebuilds in-memory gang commitments from the OPEN leases in the API
+// after a scheduler restart. gangs starts empty on New, so committedCount returns 0
+// and Permit's (waiting + committed >= expected) degrades to (waiting >= expected):
+// a lone surviving member of a partially-bound gang parks, times out at
+// permitTimeout, and loops forever (R2 problem #2, reintroduced by any restart).
+//
+// It groups open ACTIVE leases by gang (run + cohort — durable identity stamped at
+// mint, R2 pt3 / Phase 4) and rebuilds one already-decided gangCommit per gang: the
+// already-minted members from each lease's OWN provenance (so a PreBind retry of an
+// already-bound pod returns its original payer and does not consume a delta payer),
+// and — for the base gang — the un-minted remainder funded as a DELTA against the
+// live ledger (which already holds and charges those leases), never the full width on
+// top of them (which double-counts). A grow cohort's minted count is restored (so its
+// gate holds) but its remainder is left for the controller's re-emit + a fresh decide,
+// since its target width is not on the Run object.
+//
+// Called from New before the plugin serves. A failure is non-fatal: the plugin serves
+// (decide still funds fresh gangs); only in-flight partial gangs stay at risk.
+func (m *gangManager) Reconstruct(ctx context.Context) error {
+	var runList v1.RunList
+	if err := m.reader.List(ctx, &runList); err != nil {
+		return fmt.Errorf("list runs: %w", err)
+	}
+	runs := make(map[string]*v1.Run, len(runList.Items))
+	for i := range runList.Items {
+		r := &runList.Items[i]
+		runs[keys.NamespacedKey(r.Namespace, r.Name)] = r
+	}
+	var budgetList v1.BudgetList
+	if err := m.reader.List(ctx, &budgetList); err != nil {
+		return fmt.Errorf("list budgets: %w", err)
+	}
+	var leaseList v1.LeaseList
+	if err := m.reader.List(ctx, &leaseList); err != nil {
+		return fmt.Errorf("list leases: %w", err)
+	}
+	var nodeList corev1.NodeList
+	if err := m.reader.List(ctx, &nodeList); err != nil {
+		return fmt.Errorf("list nodes: %w", err)
+	}
+	var nodes []topology.SourceNode
+	for i := range nodeList.Items {
+		n := &nodeList.Items[i]
+		if !schedulableNode(n) {
+			continue
+		}
+		gpus := 0
+		if qty, ok := n.Status.Capacity[gpuResource]; ok {
+			gpus = int(qty.Value())
+		}
+		nodes = append(nodes, topology.SourceNode{Name: n.Name, Labels: n.Labels, GPUs: gpus})
+	}
+
+	// Group the OPEN, ACTIVE leases by gang key. Spares are not gang-active-width
+	// members (Permit gates on active width); closed leases are settled facts.
+	byGang := map[string][]*v1.Lease{}
+	cohortOfGang := map[string]string{}
+	runKeyOfGang := map[string]string{}
+	for i := range leaseList.Items {
+		l := &leaseList.Items[i]
+		if l.Status.Closed || l.Spec.Slice.Role == binder.RoleSpare {
+			continue
+		}
+		runKey := keys.NamespacedKey(l.Spec.RunRef.Namespace, l.Spec.RunRef.Name)
+		cohort := binder.LeaseCohort(l)
+		key := runKey
+		if cohort != "0" {
+			key = runKey + "#" + cohort
+		}
+		byGang[key] = append(byGang[key], l)
+		cohortOfGang[key] = cohort
+		runKeyOfGang[key] = runKey
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for key, leases := range byGang {
+		if m.gangs[key] != nil {
+			continue // already tracked (a gang that decided since start)
+		}
+		run := runs[runKeyOfGang[key]]
+		if run == nil {
+			continue // run gone — its orphan leases are cleanupDeletedRun's / the settle sweep's
+		}
+		gpusPerPod := len(leases[0].Spec.Slice.Nodes)
+		if gpusPerPod <= 0 {
+			gpusPerPod = 1
+		}
+		g := &gangCommit{decided: true, fundable: true, lastTouched: m.clock(), gpusPerPod: gpusPerPod, assigned: map[string]int{}}
+		// The already-minted members, from each lease's own provenance.
+		for _, l := range leases {
+			idx := len(g.payers)
+			g.payers = append(g.payers, cover.Segment{
+				Owner:        l.Spec.Owner,
+				Namespace:    l.Spec.PaidByBudgetNamespace,
+				BudgetName:   l.Spec.PaidByBudget,
+				EnvelopeName: l.Spec.PaidByEnvelope,
+			})
+			g.minted = append(g.minted, true)
+			if pn := binder.LeasePodName(l); pn != "" {
+				g.assigned[pn] = idx
+			}
+		}
+		g.claimed = len(g.payers)
+
+		// Delta-fund the un-minted remainder of the BASE gang only.
+		if cohortOfGang[key] == "0" {
+			expected := int(run.Spec.Resources.TotalGPUs) / gpusPerPod
+			if delta := expected - g.claimed; delta > 0 {
+				world := admission.Input{
+					Run: run, Budgets: budgetList.Items, Runs: runs, Leases: leaseList.Items,
+					Nodes: nodes, Now: m.clock(), Quantity: int32(delta * gpusPerPod),
+				}
+				if _, coverPlan, _, err := admission.Feasible(world); err == nil {
+					if deltaPayers, perr := admission.PerPodPayer(coverPlan, gpusPerPod); perr == nil {
+						for _, seg := range deltaPayers {
+							g.payers = append(g.payers, seg)
+							g.minted = append(g.minted, false)
+						}
+						g.pending = pendingLeases(run, deltaPayers, gpusPerPod, m.clock())
+					}
+				}
+				// If the delta cannot fund now (capacity gone / budget tightened), the
+				// survivor holds: committedCount is restored so the gate is no longer
+				// wedged, and the run re-admits through the controller's normal path.
+			}
+		}
+		m.gangs[key] = g
+	}
+	return nil
+}
+
 func (m *gangManager) verdict(pod *corev1.Pod) (fundable, decided bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -94,6 +94,12 @@ func New(ctx context.Context, _ apiruntime.Object, h fwk.Handle) (fwk.Plugin, er
 		client: c,
 		gm:     newGangManager(c, func() time.Time { return time.Now().UTC() }),
 	}
+	// Rebuild in-memory gang commitments from the open leases (R2 pt3): a scheduler
+	// restart otherwise resets committedCount to 0, and a lone surviving member of a
+	// partially-bound gang wedges. Non-fatal — the plugin still serves fresh gangs.
+	if err := j.gm.Reconstruct(ctx); err != nil {
+		utilruntime.HandleError(fmt.Errorf("jobtree plugin: gang reconstruction failed; partially-bound gangs may wedge until re-admit: %w", err))
+	}
 	// Backstop the PostBind fast path: periodically drop gang commits abandoned
 	// mid-flight so their phantom pending leases cannot leak into future funding
 	// decisions and m.gangs cannot grow without bound (R1). Stops with the
@@ -315,8 +321,25 @@ func (j *JobTree) PreBind(ctx context.Context, _ fwk.CycleState, pod *corev1.Pod
 	// belongs to and the exact pod it funds, so a scheduler restart can rebuild gang
 	// membership from the leases alone rather than string-parsing the lease name.
 	admission.StampGangIdentity(&lease, cohortOf(pod), pod.Name)
-	if err := j.client.Create(ctx, &lease); err != nil && !apierrors.IsAlreadyExists(err) {
-		return fwk.NewStatus(fwk.Error, fmt.Sprintf("jobtree: mint lease for %s: %v", pod.Name, err))
+	if err := j.client.Create(ctx, &lease); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return fwk.NewStatus(fwk.Error, fmt.Sprintf("jobtree: mint lease for %s: %v", pod.Name, err))
+		}
+		// IsAlreadyExists is success ONLY for a same-incarnation PreBind retry of THIS
+		// gang's own OPEN lease. The run nonce (R2) makes the name unique per
+		// incarnation, so a collision with a CLOSED lease (a prior incarnation's, the
+		// ABA hazard) or a lease of another run means the mint did not happen for us —
+		// swallowing it would leave this gang running with no open lease of its own,
+		// unfunded work the controller never adopts. Reject so the pod retries.
+		var existing v1.Lease
+		if gerr := j.client.Get(ctx, client.ObjectKey{Namespace: lease.Namespace, Name: leaseName}, &existing); gerr != nil {
+			return fwk.NewStatus(fwk.Error, fmt.Sprintf("jobtree: lease %s exists but cannot be read: %v", leaseName, gerr))
+		}
+		if existing.Status.Closed || existing.Spec.RunRef.Name != run.Name || existing.Spec.RunRef.Namespace != run.Namespace {
+			return fwk.NewStatus(fwk.Error, fmt.Sprintf(
+				"jobtree: lease %s already exists but is not this gang's open lease (closed=%v run=%s/%s); refusing to treat as minted",
+				leaseName, existing.Status.Closed, existing.Spec.RunRef.Namespace, existing.Spec.RunRef.Name))
+		}
 	}
 	// The real lease now exists in the API (created here, or already present on a
 	// retry). Retire this pod's phantom pending lease so the gang stops folding it
