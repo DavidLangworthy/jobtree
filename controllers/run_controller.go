@@ -139,10 +139,20 @@ func (c *RunController) Reconcile(namespace, name string) error {
 
 	now := c.Clock.Now()
 
-	// A gang whose active pods have all Succeeded is complete: finalize it and
-	// close its leases so it stops holding GPUs and charging its budget. A
-	// single pod failure neither completes nor fails the run (owner decision):
-	// the run keeps running until every active pod succeeds.
+	// The failure edge (R9 9A-3), BEFORE completion: a terminally Failed active pod
+	// means the gang cannot just "complete", and under the default Fail policy the
+	// run must fail and stop charging its budget rather than hang Running forever.
+	if run.Status.Phase == RunPhaseRunning {
+		if handled, res := c.handleWorkloadFailure(run, now); handled {
+			run.Status.Width = summarizeRunWidth(run, c.State.Leases)
+			result = res
+			return nil
+		}
+	}
+
+	// A gang whose active pods have all reached a terminal phase (Succeeded — or,
+	// under the Ignore policy, Failed) is complete: finalize it and close its leases
+	// so it stops holding GPUs and charging its budget.
 	if run.Status.Phase == RunPhaseRunning && c.runGangComplete(run) {
 		c.completeRun(run, now)
 		result = "completed"
@@ -507,6 +517,11 @@ func (c *RunController) mirrorETA(run *v1.Run, now time.Time) {
 // that Failed is simply not Succeeded, so it holds the run open rather than
 // completing or failing it.
 func (c *RunController) runGangComplete(run *v1.Run) bool {
+	// Under the Ignore failure policy (R9 9A-3) a terminally Failed active pod is a
+	// terminal member, not a blocker — an embarrassingly-parallel role completes when
+	// every member has finished, succeeded or not.
+	policy, _, _ := failurePolicyFor(run)
+	ignoreFailed := policy == v1.FailurePolicyIgnore
 	sawActive := false
 	for i := range c.State.Pods {
 		pod := &c.State.Pods[i]
@@ -517,9 +532,13 @@ func (c *RunController) runGangComplete(run *v1.Run) bool {
 			continue
 		}
 		sawActive = true
-		if pod.Phase != binder.PodPhaseSucceeded {
-			return false
+		if pod.Phase == binder.PodPhaseSucceeded {
+			continue
 		}
+		if ignoreFailed && pod.Phase == binder.PodPhaseFailed {
+			continue
+		}
+		return false
 	}
 	return sawActive
 }
@@ -541,6 +560,148 @@ func (c *RunController) completeRun(run *v1.Run, now time.Time) {
 	run.Status.Funding = summarizeRunFunding(run, c.evaluate(now))
 	metrics.ClearElasticWidth(runKey)
 	c.emit(run, EventTypeNormal, "Completed", run.Status.Message)
+}
+
+// failurePolicyFor returns a run's role FailurePolicy (default Fail) with its Retries
+// and Backoff (R9 9A-3). A legacy Roles-less run uses the default.
+func failurePolicyFor(run *v1.Run) (policy string, retries int32, backoff time.Duration) {
+	if len(run.Spec.Roles) == 0 {
+		return v1.FailurePolicyFail, 0, 0
+	}
+	r := &run.Spec.Roles[0]
+	policy = r.FailurePolicy
+	if policy == "" {
+		policy = v1.FailurePolicyFail
+	}
+	if r.Retries != nil {
+		retries = *r.Retries
+	}
+	if r.Backoff != nil {
+		backoff = r.Backoff.Duration
+	}
+	return policy, retries, backoff
+}
+
+// firstFailedActivePod returns the run's first terminally-Failed active (non-spare)
+// pod, or nil.
+func (c *RunController) firstFailedActivePod(run *v1.Run) *binder.PodManifest {
+	for i := range c.State.Pods {
+		p := &c.State.Pods[i]
+		if p.Namespace != run.Namespace || p.Labels[binder.LabelRunName] != run.Name {
+			continue
+		}
+		if p.Labels[binder.LabelRunRole] == binder.RoleSpare {
+			continue
+		}
+		if p.Phase == binder.PodPhaseFailed {
+			return p
+		}
+	}
+	return nil
+}
+
+// handleWorkloadFailure applies the run's role FailurePolicy to a terminally failed
+// active pod (R9 9A-3). It returns handled=true when it has decided the pass — the
+// run failed, or a retry was issued or is backing off. Ignore returns handled=false
+// so the completion gate (which counts a Failed pod as terminal under Ignore)
+// finalizes the run; a run with no failed active pod also returns false.
+func (c *RunController) handleWorkloadFailure(run *v1.Run, now time.Time) (handled bool, result string) {
+	failed := c.firstFailedActivePod(run)
+	if failed == nil {
+		return false, ""
+	}
+	policy, retries, backoff := failurePolicyFor(run)
+	switch policy {
+	case v1.FailurePolicyIgnore:
+		return false, "" // the completion gate treats a Failed member as terminal here
+
+	case v1.FailurePolicyRetry:
+		if run.Status.FailedAttempts < retries {
+			// Backoff: park until the deadline so a crash-looping member does not spin.
+			if backoff > 0 {
+				if run.Status.RetryAfter == nil {
+					d := v1.NewTime(now.Add(backoff))
+					run.Status.RetryAfter = &d
+					c.emit(run, EventTypeWarning, "WorkloadRetryScheduled",
+						fmt.Sprintf("active pod %s failed; retrying after %s", failed.Name, backoff))
+					return true, "retrying"
+				}
+				if now.Before(run.Status.RetryAfter.Time) {
+					return true, "retrying" // still backing off; the reconcile requeues
+				}
+			}
+			// Close the failed member's still-open lease (else it charges forever and
+			// the re-emitted member's fresh lease double-counts the rank), drop the
+			// pod, and re-emit the missing member — the plugin re-mints its lease.
+			c.closeMemberLease(run, failed.NodeName, now)
+			c.dropPod(failed.Namespace, failed.Name)
+			run.Status.FailedAttempts++
+			run.Status.RetryAfter = nil
+			created := c.topUpActiveGang(run)
+			c.emit(run, EventTypeWarning, "WorkloadRetry",
+				fmt.Sprintf("re-emitting failed active pod %s (attempt %d/%d, %d pod(s))", failed.Name, run.Status.FailedAttempts, retries, created))
+			return true, "retrying"
+		}
+		// Retries exhausted → fall through to Fail.
+	}
+
+	// Fail (default), or Retry exhausted.
+	c.failWorkload(run, fmt.Sprintf("active pod %s terminally failed; failing the gang", failed.Name), now)
+	return true, "failed"
+}
+
+// failWorkload drives the failure edge (R9 9A-3): terminal Failed, close the run's
+// open leases (WorkloadFailed) and drop its pods, and clear parked-state fields so a
+// follower's grace path sees an honest terminal upstream instead of hanging.
+func (c *RunController) failWorkload(run *v1.Run, msg string, now time.Time) {
+	run.Status.Phase = RunPhaseFailed
+	run.Status.Message = msg
+	run.Status.PendingReservation = nil
+	run.Status.EarliestStart = nil
+	run.Status.FollowDeadline = nil
+	run.Status.CheckpointDeadline = nil
+	run.Status.RetryAfter = nil
+	if closed := c.releaseRun(run, "WorkloadFailed", now); closed > 0 {
+		c.emit(run, EventTypeWarning, "LeasesReleased",
+			fmt.Sprintf("released %d open lease(s) held by the failed run", closed))
+	}
+	c.emit(run, EventTypeWarning, "WorkloadFailed", msg)
+}
+
+// closeMemberLease closes the run's open active lease on node (a failed member's
+// lease) so a Retry re-emit does not leave two open leases for one rank.
+func (c *RunController) closeMemberLease(run *v1.Run, node string, now time.Time) {
+	if node == "" {
+		return
+	}
+	runKey := keys.NamespacedKey(run.Namespace, run.Name)
+	for i := range c.State.Leases {
+		l := &c.State.Leases[i]
+		if l.Status.Closed || l.Spec.Slice.Role == binder.RoleSpare {
+			continue
+		}
+		if keys.NamespacedKey(l.Spec.RunRef.Namespace, l.Spec.RunRef.Name) != runKey {
+			continue
+		}
+		for _, slot := range l.Spec.Slice.Nodes {
+			if nodeFromSlot(slot) == node {
+				CloseLease(l, "WorkloadFailed", now)
+				return
+			}
+		}
+	}
+}
+
+// dropPod removes one pod manifest from state so Bridge.apply deletes it.
+func (c *RunController) dropPod(namespace, name string) {
+	kept := c.State.Pods[:0]
+	for _, p := range c.State.Pods {
+		if p.Namespace == namespace && p.Name == name {
+			continue
+		}
+		kept = append(kept, p)
+	}
+	c.State.Pods = kept
 }
 
 // isPreAdmission reports whether a run has not yet started or terminated, so
@@ -1367,8 +1528,10 @@ func (c *RunController) HandleNodeFailure(nodeName string, now time.Time) error 
 		// Re-emit the group's pod as a SWAP onto the reclaimed spare node,
 		// stamped with the spare's funding provenance; the scheduler plugin binds
 		// it there (required node affinity) and mints the Swap lease from that
-		// provenance — the sole committer. We mint nothing here.
-		c.emitSwapPod(run, groupIndex, spareLease, now)
+		// provenance — the sole committer. We mint nothing here. It inherits the
+		// failed member's rendezvous hostname (R9 9A-1), so nodeName (the failed
+		// node) is passed to find the member being replaced.
+		c.emitSwapPod(run, groupIndex, spareLease, nodeName, now)
 		msg := fmt.Sprintf("group %s swapping to spare after node %s failure", groupIndex, nodeName)
 		// Running is the mildest outcome: it must not overwrite a sibling group's
 		// Failed or Pending, whichever order the leases happen to be in.
@@ -2475,15 +2638,23 @@ func nextCohortForRun(pods []binder.PodManifest, run *v1.Run) int {
 // spare node, carrying the spare's funding provenance (owner/budget/envelope) so
 // the plugin mints the Swap lease from it without re-funding. The controller
 // mints nothing.
-func (c *RunController) emitSwapPod(run *v1.Run, groupIndex string, spareLease *v1.Lease, now time.Time) {
+func (c *RunController) emitSwapPod(run *v1.Run, groupIndex string, spareLease *v1.Lease, failedNode string, now time.Time) {
 	slots := spareLease.Spec.Slice.Nodes
 	if len(slots) == 0 {
 		return
 	}
 	node := nodeFromSlot(slots[0])
+	// Inherit the rendezvous identity of the member that died on the failed node
+	// (R9 9A-1), and remove that dead pod so its stale DNS A record does not shadow
+	// the replacement. The swap pod keeps a fresh, UNIQUE object name — Bridge.apply
+	// diffs pods by name, so reusing the dead pod's name in the same pass would be a
+	// no-op collision — but serves the same `<hostname>.<svc>` address, so training
+	// ranks re-rendezvous to the same member with no reconfiguration.
+	hostname := c.takeOverFailedMember(run, groupIndex, failedNode)
 	c.State.Pods = append(c.State.Pods, binder.PodManifest{
 		Namespace: run.Namespace,
 		Name:      fmt.Sprintf("%s-g%s-swap-%d", run.Name, groupIndex, now.UnixNano()),
+		Hostname:  hostname,
 		NodeName:  node,
 		GPUs:      len(slots),
 		Labels: map[string]string{
@@ -2501,6 +2672,32 @@ func (c *RunController) emitSwapPod(run *v1.Run, groupIndex string, spareLease *
 			binder.AnnotationPayerEnvelope:  spareLease.Spec.PaidByEnvelope,
 		},
 	})
+}
+
+// takeOverFailedMember removes the run's Active pod that died on failedNode in group
+// and returns its rendezvous hostname for the swap replacement to inherit (R9 9A-1).
+// Removing it deletes the dead pod's stale DNS record (Bridge.apply deletes pods
+// absent from state.Pods) so it cannot shadow the replacement's `<hostname>.<svc>`.
+// Returns "" when no such pod is present — the pod already GC'd with its node — in
+// which case the swap takes a fresh identity and that rank re-rendezvous on the new
+// address (correct, just not name-stable for that one member).
+func (c *RunController) takeOverFailedMember(run *v1.Run, group, failedNode string) string {
+	for i := range c.State.Pods {
+		p := &c.State.Pods[i]
+		if p.Namespace != run.Namespace || p.Labels[binder.LabelRunName] != run.Name {
+			continue
+		}
+		if p.Labels[binder.LabelRunRole] != binder.RoleActive || podGroupIndex(p) != group || p.NodeName != failedNode {
+			continue
+		}
+		hostname := p.Name
+		if p.Hostname != "" {
+			hostname = p.Hostname
+		}
+		c.State.Pods = append(c.State.Pods[:i], c.State.Pods[i+1:]...)
+		return hostname
+	}
+	return ""
 }
 
 // intentPodShape returns the uniform (gpusPerPod, width) an intent gang emits.

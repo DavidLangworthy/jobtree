@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,6 +17,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
@@ -306,9 +309,18 @@ func (b *Bridge) apply(ctx context.Context, snap *worldSnapshot) error {
 	for _, pod := range state.Pods {
 		current[keys.NamespacedKey(pod.Namespace, pod.Name)] = pod
 	}
+	ensuredSvc := map[string]bool{}
 	for key, manifest := range current {
 		if _, existed := snap.pods[key]; !existed {
 			run := state.Runs[keys.NamespacedKey(manifest.Namespace, manifest.Labels[binder.LabelRunName])]
+			// The pod's subdomain names the run's headless Service; create it before
+			// the pod so `<hostname>.<svc>` resolves as soon as the pod is up (R9 9A-1).
+			if run != nil && !ensuredSvc[run.Name] {
+				if err := b.ensureRunService(ctx, run); err != nil {
+					return fmt.Errorf("ensure rendezvous service for run %s: %w", run.Name, err)
+				}
+				ensuredSvc[run.Name] = true
+			}
 			if err := b.Client.Create(ctx, buildPod(manifest, run)); err != nil {
 				return fmt.Errorf("create pod %s: %w", key, err)
 			}
@@ -475,6 +487,11 @@ func buildPod(manifest binder.PodManifest, run *v1.Run) *corev1.Pod {
 		c.Resources.Limits[GPUCapacityResource] = *q
 	}
 
+	// Rendezvous env for distributed training (R9 9A-2), derived from the pod's
+	// ordinal hostname + the run's shape — so it is correct on every mint path
+	// (initial, top-up, swap) without per-path stamping.
+	injectRendezvousEnv(&spec, targetIdx, run, manifest)
+
 	// Advisory placement toward pack's chosen node: a preference the plugin's
 	// Filter/Score honor, NOT a pin.
 	if manifest.NodeName != "" {
@@ -510,6 +527,23 @@ func buildPod(manifest binder.PodManifest, run *v1.Run) *corev1.Pod {
 		requireNode(&spec, swapNode)
 	}
 
+	// Stable rendezvous identity (R9 9A-1): hostname + the run's headless-Service
+	// subdomain give the pod a deterministic DNS name for distributed training.
+	// hostname defaults to the pod name (already the deterministic ordinal); a swap
+	// pod overrides it to the member it replaced. Both must be DNS-1123 labels, so a
+	// pathologically long name degrades to no rendezvous DNS rather than an invalid
+	// (uncreatable) pod that would wedge the run.
+	if run != nil {
+		hostname := manifest.Name
+		if manifest.Hostname != "" {
+			hostname = manifest.Hostname
+		}
+		if svc := runServiceName(run); len(validation.IsDNS1123Label(hostname)) == 0 && len(validation.IsDNS1123Label(svc)) == 0 {
+			spec.Hostname = hostname
+			spec.Subdomain = svc
+		}
+	}
+
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace:       manifest.Namespace,
@@ -520,6 +554,121 @@ func buildPod(manifest binder.PodManifest, run *v1.Run) *corev1.Pod {
 		},
 		Spec: spec,
 	}
+}
+
+// runServiceName is the name of a Run's headless Service (R9 9A-1). Pods set it as
+// their subdomain so `<hostname>.<runServiceName>.<ns>.svc` resolves to the pod; the
+// bridge creates one such Service per Run, owned by the Run so it is GC'd with it.
+func runServiceName(run *v1.Run) string { return run.Name }
+
+// ensureRunService creates the Run's headless Service (R9 9A-1) if it does not yet
+// exist: ClusterIP=None so DNS publishes per-pod A records, a selector on the run's
+// pods, and publishNotReadyAddresses so ranks resolve each other DURING startup
+// rendezvous (before any container is Ready — otherwise a distributed job deadlocks
+// waiting for endpoints that only appear once it is already up). Owned by the Run,
+// so kube GC deletes it with the Run (no hand-rolled cleanup). Idempotent.
+func (b *Bridge) ensureRunService(ctx context.Context, run *v1.Run) error {
+	if run == nil || run.UID == "" {
+		return nil // a pure-engine run has no UID to anchor GC; skip (buildPod also skips DNS)
+	}
+	name := runServiceName(run)
+	if len(validation.IsDNS1123Label(name)) != 0 {
+		return nil // not a legal Service name; buildPod likewise omitted the subdomain
+	}
+	var existing corev1.Service
+	err := b.APIReader.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: name}, &existing)
+	if err == nil {
+		return nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return err
+	}
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:       run.Namespace,
+			Name:            name,
+			OwnerReferences: runOwnerReferences(run),
+		},
+		Spec: corev1.ServiceSpec{
+			ClusterIP:                corev1.ClusterIPNone,
+			Selector:                 map[string]string{binder.LabelRunName: run.Name},
+			PublishNotReadyAddresses: true,
+		},
+	}
+	if err := b.Client.Create(ctx, svc); err != nil && !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	return nil
+}
+
+// injectRendezvousEnv sets torch-style rendezvous env on a FIXED-width gang's Active
+// pods (R9 9A-2). It is deliberately NOT applied to a malleable run (a static
+// WORLD_SIZE is wrong for a run that resizes — elastic rendezvous is a separate
+// thing), nor to spares, nor to width-1 runs. RANK/LOCAL_RANK are omitted on purpose:
+// those are per-process, and torchrun derives them from NODE_RANK + nproc-per-node.
+// Everything is derived from the pod's ordinal hostname and the run, so it is correct
+// on every mint path (initial/top-up/swap) without per-path stamping.
+func injectRendezvousEnv(spec *corev1.PodSpec, targetIdx int, run *v1.Run, manifest binder.PodManifest) {
+	if run == nil || run.Spec.Malleable != nil || manifest.Labels[binder.LabelRunRole] != binder.RoleActive {
+		return
+	}
+	gpusPerPod, width := gangShape(run)
+	if width <= 1 || targetIdx < 0 || targetIdx >= len(spec.Containers) {
+		return
+	}
+	svc := runServiceName(run)
+	if len(validation.IsDNS1123Label(svc)) != 0 {
+		return // no headless-Service DNS name, so no rendezvous address to hand out
+	}
+	hostname := manifest.Name
+	if manifest.Hostname != "" {
+		hostname = manifest.Hostname
+	}
+	rank := podOrdinal(hostname)
+	if rank < 0 {
+		return
+	}
+	vals := map[string]string{
+		"MASTER_ADDR": fmt.Sprintf("%s-active-0.%s.%s.svc", run.Name, svc, run.Namespace),
+		"MASTER_PORT": "29500",
+		"WORLD_SIZE":  strconv.Itoa(width * gpusPerPod),
+		"NNODES":      strconv.Itoa(width),
+		"NODE_RANK":   strconv.Itoa(rank),
+	}
+	ct := &spec.Containers[targetIdx]
+	kept := ct.Env[:0]
+	for _, e := range ct.Env {
+		if _, owned := vals[e.Name]; !owned {
+			kept = append(kept, e)
+		}
+	}
+	ct.Env = kept
+	for _, name := range v1.ReservedRendezvousEnvNames {
+		ct.Env = append(ct.Env, corev1.EnvVar{Name: name, Value: vals[name]})
+	}
+}
+
+// gangShape is the (gpusPerPod, pod-count) of a run's base gang — mirrors
+// controllers.intentPodShape across the package boundary.
+func gangShape(run *v1.Run) (gpusPerPod, width int) {
+	if len(run.Spec.Roles) > 0 {
+		r := &run.Spec.Roles[0]
+		return int(r.GPUsPerPod), int(r.Width)
+	}
+	return 1, int(run.Spec.Resources.TotalGPUs)
+}
+
+// podOrdinal parses the rank from a pod's ordinal name/hostname (`…-<i>`); -1 if none.
+func podOrdinal(name string) int {
+	i := strings.LastIndex(name, "-")
+	if i < 0 || i == len(name)-1 {
+		return -1
+	}
+	n, err := strconv.Atoi(name[i+1:])
+	if err != nil || n < 0 {
+		return -1
+	}
+	return n
 }
 
 // runOwnerReferences ties an emitted workload pod to its owning Run: it makes the

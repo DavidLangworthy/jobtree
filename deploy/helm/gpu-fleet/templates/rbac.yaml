@@ -26,6 +26,11 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch", "create", "delete"]
+  # R9 9A-1: one headless Service per Run for rendezvous DNS. The controller creates
+  # it; the apiserver GCs it via the Run ownerRef, so no delete verb is needed here.
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create"]
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]

@@ -56,6 +56,13 @@ type RunSpec struct {
 // one definition.
 const GPUTargetContainerName = "workload"
 
+// Failure policies for a RunRole (R9 9A-3). Fail is the default (empty string).
+const (
+	FailurePolicyFail   = "Fail"
+	FailurePolicyRetry  = "Retry"
+	FailurePolicyIgnore = "Ignore"
+)
+
 // RunRole is one homogeneous pool of pods within a Run — the unit jobtree
 // materializes as a cohort of pods it owns. (JobSet calls the same shape a
 // ReplicatedJob; we keep the shape as a reference contract and not as a
@@ -107,6 +114,28 @@ type RunRole struct {
 	// Spares optionally overrides spec.sparesPerGroup for this role: hot spares
 	// held per group for fast node-failure swap. Non-negative when set.
 	Spares *int32 `json:"spares,omitempty"`
+
+	// FailurePolicy decides what happens when an active pod of this role terminally
+	// Fails (R9 9A-3). The default is Fail: a lost rank hangs fixed-world-size
+	// training and leaving the run Running charges its budget forever, so the safe,
+	// honest default is to fail the whole gang and stop the funding.
+	//   Fail   (default) — any active pod failing fails the run; leases close
+	//                      (WorkloadFailed) and followers unblock.
+	//   Retry  — re-emit the failed member up to Retries times (attempts tracked in
+	//            status), then Fail. For transient crashes.
+	//   Ignore — a Failed active pod counts as terminal for the completion gate; for
+	//            embarrassingly-parallel roles where one pod dying is fine.
+	// +kubebuilder:validation:Enum=Fail;Retry;Ignore
+	FailurePolicy string `json:"failurePolicy,omitempty"`
+
+	// Retries is the number of times a Retry-policy role re-emits a failed member
+	// before failing the run. Required (positive) when FailurePolicy is Retry.
+	Retries *int32 `json:"retries,omitempty"`
+
+	// Backoff is an optional delay before re-emitting a failed member under Retry:
+	// the run waits this long (parked, via status.retryAfter) before the next
+	// attempt. Zero/unset re-emits immediately.
+	Backoff *metav1.Duration `json:"backoff,omitempty"`
 }
 
 // GPUTargetContainerIndex returns the index of the container that receives the
@@ -198,6 +227,12 @@ type RunStatus struct {
 	// terminally. A zero/unset Checkpoint keeps the old behavior of failing
 	// immediately on an uncovered node failure.
 	CheckpointDeadline *metav1.Time `json:"checkpointDeadline,omitempty"`
+	// FailedAttempts counts how many times a Retry-policy run has re-emitted a
+	// failed member (R9 9A-3). At the role's Retries, the run Fails.
+	FailedAttempts int32 `json:"failedAttempts,omitempty"`
+	// RetryAfter is set while a Retry-policy run waits out its Backoff before the
+	// next re-emit, so a crash-looping member does not re-emit in a tight spin.
+	RetryAfter *metav1.Time `json:"retryAfter,omitempty"`
 }
 
 // RunETA is an optional, best-effort estimate of when the run will finish. It
@@ -394,6 +429,18 @@ func (s *RunSpec) validateRoles() error {
 	if role.Spares != nil && *role.Spares < 0 {
 		return fmt.Errorf("spec.roles[0].spares must be >= 0 when set")
 	}
+	switch role.FailurePolicy {
+	case "", FailurePolicyFail, FailurePolicyIgnore:
+		if role.Retries != nil {
+			return fmt.Errorf("spec.roles[0].retries is only valid with failurePolicy Retry")
+		}
+	case FailurePolicyRetry:
+		if role.Retries == nil || *role.Retries <= 0 {
+			return fmt.Errorf("spec.roles[0].retries must be positive when failurePolicy is Retry")
+		}
+	default:
+		return fmt.Errorf("spec.roles[0].failurePolicy %q must be Fail, Retry, or Ignore", role.FailurePolicy)
+	}
 	return role.validateTemplate()
 }
 
@@ -403,10 +450,25 @@ func (s *RunSpec) validateRoles() error {
 // template: at least one container, a non-empty image on the GPU-target
 // container, and none of the jobtree-owned pod fields (nodeName, schedulerName,
 // restartPolicy) set by the researcher.
+// ReservedRendezvousEnvNames are container env vars jobtree injects for
+// distributed-training rendezvous (R9 9A-2). A researcher must not set them: the
+// injected value is authoritative, and a researcher-set one would only be silently
+// overridden, so reject it at submission instead of confusing them later.
+var ReservedRendezvousEnvNames = []string{"MASTER_ADDR", "MASTER_PORT", "WORLD_SIZE", "NNODES", "NODE_RANK"}
+
 func (r *RunRole) validateTemplate() error {
 	spec := &r.Template.Spec
 	if len(spec.Containers) == 0 {
 		return fmt.Errorf("spec.roles[0].template must define at least one container")
+	}
+	for i := range spec.Containers {
+		for _, e := range spec.Containers[i].Env {
+			for _, reserved := range ReservedRendezvousEnvNames {
+				if e.Name == reserved {
+					return fmt.Errorf("spec.roles[0].template: container %q sets env %q, which jobtree owns for distributed-training rendezvous (R9 9A-2) — remove it", spec.Containers[i].Name, e.Name)
+				}
+			}
+		}
 	}
 	target := r.GPUTargetContainerIndex()
 	if target < 0 || spec.Containers[target].Image == "" {

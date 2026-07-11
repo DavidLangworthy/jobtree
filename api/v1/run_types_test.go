@@ -266,3 +266,28 @@ func TestRunDefaultSetsDesired(t *testing.T) {
 		t.Fatalf("expected desired to equal max when defaulted, got %d", *run.Spec.Malleable.DesiredTotalGPUs)
 	}
 }
+
+func TestValidateRejectsReservedRendezvousEnv(t *testing.T) {
+	run := &Run{
+		ObjectMeta: ObjectMeta{Name: "train", Namespace: "default"},
+		Spec: RunSpec{
+			Owner:     "org:team",
+			Resources: RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
+			Roles: []RunRole{{
+				Name: "worker", Width: 4, GPUsPerPod: 1,
+				Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{
+					Name: GPUTargetContainerName, Image: "trainer:1",
+					Env: []corev1.EnvVar{{Name: "MASTER_ADDR", Value: "researcher-set"}},
+				}}}},
+			}},
+		},
+	}
+	if err := run.ValidateCreate(); err == nil {
+		t.Fatalf("a Run whose container sets a jobtree-owned rendezvous env (MASTER_ADDR) must be rejected")
+	}
+	// The same run without the reserved env validates.
+	run.Spec.Roles[0].Template.Spec.Containers[0].Env = nil
+	if err := run.ValidateCreate(); err != nil {
+		t.Fatalf("the same run without the reserved env must validate, got %v", err)
+	}
+}

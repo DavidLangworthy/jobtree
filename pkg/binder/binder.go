@@ -124,6 +124,11 @@ type Result struct {
 // binder need no Kubernetes API dependency.
 const PodPhaseSucceeded = "Succeeded"
 
+// PodPhaseFailed is the workload-pod phase that signals a member terminally failed
+// (crash, OOM, non-zero exit). The run controller drives the R9 9A-3 failure edge
+// off it: apply the role's FailurePolicy instead of holding the run open forever.
+const PodPhaseFailed = "Failed"
+
 // EtaAnnotation is the pod annotation a workload sets to report an estimated
 // completion time (RFC3339); the run controller mirrors it into
 // Run.status.eta. Optional and observability only.
@@ -141,6 +146,13 @@ type PodManifest struct {
 	Labels      map[string]string
 	Annotations map[string]string
 	Phase       string
+	// Hostname is the pod's stable rendezvous identity (R9 9A-1): the DNS name
+	// `<Hostname>.<run-service>.<ns>.svc` resolves to this pod under the run's
+	// headless Service. Empty means "use Name" — true for every normal pod, whose
+	// name is already its deterministic ordinal. A SWAP pod sets it explicitly to
+	// the ordinal of the member it replaces, so the replacement keeps that member's
+	// rank/address while carrying a fresh, unique object Name (apply diffs by name).
+	Hostname string
 	// Terminating is true when the API object carries a DeletionTimestamp: the
 	// kubelet is draining it and its GPUs are being reclaimed. The engine keeps
 	// it in the world (so apply neither re-creates its name nor re-issues the

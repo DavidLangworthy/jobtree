@@ -193,7 +193,11 @@ func (r *RunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	podWatch := predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
 			pod, ok := e.Object.(*corev1.Pod)
-			return ok && (pod.Status.Phase == corev1.PodSucceeded || pod.Annotations[binder.EtaAnnotation] != "")
+			// Succeeded → completion (B0); Failed → the R9 9A-3 failure edge; an ETA
+			// annotation → status mirror (A). A watch replay after a restart re-lists
+			// an already-terminal pod as a create, so both terminal phases must fire.
+			return ok && (pod.Status.Phase == corev1.PodSucceeded ||
+				pod.Status.Phase == corev1.PodFailed || pod.Annotations[binder.EtaAnnotation] != "")
 		},
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			oldPod, ok1 := e.ObjectOld.(*corev1.Pod)
@@ -202,6 +206,10 @@ func (r *RunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				return false
 			}
 			if newPod.Status.Phase == corev1.PodSucceeded && oldPod.Status.Phase != corev1.PodSucceeded {
+				return true
+			}
+			// A member crossing into Failed drives the failure edge (R9 9A-3).
+			if newPod.Status.Phase == corev1.PodFailed && oldPod.Status.Phase != corev1.PodFailed {
 				return true
 			}
 			return oldPod.Annotations[binder.EtaAnnotation] != newPod.Annotations[binder.EtaAnnotation]

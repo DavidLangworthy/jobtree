@@ -154,6 +154,29 @@ spec:
                     template plus the width/topology/spare knobs that were previously spread
                     across RunSpec, so a future multi-role Run can size each role independently.
                   properties:
+                    backoff:
+                      description: |-
+                        Backoff is an optional delay before re-emitting a failed member under Retry:
+                        the run waits this long (parked, via status.retryAfter) before the next
+                        attempt. Zero/unset re-emits immediately.
+                      type: string
+                    failurePolicy:
+                      description: |-
+                        FailurePolicy decides what happens when an active pod of this role terminally
+                        Fails (R9 9A-3). The default is Fail: a lost rank hangs fixed-world-size
+                        training and leaving the run Running charges its budget forever, so the safe,
+                        honest default is to fail the whole gang and stop the funding.
+                          Fail   (default) — any active pod failing fails the run; leases close
+                                             (WorkloadFailed) and followers unblock.
+                          Retry  — re-emit the failed member up to Retries times (attempts tracked in
+                                   status), then Fail. For transient crashes.
+                          Ignore — a Failed active pod counts as terminal for the completion gate; for
+                                   embarrassingly-parallel roles where one pod dying is fine.
+                      enum:
+                      - Fail
+                      - Retry
+                      - Ignore
+                      type: string
                     gpusPerPod:
                       description: |-
                         GPUsPerPod is the nvidia.com/gpu request (== limit, extended resources
@@ -172,6 +195,12 @@ spec:
                         Name identifies the role (e.g. "trainer"). It becomes the gang-role label
                         value and the pod-name prefix, so it must be a non-empty DNS label.
                       type: string
+                    retries:
+                      description: |-
+                        Retries is the number of times a Retry-policy role re-emits a failed member
+                        before failing the run. Required (positive) when FailurePolicy is Retry.
+                      format: int32
+                      type: integer
                     spares:
                       description: |-
                         Spares optionally overrides spec.sparesPerGroup for this role: hot spares
@@ -261,6 +290,12 @@ spec:
                 required:
                 - estimatedCompletion
                 type: object
+              failedAttempts:
+                description: |-
+                  FailedAttempts counts how many times a Retry-policy run has re-emitted a
+                  failed member (R9 9A-3). At the role's Retries, the run Fails.
+                format: int32
+                type: integer
               followDeadline:
                 description: |-
                   FollowDeadline is set while the run waits on a failed upstream under the
@@ -320,6 +355,12 @@ spec:
               pendingReservation:
                 type: string
               phase:
+                type: string
+              retryAfter:
+                description: |-
+                  RetryAfter is set while a Retry-policy run waits out its Backoff before the
+                  next re-emit, so a crash-looping member does not re-emit in a tight spin.
+                format: date-time
                 type: string
               width:
                 description: RunWidthStatus summarises elastic width bookkeeping.
