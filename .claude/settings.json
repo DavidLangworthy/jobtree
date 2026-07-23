@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git branch *)",
+      "Bash(git show *)",
+      "Bash(make verify)",
+      "Bash(make envtest)",
+      "Bash(make antifake)",
+      "Bash(go build *)",
+      "Bash(go vet *)",
+      "Bash(go test *)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(git push --force *)",
+      "Bash(git push -f *)",
+      "Bash(git reset --hard *)",
+      "Bash(git clean -fdx *)",
+      "Bash(gh pr merge *)",
+      "Bash(gh release *)",
+      "Bash(gh repo delete *)",
+      "Bash(gh auth *)",
+      "Read(./.env)",
+      "Read(**/auth.json)",
+      "Read(**/*.pem)",
+      "Read(**/id_rsa*)"
+    ]
+  }
+}
