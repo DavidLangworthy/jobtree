@@ -8,7 +8,11 @@
 # applies under bypass) plus the PARK LIST in the playbook, which the agent is told to obey.
 #
 #   docs/project/autonomous-run-playbook.md   <- the operating contract (READ THIS)
-#   .claude/settings.json                     <- deny guardrails that hold under bypass
+#   hack/autopilot-settings.json              <- the autopilot's OWN guardrails (passed via
+#                                                --settings): it CANNOT `gh pr merge`, so it
+#                                                never merges protected main. The shared
+#                                                .claude/settings.json lets a supervised human
+#                                                session merge; this file re-denies it here.
 #
 # Effort:  runs Opus at maximum thinking (AUTOPILOT_MODEL, MAX_THINKING_TOKENS below).
 # Limits:  when usage limits are hit, it WAITS for the reset and resumes (with a heartbeat
@@ -26,7 +30,7 @@
 # If the Codespace is suspended anyway, just re-run this script — `--continue` resumes.
 
 set -uo pipefail
-cd "$(git rev-parse --show-toplevel)"
+ROOT="$(git rev-parse --show-toplevel)"; cd "$ROOT"
 
 command -v claude >/dev/null 2>&1 || { echo "error: 'claude' CLI not found on PATH" >&2; exit 1; }
 
@@ -58,7 +62,9 @@ rm -f "$SENTINEL"
 heartbeat() { while true; do date -u +">> autopilot-alive %FT%TZ"; sleep 110; done; }
 heartbeat & HEARTBEAT_PID=$!
 cleanup() { kill "$HEARTBEAT_PID" 2>/dev/null || true; }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+# Ctrl-C must actually STOP the loop, not just interrupt one turn and roll to the next.
+trap 'cleanup; echo ">> autopilot: interrupted — stopping."; exit 130' INT TERM
 
 # Try to raise the idle timeout to the max (best-effort; ignore if gh/flag unsupported).
 if command -v gh >/dev/null 2>&1 && [ -n "${CODESPACE_NAME:-}" ]; then
@@ -111,7 +117,11 @@ run_claude() {  # $1 = prompt, $2 = "first" | "resume"
   # --verbose streams the turn's progress live (tool calls, messages) so you can watch it
   # instead of staring at heartbeats. If your CLI version still buffers, switch the format to
   #   --output-format stream-json --verbose   (noisier JSON, but definitely streams).
-  local args=(--dangerously-skip-permissions --model "$AUTOPILOT_MODEL" --verbose)
+  # --settings gives the autopilot its OWN guardrails (hack/autopilot-settings.json) — most
+  # importantly it re-denies `gh pr merge`, so the unattended run can never merge protected
+  # main, even though the shared .claude/settings.json lets a supervised human session do so.
+  local args=(--dangerously-skip-permissions --model "$AUTOPILOT_MODEL" --verbose
+              --settings "$ROOT/hack/autopilot-settings.json")
   [ "$mode" = "resume" ] && args+=(--continue)
   args+=(-p "$prompt")
   claude "${args[@]}" 2>&1 | tee "$LOG"
