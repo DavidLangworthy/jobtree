@@ -19,7 +19,8 @@ spec:
         {{- toYaml .Values.imagePullSecrets | nindent 8 }}
       containers:
         - name: manager
-          image: {{ .Values.controller.image }}
+          image: {{ include "gpu-fleet.image" (list $ .Values.controller.image) }}
+          imagePullPolicy: {{ include "gpu-fleet.imagePullPolicy" (list $ .Values.controller.image) }}
           args:
             - "--metrics-bind-address=:{{ .Values.controller.metricsPort }}"
             - "--health-probe-bind-address=:{{ .Values.controller.healthPort }}"
@@ -65,27 +66,3 @@ spec:
       nodeSelector: {{- toYaml .Values.nodeSelector | nindent 8 }}
       tolerations: {{- toYaml .Values.tolerations | nindent 8 }}
       affinity: {{- toYaml .Values.affinity | nindent 8 }}
----
-{{- if .Values.notifier.enabled }}
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: {{ include "gpu-fleet.notifierName" . }}
-  labels: {{- include "gpu-fleet.labels" . | nindent 4 }}
-spec:
-  replicas: {{ .Values.notifier.replicas }}
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: {{ include "gpu-fleet.notifierName" . }}
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: {{ include "gpu-fleet.notifierName" . }}
-        {{- include "gpu-fleet.labels" . | nindent 8 }}
-    spec:
-      serviceAccountName: {{ .Values.controller.serviceAccount }}
-      containers:
-        - name: notifier
-          image: {{ .Values.notifier.image }}
-          resources: {{- toYaml .Values.notifier.resources | nindent 12 }}
-{{- end }}

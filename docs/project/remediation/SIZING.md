@@ -69,7 +69,7 @@ Three multipliers, learned the hard way:
 | ◐ | **R4** plugin hot path | pt1 metrics, pt2a compaction, **pt1b safe-fold core (#99)** done; pt1b reader-swap (perf) + pt2b settlement store (feature) open |
 | ◐ | **R7** namespace tenancy | pt1 envelope key (#87) done; **pt2 delete `Run.Spec.Owner`** open (authz decision, deferred by ruling) |
 | ⏳ | **R11 – R14** k8s conventions | status conditions, ownerRefs/finalizers, `Lease` rename, CRD validation |
-| ⏳ | **R15 / R18** admin | install/release images; operator runbook |
+| ◐ | **R15 / R18** admin | R15 install/release images **done** (2026-07-23); R18 operator runbook open |
 | ⏳ | **R20 / R23** observability | plugin events for `explain`; logs/pods/artifacts CLI |
 | ⏳ | **R26** ledger auditor | runtime backstop (test-time now covered by the invariant oracle + eviction fuzzer) |
 
@@ -145,7 +145,7 @@ install exists yet**, which makes R13's hard-rename-without-migration very plaus
 
 | Item | Size | Why | Blocked on |
 |---|---|---|---|
-| **R15** install can't work | **S** | `release.yaml` has **zero** image build/push steps; the chart points at `:latest` tags that were never pushed. 2 files. | — |
+| **R15** install can't work | ✅ **done** | `release.yaml` had **zero** image build/push steps and the chart pointed at `:latest` tags nobody pushed. Landed 2026-07-23: a GHCR push job ahead of chart packaging, a real `image.tag`, the phantom notifier deleted, and two new helm-assertion rails so neither can regress. It was ~10 files, not 2 — the `image.tag` the docs promised did not exist as a key. | — |
 | **R16** ServiceMonitor selector | **XS** | Confirmed live bug: the Service never carries the label the ServiceMonitor selects on, so it matches nothing. One label + a Chart.yaml dependency gate. | — |
 | **R17** prod overlay | **XS** | Confirmed live bug: `controller.leaderElect` **does not exist as a key**, so 3 prod replicas write concurrently. Scheduler is off in both overlays. 3–4 files. | — |
 | **R18** operator runbook | **M** | Docs plus two scripts that don't exist (`break-glass.sh`, `uninstall.sh`), and a live kind test of wedge-and-recover. | describes R6/R12/R13, so write it after |

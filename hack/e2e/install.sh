@@ -14,7 +14,9 @@ echo "Installing the real chart (deploy/helm/gpu-fleet) with the e2e values over
 helm upgrade --install "$E2E_HELM_RELEASE" "$ROOT/deploy/helm/gpu-fleet" \
   --namespace "$E2E_NAMESPACE" --create-namespace \
   -f "$ROOT/hack/e2e/values-e2e.yaml" \
-  --set "controller.image=$E2E_IMAGE" \
+  --set "controller.image.repository=${E2E_IMAGE%:*}" \
+  --set "controller.image.tag=${E2E_IMAGE##*:}" \
   --set "scheduler.enabled=true" \
-  --set "scheduler.image=$E2E_SCHEDULER_IMAGE" \
+  --set "scheduler.image.repository=${E2E_SCHEDULER_IMAGE%:*}" \
+  --set "scheduler.image.tag=${E2E_SCHEDULER_IMAGE##*:}" \
   --wait --timeout 180s
