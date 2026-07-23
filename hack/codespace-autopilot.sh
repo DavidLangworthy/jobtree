@@ -112,19 +112,36 @@ you hit a stop condition, write a one-line summary to .autopilot-done and stop.
 PROMPT
 
 # --- Run loop ---------------------------------------------------------------------------
+# Render stream-json events as readable console lines. Falls back to raw (still streaming) if
+# jq is missing or AUTOPILOT_RAW=1. `jq --unbuffered` is what flushes per line; `-R` + try-fromjson
+# tolerates any non-JSON line instead of dying on it. RAW is always tee'd to the log regardless.
+pretty() {
+  if [ "${AUTOPILOT_RAW:-0}" = "1" ] || ! command -v jq >/dev/null 2>&1; then cat; return; fi
+  jq -Rr --unbuffered '
+    (try fromjson catch null) as $j |
+    if   $j == null           then .
+    elif $j.type=="assistant" then ($j.message.content[]? |
+           if   .type=="text"     then (.text | gsub("\n";" ") | .[0:200])
+           elif .type=="tool_use" then "  🔧 " + .name + " " +
+                  ((.input.command // .input.file_path // .input.pattern // .input.description // "") | tostring | .[0:140])
+           else empty end)
+    elif $j.type=="result"    then "  ── turn done (" + ($j.subtype // "ok") + ")"
+    else empty end' 2>/dev/null
+}
+
 run_claude() {  # $1 = prompt, $2 = "first" | "resume"
   local prompt="$1" mode="$2"
-  # --verbose streams the turn's progress live (tool calls, messages) so you can watch it
-  # instead of staring at heartbeats. If your CLI version still buffers, switch the format to
-  #   --output-format stream-json --verbose   (noisier JSON, but definitely streams).
-  # --settings gives the autopilot its OWN guardrails (hack/autopilot-settings.json) — most
-  # importantly it re-denies `gh pr merge`, so the unattended run can never merge protected
-  # main, even though the shared .claude/settings.json lets a supervised human session do so.
-  local args=(--dangerously-skip-permissions --model "$AUTOPILOT_MODEL" --verbose
+  # stream-json (+ --verbose) actually streams live in headless mode — plain --verbose buffered
+  # to the turn's end. --settings gives the autopilot its OWN guardrails
+  # (hack/autopilot-settings.json): it re-denies `gh pr merge`, so the unattended run can never
+  # merge protected main, even though the shared .claude/settings.json lets a supervised human do so.
+  local args=(--dangerously-skip-permissions --model "$AUTOPILOT_MODEL"
+              --output-format stream-json --verbose
               --settings "$ROOT/hack/autopilot-settings.json")
   [ "$mode" = "resume" ] && args+=(--continue)
   args+=(-p "$prompt")
-  claude "${args[@]}" 2>&1 | tee "$LOG"
+  # tee RAW stream-json to the log (limit-detection greps it); pretty-print to the console.
+  claude "${args[@]}" 2>&1 | tee "$LOG" | pretty
   return "${PIPESTATUS[0]}"
 }
 
