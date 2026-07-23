@@ -149,6 +149,20 @@ func (j *JobTree) Reserve(_ context.Context, _ fwk.CycleState, _ *corev1.Pod, _ 
 // Unreserve releases a rejected member's gang state (a no-op once any member
 // has begun minting, so an in-flight commit is never re-derived).
 func (j *JobTree) Unreserve(_ context.Context, _ fwk.CycleState, pod *corev1.Pod, _ string) {
+	// R20: a member that sat at the gate for the FULL permitTimeout was rejected by
+	// the framework's timeout, not by anything we decided — and that is a distinct
+	// answer worth telling the researcher, because the gang will simply re-form and
+	// the run looks identical while it does.
+	//
+	// It is measured, not guessed: Permit stamps when a member parks, and only an
+	// elapsed >= permitTimeout is called a timeout. A member unreserved for any other
+	// reason (a rejected sibling, a bind failure) says nothing here, because we would
+	// be attributing a cause we do not know.
+	if j.gm.waitedOutTimeout(pod.Name) {
+		j.emit(pod, corev1.EventTypeWarning, ReasonGangTimeout, "Permit",
+			"gang %s did not assemble within %s; the member was rejected and the gang will re-form",
+			gangKey(pod), permitTimeout)
+	}
 	j.gm.forget(pod)
 }
 
@@ -208,11 +222,21 @@ func (j *JobTree) Permit(ctx context.Context, _ fwk.CycleState, pod *corev1.Pod,
 	// the first funding decision (committed is 0 until a gang funds).
 	committed := j.gm.committedCount(key)
 	if waiting+committed < expected {
+		// R20: the pod is about to park, possibly for the full permitTimeout. Say so
+		// on the Run — "forming (3/8)" is the entire answer to "why isn't it starting"
+		// for a gang whose eighth pod is never coming.
+		j.emitForming(pod, key, waiting, committed, expected)
+		j.gm.noteWaiting(pod.Name)
 		return fwk.NewStatus(fwk.Wait, fmt.Sprintf("jobtree: gang %s forming (%d waiting + %d committed / %d)", key, waiting, committed, expected)), permitTimeout
 	}
 
 	fundable, reason := j.gm.decide(ctx, pod)
 	if !fundable {
+		// R20: unfundable and unplaceable are different answers to different people.
+		// The status message keeps its historical wording (it is matched in tests and
+		// read in logs); the Event carries the distinction and the explanation.
+		kind := j.gm.refusalOf(key)
+		j.emit(pod, corev1.EventTypeWarning, unfundableEvent(kind), "Permit", "%s", describeRefusal(key, kind, reason))
 		msg := fmt.Sprintf("jobtree: gang %s not fundable: %s", key, reason)
 		j.handle.IterateOverWaitingPods(func(wp fwk.WaitingPod) {
 			if gangKey(wp.GetPod()) == key {
@@ -346,7 +370,24 @@ func (j *JobTree) PreBind(ctx context.Context, _ fwk.CycleState, pod *corev1.Pod
 	// into other funding decisions — the real lease already counts (R1). A swap
 	// pod is not gang-tracked, so this is a no-op for it.
 	j.gm.notifyMinted(pod)
+	// R20: the positive audit signal, and the only Event in this vocabulary that
+	// records a FACT rather than a state. From here the lease charges seg's envelope
+	// and holds these GPUs until something closes it, and this is the timestamped
+	// record of the instant that started, on the pod and on the run.
+	j.emit(pod, corev1.EventTypeNormal, ReasonLeaseMinted, "PreBind",
+		"minted lease %s on %s for %d GPU(s), paid by %s/%s/%s (reason %s)",
+		leaseName, nodeName, gpusPerPod, seg.Owner, seg.BudgetName, seg.EnvelopeName,
+		leaseReasonOrDefault(pod))
 	return nil
+}
+
+// leaseReasonOrDefault names why a lease was minted, defaulting the same way
+// admission.PodLeaseWithRole does so the Event and the Lease never disagree.
+func leaseReasonOrDefault(pod *corev1.Pod) string {
+	if r := pod.Annotations[binder.AnnotationLeaseReason]; r != "" {
+		return r
+	}
+	return "Start"
 }
 
 // PostBind releases a gang's in-memory commit once all its pods have minted and
@@ -379,10 +420,38 @@ func isSparePod(pod *corev1.Pod) bool {
 	return pod.Labels[binder.LabelRunRole] == binder.RoleSpare
 }
 
-// PostFilter is a no-op: it reclaims nothing (reclaim stays a controller
-// re-derivation per §9; wiring it through PostFilter is a later increment).
-func (j *JobTree) PostFilter(_ context.Context, _ fwk.CycleState, _ *corev1.Pod, _ fwk.NodeToStatusReader) (*fwk.PostFilterResult, *fwk.Status) {
+// PostFilter reclaims nothing (reclaim stays a controller re-derivation per §9;
+// wiring it through PostFilter is a later increment). R20 gives it one job it can do
+// honestly: this is the once-per-unschedulable-pod hook, so it is the only place the
+// plugin can say "no node in this cluster has the flavor you asked for" without
+// emitting an Event per node — which is what Filter would do, since Filter runs per
+// node and cannot know it rejected them all.
+func (j *JobTree) PostFilter(ctx context.Context, _ fwk.CycleState, pod *corev1.Pod, _ fwk.NodeToStatusReader) (*fwk.PostFilterResult, *fwk.Status) {
+	j.reportFlavorMismatch(ctx, pod)
 	return nil, fwk.NewStatus(fwk.Unschedulable, "jobtree: reclaim not wired (PLUGIN-6)")
+}
+
+// reportFlavorMismatch emits FlavorMismatch when the cluster holds no node of the
+// flavor the pod's run asked for. It says nothing when some node has the flavor: the
+// pod is then unschedulable for an ordinary reason (full nodes, taints) that the
+// framework's own FailedScheduling event already explains better than we could.
+func (j *JobTree) reportFlavorMismatch(ctx context.Context, pod *corev1.Pod) {
+	want := pod.Annotations[binder.AnnotationFlavor]
+	if want == "" || j.client == nil {
+		return
+	}
+	var nodes corev1.NodeList
+	if err := j.client.List(ctx, &nodes); err != nil {
+		return // narration must never fail scheduling
+	}
+	for i := range nodes.Items {
+		if nodes.Items[i].Labels[topology.LabelGPUFlavor] == want {
+			return
+		}
+	}
+	j.emit(pod, corev1.EventTypeWarning, ReasonFlavorMismatch, "Filter",
+		"no node in this cluster is labelled %s=%s; the run asks for a GPU flavor that is not here",
+		topology.LabelGPUFlavor, want)
 }
 
 // ErrNoPlacementGroup is returned when a pod reaching PreBind carries no placement
