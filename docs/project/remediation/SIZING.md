@@ -69,12 +69,12 @@ Three multipliers, learned the hard way:
 | ◐ | **R4** plugin hot path | pt1 metrics, pt2a compaction, **pt1b safe-fold core (#99)** done; pt1b reader-swap (perf) + pt2b settlement store (feature) open |
 | ◐ | **R7** namespace tenancy | pt1 envelope key (#87) done; **pt2 delete `Run.Spec.Owner`** open (authz decision, deferred by ruling) |
 | ✅ | **R11 – R14** k8s conventions | all four done (2026-07-23): conditions, ownerRefs/finalizers, the `Lease`→`GPULease` clean break, and CRD/CEL validation |
-| ◐ | **R15 / R18** admin | R15 install/release images **done** (2026-07-23); R18 operator runbook open |
+| ✅ | **R15 / R18** admin | R15 install/release images and R18 the day-2 runbook, both done (2026-07-23) |
 | ⏳ | **R20 / R23** observability | plugin events for `explain`; logs/pods/artifacts CLI |
 | ⏳ | **R26** ledger auditor | runtime backstop (test-time now covered by the invariant oracle + eviction fuzzer) |
 
 So: **~17 of 26 landed** — 15 complete, plus R4 and R7 with only their deferred perf / feature /
-authz sub-part left. **4 remain** (R18, R20, R23, R26), all P3–P5 conventions /
+authz sub-part left. **3 remain** (R20, R23, R26), all P3–P5 conventions /
 admin / observability, plus the **ROLES** track (XL). The high-severity correctness core — where
 the scheduler plugin is the sole committer and a mistake silently double-spends a budget or strands
 a gang — is done, and it is now guarded by three nets: the invariant oracle (R27), the live
@@ -148,7 +148,7 @@ install exists yet**, which makes R13's hard-rename-without-migration very plaus
 | **R15** install can't work | ✅ **done** | `release.yaml` had **zero** image build/push steps and the chart pointed at `:latest` tags nobody pushed. Landed 2026-07-23: a GHCR push job ahead of chart packaging, a real `image.tag`, the phantom notifier deleted, and two new helm-assertion rails so neither can regress. It was ~10 files, not 2 — the `image.tag` the docs promised did not exist as a key. | — |
 | **R16** ServiceMonitor selector | **XS** | Confirmed live bug: the Service never carries the label the ServiceMonitor selects on, so it matches nothing. One label + a Chart.yaml dependency gate. | — |
 | **R17** prod overlay | **XS** | Confirmed live bug: `controller.leaderElect` **does not exist as a key**, so 3 prod replicas write concurrently. Scheduler is off in both overlays. 3–4 files. | — |
-| **R18** operator runbook | **M** | Docs plus two scripts that don't exist (`break-glass.sh`, `uninstall.sh`), and a live kind test of wedge-and-recover. | describes R6/R12/R13, so write it after |
+| **R18** operator runbook | ✅ **done** | Landed 2026-07-23: `docs/operator-guide/runbook.md`, `hack/break-glass.sh`, `hack/uninstall.sh`, and `make e2e-runbook` — a live kind proof that runs the documented procedures verbatim. Writing them down found a defect in the spec itself: its break-glass step names a binding `jobtree-gpu-mandatory`, which has never existed (the chart's is release-prefixed `<release>-jobtree-gpu-guard`). Both scripts select by label instead. | — |
 | **R19** LICENSE + governance | ✅ **done** | All-rights-reserved `LICENSE`; truthful `MAINTAINERS.md` (the old one invented four people, a pager and a vote); `SECURITY.md` via GitHub private vulnerability reporting. No headers needed. | — |
 
 R16 and R17 are each **under an hour** and are *real, confirmed bugs in what we

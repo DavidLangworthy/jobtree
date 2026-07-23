@@ -1268,3 +1268,98 @@ R13's own invariant is asked of **discovery**, not of Go: `rq.davidlangworthy.io
 serves `gpuleases` (kind `GPULease`, short name `gl`) and serves nothing called `leases`,
 while `coordination.k8s.io/v1` still serves its own. A rename that missed the CRD would
 compile perfectly and fail that test.
+
+## R18 — the day-2 runbook, and why it had to be executable (2026-07-23)
+
+R18's spec is unusual: the *procedures are the design*, already written by Fable. The
+implementation is turning them into `docs/operator-guide/runbook.md` plus two scripts.
+The interesting part is that writing them down surfaced errors in them.
+
+**The spec named an object that has never existed.** Break-glass step 1 says
+`kubectl delete validatingadmissionpolicybinding jobtree-gpu-mandatory`. The chart's
+binding is `{{ .Release.Name }}-jobtree-gpu-guard` — release-prefixed, so *any*
+hardcoded name is wrong for every install but one. That is exactly the failure mode a
+runbook has: it is read once, under pressure, by someone who cannot debug it. Both
+scripts therefore find every object by the chart's own label
+(`app.kubernetes.io/instance`), and take `--release` only to disambiguate multiple
+installs.
+
+**Break-glass never touches the controller manager, and that is a decision.** The spec
+says to leave it running so accounting stays honest; the reason is worth stating
+plainly in the doc, because the instinct under pressure is to scale everything to zero.
+The manager is what runs the Run finalizer, which is what CLOSES leases. Scale it down
+and every open lease stays open, charging its budget and holding its GPUs, for as long
+as the incident lasts.
+
+**The `crd-writes` lever is survivable now in a way it was not before R14.** Flipping
+the webhooks to `failurePolicy=Ignore` used to mean *no validation at all*. It now means
+losing only the genuinely cross-object rules (an aggregate cap naming an envelope that
+does not exist; a run that follows itself) while every field-level rule and lease
+immutability keep holding in the apiserver. The runbook says so, because an operator
+deciding whether to pull this lever needs to know what it costs.
+
+**Two judgment calls in `uninstall.sh`, both toward not destroying the ledger:**
+
+- **CRDs are kept by default.** `helm uninstall` already leaves `crds/`-installed CRDs
+  alone; the script makes that the explicit default and needs `--delete-crds` to
+  remove them. The lease set *is* the audit trail — "who ran where, when, and who
+  paid" — and nothing else in the cluster records it.
+- **It refuses to delete the CRDs while any lease is still open**, unless `--force`.
+  An open lease at teardown means a Run did not drain, and deleting the ledger at that
+  moment makes its last statement a fiction: work still running, still charging.
+  Relatedly, the drain step tells the operator *not* to strip the finalizer by hand,
+  and says what it costs, because that is the obvious wrong move when a delete hangs.
+
+### The verification is a live proof, not a review
+
+`make e2e-runbook` (kind, real chart, `podPolicy.enabled=true`) runs the documented
+procedures verbatim and asserts the promised outcome: a GPU pod on the default
+scheduler is denied; the first lever un-denies it; the committer scales to 0 and back;
+a Run is written while the webhook endpoint is dead; Runs drain through the finalizer;
+no lease is left open; the CRDs survive an uninstall that did not ask to delete them.
+
+The `crd-writes` step is built to be falsifiable, and the first draft was not. It
+originally broke `webhooks[0]`'s service and then wrote a Run — but `webhooks[0]` is
+`vbudget`, which a Run never reaches, so the assertion would have passed against a
+lever that did nothing. It now breaks **every** webhook's service, asserts the Run is
+refused while `failurePolicy=Fail` (the situation the lever exists for), pulls the
+lever, and asserts the same write succeeds.
+
+It is a separate target from `make e2e` on purpose: it ends by uninstalling the chart
+and deleting the CRDs, so it cannot share a cluster with the other smokes.
+
+### What the live proof caught (and prose would not have)
+
+Three real defects, none of which any amount of re-reading would have found. This is the
+argument for making a runbook executable, so it is worth being specific.
+
+**1. The most important lever appears not to work.** Deleting the R6
+`ValidatingAdmissionPolicyBinding` is not instantaneous: the apiserver evaluates
+admission policies from a cached snapshot that refreshes on its own schedule. Measured
+on kind — the `delete` returns, the very next GPU-pod create is refused *quoting the
+binding that was just deleted*, and a moment later the same create succeeds.
+
+An operator in an incident pulls the lever, retries, sees the identical denial, and
+concludes break-glass is broken. That is the worst thing this script could do. It now
+dry-runs a probe pod in a loop and does not claim success until one is actually
+admitted — and it distinguishes "still our policy" from "refused for some other reason",
+because an unrelated refusal will not resolve itself and waiting on it would hide it.
+
+**2. The lag runs both ways.** Re-enabling via `helm upgrade` also takes a few seconds
+to bite, which failed the smoke's *precondition* on the second run: a GPU pod was still
+being admitted right after install. Both directions are now documented, and the smoke
+polls rather than asserting instantly — asserting instantly would have been flaky *and*
+would have hidden a fact operators need.
+
+**3. `helm upgrade` breaks admission until the manager restarts.** With
+`webhook.generateCert=true` (the default) the chart mints a fresh self-signed CA on every
+upgrade. The webhook configurations get the new CA at once; the running manager serves the
+old certificate until its pod restarts, and in between **every** Run/Budget/GPULease write
+fails `x509: certificate signed by unknown authority`. The chart's values file knows the
+cert is regenerated; nothing said that the window exists or what it does. The runbook's
+upgrade section now leads with the rollout-restart, points at cert-manager for long-lived
+clusters, and notes that the `crd-writes` lever unblocks writes while the rollout happens.
+
+The additive-upgrade check (verification item 3) is a real additive change, not a no-op
+upgrade: it adds an optional property to a live CRD's schema **while an object of that
+kind exists**, and asserts the object reads back unchanged.

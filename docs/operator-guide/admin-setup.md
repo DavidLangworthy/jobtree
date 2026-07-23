@@ -127,8 +127,16 @@ kubectl logs deploy/jobtree-controller-manager -n jobtree-system | rg RandomPree
 
 ## 7. Day-two operations
 
-* **Upgrades:** use Helm’s rolling upgrade or apply the new Kustomize overlay; CRDs are backward
-  compatible and stored in Git.
+> **Break-glass, uninstall and CRD upgrade have their own page: [runbook.md](runbook.md).**
+> Three procedures, one script each (`hack/break-glass.sh`, `hack/uninstall.sh`), all of
+> them exercised against a real cluster by `make e2e-runbook`. Read it before you need
+> it — the most important lever, restoring GPU scheduling when jobtree is wedged, is one
+> command, and it is worth knowing that in advance.
+
+* **Upgrades:** use Helm’s rolling upgrade or apply the new Kustomize overlay. Every CRD
+  change so far is **additive**, so no conversion is needed; the one breaking change
+  (`Lease` → `GPULease`) and the k8s version-skew policy are in
+  [runbook.md §3](runbook.md#3-upgrade-and-crd-migration).
 * **Quota tuning:** edit Budget envelopes and rely on controller validation to enforce
   `maxGPUHours ≤ concurrency × window`.
 * **Cluster growth:** label new nodes with the same topology keys; packers discover them
