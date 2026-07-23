@@ -31,7 +31,27 @@ else
   echo "WARN: docs toolchain install failed"
 fi
 
+step "Installing the weekly disk-hygiene cron (in-codespace only)"
+# This cron runs INSIDE the codespace. It never starts the codespace and does
+# nothing while the codespace is stopped -- an idle codespace's disk isn't
+# growing, so there is nothing to reclaim. When the codespace IS running it
+# checks every 6 hours and only acts once / crosses 70% full (see
+# disk-hygiene.sh --if-above), so a normal week's warm caches are left alone.
+# `sudo service cron start` is repeated in devcontainer.json's postStartCommand
+# so the daemon comes back after every stop/start, not just at create time.
+HYGIENE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/disk-hygiene.sh"
+if sudo apt-get install -y -qq cron 2>/dev/null; then
+  sudo service cron start || echo "  WARN: could not start cron now (postStartCommand will)"
+  cron_line="0 */6 * * * $HYGIENE --if-above 70 >> \$HOME/.disk-hygiene.log 2>&1"
+  ( crontab -l 2>/dev/null | grep -vF 'disk-hygiene.sh'; echo "$cron_line" ) | crontab -
+  echo "  installed: $cron_line"
+  echo "  on-demand: make disk-hygiene   (log: ~/.disk-hygiene.log)"
+else
+  echo "WARN: cron install failed; run 'make disk-hygiene' by hand when the disk fills"
+fi
+
 step "Done. Quick reference:"
 echo "  go test ./...                      # unit tests (~20s)"
 echo "  kind create cluster                # local real cluster"
 echo "  kwokctl create cluster --wait 60s  # fake-node scale cluster"
+echo "  make disk-hygiene                  # reclaim disk (Go/docker caches) if it fills"

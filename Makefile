@@ -1,4 +1,4 @@
-.PHONY: verify fmt-check vet test-race golden-clean build-bins helm-assert krew-validate test envtest fmt generate manifests verify-generate spec-check spec-counterexamples node-failure-spec-check node-failure-spec-counterexamples node-failure-spec-pdf ledger-compaction-apalache-check ledger-compaction-apalache-counterexamples ledger-compaction-store-apalache-check ledger-compaction-store-apalache-counterexamples ledger-compaction-accounting-apalache-check ledger-compaction-accounting-apalache-counterexamples ledger-compaction-accounting-witness-check ledger-compaction-accounting-witness-counterexamples helm-lint cli-build cli-test antifake kind-up kind-down e2e-build e2e-load e2e-image e2e-bins e2e-build-fast build-flags-agree e2e
+.PHONY: verify fmt-check vet test-race golden-clean build-bins helm-assert krew-validate test envtest fmt generate manifests verify-generate spec-check spec-counterexamples node-failure-spec-check node-failure-spec-counterexamples node-failure-spec-pdf ledger-compaction-apalache-check ledger-compaction-apalache-counterexamples ledger-compaction-store-apalache-check ledger-compaction-store-apalache-counterexamples ledger-compaction-accounting-apalache-check ledger-compaction-accounting-apalache-counterexamples ledger-compaction-accounting-witness-check ledger-compaction-accounting-witness-counterexamples helm-lint cli-build cli-test antifake kind-up kind-down e2e-build e2e-load e2e-image e2e-bins e2e-build-fast build-flags-agree e2e disk-hygiene
 
 # ---------------------------------------------------------------------------
 # `make verify` is THE gate. CI runs exactly this target and nothing else, so a
@@ -312,3 +312,10 @@ ledger-compaction-accounting-stateful-counterexamples: $(TLA2TOOLS)
 # from the ordinary Apalache rail, which is sized for standard CI machines.
 ledger-compaction-accounting-stateful-apalache-check: $(APALACHE)
 	cd specs && JVM_ARGS='$(APALACHE_STATEFUL_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=LedgerCompactionAccountingStateful.cfg --length=2 --no-deadlock LedgerCompactionAccounting.tla
+
+# Reclaim the codespace disk: Go build cache, unused docker images + build
+# cache, and dead kind clusters. Everything it removes is regenerable. A weekly
+# in-codespace cron runs the same script in watermark mode (see
+# .devcontainer/post-create.sh); this target is the on-demand version.
+disk-hygiene:
+	.devcontainer/disk-hygiene.sh

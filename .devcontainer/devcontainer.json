@@ -20,6 +20,7 @@
     "CLAUDE_CODE_EFFORT_LEVEL": "max"
   },
   "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "postStartCommand": "sudo service cron start || true",
   "customizations": {
     "vscode": {
       "extensions": [
