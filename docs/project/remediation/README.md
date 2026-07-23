@@ -63,7 +63,7 @@ mechanical, no design needed (implement straight from the audit — Opus/Sonnet)
 | Spec | Finding | Design | Code | Verify |
 |---|---|---|---|---|
 | [R11](R11-status-conditions.md) | No `status.conditions` anywhere | ✅ | ⏳ Opus | ⏳ Sonnet |
-| [R12](R12-ownerrefs-finalizers.md) | Zero ownerRefs/finalizers; hand-rolled GC — **promoted to P1**, it retires R27c's `orphan-run` sweep rule | ✅ | ⏳ Opus | ⏳ Sonnet |
+| [R12](R12-ownerrefs-finalizers.md) | Zero ownerRefs/finalizers; hand-rolled GC — **promoted to P1**, it retires R27c's `orphan-run` sweep rule | ✅ | ✅ finalizer + ownerRefs + `orphan-run` deleted | ✅ fake-client + **envtest** (items 1/2/3/5, mutation-verified) |
 | [R13](R13-lease-rename.md) | `Lease` collides with `coordination.k8s.io/Lease` | ✅ | ⏳ Opus | ⏳ Sonnet |
 | [R14](R14-crd-validation.md) | Near-zero CRD validation; webhook-only immutability | ✅ | ⏳ Opus | ⏳ Sonnet |
 
