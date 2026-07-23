@@ -210,7 +210,64 @@ tell them apart. `kubectl runs explain <run>` prints the same reason.
 See [concepts/runs.md](../concepts/runs.md#status-conditions-and-the-phase-derived-from-them)
 for the full condition vocabulary.
 
-## 9. Checklist before you submit
+## 9. Reaching your workload: pods, logs, and artifacts
+
+Once a run is `Running` you should never have to reverse-engineer the pod-naming
+scheme or drop to raw label queries. Three commands close the loop from a Run to
+its containers and its outputs:
+
+```bash
+kubectl runs pods train            # the run's pods: role, group, node, phase, paying envelope
+kubectl runs logs train            # stream rank 0 (the first active member)
+kubectl runs logs train --rank 3   # a specific rank, in the same stable order `pods` lists
+kubectl runs logs train -r Spare   # a held spare's logs
+kubectl runs logs train -f         # follow
+kubectl runs logs train --previous # a CRASHED rank's last output — the first thing to read on a failure
+```
+
+`logs` needs a live kubelet, so it is live-only; under `--local` it refuses
+rather than fabricate output. `pods` works in both modes (under `--local` it
+lists the *planned* pods, phase `Planned`).
+
+**Getting results out — the `/artifacts` convention.** jobtree schedules and
+funds GPUs; it does not move your bytes. To keep a model, a checkpoint, or logs
+you want to retain, mount a **durable** volume in your role template — a
+`PersistentVolumeClaim` or an object-store CSI volume — at the conventional path
+`/artifacts`:
+
+```yaml
+spec:
+  roles:
+    - name: trainer
+      template:
+        spec:
+          containers:
+            - name: trainer
+              image: myrepo/train:latest
+              volumeMounts:
+                - name: outputs
+                  mountPath: /artifacts     # write checkpoints/models here
+          volumes:
+            - name: outputs
+              persistentVolumeClaim:
+                claimName: train-results
+```
+
+Then ask jobtree where your outputs go — it reads the answer back out of the
+template you wrote, and flags the trap:
+
+```bash
+kubectl runs artifacts train
+# Role     Container  Path        Volume    Source
+# trainer  trainer    /artifacts  outputs   PVC train-results (persists across pod restarts)
+```
+
+The durability column is the point: a checkpoint written to an `emptyDir` is
+reported **EPHEMERAL** because it is gone the moment the pod restarts or moves
+nodes — exactly the node-failure event spares exist to survive. See that before
+it costs you a training run, not after.
+
+## 10. Checklist before you submit
 
 * Define `spec.roles[].template` with your real container image/command; `width * gpusPerPod`
   must equal `resources.totalGPUs`.

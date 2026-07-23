@@ -84,7 +84,7 @@ mechanical, no design needed (implement straight from the audit — Opus/Sonnet)
 | [R20](R20-plugin-events.md) | Plugin scheduling refusals invisible to `explain` | ✅ | ✅ EventRecorder + fixed vocabulary, mirrored to Run; `explain` aggregates (2026-07-23) | ✅ unit + mutation-verified (scheme-registration guard, type-not-message classification, timeout/throttle/UID-cache) |
 | [R21](R21-cordon-not-failure.md) | Cordon treated as node failure → destructive swap | ✅ **amended** | ✅ fencing, not a NotReady timer | ✅ |
 | [R22](R22-reclaim-slot-granularity.md) | Swap reclaim closes co-located runs (node granularity) | ✅ | ✅ slot-exact, funding-aware decline | ✅ |
-| [R23](R23-workload-observability.md) | No logs/pods/artifacts story | ✅ | ⏳ Opus | ⏳ Sonnet |
+| [R23](R23-workload-observability.md) | No logs/pods/artifacts story | ✅ | ✅ `runs pods` / `runs logs` (`-r`/`--rank`/`-f`/`--previous`) / `runs artifacts` + `/artifacts` convention (2026-07-23) | ✅ unit (pod selection, envelope join, artifact durability) + doc-examples rail |
 | R24 | Doc-honesty leftovers (README/spares-and-fill/guide) + funding-model doc fixes (see below) | **mech** | ✅ | — |
 
 **From the funding-model review** (`../funding-model-review.md`, 2026-07-08):

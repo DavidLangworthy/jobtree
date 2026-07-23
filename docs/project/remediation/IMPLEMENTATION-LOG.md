@@ -26,6 +26,63 @@ The README compose note lists R5/R6 first. I moved the two P0 correctness bugs
 
 ## Decisions (chronological)
 
+### R23 — from a Run to its pods, logs, and outputs (2026-07-23, unattended run)
+
+The CLI could show scheduling and accounting but never the workload itself: once a run
+was Running the researcher had to know the pod-naming scheme and drop to
+`kubectl get pods -l rq.davidlangworthy.io/run=<run>` to find their own containers, and
+there was no story at all for getting results out. R23 adds `runs pods`, `runs logs`, and
+`runs artifacts`, and documents the `/artifacts` convention. **No engine, no plugin, no
+funding path** — three new CLI files on the existing live-client surface, so this is not a
+sole-committer change and carries no milestone-review flag.
+
+**Judgment calls:**
+
+- **Per-pod "funding class" is reported as the paying ENVELOPE, not a derived class.** The
+  spec's `pods` column says "lease/funding class". The funding *class*
+  (Owned/Shared/Borrowed/Unfunded) is a run-level DERIVATION `pkg/funding` computes from
+  the whole ledger — and the CLI's standing rule (Track G) is that it must never re-run
+  funding client-side and race the manager's brain. So `pods` joins each pod to its OPEN
+  lease (via the `pod-name` annotation the sole committer already stamps) and shows that
+  lease's `PaidByEnvelope`: the honest, recorded, per-pod signal of who is paying, with
+  the class left to `explain`, which is where the run-level derivation is surfaced.
+- **`logs` is live-only and refuses `--local` rather than fabricating.** A container log
+  comes from a real kubelet; the `--local` simulator runs no containers. Inventing lines
+  there is the exact fake the `--local` notice exists to prevent, so `logs --local` errors
+  with a pointer at the live path. `pods` and `artifacts`, which read the plan/spec, work
+  in both modes (under `--local`, `pods` shows planned pods with phase `Planned`).
+- **`--rank` counts pods in one stable order, defined once.** `pods` sorts active before
+  spare, then by group index, then by name; `logs --rank N` selects the Nth pod in exactly
+  that order, so "rank 0" is deterministically the first active member — what a researcher
+  means by "show me the logs" unqualified — and the number they see in `pods` is the number
+  `logs` selects on. A role filter (`-r`) narrows first, then rank counts within the filtered
+  set.
+- **`logs` uses a typed clientset, built on demand.** Streaming a log is the `pods/log`
+  SUBRESOURCE, which controller-runtime's `client.Client` cannot request (GetLogs lives on
+  client-go's typed CoreV1 client). Rather than thread a clientset through every command's
+  `RootOptions`, `newLiveClientset` builds one from the same kubeconfig resolution, only in
+  the one command that needs it. `streamPodLog` depends on a narrow `logOpener` func so the
+  copy/flag-forwarding logic is unit-testable; the actual GetLogs round-trip needs a live
+  kubelet and is proven by kind, not unit tests.
+- **`artifacts` reads the answer back out of the template the researcher wrote, and names
+  the durability trap.** No new storage, no new spec field: the run already carries a full
+  `PodTemplateSpec` per role, so `artifacts` walks its writable volume mounts (skipping
+  `readOnly` input mounts) and describes each backing volume. A PVC/CSI/NFS volume is
+  reported as persisting; an `emptyDir` is flagged **EPHEMERAL** — a checkpoint written
+  there is lost on the first node move, which is precisely the failure spares exist to
+  survive, so surfacing it before the run is the whole value. An empty result is rendered
+  as one explanatory row (how to mount `/artifacts`), not a bare table that reads as "no
+  data".
+
+**Verification.** Unit tests: the label selector returns only the run's pods; the
+active-before-spare/group/name sort (which `--rank` depends on); the envelope join uses
+OPEN leases only (a closed lease no longer names a payer); rank selection defaults to 0,
+honors `--rank` and `-r`, and errors actionably out of range / on an absent role;
+`streamPodLog` copies verbatim and forwards `--previous`/`-f`/`-c`; `--local` logs refuses;
+artifact mounts classify PVC-vs-emptyDir durability, skip read-only inputs, and flag a
+mount naming an undeclared volume. The documented `--local` examples (`pods`, `artifacts`)
+run under the doc-examples rail that R12 added. `make verify` green.
+
 ### R20 — the plugin narrates its own decisions (2026-07-23, unattended run)
 
 The scheduler plugin is where placement and funding are actually decided, and it
