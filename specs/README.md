@@ -124,6 +124,16 @@ aggregate bucket, full window identity, and lender/class buckets. Its SMT rail
 keeps a fixed two-lease history for tractability; its TLC rail exhausts the
 canonical two-lease history family.
 
+The production seam for the first model is executable as
+`make ledger-compaction-conformance-check`. The Go test pins both
+`LedgerCompaction.tla` and its `Capacity = 2` configuration, enumerates all
+9,261 canonical three-lease histories at every modeled `Now` and horizon, and
+compares `funding.Evaluate` against the model's independent candidate-set
+oracle. It checks full-replay classes and GPU-hours, `SettleAccrual` summaries,
+safe compacted replay, and unsafe fallback. It deliberately does not claim
+conformance for aggregate, lender, or persisted-window fields deferred to the
+pt2b implementation.
+
 One important result of that broader model: the naive "add the newly settled
 chunk onto the old summary" law is false once depletion-sensitive accounting is
 included. The checked theorem is therefore a seeded replay law. On the current

@@ -244,6 +244,13 @@ ledger-compaction-apalache-check: $(APALACHE)
 	cd specs && JVM_ARGS='$(APALACHE_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=LedgerCompactionAccountingSeededFold01.cfg --length=1 --no-deadlock LedgerCompactionAccounting.tla
 	cd specs && JVM_ARGS='$(APALACHE_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=LedgerCompactionAccountingSeededFold12.cfg --length=1 --no-deadlock LedgerCompactionAccounting.tla
 
+# Executable abstraction map for the production seam proven by
+# LedgerCompaction.tla. This test also runs under test-race in `make verify`;
+# the focused target is for quick local checks.
+.PHONY: ledger-compaction-conformance-check
+ledger-compaction-conformance-check:
+	go test ./pkg/funding -run TestLedgerCompactionExecutableConformance -count=1
+
 ledger-compaction-apalache-counterexamples: $(APALACHE)
 	cd specs && ! JVM_ARGS='$(APALACHE_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=LedgerCompactionStraddle.cfg --length=1 --no-deadlock LedgerCompaction.tla
 	cd specs && ! JVM_ARGS='$(APALACHE_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=LedgerCompactionFutureHorizon.cfg --length=1 --no-deadlock LedgerCompaction.tla
