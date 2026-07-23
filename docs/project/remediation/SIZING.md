@@ -62,7 +62,7 @@ Three multipliers, learned the hard way:
 | ✅ | **R10 / R16 / R17 / R19 / R24** | mechanical + hygiene, all landed |
 | ◐ | **R4** plugin hot path | pt1 metrics, pt2a compaction, **pt1b safe-fold core (#99)** done; pt1b reader-swap (perf) + pt2b settlement store (feature) open |
 | ◐ | **R7** namespace tenancy | pt1 envelope key (#87) done; **pt2 delete `Run.Spec.Owner`** open (authz decision, deferred by ruling) |
-| ⏳ | **R11 – R14** k8s conventions | status conditions, ownerRefs/finalizers, `Lease` rename, CRD validation |
+| ◐ | **R11 – R14** k8s conventions | **R12 done** (2026-07-23, envtest closeout); status conditions, `Lease` rename, CRD validation open |
 | ◐ | **R15 / R18** admin | R15 install/release images **done** (2026-07-23); R18 operator runbook open |
 | ⏳ | **R20 / R23** observability | plugin events for `explain`; logs/pods/artifacts CLI |
 | ⏳ | **R26** ledger auditor | runtime backstop (test-time now covered by the invariant oracle + eviction fuzzer) |
@@ -127,7 +127,7 @@ that the architecture is now compatible with what we have already shipped.
 | Item | Size | Why | Blocked on |
 |---|---|---|---|
 | **R11** status conditions | **L** | Four CRDs gain `status.conditions`; every `Phase`/`Message` write in a 2400-line controller is replaced. Now a **retrofit rather than a blocker**: R2 pt2's "Degraded" was overruled, so nothing is currently waiting on the taxonomy. | — |
-| **R12** ownerRefs/finalizers | **M** | Smaller than the spec reads: the pod OwnerReference already landed with R5. Remaining is the Run finalizer that closes leases on delete (force-delete currently **leaks charging leases**) and the Reservation ownerRef. | — |
+| **R12** ownerRefs/finalizers | ✅ **done** | Smaller than the spec read: the pod OwnerReference landed with R5, the finalizer and the Reservation ownerRef landed 2026-07-10, and the real-apiserver envtest closed it 2026-07-23. The mutation that matters: remove the finalizer install and a world load immediately observes an open lease whose Run is absent — the exact orphan state R27c's deleted sweep rule used to act on. | — |
 | **R13** rename `Lease` | **M** | **Decided: clean break.** 37 files reference the type; individually mechanical. No dual-read, no conversion webhook, no migration Job — that was the **L**. Still touches `pkg/funding`, the plugin's PreBind mint, and the controller at once. | name only (`GPULease` recommended) |
 | **R14** CRD validation + CEL | **M** | Markers mirroring the existing `validate()`, plus CEL immutability on Lease. **Land in the same pass as R13** — the CEL rules attach to the very Kind R13 renames. The pair is ~1 day, not 2–3. | R13 |
 

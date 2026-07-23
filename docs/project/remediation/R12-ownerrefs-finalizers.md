@@ -1,6 +1,6 @@
 # R12 — OwnerReferences + finalizers for API-native garbage collection
 
-**Priority:** ~~P3~~ → **P1, promoted 2026-07-10** · **Design:** complete (Fable) · **Status:** implemented 2026-07-10 (finalizer + pod/Reservation ownerRefs + orphan-run rule deleted; fake-client tests green). **Remaining:** the real-apiserver envtest verification (§Verification spec items 1–5) runs under `make verify`/CI, and cascade-GC needs a live GC controller.
+**Priority:** ~~P3~~ → **P1, promoted 2026-07-10** · **Design:** complete (Fable) · **Status:** ✅ **complete 2026-07-23.** Implemented 2026-07-10 (finalizer + pod/Reservation ownerRefs + orphan-run rule deleted; fake-client tests green); the real-apiserver envtest verification landed 2026-07-23 in `controllers/kube/ownership_envtest_test.go` (§Verification spec items 1, 2, 3, 5 — all mutation-verified). **Item 4 (golden) is unaffected: no Go behaviour changed.** Cascade GC itself is *not* asserted anywhere in envtest and cannot be: envtest runs no kube-controller-manager, so no garbage collector exists. What the envtest proves instead is that each ownerReference is one a real GC would resolve — see the note at the top of that file.
 **Shares work with:** R5 (which already adds the Run OwnerReference to pods).
 
 ## Why this is now P1: it retires R27c's `orphan-run` rule instead of hardening it
@@ -43,8 +43,10 @@ duct taping something that can't work"*):
    removes the finalizer, so the accounting is closed before the object can vanish even
    under `--force`. The `For()` watch predicate was widened to fire when a Run enters
    deletion, or the finalizer would strand it Terminating. Fake-client tests pin the
-   lifecycle; the real-apiserver + `--force` cases are the envtest gate, verification
-   items 1–3. **Still owed: the pod/Reservation ownerRefs (§Implementation spec).**)*
+   lifecycle; the real-apiserver + `--force` cases landed 2026-07-23 as the envtest
+   gate, verification items 1–3 and 5. The pod, Reservation and rendezvous-Service
+   ownerRefs are in place — `runOwnerReferences` in `controllers/kube/bridge.go`,
+   applied at `buildPod`, the Reservation create, and `ensureRunService`.)*
    The finalizer closes leases with reason `RunDeleted` before the Run goes.
 3. **✅ Delete the `orphan-run` rule entirely.** *(Done — `controllers/settle.go` now
    has only the terminal-run rule; `Sweep.Observed` and the `orphan-run` reason are

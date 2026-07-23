@@ -86,6 +86,59 @@ Not done, deliberately: no Helm repository index, and no change to `Chart.yaml`'
 committed `appVersion` (`0.1.0`) — a source checkout is a development install and the
 guide now says so.
 
+### R12 closed out: the ownership edges verified against a real apiserver (2026-07-23)
+
+The code landed 2026-07-10; what was owed was verification, and the board disagreed with
+itself about whether the ownerRefs existed (the header said done, step 2 said "still
+owed"). They do exist — `runOwnerReferences` is applied at `buildPod`, the Reservation
+create, and `ensureRunService`. So this is verification, not implementation, and the
+honest question was *what can envtest actually prove.*
+
+**It cannot prove cascade GC, and no test in `controllers/kube` should pretend to.**
+envtest runs an apiserver and etcd and **no kube-controller-manager**, so there is no
+garbage collector. "Delete the Run, watch the pods disappear" would pass or fail for
+reasons that have nothing to do with jobtree. Stating that at the top of the new file
+matters more than the tests below it: the next person to add a GC assertion here needs
+to know why it will lie.
+
+**What it can prove, and the fake client cannot: that the reference is one a real GC
+would resolve.** `assertOwnedByRun` re-reads the Run through the API and compares the
+UID, and compares group/version/kind against the *scheme's own* answer rather than a
+string literal — a literal in the test would only repeat whatever typo production made.
+Mutation: set the pods' `ownerReference.APIVersion` to `"v1"` (a plausible-looking,
+completely inert value) → red on every pod and the Service. The fake client accepts that
+mutation silently, which is exactly the gap.
+
+**Three judgment calls:**
+
+- **Pinned the negative: a Lease must have NO ownerReference.** The design refuses to
+  owner-ref a funding fact, because cascade-deleting one erases accounting history and
+  lets a force-deleted Run escape its charge. That is a *decision to not do something*,
+  and nothing was stopping a future "make GC uniform" cleanup from undoing it silently.
+  Now it trips a test.
+- **The delete tests assert ORDER, not just outcome.** Checking "the leases end up
+  closed" would pass even if the finalizer were removed first, because the NotFound
+  backstop closes them a moment later. The tests observe the Run's disappearance and
+  then read the leases, so the claim is *closed before the object could vanish*.
+  Mutation: move `RemoveFinalizer` ahead of the closure → red, deterministically
+  (`closed=false reason=""`), on both the graceful and `--force --grace-period=0` paths.
+- **Verification item 5 is written as a sampled property, deliberately.** The claim is
+  about *every* world load — "at no `Bridge.WithWorld` pass does an open lease exist
+  whose Run is absent" — and from outside the only honest check is to look often,
+  through the whole deletion window, against the real object graph. It is sound because
+  the finalizer is removed only after `WithWorld` has applied the closures: once the Run
+  can vanish its leases are already closed, so the sampling has no window to miss. It
+  carries a **non-vacuity guard** (it fails if no load ever saw an open lease), because
+  a sampled property that never sampled the interesting state is a decorative test.
+  Mutation: disable the finalizer install → "load observed 1 OPEN lease(s) for a Run
+  that is absent from the world". That is R27c's `orphan-run` premise, reproduced on
+  demand, which is the licence for having deleted the rule.
+
+Not done, deliberately: the spec's **optional** Lease finalizer (design decision 3). A
+finalizer on a Lease would block CRD deletion during an uninstall — the exact
+non-obvious wedge R18's ordered uninstall exists to avoid — and buys nothing the Run
+finalizer does not already guarantee, since closure now precedes the Run's deletion.
+
 ### R19 settled, and the project shell made honest (2026-07-09)
 David: *"I'm not ready to give this away yet, but I want to be able to talk about
 it."* Also: *"maintainers is a good place to give yourself credit for doing all this
