@@ -1,0 +1,35 @@
+{
+  "_comment": "Autopilot-only permissions, passed via `claude --settings` in hack/codespace-autopilot.sh. Self-contained so it holds whether --settings merges with or replaces .claude/settings.json. The point of this file vs the shared .claude/settings.json is the `gh pr merge` deny: the UNATTENDED autopilot must never merge (or --admin-override) protected main, while a SUPERVISED session may when David says so.",
+  "permissions": {
+    "allow": [
+      "Bash(git status)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git branch *)",
+      "Bash(git show *)",
+      "Bash(git fetch *)",
+      "Bash(make verify)",
+      "Bash(make envtest)",
+      "Bash(make antifake)",
+      "Bash(go build *)",
+      "Bash(go vet *)",
+      "Bash(go test *)"
+    ],
+    "deny": [
+      "Bash(gh pr merge *)",
+      "Bash(rm -rf *)",
+      "Bash(git push --force *)",
+      "Bash(git push -f *)",
+      "Bash(git reset --hard *)",
+      "Bash(git clean -fdx *)",
+      "Bash(gh release *)",
+      "Bash(gh repo delete *)",
+      "Bash(gh auth *)",
+      "Read(./.env)",
+      "Read(**/auth.json)",
+      "Read(**/*.pem)",
+      "Read(**/id_rsa*)"
+    ]
+  }
+}
