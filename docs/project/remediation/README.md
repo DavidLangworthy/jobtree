@@ -71,7 +71,7 @@ mechanical, no design needed (implement straight from the audit — Opus/Sonnet)
 
 | Spec | Finding | Design | Code | Verify |
 |---|---|---|---|---|
-| R15 | Documented install can't work; phantom notifier | **mech** | ⏳ Sonnet | ⏳ Sonnet |
+| R15 | Documented install can't work; phantom notifier | **mech** | ✅ release images + real `image.tag` + notifier deleted | ✅ helm-assertions (2 new rails, mutation-verified) |
 | R16 | ServiceMonitor selector mismatch; Prom-Operator hard dep | **mech** | ✅ label + capability gate | ✅ helm-assertions |
 | R17 | Prod overlay: 3 replicas, leader-election off; scheduler off | **mech** | ✅ flag wired + overlays fixed | ✅ helm-assertions |
 | [R18](R18-operator-runbook.md) | No break-glass / uninstall / CRD-upgrade story | ✅ | ⏳ Sonnet | ⏳ Sonnet |
@@ -96,8 +96,13 @@ mechanical, no design needed (implement straight from the audit — Opus/Sonnet)
 
 **Mechanical-only (R10, R15, R24; R16 + R17 landed 2026-07-09):** no design
 decision — the audit's finding text is the spec. R10 = correct the false comment.
-R15 = build+push images in `release.yaml`, fix helm repo + `image.tag`, default
-notifier off. ~~R16 = fix the ServiceMonitor selector + make the
+~~R15 = build+push images in `release.yaml`, fix helm repo + `image.tag`, default
+notifier off.~~ **R15 done (2026-07-23):** `release.yaml` pushes both Dockerfile
+targets to GHCR before packaging the chart with `--app-version` (the chart's image
+tag defaults to `appVersion`, so a released chart installs with no flags); `image.tag`
+is a real key instead of a documented no-op; the phantom `notifier` Deployment is
+**deleted** rather than defaulted off; the docs install from the release asset because
+there is no Helm repo. ~~R16 = fix the ServiceMonitor selector + make the
 Prometheus-Operator dep optional.~~ ~~R17 = enable leader election in prod, enable
 the scheduler in both overlays.~~ R24 = fix
 the stale README claim, drop the `spares-and-fill.md` "opportunistic fill" fake,

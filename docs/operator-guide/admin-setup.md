@@ -27,13 +27,38 @@ kubectl label nodes gpu-b-[01-16] \
 
 ## 3. Install the controller manager
 
+There is **no Helm repository**. Every release publishes the packaged chart and the
+`kubectl-runs` archives as assets on its GitHub release, and pushes the two container
+images to GHCR under the same tag. Install the packaged chart:
+
 ```bash
-helm repo add jobtree https://davidlangworthy.github.io/jobtree
-helm install jobtree deploy/helm/gpu-fleet \
+VERSION=v0.1.0   # any published release tag
+curl -fsSLO "https://github.com/DavidLangworthy/jobtree/releases/download/${VERSION}/gpu-fleet-${VERSION#v}.tgz"
+helm install jobtree "gpu-fleet-${VERSION#v}.tgz" \
   --namespace jobtree-system --create-namespace \
-  --set image.tag=$(git rev-parse --short HEAD) \
   --set scheduler.enabled=true
 ```
+
+A packaged chart carries the release tag as its `appVersion`, and the image tag defaults
+to `appVersion`, so this pulls `ghcr.io/davidlangworthy/jobtree-{controller,scheduler}:$VERSION`
+— images that release pushed. Nothing else needs pinning.
+
+Installing from a **source checkout** (`deploy/helm/gpu-fleet`) is for development. The
+chart's `appVersion` there is whatever is committed, which is not necessarily a tag that
+was ever released, so name the images explicitly:
+
+```bash
+helm install jobtree deploy/helm/gpu-fleet \
+  --namespace jobtree-system --create-namespace \
+  --set image.tag=v0.1.0 \
+  --set scheduler.enabled=true
+```
+
+`image.tag` sets the tag for every jobtree image; `controller.image.tag` and
+`scheduler.image.tag` override it per component, and `controller.image.repository` /
+`scheduler.image.repository` repoint them at a private registry (a mirror, or images you
+built yourself with `docker build --target manager .` and `--target scheduler .`). For an
+air-gapped cluster, mirror both images and set the two repositories.
 
 What gets installed:
 

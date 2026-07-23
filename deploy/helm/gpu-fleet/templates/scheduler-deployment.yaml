@@ -65,7 +65,8 @@ spec:
         {{- toYaml .Values.imagePullSecrets | nindent 8 }}
       containers:
         - name: scheduler
-          image: {{ .Values.scheduler.image }}
+          image: {{ include "gpu-fleet.image" (list $ .Values.scheduler.image) }}
+          imagePullPolicy: {{ include "gpu-fleet.imagePullPolicy" (list $ .Values.scheduler.image) }}
           args:
             - "--config=/etc/jobtree/scheduler/jobtree-config.yaml"
             - "--leader-elect={{ .Values.scheduler.leaderElect }}"

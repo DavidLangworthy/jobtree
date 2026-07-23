@@ -1,5 +1,29 @@
+# Every image this chart deploys is built from the repository's single
+# Dockerfile (two targets) and pushed by .github/workflows/release.yaml on a
+# `v*` tag. `image.tag` is the one knob that pins a release across every
+# component; empty means "the chart's appVersion", which the release workflow
+# stamps to the tag it just published — so a chart pulled from a release
+# already points at images that exist.
+#
+# This used to be a single `controller.image` string holding a full reference
+# pinned at `:latest`, while the operator guide told admins to run
+# `--set image.tag=$(git rev-parse --short HEAD)`. That key did not exist, so
+# the flag was a silent no-op and every install got `:latest` — an image no CI
+# job had ever pushed (R15). `hack/ci/helm-assertions.sh` now fails the build
+# if `image.tag` stops reaching a rendered container.
+image:
+  tag: ""
+  # Tags are immutable release versions, so IfNotPresent is correct and lets a
+  # locally built/loaded image (kind, `make e2e`) be used without a registry.
+  pullPolicy: IfNotPresent
+
 controller:
-  image: ghcr.io/davidlangworthy/jobtree-controller:latest
+  image:
+    repository: ghcr.io/davidlangworthy/jobtree-controller
+    # Empty inherits image.tag, then the chart appVersion.
+    tag: ""
+    # Empty inherits image.pullPolicy.
+    pullPolicy: ""
   replicas: 1
   resources: {}
   serviceAccount: jobtree-controller
@@ -17,12 +41,6 @@ controller:
   webhookPort: 9443
   extraArgs: []
 
-notifier:
-  enabled: true
-  image: ghcr.io/davidlangworthy/jobtree-notifier:latest
-  replicas: 1
-  resources: {}
-
 scheduler:
   # The out-of-tree jobtree scheduler-framework binary (cmd/scheduler). It runs
   # as a second Deployment alongside the manager and places pods that set
@@ -32,7 +50,10 @@ scheduler:
   # deliberately (it needs the -committer RBAC below and workload pods that set
   # schedulerName: jobtree with the gang/gpu metadata the controller stamps).
   enabled: false
-  image: ghcr.io/davidlangworthy/jobtree-scheduler:latest
+  image:
+    repository: ghcr.io/davidlangworthy/jobtree-scheduler
+    tag: ""
+    pullPolicy: ""
   replicas: 1
   resources: {}
   serviceAccount: jobtree-scheduler

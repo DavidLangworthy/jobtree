@@ -61,7 +61,9 @@ Expose REST endpoints via the controller manager (secured via authz middleware):
 
 * Email and Slack notifications when requests are approved or when headroom is within 10% of the
   limit.
-* Integrate with the notifier controller to reuse countdown and deficit forecasts.
+* Reuse the countdown and deficit forecasts the manager already computes. (This is a product
+  sketch: no notification component exists, and the chart's phantom `notifier` Deployment was
+  removed in R15.)
 
 ## 5. Next steps
 

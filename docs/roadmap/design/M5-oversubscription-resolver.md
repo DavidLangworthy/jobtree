@@ -21,7 +21,7 @@ Introduce the mechanisms that restore feasibility when Reservations activate or 
 ## Architecture & Components
 - **Resolver library (`pkg/resolver`):** Encapsulates structural cuts, token generation, lottery execution, and audit emission.
 - **Controller hooks:** Run/Reservation controllers invoke resolver before binding when deficits exist.
-- **Attestation service:** Extend `cmd/notifier` or a new component to publish seed, conflict set, and winners to durable storage.
+- **Attestation service:** A new component to publish seed, conflict set, and winners to durable storage. (There is no notifier binary — the chart's phantom `notifier` Deployment was removed in R15.)
 
 ## Detailed Design
 1. **Conflict scope derivation**

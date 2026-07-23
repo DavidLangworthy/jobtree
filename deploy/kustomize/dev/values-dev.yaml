@@ -10,8 +10,5 @@ scheduler:
   replicas: 1
   leaderElect: false
 
-notifier:
-  enabled: false
-
 monitoring:
   enabled: true

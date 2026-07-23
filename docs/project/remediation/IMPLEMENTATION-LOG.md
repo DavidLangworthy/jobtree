@@ -26,6 +26,66 @@ The README compose note lists R5/R6 first. I moved the two P0 correctness bugs
 
 ## Decisions (chronological)
 
+### R15 — the documented install made real (2026-07-23, unattended run)
+
+Four separate things had to be true for `helm install` to work, and none of them were.
+Fixing three and leaving one would still produce `ImagePullBackOff`, so they land together.
+
+- **`release.yaml` built no images at all.** Added an `images` job that logs into GHCR
+  and pushes both Dockerfile targets (`manager`, `scheduler`) as
+  `ghcr.io/<owner>/jobtree-{controller,scheduler}` at `${GITHUB_REF_NAME}` **and**
+  `latest`. It runs *before* `package`, and `package` now stamps the chart with
+  `--version ${VERSION#v} --app-version ${VERSION}`. That ordering is load-bearing:
+  the chart's image tag defaults to `.Chart.AppVersion`, so a chart packaged with the
+  tag whose images were just pushed installs correctly with **no flags at all**. The
+  job then re-renders the packaged `.tgz` and greps for the two expected references —
+  proving the two halves agree rather than assuming it.
+- **`--set image.tag=…` was a silent no-op**, and the operator guide told admins to use
+  it. There was no `image` key; `controller.image` was one full reference string pinned
+  at `:latest`. **Judgment call: wire the flag rather than delete it from the docs.**
+  The audit allows either, but the operator's intent — pin a deployed build — is
+  legitimate, and the standard Helm shape (`repository`/`tag`/`pullPolicy` per component
+  under a chart-wide `image.tag`) delivers it in ~6 mechanical files. `e2e-local` images
+  now come in via `--set controller.image.repository/tag` from `hack/e2e/install.sh`
+  (derived from the existing `E2E_IMAGE`, so `versions.env` is untouched).
+  `imagePullPolicy` is now explicit (`IfNotPresent`): the previous `:latest` default made
+  the kubelet's implicit policy `Always`, which would fail on a kind-loaded image the
+  moment a tag stopped being `latest`.
+- **The `notifier` was a phantom and is DELETED, not defaulted off.** There is no
+  `cmd/notifier`, no Dockerfile stage, no job that ever pushed
+  `ghcr.io/davidlangworthy/jobtree-notifier` — and it was `enabled: true` by default, so
+  `helm install --wait` hung on ImagePullBackOff forever. The e2e harness carried a
+  standing accommodation for exactly this. Both options are inside the audit's sanctioned
+  set ("default off — or delete it entirely"); deletion is what the repo's own
+  fake-features discipline requires, and hiding a nonexistent component behind a flag is
+  how it survived this long. Removed from `values.yaml`, `deployment.yaml`,
+  `_helpers.tpl`, both kustomize overlays, the e2e overlay, and the chart description.
+  Two docs that named `cmd/notifier` as an extension point were corrected in place.
+- **The helm repo (`https://davidlangworthy.github.io/jobtree`) 404s.** Chose to *fix
+  the docs*, not publish an index: GitHub Pages is not enabled for this repo (the docs
+  site is readthedocs), an unattended run cannot verify a Pages deploy, and an unserved
+  index is the same broken promise relocated. Every release already publishes the
+  packaged chart as an asset, so `README.md` and `admin-setup.md` §3 now install from
+  that `.tgz`, and explain what a source-checkout install needs instead.
+
+**Two new rails in `hack/ci/helm-assertions.sh`, both mutation-verified:**
+
+1. **Every rendered container image must be one this repo builds.** The Dockerfile has
+   two targets, so the chart may name two repositories. Mutation: repoint
+   `controller.image.repository` at `jobtree-notifier` → red. This is the rail that makes
+   a phantom image impossible to reintroduce, and it would have caught the notifier on
+   the day it was added.
+2. **`image.tag` must reach every container.** Renders with `--set image.tag=pin-me-9a1b`
+   and requires exactly 2 hits; separately asserts a per-component tag overrides the
+   global one, and that the *unset* default is the chart's `appVersion` (the property the
+   release job depends on). Mutation: hard-code the manager's image back to a literal →
+   "reached 1 of the 2 chart containers". A documented flag the template ignores is worse
+   than no flag, because nothing fails.
+
+Not done, deliberately: no Helm repository index, and no change to `Chart.yaml`'s
+committed `appVersion` (`0.1.0`) — a source checkout is a development install and the
+guide now says so.
+
 ### R19 settled, and the project shell made honest (2026-07-09)
 David: *"I'm not ready to give this away yet, but I want to be able to talk about
 it."* Also: *"maintainers is a good place to give yourself credit for doing all this

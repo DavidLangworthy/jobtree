@@ -41,6 +41,57 @@ for needle in \
   fi
 done
 
+# --- R15: the chart may only deploy images this repository actually builds ----
+#
+# The chart shipped a default-ON `notifier` Deployment pointing at
+# ghcr.io/davidlangworthy/jobtree-notifier — an image with no source anywhere in
+# the repo and no job that ever pushed it. `helm install --wait` hung on
+# ImagePullBackOff forever. The Dockerfile has exactly two targets, so the
+# rendered chart may name exactly two image repositories.
+all_rendered="$(helm template ci "$CHART" --namespace "$NS" \
+                 --api-versions monitoring.coreos.com/v1 \
+                 --set scheduler.enabled=true | strip_comments)"
+
+while read -r ref; do
+  case "${ref%%:*}" in
+    */jobtree-controller|*/jobtree-scheduler|jobtree-controller|jobtree-scheduler) ;;
+    *) echo "::error::chart deploys '$ref', which this repository does not build" >&2; exit 1 ;;
+  esac
+done < <(grep -E '^[[:space:]]*image:[[:space:]]' <<<"$all_rendered" | awk '{print $2}')
+
+# --- R15: `image.tag` must actually reach the containers ----------------------
+#
+# The operator guide documented `--set image.tag=$(git rev-parse --short HEAD)`
+# against a chart that had no `image.tag` key at all: a silent no-op that left
+# every install on `:latest`. A flag the docs promise and the template ignores
+# is worse than no flag, because nothing fails.
+pinned="$(helm template ci "$CHART" --namespace "$NS" \
+           --set scheduler.enabled=true --set image.tag=pin-me-9a1b | strip_comments)"
+pinned_count="$(grep -cE '^[[:space:]]*image:[[:space:]].*:pin-me-9a1b$' <<<"$pinned" || true)"
+if [ "$pinned_count" -ne 2 ]; then
+  echo "::error::--set image.tag reached $pinned_count of the 2 chart containers; the flag is (partly) a no-op" >&2
+  exit 1
+fi
+
+# A component tag overrides the global one, and neither may silently vanish.
+override="$(helm template ci "$CHART" --namespace "$NS" \
+             --set scheduler.enabled=true \
+             --set image.tag=global-tag \
+             --set scheduler.image.tag=sched-tag | strip_comments)"
+if ! grep -qE '^[[:space:]]*image:[[:space:]].*jobtree-scheduler:sched-tag$' <<<"$override" \
+   || ! grep -qE '^[[:space:]]*image:[[:space:]].*jobtree-controller:global-tag$' <<<"$override"; then
+  echo "::error::a per-component image.tag does not override image.tag" >&2
+  exit 1
+fi
+
+# With nothing set, the tag must be the chart's appVersion — the property the
+# release workflow relies on when it packages with --app-version.
+appversion="$(awk '/^appVersion:/{gsub(/"/,"",$2); print $2}' "$CHART/Chart.yaml")"
+if ! grep -qE "^[[:space:]]*image:[[:space:]].*jobtree-controller:${appversion}\$" <<<"$all_rendered"; then
+  echo "::error::the default controller image tag is not the chart appVersion ($appversion)" >&2
+  exit 1
+fi
+
 # --- R16: the ServiceMonitor must actually select the metrics Service ---------
 #
 # It selected `app.kubernetes.io/name`, which `gpu-fleet.labels` never emitted, so

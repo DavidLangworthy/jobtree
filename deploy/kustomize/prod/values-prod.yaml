@@ -23,10 +23,6 @@ scheduler:
   replicas: 2
   leaderElect: true
 
-notifier:
-  enabled: true
-  replicas: 2
-
 monitoring:
   enabled: true
   scrapeInterval: 15s

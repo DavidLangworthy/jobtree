@@ -16,13 +16,17 @@ Kubernetes-native gang scheduling of job forests under time-scoped organizationa
 
 2. Explore the API using the samples in `config/samples/` and the simulated CLI (`kubectl runs --state cluster.yaml plan <run>`).
 
-3. Deploy the observability stack with Helm:
+3. Install on a cluster from a published release (the chart is a release asset; there is no Helm repository):
 
    ```bash
-   helm install jobtree ./deploy/helm/gpu-fleet --namespace jobtree-system --create-namespace
+   VERSION=v0.1.0
+   curl -fsSLO "https://github.com/DavidLangworthy/jobtree/releases/download/${VERSION}/gpu-fleet-${VERSION#v}.tgz"
+   helm install jobtree "gpu-fleet-${VERSION#v}.tgz" \
+     --namespace jobtree-system --create-namespace --set scheduler.enabled=true
    ```
 
-   For overlays, use the Kustomize bundles under `deploy/kustomize/`.
+   Installing the chart straight from this checkout needs an image tag that exists — see
+   [`docs/operator-guide/admin-setup.md`](docs/operator-guide/admin-setup.md) §3. For overlays, use the Kustomize bundles under `deploy/kustomize/`.
 
 ## Testing
 

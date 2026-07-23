@@ -12,10 +12,31 @@ app.kubernetes.io/component: scheduler
 {{- printf "%s-controller" (include "gpu-fleet.name" .) -}}
 {{- end -}}
 
-{{- define "gpu-fleet.notifierName" -}}
-{{- printf "%s-notifier" (include "gpu-fleet.name" .) -}}
-{{- end -}}
-
 {{- define "gpu-fleet.schedulerName" -}}
 {{- printf "%s-scheduler" (include "gpu-fleet.name" .) -}}
+{{- end -}}
+
+{{/*
+Resolve one component's image reference. Called as
+`include "gpu-fleet.image" (list $ .Values.controller.image)`.
+
+The tag falls back component -> image.tag -> .Chart.AppVersion. The last hop is
+what makes a released chart self-consistent: release.yaml packages the chart
+with `--app-version <tag>` after pushing images under exactly that tag, so an
+install with no flags at all pulls images that exist. `required` refuses to
+render a component whose repository was blanked, rather than emitting a
+`:tag`-only reference the kubelet would reject at pull time.
+*/}}
+{{- define "gpu-fleet.image" -}}
+{{- $root := index . 0 -}}
+{{- $img := index . 1 -}}
+{{- $repo := required "a component image.repository must be set" $img.repository -}}
+{{- $tag := $img.tag | default $root.Values.image.tag | default $root.Chart.AppVersion -}}
+{{- printf "%s:%s" $repo $tag -}}
+{{- end -}}
+
+{{- define "gpu-fleet.imagePullPolicy" -}}
+{{- $root := index . 0 -}}
+{{- $img := index . 1 -}}
+{{- $img.pullPolicy | default $root.Values.image.pullPolicy -}}
 {{- end -}}
