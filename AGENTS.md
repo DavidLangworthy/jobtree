@@ -21,7 +21,13 @@ writes `Lease.Status.{Closed,Ended,ClosureReason}`. There is no allowlist.
 2. Read **`docs/project/history-run-phase-writers.md`** if you are touching `HandleNodeFailure` or
    anything that writes `run.Status.Phase`. It traces one field through seven consecutive defects and
    explains exactly why that function, and no other, keeps producing the same bug.
-3. Run an adversarial review before merging. See below.
+3. Do **not** run a full adversarial review per PR. The per-PR gate is `make verify` + the invariant
+   oracle (both below) + a mutated fix — a cheap, continuous legality check that runs on every test
+   binary. Run the **big adversarial review at milestone cadence** — once per milestone, or when a
+   change introduces a genuinely new sole-committer mechanism (a new invariant surface) — **not** for
+   routine changes on this path. Rationale: a full review costs more wall-clock and tokens than the PR
+   it reviews, and now that the oracle carries the continuous load it mostly resurfaces already-booked
+   findings. Batch it. See below for how to archive one when you do run it.
 4. **Mutate every fix.** Revert the load-bearing line, confirm the test goes red, restore. A test that
    passes against the reverted fix does not test the fix. This has caught decorative tests twice.
 
