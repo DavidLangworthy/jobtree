@@ -36,7 +36,11 @@ func seedRunning(t *testing.T, state *ClusterState, runKey string, now time.Time
 	}
 	state.Leases = append(state.Leases, res.Leases...)
 	state.Pods = append(state.Pods, res.Pods...)
-	run.Status.Phase = RunPhaseRunning
+	// Through the vocabulary, not around it: on a real cluster this run reaches
+	// Running via the adoption path's setState(GangBound), and a bare
+	// `Status.Phase = Running` here would leave the conditions saying Pending —
+	// which INV-PHASE-DERIVED catches, correctly, as the fixture lying.
+	setState(run, v1.RunStateGangBound, "seeded Running by the plugin stand-in")
 }
 
 // seedGrowLeases mints the leases the scheduler plugin would create for an

@@ -16,6 +16,7 @@ import (
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Owner",type=string,JSONPath=`.spec.owner`
 // +kubebuilder:printcolumn:name="Updated",type=date,JSONPath=`.status.updatedAt`
+// +kubebuilder:printcolumn:name="Healthy",type=string,JSONPath=`.status.conditions[?(@.type=="Healthy")].status`
 type Budget struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -90,6 +91,13 @@ type AggregateCap struct {
 
 // BudgetStatus surfaces derived accounting data.
 type BudgetStatus struct {
+	// Conditions reports Healthy/Overcommitted (R11), derived by
+	// SetBudgetConditions from the headroom written in the same pass.
+	// +patchMergeKey=type
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=type
+	Conditions         []metav1.Condition  `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 	ObservedGeneration int64               `json:"observedGeneration,omitempty"`
 	Headroom           []EnvelopeHeadroom  `json:"headroom,omitempty"`
 	AggregateHeadroom  []AggregateHeadroom `json:"aggregateHeadroom,omitempty"`

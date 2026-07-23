@@ -235,7 +235,7 @@ func PodLeaseWithRole(run *v1.Run, seg cover.Segment, node string, gpusPerPod in
 	for i := range slots {
 		slots[i] = fmt.Sprintf("%s#%d", node, i)
 	}
-	return v1.Lease{
+	lease := v1.Lease{
 		ObjectMeta: v1.ObjectMeta{
 			Namespace: run.Namespace,
 			Name:      name,
@@ -252,6 +252,13 @@ func PodLeaseWithRole(run *v1.Run, seg cover.Segment, node string, gpusPerPod in
 			Reason:                reason,
 		},
 	}
+	// Deliberately NO status here. Status is a subresource, so Create drops it —
+	// stamping conditions at the mint would be inert, and the sole committer is
+	// not paying an extra API write per pod on its hot path to fix that. The
+	// controller derives the lease's conditions on its next pass instead
+	// (controllers/kube.Bridge.apply), which is where every other observation of
+	// the ledger already happens.
+	return lease
 }
 
 // StampGangIdentity records durable gang identity on a freshly-minted lease: the

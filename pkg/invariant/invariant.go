@@ -136,6 +136,16 @@ const (
 	// auditor, which sees them. The coarse form is what a state projection can
 	// honestly answer, and it is enough to catch a whole-pod-set deletion.
 	LeaseHasPod = "INV-LEASE-HAS-POD"
+
+	// PhaseDerived: status.phase must equal what status.conditions derive (R11).
+	//
+	// Phase is what every control path keys off — the completion gate, the elastic
+	// loop, the resolver, the CLI — and conditions are what operators and
+	// `kubectl wait` key off. If they can disagree, one of the two audiences is
+	// being lied to, and which one depends on where the bug is. SetRunState makes
+	// them agree by construction, so any violation here means something wrote
+	// status.phase behind its back.
+	PhaseDerived = "INV-PHASE-DERIVED"
 )
 
 // Violation is one broken invariant, named so it can be grepped, counted, and
@@ -188,6 +198,15 @@ type Run struct {
 	// checking.
 	RunnableGPUs    int
 	MinRunnableGPUs int
+	// DerivedPhase is what this run's OWN status conditions derive to (R11). It
+	// is empty for a run carrying no conditions at all — a hand-built pure-engine
+	// fixture that never went through a status write — and such a run is skipped,
+	// the same documented blind spot KnownToLedger takes.
+	//
+	// It is deliberately computed by the API package's DeriveRunPhase, not
+	// reimplemented here: an oracle that re-derives the rule it is checking checks
+	// only that someone wrote the same bug twice.
+	DerivedPhase string
 	// Pods is how many pods of any role the workload plane still holds for this
 	// run. It is the plane the ledger cannot see; see TerminalNoPods.
 	Pods int
@@ -246,6 +265,16 @@ func CheckSteady(w World) []Violation {
 	}
 
 	for _, r := range w.Runs {
+		if r.DerivedPhase != "" && r.DerivedPhase != r.Phase {
+			out = append(out, Violation{
+				ID:      PhaseDerived,
+				Subject: "run " + r.Key,
+				Detail: fmt.Sprintf(
+					"status.phase is %q but its own status.conditions derive %q; "+
+						"the control paths and `kubectl wait` are being told different things",
+					r.Phase, r.DerivedPhase),
+			})
+		}
 		if r.Terminal {
 			if names := openByRun[r.Key]; len(names) > 0 {
 				sort.Strings(names)

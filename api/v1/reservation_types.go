@@ -12,6 +12,7 @@ import (
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Run",type=string,JSONPath=`.spec.runRef.name`
 // +kubebuilder:printcolumn:name="Earliest",type=string,JSONPath=`.spec.earliestStart`
+// +kubebuilder:printcolumn:name="State",type=string,JSONPath=`.status.state`
 type Reservation struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -42,6 +43,13 @@ type RunReference struct {
 
 // ReservationStatus reports lifecycle transitions.
 type ReservationStatus struct {
+	// Conditions reports Forecast/Activated (R11), derived by
+	// SetReservationConditions from the fields below.
+	// +patchMergeKey=type
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=type
+	Conditions       []metav1.Condition   `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 	State            string               `json:"state,omitempty"`
 	Reason           string               `json:"reason,omitempty"`
 	ActivatedAt      *metav1.Time         `json:"activatedAt,omitempty"`

@@ -396,7 +396,7 @@ func TestFailingARunReleasesEveryLeaseItStillHolds(t *testing.T) {
 	}
 	c := NewRunController(state, runClock{now: now})
 
-	c.failRun(run, "checkpoint grace expired without recovering capacity")
+	c.failRun(run, v1.RunStateCheckpointExpired, "checkpoint grace expired without recovering capacity")
 
 	if run.Status.Phase != RunPhaseFailed {
 		t.Fatalf("setup: failRun must fail the run, got %s", run.Status.Phase)

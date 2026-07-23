@@ -12,6 +12,10 @@ import (
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Owner",type=string,JSONPath=`.spec.owner`
 // +kubebuilder:printcolumn:name="GPUs",type=integer,JSONPath=`.spec.resources.totalGPUs`
+// R11: Phase is DERIVED from status.conditions, so the column and the
+// conditions cannot disagree. Reason is the machine-readable "why".
+// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="Reason",type=string,priority=1,JSONPath=`.status.conditions[?(@.status=="True")].reason`
 type Run struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -209,14 +213,21 @@ type RunFunding struct {
 
 // RunStatus reports lifecycle information.
 type RunStatus struct {
-	Phase              string            `json:"phase,omitempty"`
-	Message            string            `json:"message,omitempty"`
-	Generation         int64             `json:"generation,omitempty"`
-	PendingReservation *string           `json:"pendingReservation,omitempty"`
-	EarliestStart      *metav1.Time      `json:"earliestStart,omitempty"`
-	Width              *RunWidthStatus   `json:"width,omitempty"`
-	Funding            *RunFundingStatus `json:"funding,omitempty"`
-	ETA                *RunETA           `json:"eta,omitempty"`
+	// Conditions is the machine-readable state (R11). Phase below is DERIVED
+	// from it by DeriveRunPhase and kept only as the printer-column and CLI
+	// convenience; the two cannot disagree because SetRunState writes both.
+	// +patchMergeKey=type
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=type
+	Conditions         []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
+	Phase              string             `json:"phase,omitempty"`
+	Message            string             `json:"message,omitempty"`
+	PendingReservation *string            `json:"pendingReservation,omitempty"`
+	EarliestStart      *metav1.Time       `json:"earliestStart,omitempty"`
+	Width              *RunWidthStatus    `json:"width,omitempty"`
+	Funding            *RunFundingStatus  `json:"funding,omitempty"`
+	ETA                *RunETA            `json:"eta,omitempty"`
 	// FollowDeadline is set while the run waits on a failed upstream under the
 	// "wait" policy: if the upstream is not resolved by then, the run fails.
 	FollowDeadline *metav1.Time `json:"followDeadline,omitempty"`

@@ -5,6 +5,9 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	"github.com/davidlangworthy/jobtree/controllers"
 	"github.com/davidlangworthy/jobtree/pkg/keys"
@@ -75,6 +78,13 @@ func buildExplainPayload(state *controllers.ClusterState, run *v1.Run) Payload {
 		{"Phase", run.Status.Phase},
 		{"Message", run.Status.Message},
 	}
+	// R11: the machine-readable "why". Phase says Pending; the reason on the
+	// conditions says whether that is Unfunded (quota), Unschedulable (capacity),
+	// GangForming (nearly there) or FollowWait (not this run's problem at all) —
+	// which are four different next actions for the researcher.
+	if reason := activeConditionReason(run); reason != "" {
+		rows = append(rows, []string{"Reason", reason})
+	}
 	if run.Spec.Follow != nil && len(run.Spec.Follow.After) > 0 {
 		rows = append(rows, []string{"Follows", strings.Join(run.Spec.Follow.After, ", ")})
 	}
@@ -124,4 +134,29 @@ func buildExplainPayload(state *controllers.ClusterState, run *v1.Run) Payload {
 		},
 		Title: "Run Explanation",
 	}
+}
+
+// activeConditionReason is the reason from the condition that determines the
+// run's phase — the one DeriveRunPhase keyed on — or the highest-signal True
+// condition when the run is merely Pending.
+func activeConditionReason(run *v1.Run) string {
+	for _, condType := range []string{
+		v1.RunConditionFailed,
+		v1.RunConditionCompleted,
+		v1.RunConditionRunning,
+		v1.RunConditionBlocked,
+		v1.RunConditionScheduled,
+		v1.RunConditionAdmitted,
+	} {
+		if cond := meta.FindStatusCondition(run.Status.Conditions, condType); cond != nil && cond.Status == metav1.ConditionTrue {
+			return cond.Reason
+		}
+	}
+	// Nothing is True, which is the Unschedulable/Unfunded shape: the run is not
+	// admitted, and the reason for THAT is the researcher's actual question. It
+	// rides on the False Admitted condition.
+	if cond := meta.FindStatusCondition(run.Status.Conditions, v1.RunConditionAdmitted); cond != nil && cond.Reason != "" && cond.Reason != v1.RunReasonNotApplicable {
+		return cond.Reason
+	}
+	return ""
 }
