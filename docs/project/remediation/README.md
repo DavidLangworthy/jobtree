@@ -92,7 +92,7 @@ mechanical, no design needed (implement straight from the audit — Opus/Sonnet)
 | Spec | Finding | Design | Code | Verify |
 |---|---|---|---|---|
 | [R25](R25-spare-node-lease-leak.md) | Spare-only node deletion leaks an immortal spare lease | ✅ | ✅ (with R21/R22) | ✅ |
-| [R26](R26-ledger-auditor.md) | No runtime audit of leases vs pods/nodes — ledger integrity is unverified | ✅ | ⏳ Opus | ⏳ Sonnet |
+| [R26](R26-ledger-auditor.md) | No runtime audit of leases vs pods/nodes — ledger integrity is unverified | ✅ | ✅ periodic `LedgerAuditor`: lease↔reality + reality↔lease, close `Orphaned` after grace, alarm-only for pod-no-lease (2026-07-23) | ✅ pure-engine unit + fake-client Sweep + real-apiserver read-path envtest; 3 rules mutation-verified |
 
 **Mechanical-only (R10, R15, R24; R16 + R17 landed 2026-07-09):** no design
 decision — the audit's finding text is the spec. R10 = correct the false comment.

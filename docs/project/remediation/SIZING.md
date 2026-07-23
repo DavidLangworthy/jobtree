@@ -71,11 +71,12 @@ Three multipliers, learned the hard way:
 | ✅ | **R11 – R14** k8s conventions | all four done (2026-07-23): conditions, ownerRefs/finalizers, the `Lease`→`GPULease` clean break, and CRD/CEL validation |
 | ✅ | **R15 / R18** admin | R15 install/release images and R18 the day-2 runbook, both done (2026-07-23) |
 | ✅ | **R20 / R23** observability | **R20 done (2026-07-23):** plugin EventRecorder + vocabulary, mirrored to Run, `explain` aggregates. **R23 done (2026-07-23):** `runs pods`/`logs`/`artifacts` CLI + `/artifacts` convention |
-| ⏳ | **R26** ledger auditor | runtime backstop (test-time now covered by the invariant oracle + eviction fuzzer) |
+| ✅ | **R26** ledger auditor | **done (2026-07-23):** periodic `LedgerAuditor` — lease↔reality + reality↔lease, closes `Orphaned` after a grace window, alarm-only for pod-no-lease. The runtime backstop under the invariant oracle + eviction fuzzer |
 
-So: **~19 of 26 landed** — 17 complete, plus R4 and R7 with only their deferred perf / feature /
-authz sub-part left. **1 remains** (R26, the ledger auditor), plus the **ROLES**
-track (XL). The high-severity correctness core — where
+So: **~20 of 26 landed** — 18 complete, plus R4 and R7 with only their deferred perf / feature /
+authz sub-part left. **Nothing remains on the unparked R1–R26 board**; the only open
+work is the **ROLES** track (XL, out of scope) and the parked perf/feature/authz
+sub-parts (R4 pt1b reader-swap, R4 pt2b store, R7 pt2). The high-severity correctness core — where
 the scheduler plugin is the sole committer and a mistake silently double-spends a budget or strands
 a gang — is done, and it is now guarded by three nets: the invariant oracle (R27), the live
 eviction fuzzer, and the TLA+ ledger / node-failure specs. Off-board infrastructure landed too: the
