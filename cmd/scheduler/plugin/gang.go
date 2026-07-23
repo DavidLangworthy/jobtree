@@ -2,12 +2,15 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
@@ -16,6 +19,7 @@ import (
 	"github.com/davidlangworthy/jobtree/pkg/cover"
 	"github.com/davidlangworthy/jobtree/pkg/keys"
 	"github.com/davidlangworthy/jobtree/pkg/metrics"
+	"github.com/davidlangworthy/jobtree/pkg/pack"
 	"github.com/davidlangworthy/jobtree/pkg/topology"
 )
 
@@ -46,14 +50,29 @@ type gangManager struct {
 
 	mu    sync.Mutex
 	gangs map[string]*gangCommit // keyed by namespace/run
+	// runUIDs caches each Run's UID so a plugin Event can be MIRRORED onto the Run
+	// with a reference kubectl will match (R20). It is a cache, not state: a miss
+	// costs one Get, a stale entry costs an Event attached to a dead UID, and the
+	// sweep drops entries with their gang. Never read by any funding decision.
+	runUIDs map[string]types.UID
+	// lastForming throttles the Run-visible GangForming mirror per gang.
+	lastForming map[string]time.Time
+	// parkedAt records when each member entered Permit's Wait, so Unreserve can tell a
+	// framework TIMEOUT from any other unreserve rather than guessing (R20). Entries
+	// are dropped on forget, which the framework calls for every unreserved pod.
+	parkedAt map[string]time.Time
 }
 
 // gangCommit is the decided funding state for one gang. Once decided, every
 // member reads the same verdict; fundable gangs hand out payers one per pod.
 type gangCommit struct {
-	decided    bool
-	fundable   bool
-	reason     string
+	decided  bool
+	fundable bool
+	reason   string
+	// refusal records WHICH planner said no (R20). Stored rather than returned so
+	// decide's signature — and its nineteen call sites — stay as they are, and so a
+	// cached verdict carries the same distinction as a fresh one.
+	refusal    refusalKind
 	payers     []cover.Segment // one paying envelope per pod, owned-before-borrowed
 	claimed    int             // distinct pods that have claimed a payer
 	assigned   map[string]int  // pod name -> payer index (idempotent across PreBind retries)
@@ -89,7 +108,103 @@ func (g *gangCommit) fullyMinted() bool {
 }
 
 func newGangManager(reader client.Reader, clock func() time.Time) *gangManager {
-	return &gangManager{reader: reader, clock: clock, gangs: map[string]*gangCommit{}}
+	return &gangManager{
+		reader:      reader,
+		clock:       clock,
+		gangs:       map[string]*gangCommit{},
+		runUIDs:     map[string]types.UID{},
+		lastForming: map[string]time.Time{},
+		parkedAt:    map[string]time.Time{},
+	}
+}
+
+// refusalKind separates the two ways admission.Feasible can say no. They send a
+// researcher to different places — one to their budget, one to the cluster — and
+// collapsing them into one string is why Permit called every refusal "not fundable".
+type refusalKind int
+
+const (
+	refusalUnfundable  refusalKind = iota // the cover step: no envelope pays for this
+	refusalUnplaceable                    // the pack step: the hardware cannot hold it
+)
+
+// classifyRefusal reads the typed error the planners return. It matches on TYPE, never
+// on message text: pack and cover both return a *PlanError with a Reason, and the
+// distinction is exactly what R20 needs preserved.
+func classifyRefusal(err error) refusalKind {
+	var packErr *pack.PlanError
+	if errors.As(err, &packErr) {
+		return refusalUnplaceable
+	}
+	return refusalUnfundable
+}
+
+// runUID returns the cached UID for a Run, fetching it once per gang lifetime.
+//
+// Deliberately best-effort: a failed Get returns "" and the caller skips the Run
+// mirror rather than emitting an Event nothing can find. Narration must never be able
+// to fail a scheduling decision.
+func (m *gangManager) runUID(namespace, name string) types.UID {
+	key := keys.NamespacedKey(namespace, name)
+	m.mu.Lock()
+	if uid, ok := m.runUIDs[key]; ok {
+		m.mu.Unlock()
+		return uid
+	}
+	m.mu.Unlock()
+
+	var run v1.Run
+	if err := m.reader.Get(context.Background(), client.ObjectKey{Namespace: namespace, Name: name}, &run); err != nil {
+		return ""
+	}
+	m.mu.Lock()
+	m.runUIDs[key] = run.UID
+	m.mu.Unlock()
+	return run.UID
+}
+
+// refusalOf reports which planner refused a decided gang. Unfundable is the safe
+// default: it is what Permit said for every refusal before R20, so an unclassified
+// path degrades to the old message rather than to a confident wrong one.
+func (m *gangManager) refusalOf(key string) refusalKind {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if g := m.gangs[key]; g != nil {
+		return g.refusal
+	}
+	return refusalUnfundable
+}
+
+// noteWaiting stamps the moment a member parked at the gate.
+func (m *gangManager) noteWaiting(podName string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, already := m.parkedAt[podName]; !already {
+		m.parkedAt[podName] = m.clock()
+	}
+}
+
+// waitedOutTimeout reports whether this member sat at the gate for the full
+// permitTimeout — i.e. the framework's Permit timeout is what ended it, rather than a
+// sibling's rejection or a bind failure.
+func (m *gangManager) waitedOutTimeout(podName string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	parked, ok := m.parkedAt[podName]
+	return ok && m.clock().Sub(parked) >= permitTimeout
+}
+
+// shouldReportForming rate-limits the GangForming mirror to one Event per gang per
+// formingEventInterval, and reports true the first time it sees a gang.
+func (m *gangManager) shouldReportForming(key string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.clock()
+	if last, ok := m.lastForming[key]; ok && now.Sub(last) < formingEventInterval {
+		return false
+	}
+	m.lastForming[key] = now
+	return true
 }
 
 // gangKey identifies the admission unit a pod belongs to: the run, plus its
@@ -220,12 +335,14 @@ func (m *gangManager) decide(ctx context.Context, pod *corev1.Pod) (fundable boo
 	_, coverPlan, _, err := admission.Feasible(world)
 	if err != nil {
 		g.reason = err.Error()
+		g.refusal = classifyRefusal(err)
 		metrics.ObserveDecideLatency("unfundable", m.clock().Sub(start))
 		return false, g.reason
 	}
 	payers, err := admission.PerPodPayer(coverPlan, g.gpusPerPod)
 	if err != nil {
 		g.reason = err.Error()
+		g.refusal = classifyRefusal(err)
 		metrics.ObserveDecideLatency("unfundable", m.clock().Sub(start))
 		return false, g.reason
 	}
@@ -442,6 +559,9 @@ func (m *gangManager) committedCount(key string) int {
 func (m *gangManager) forget(pod *corev1.Pod) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// The park stamp is per-pod bookkeeping for one trip through the gate; dropping it
+	// here is what keeps parkedAt bounded by the pods currently in flight.
+	delete(m.parkedAt, pod.Name)
 	key := gangKey(pod)
 	if g := m.gangs[key]; g != nil && g.claimed == 0 {
 		delete(m.gangs, key)
@@ -498,6 +618,26 @@ func (m *gangManager) sweep(now time.Time) {
 	for key, g := range m.gangs {
 		if now.Sub(g.lastTouched) > gangTTL {
 			delete(m.gangs, key)
+			// The R20 narration caches are bounded by the same sweep, so an
+			// observability feature cannot become the unbounded map R1 was about.
+			delete(m.lastForming, key)
+		}
+	}
+	// runUIDs is keyed by run, not by gang (a run's grow cohorts share it), so it is
+	// reaped when no gang for that run remains.
+	for key := range m.runUIDs {
+		if _, base := m.gangs[key]; base {
+			continue
+		}
+		live := false
+		for gk := range m.gangs {
+			if strings.HasPrefix(gk, key+"#") {
+				live = true
+				break
+			}
+		}
+		if !live {
+			delete(m.runUIDs, key)
 		}
 	}
 }

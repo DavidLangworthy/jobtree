@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -141,4 +143,51 @@ func liveMutateRun(ctx context.Context, c client.Client, namespace, name string,
 		return run, nil
 	}
 	return nil, fmt.Errorf("update run %s: too many conflicting writes: %w", keys.NamespacedKey(namespace, name), lastErr)
+}
+
+// liveRunEvents lists the Events recorded against a Run, newest last.
+//
+// R20: the scheduler plugin now mirrors its decisions onto the Run, so this is where
+// "the gang is forming (3/8)", "cannot be funded", "cannot be PLACED" and "minted
+// lease X" become visible to `runs explain`. Before that the plugin emitted nothing
+// and its half of the answer existed only inside a Permit status string.
+//
+// Best-effort by design: a failure to list Events must not turn `explain` — which is
+// what a researcher runs when something is already wrong — into an error. The caller
+// renders what it got.
+func liveRunEvents(ctx context.Context, c client.Client, run *v1.Run) []corev1.Event {
+	var list corev1.EventList
+	if err := c.List(ctx, &list, client.InNamespace(run.Namespace)); err != nil {
+		return nil
+	}
+	var out []corev1.Event
+	for i := range list.Items {
+		e := list.Items[i]
+		// Match on UID, not name: a delete + resubmit of a same-named Run is a
+		// DIFFERENT run, and showing the dead incarnation's events as if they were
+		// this one's is exactly the kind of confident wrong answer explain must not
+		// give. Fall back to kind+name only when the event carries no UID.
+		if e.InvolvedObject.Kind != "Run" || e.InvolvedObject.Name != run.Name {
+			continue
+		}
+		if e.InvolvedObject.UID != "" && e.InvolvedObject.UID != run.UID {
+			continue
+		}
+		out = append(out, e)
+	}
+	sort.Slice(out, func(i, j int) bool { return eventTime(out[i]).Before(eventTime(out[j])) })
+	return out
+}
+
+// eventTime is the best timestamp an Event has: the events.k8s.io path fills
+// EventTime and leaves LastTimestamp zero, the legacy path does the reverse, and
+// sorting on the wrong one silently reverses the list.
+func eventTime(e corev1.Event) time.Time {
+	if !e.EventTime.IsZero() {
+		return e.EventTime.Time
+	}
+	if !e.LastTimestamp.IsZero() {
+		return e.LastTimestamp.Time
+	}
+	return e.FirstTimestamp.Time
 }

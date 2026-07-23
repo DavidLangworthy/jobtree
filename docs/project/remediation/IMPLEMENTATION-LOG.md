@@ -26,6 +26,96 @@ The README compose note lists R5/R6 first. I moved the two P0 correctness bugs
 
 ## Decisions (chronological)
 
+### R20 — the plugin narrates its own decisions (2026-07-23, unattended run)
+
+The scheduler plugin is where placement and funding are actually decided, and it
+emitted **zero** Events. A gang parked in Permit was invisible: the Run said `Pending`,
+the controller's Events said it had asked for GPUs, and the reason it was not starting
+lived only as a string inside a `Wait` status that a researcher had to know to go read
+off individual pods. R20 gives the plugin an EventRecorder and a fixed vocabulary,
+emitted on the **pod** (where the framework's own scheduling events live, so they read
+together) and mirrored onto the **Run** (so `kubectl describe run` / `runs explain`
+answer "why isn't it starting?" without pod spelunking).
+
+**The load-bearing constraint: this narrates, it decides nothing.** No emission site
+changes a verdict; the recorder is nil-safe so a plugin built without a handle (every
+existing unit test) behaves exactly as before; the funding hot path (R4) gains no
+synchronous API write on the decision path. The two caches R20 adds (`runUIDs`,
+`lastForming`) are reaped by the SAME gang sweep that bounds `gangs`, so an
+observability feature cannot become the unbounded map R1 was about.
+
+**Judgment calls:**
+
+- **Unfundable and unplaceable are preserved as DIFFERENT answers, off the error TYPE.**
+  `decide` collapsed both into one string and Permit labelled every refusal "not
+  fundable" (`plugin.go`, `gang.go`) — which sends anyone debugging an overcommitted
+  cluster to argue with a budget that is fine (funding-model review, 2026-07-08). The
+  fix stores a `refusalKind` on the `gangCommit`, classified with `errors.As` on
+  `pack.PlanError` vs anything else, so a wrapped pack error is still a pack error and an
+  untyped error degrades to the pre-R20 "unfundable" rather than to a confident wrong
+  one. Stored, not returned, so `decide`'s signature and its many call sites are
+  untouched and a cached verdict carries the same distinction as a fresh one. The Permit
+  status STRING keeps its historical wording ("not fundable: …", matched in tests and
+  read in logs); only the Event carries the new distinction.
+- **`GangTimeout` is measured, not guessed.** Permit stamps `parkedAt` when a member
+  parks; Unreserve reports a timeout only when `elapsed >= permitTimeout`. A member
+  unreserved for any other reason (a rejected sibling, a bind failure) says nothing,
+  because attributing it to a timeout would attribute a cause we do not know. The stamp
+  is dropped in `forget`, which the framework calls for every unreserved pod, so
+  `parkedAt` is bounded by the pods in flight.
+- **`FlavorMismatch` is emitted from PostFilter, not Filter.** Filter runs per NODE and
+  cannot know it rejected them all; PostFilter is the once-per-unschedulable-pod hook. It
+  fires only when NO node carries the requested flavor — if some node has it, the pod is
+  unschedulable for an ordinary reason (full nodes, taints) the framework's own
+  `FailedScheduling` already explains better than we could. PostFilter otherwise keeps
+  its existing no-op reclaim verdict unchanged.
+- **`GangForming` is throttled per gang (30s).** Permit runs per member per attempt, so a
+  64-pod gang that re-forms produces hundreds of identical observations; the Event API's
+  own aggregation does not collapse them because the changing (k/N) counts — the useful
+  part — are in the note. Throttling per gang keeps the signal and a readable Event list.
+- **The Run mirror needs the real UID, and that is the whole feature's failure mode.**
+  `kubectl describe run` selects Events on `involvedObject.uid`; a reference carrying only
+  name+namespace produces Events that exist in the API and are invisible where anyone
+  looks. The gang manager caches the UID (one Get per gang lifetime, never per Event on
+  the hot path) and returns "" — silently skipping the mirror — when it cannot read the
+  Run, because an Event on a made-up reference is worse than no Event.
+- **The recorder's scheme is the BINARY's, registered in `main.init`, not the plugin's.**
+  The framework's EventRecorder turns the mirrored object into an ObjectReference with
+  `reference.GetReference` against the GLOBAL client-go scheme — a Run is not in it, so
+  without registration every Run-mirrored Event is dropped with "no kind is registered"
+  (logged, not returned: the plugin would look like it was narrating while
+  `kubectl describe run` stayed empty). `main_test.go` pins exactly this and is
+  mutation-verified: delete the `AddToScheme` and it fails with
+  "no kind is registered for the type v1.Run". The plugin's own API-client scheme is a
+  different scheme; registering in `New` would not fix the recorder.
+- **`explain` shows only LIVE Events, matched on UID.** The `--local` simulator has no API
+  server and therefore no Events; inventing plausible ones there would be a fake, so the
+  aggregation is live-path only. Events are matched on the Run's UID (a delete+resubmit of
+  a same-named Run is a different run; showing the dead incarnation's events would be a
+  confident wrong answer), sorted on the best available timestamp (`EventTime` for the
+  events.k8s.io path, `LastTimestamp`/`FirstTimestamp` for the legacy path — sorting on
+  the wrong one silently reverses the list), newest last and capped at 8 so the current
+  answer is the last line and a fifty-times-re-formed gang does not bury it.
+
+**Coordination with R23 recorded, not deferred:** R20's spec says to "coordinate the CLI
+aggregation once" with R23. R20 lands the Event-aggregation half in `explain`
+(`withRunEvents` / `liveRunEvents`); R23 adds `pods`/`logs` on the same live-client
+surface and reuses `liveRunEvents` if it needs Run Events. No second aggregation path.
+
+**Verification.** Unit tests, all mutation-verified: refusal classification is by type
+not message (a wrapped pack error stays unplaceable; an untyped error degrades to
+unfundable); the two refusals render with different reasons and steer the reader to
+different places; forming is throttled per gang and the throttle expires; only a full
+`permitTimeout` wait counts as a timeout and the stamp dies with the pod; the UID is
+fetched once for ten Events and an unreadable Run silences the mirror; and the recorder's
+scheme can reference a Run (the silence-failure guard). `make verify` green (fmt, vet,
+generate, antifake, `-race` incl. the 800-seed eviction fuzzer, envtest, golden, helm).
+R20 touches no `controllers/` or `pkg/funding` code, so envtest and the fuzzer confirm no
+regression rather than exercising R20 directly; the plugin runs inside the scheduler
+binary, which envtest does not stand up, so the emission sites are proven by unit tests
+and the scheme-registration guard. Flagged for the milestone review in
+`DECISIONS-NEEDED.md` (F5) as a sole-committer-path change, even though it is observe-only.
+
 ### R15 — the documented install made real (2026-07-23, unattended run)
 
 Four separate things had to be true for `helm install` to work, and none of them were.

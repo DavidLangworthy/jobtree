@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -68,7 +69,41 @@ func explainLive(cmd *cobra.Command, opts *RootOptions, printer *Printer, name s
 	}
 	state := reservationLookupState(opts.Namespace, reservation)
 	payload := buildExplainPayload(state, run)
+	// R20: the scheduler plugin's own Events, mirrored onto the Run. Only the live
+	// path has them — the --local simulator has no API server and therefore no
+	// Events, and inventing plausible ones there would be a fake.
+	payload = withRunEvents(payload, liveRunEvents(ctx, c, run))
 	return printer.Print(cmd, opts, payload)
+}
+
+// withRunEvents appends the run's recent Events to an explain payload.
+//
+// Newest last and capped, because `explain` is read top-to-bottom by someone asking
+// "why isn't it starting" — the most recent line is the current answer, and a gang
+// that has re-formed fifty times would otherwise bury it.
+func withRunEvents(payload Payload, events []corev1.Event) Payload {
+	const maxShown = 8
+	if len(events) == 0 {
+		return payload
+	}
+	if len(events) > maxShown {
+		events = events[len(events)-maxShown:]
+	}
+	for _, e := range events {
+		label := "Event"
+		if e.Type == corev1.EventTypeWarning {
+			label = "Event!"
+		}
+		note := e.Message
+		if e.Count > 1 {
+			note = fmt.Sprintf("%s (x%d)", note, e.Count)
+		}
+		payload.Rows = append(payload.Rows, []string{label, fmt.Sprintf("%s: %s", e.Reason, note)})
+	}
+	if raw, ok := payload.Raw.(map[string]interface{}); ok {
+		raw["events"] = events
+	}
+	return payload
 }
 
 func buildExplainPayload(state *controllers.ClusterState, run *v1.Run) Payload {
