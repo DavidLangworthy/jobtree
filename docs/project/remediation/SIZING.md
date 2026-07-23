@@ -22,10 +22,16 @@ instrument: what is big, what is blocked, and what can run in parallel.
 
 ## Size legend
 
-Sizes are in **focused implementation hours**, including the adversarial review
-that every sole-committer / funding-path change now gets before merge (it has
-caught a real, merge-blocking bug on four consecutive changes). They do **not**
-include waiting on CI, which is why PRs are stacked.
+Sizes are in **focused implementation hours**. They do **not** include waiting on
+CI, which is why PRs are stacked.
+
+> **Cadence change (2026-07-10):** adversarial review is **no longer run per PR** —
+> it moved to **milestone cadence** (see `AGENTS.md`). The per-PR gate is now
+> `make verify` + the invariant oracle + a mutated fix. Earlier revisions of this
+> doc folded a per-PR review into every funding-path size; those items are
+> therefore **over-sized** here by roughly that review, and the headline day counts
+> below are correspondingly conservative. Left in place rather than re-derived — the
+> ordering and blocking analysis is unaffected.
 
 | Size | Hours | Shape |
 |---|---|---|
