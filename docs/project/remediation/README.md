@@ -22,6 +22,14 @@ about a third of what is left, and two of them change the *size* of other items.
 
 ## Status board
 
+> **Reconciled 2026-07-11 against `origin/main`.** The correctness sprint has landed. The
+> entire [correctness-closeout-plan.md](correctness-closeout-plan.md) (Phases 0–6: eviction
+> recovery + live fuzzer, durable lease identity, R2 pt3 restart reconstruction, R4 pt1b
+> safe fold) is complete; the R27 review is closed (#92); and R9 (9A-0…9A-4, live kind
+> proofs), R8 (built as 9A-3), and R7 pt1 landed. `correctness-closeout-plan.md` is the live
+> sub-tracker for correctness work — this board tracks the full R1–R26 set. Rows below are
+> updated to the merged PRs; SIZING.md's day counts still need the same pass.
+
 Design = the Fable layer (this repo). ✅ = design spec written; **mech** = purely
 mechanical, no design needed (implement straight from the audit — Opus/Sonnet).
 
@@ -30,9 +38,9 @@ mechanical, no design needed (implement straight from the audit — Opus/Sonnet)
 | Spec | Finding | Design | Code | Verify |
 |---|---|---|---|---|
 | [R1](R1-phantom-lease-clear.md) | Phantom `pending` lease funding leak | ✅ | ✅ #46 | ✅ |
-| [R2](R2-gang-recovery.md) | Partial-gang wedge / restart / adopt-at-partial-width | ✅ | ◐ pt1 de-wedge + pt2 adopt-at-width done; pt3 restart reconstruction pending | ◐ unit; restart + live-proof pending |
+| [R2](R2-gang-recovery.md) | Partial-gang wedge / restart / adopt-at-partial-width | ✅ | ✅ pt1 de-wedge + pt2 adopt-at-width + pt3 restart reconstruction (#98, `Reconstruct`) | ✅ unit + envtest; kind restart live-proof (closeout Phase 5) |
 | [R3](R3-opportunistic-fork.md) | Opportunistic activation incoherent post-cutover | ✅ (refined) | ✅ Promise path | ✅ engine + plugin |
-| [R4](R4-plugin-hotpath.md) | Permit hot-path relists + unbounded ledger replay | ✅ | ◐ pt1 metrics + pt2a compaction primitive done; pt1b caching + pt2b settlement pending | ◐ unit+race+round-trip; caching/bench deferred |
+| [R4](R4-plugin-hotpath.md) | Permit hot-path relists + unbounded ledger replay | ✅ | ◐ pt1 metrics + pt2a compaction + **pt1b safe-fold core (#99)** done; pt1b reader-swap (perf, on #34) + pt2b settlement store (feature) open | ◐ unit+race+round-trip + TLA rails; reader-swap live-proof deferred |
 
 **P1 — multi-tenant safety**
 
@@ -40,14 +48,14 @@ mechanical, no design needed (implement straight from the audit — Opus/Sonnet)
 |---|---|---|---|---|
 | [R5](R5-provenance-trust-anchor.md) | Forgeable funding provenance (swap mint) | ✅ | ✅ plugin+VAP | ◐ unit; VAP CEL needs kind |
 | [R6](R6-mandatory-scheduler.md) | Budget is opt-in for GPU pods | ✅ | ✅ VAP (off by default) | ◐ VAP CEL needs kind |
-| [R7](R7-tenancy-envelope-namespace.md) | Namespaces are not a tenancy boundary | ✅ | ⏳ Opus | ⏳ Sonnet |
+| [R7](R7-tenancy-envelope-namespace.md) | Namespaces are not a tenancy boundary | ✅ | ◐ pt1 namespace envelope key (#87); **pt2 delete `Run.Spec.Owner` open** — authz decision, deferred by owner ruling | ◐ pt1 unit + golden; pt2 pending |
 
 **P2 — workload lifecycle (blocks "usable for ML")**
 
 | Spec | Finding | Design | Code | Verify |
 |---|---|---|---|---|
-| [R8](R8-pod-failure-handling.md) | Failed pod = immortal budget-charging zombie | ✅ | ⏳ Opus — **absorbed as [R9 phase 9A-3](R9-jobset-amendment.md)**, not separate work | ⏳ Sonnet |
-| [R9](R9-rendezvous.md) | No distributed-training rendezvous on the live path | ✅ **amended** ([9A](R9-jobset-amendment.md)) | 9A-0 ✅ · 9A-1..4 ⏳ Opus | ⏳ Sonnet |
+| [R8](R8-pod-failure-handling.md) | Failed pod = immortal budget-charging zombie | ✅ | ✅ built as [R9 phase 9A-3](R9-jobset-amendment.md) (#88) — per-role `FailurePolicy`, `handleWorkloadFailure` closes leases | ✅ pure-engine + envtest + `failure-smoke.sh` (live) |
+| [R9](R9-rendezvous.md) | No distributed-training rendezvous on the live path | ✅ **amended** ([9A](R9-jobset-amendment.md)) | ✅ 9A-0…9A-4 (#88 + 9A-4) | ✅ envtest + `rendezvous-smoke.sh` + `failure-smoke.sh` (kind v1.36.1) |
 | R10 | False rendezvous API comment (`run_types.go:67`) | **mech** | ✅ (in 9A-0) | — |
 
 **P3 — Kubernetes conventions & API hardening**
@@ -110,6 +118,20 @@ divergences); `concepts/runs.md` and `concepts/budgets.md` (two-class → four-c
 derived-not-stored); `concepts/overview.md` (the three planes, and that quota may over- or
 under-commit the hardware); `index.md` (budget-as-gate framing). `index.md`'s "sole
 committer" claim needed no change — it is true and already unhedged since R3.
+
+**From the correctness closeout** ([correctness-closeout-plan.md](correctness-closeout-plan.md),
+2026-07-10/11) — landed outside the original R-numbering; that plan is the authority for these:
+
+| Item | Landed |
+|---|---|
+| Eviction recovery (`recoverEvictedRanks`) + name-keyed spare mint | #93 |
+| Loses-all-ranks demote + **eviction fuzzer live (800 seeds green)** | #101 |
+| Durable gang identity on the minted lease (Phase 4 foundation) | #97 |
+| `AggregateCap` flavor mis-count across flavors (Codex-3) | #94 |
+| Spare top-up name-keyed (TLA-found) | #100 |
+| ETA-test hang — diagnosed, cleared as infra | #96 |
+| R27 review closeout — #58 / #59 / #60 / #61 | #92 |
+| Executable ledger-compaction conformance rail | **#95 (open)** |
 
 ## How the pieces compose (read before implementing any single one)
 
