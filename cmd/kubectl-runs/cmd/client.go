@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -70,4 +71,22 @@ func newLiveClient(kubeconfigPath, kubeContext string) (client.Client, error) {
 		return nil, fmt.Errorf("build cluster client: %w", err)
 	}
 	return c, nil
+}
+
+// newLiveClientset builds a typed client-go Clientset from the same kubeconfig
+// resolution as newLiveClient. It exists only for `runs logs`: streaming a
+// container's log is a Pod SUBRESOURCE (`pods/log`), which the controller-runtime
+// client.Client cannot request — GetLogs lives on the typed CoreV1 client. Every
+// other command stays on client.Client; this is the one place that needs the
+// clientset, so it is built on demand rather than threaded through RootOptions.
+func newLiveClientset(kubeconfigPath, kubeContext string) (*kubernetes.Clientset, error) {
+	restConfig, err := kubeconfigLoader(kubeconfigPath, kubeContext).ClientConfig()
+	if err != nil {
+		return nil, fmt.Errorf("load kubeconfig (pass --local to use the in-process simulator instead): %w", err)
+	}
+	cs, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return nil, fmt.Errorf("build clientset: %w", err)
+	}
+	return cs, nil
 }

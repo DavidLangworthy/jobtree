@@ -55,6 +55,9 @@ kubectl runs --local --state my-cluster.json submit --file run-128-groups.yaml
 | `sponsors list/add` | Inspect or modify borrowing sponsors. |
 | `shrink` | Request a voluntary shrink for an elastic Run. |
 | `leases` | List leases (active and historical) for a Run. |
+| `pods` | List a Run's pods with their role, group, node, phase, and paying envelope. |
+| `logs` | Stream a Run pod's container logs, selected by `--role`/`--rank` (`-f` to follow, `--previous` for a crashed rank). Live cluster only. |
+| `artifacts` | Show where a Run's outputs are written — the writable volumes its role templates mount (by convention at `/artifacts`). |
 | `complete` | Mark a Run's workload as finished (`--local` only). |
 | `eta` | Set a Run's estimated completion time (`--local` only). |
 | `completions bash\|zsh\|fish` | Generate a shell completion script from the real Cobra command tree (not a hand-maintained list — new subcommands are picked up automatically). |
@@ -70,6 +73,18 @@ kubectl runs --local --state cluster.json submit --file run-128-groups.json
 kubectl runs --local --state cluster.json plan train-128
 kubectl runs --local --state cluster.json watch train-128 --watch-count 3 --watch-interval 1
 kubectl runs --local --state cluster.json budgets usage
+kubectl runs --local --state cluster.json pods train-128
+kubectl runs --local --state cluster.json artifacts train-128
+```
+
+`pods` and `artifacts` read the plan/spec, so they work under `--local`. `logs`
+needs a real kubelet and is live-only:
+
+```bash
+# against a live cluster (no --local): stream rank 0's logs, follow, or a crash's last output
+kubectl runs logs train-128
+kubectl runs logs train-128 --rank 3 -f
+kubectl runs logs train-128 --previous   # a crashed rank's last output (pairs with failure policy)
 ```
 
 See [docs/examples/worked-examples.md](../examples/worked-examples.md) for full end-to-end scenarios that match the CLI output.

@@ -126,6 +126,9 @@ no manager reconciles anything you submit to it.`,
 	root.AddCommand(NewCompleteCommand(opts, store, printer))
 	root.AddCommand(NewEtaCommand(opts, store, printer))
 	root.AddCommand(NewLeasesCommand(opts, store, printer))
+	root.AddCommand(NewPodsCommand(opts, store, printer))
+	root.AddCommand(NewLogsCommand(opts, store, printer))
+	root.AddCommand(NewArtifactsCommand(opts, store, printer))
 	root.AddCommand(NewCompletionsCommand(opts, printer))
 
 	return root
