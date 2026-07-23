@@ -26,9 +26,11 @@ boards have drifted before. If a row is already done, fix the board instead.
   [`remediation/IMPLEMENTATION-LOG.md`](remediation/IMPLEMENTATION-LOG.md)** with its
   rationale (the standing "don't interrupt me, log the judgment call" convention), and
   proceed.
-- **One PR per item.** Branch off `main`, implement, verify, `git commit` and `git push`
-  the branch, open a PR. **Never `gh pr merge`** — `main` is protected and merging is
-  David's call.
+- **Stack the PRs.** Base each item's branch on the **previous item's branch**, not
+  `main`, so the whole series reviews as one coherent progression and later items can build
+  on earlier ones without waiting for a merge. Open each PR against its parent branch, push
+  every branch, keep the stack in order. **Never `gh pr merge`** — `main` is protected and
+  merging is David's call.
 - **Small, honest commits.** Follow the repo's message style; end with the
   `Co-Authored-By: Claude` trailer.
 
@@ -52,9 +54,11 @@ guess.
 
 ## Review cadence — do NOT run a per-PR adversarial review
 
-The adversarial review is now **milestone-cadence, not per-PR** (it was finding
-already-booked work, and a full run costs ~2h and ~3M subagent tokens — more than the PR
-itself). So:
+**Finishing this entire backlog is ONE milestone.** The adversarial review is
+milestone-cadence, so it runs **exactly once, at the very end**, after all items land —
+and **David runs it**, not the autopilot. A full run costs ~2h and ~3M subagent tokens,
+more than the PRs themselves, and it was finding already-booked work when run per-change.
+So:
 
 - **The per-PR gate is:** `make verify` green (fmt, vet, generate, antifake, `-race`,
   **envtest**, golden, helm) + the **invariant oracle** (automatic in every test binary)
