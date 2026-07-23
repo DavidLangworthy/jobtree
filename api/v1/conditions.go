@@ -305,6 +305,50 @@ const (
 // controllers.CloseLease (the sole closer).
 const LeaseReasonMinted = "Minted"
 
+// conditionReason makes a free-form string safe to use as a condition Reason.
+//
+// The apiserver enforces `^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$` on every
+// condition reason, and a violation rejects the WHOLE status update — which, from
+// a controller, means the reconcile errors and retries forever.
+//
+// This is not hypothetical caution. `ClosureReason` looked like a closed
+// vocabulary and is not: the oversubscription resolver stamps the attested
+// lottery seed into it, producing `ReclaimUnfunded(0x2ab536d36c965726)`. Mirroring
+// that verbatim wedged every lease status write on the swap path, and with it the
+// run's own status. So the reason is sanitised to its identifier prefix and the
+// verbatim original is preserved in the condition's Message, where no such
+// constraint applies and nothing is lost.
+func conditionReason(raw, fallback string) string {
+	out := make([]rune, 0, len(raw))
+	for _, r := range raw {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
+			out = append(out, r)
+		case len(out) > 0 && (r >= '0' && r <= '9' || r == '_' || r == ',' || r == ':'):
+			// Digits and separators are legal, but only after a leading letter.
+			out = append(out, r)
+		default:
+			// Anything else ends the identifier rather than being dropped from the
+			// middle of it: "ReclaimUnfunded(0xdead)" is ReclaimUnfunded, not
+			// "ReclaimUnfunded0xdead".
+			if len(out) > 0 {
+				return trimReasonTail(string(out), fallback)
+			}
+		}
+	}
+	return trimReasonTail(string(out), fallback)
+}
+
+func trimReasonTail(s, fallback string) string {
+	for len(s) > 0 && (s[len(s)-1] == ',' || s[len(s)-1] == ':') {
+		s = s[:len(s)-1]
+	}
+	if s == "" {
+		return fallback
+	}
+	return s
+}
+
 // SetLeaseConditions mirrors a lease's open/closed fact into conditions. It reads
 // Status.Closed/ClosureReason and writes only Conditions, so it cannot become a
 // second writer of the closure fact — hack/antifake enforces that CloseLease is
@@ -315,11 +359,11 @@ func SetLeaseConditions(status *LeaseStatus, observedGeneration int64) {
 	message := "open: charging its payer envelope and holding its slice"
 	if status.Closed {
 		active, closed = metav1.ConditionFalse, metav1.ConditionTrue
-		reason = status.ClosureReason
-		if reason == "" {
-			reason = "Closed"
+		reason = conditionReason(status.ClosureReason, "Closed")
+		message = "closed: no longer charging (" + status.ClosureReason + ")"
+		if status.ClosureReason == "" {
+			message = "closed: no longer charging"
 		}
-		message = "closed: no longer charging"
 	}
 	meta.SetStatusCondition(&status.Conditions, metav1.Condition{
 		Type: LeaseConditionActive, Status: active, Reason: reason,

@@ -1,6 +1,8 @@
 package v1
 
 import (
+	"regexp"
+	"strings"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -212,3 +214,73 @@ func TestBudgetIsUnhealthyExactlyWhenAnEnvelopeIsOvercommitted(t *testing.T) {
 		t.Errorf("message = %q, want %q — naming the envelope is the point", cond.Message, want)
 	}
 }
+
+// ClosureReason LOOKED like a closed vocabulary and is not: the oversubscription
+// resolver stamps the attested lottery seed into it. The apiserver rejects a
+// reason that does not match ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$ — and it
+// rejects the WHOLE status update, so from a controller that is an infinite
+// retry loop, not a cosmetic defect. It wedged the swap path's lease writes (and
+// with them the run's own status) until this sanitiser landed.
+func TestASeededClosureReasonIsSanitisedButNotLost(t *testing.T) {
+	closed := LeaseStatus{Closed: true, ClosureReason: "ReclaimUnfunded(0x2ab536d36c965726)"}
+	SetLeaseConditions(&closed, 1)
+
+	cond := meta.FindStatusCondition(closed.Conditions, LeaseConditionClosed)
+	if cond.Reason != "ReclaimUnfunded" {
+		t.Errorf("reason = %q, want the identifier prefix %q", cond.Reason, "ReclaimUnfunded")
+	}
+	if !apiserverReasonRE.MatchString(cond.Reason) {
+		t.Errorf("reason %q would be REJECTED by the apiserver, wedging every status write", cond.Reason)
+	}
+	if !strings.Contains(cond.Message, "0x2ab536d36c965726") {
+		t.Errorf("the verbatim closure reason must survive in the message (the seed is the audit trail), got %q", cond.Message)
+	}
+}
+
+// Every reason this package can emit has to satisfy the apiserver, including the
+// ones nobody thought about. A unit test is the only cheap place to check the
+// whole vocabulary at once.
+func TestEveryEmittableReasonSatisfiesTheAPIServer(t *testing.T) {
+	seen := map[string]bool{}
+	for _, state := range AllRunStates {
+		var status RunStatus
+		SetRunState(&status, 1, state, "m")
+		for _, cond := range status.Conditions {
+			seen[cond.Reason] = true
+		}
+	}
+	for _, raw := range []string{
+		"", "Completed", "RunDeleted", "NodeFailure", "SwapDeclined", "WorkloadFailed",
+		"ReclaimUnfunded(0x2ab536d36c965726)", "Orphaned", "-leading-dash", "()",
+	} {
+		st := LeaseStatus{Closed: true, ClosureReason: raw}
+		SetLeaseConditions(&st, 1)
+		for _, cond := range st.Conditions {
+			seen[cond.Reason] = true
+		}
+	}
+	var res ReservationStatus
+	SetReservationConditions(&res, 1)
+	for _, cond := range res.Conditions {
+		seen[cond.Reason] = true
+	}
+	var b BudgetStatus
+	SetBudgetConditions(&b, 1)
+	for _, cond := range b.Conditions {
+		seen[cond.Reason] = true
+	}
+
+	if len(seen) < 5 {
+		t.Fatalf("only %d reasons collected; this test would be near-vacuous", len(seen))
+	}
+	for reason := range seen {
+		if !apiserverReasonRE.MatchString(reason) {
+			t.Errorf("reason %q does not match the apiserver's pattern; the whole status update would be rejected", reason)
+		}
+	}
+}
+
+// The apiserver's own pattern for metav1.Condition.Reason, copied verbatim from
+// the generated CRD schema. If upstream ever loosens it, this test is where the
+// copy is corrected — deliberately, rather than by discovering a wedge in prod.
+var apiserverReasonRE = regexp.MustCompile(`^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$`)
