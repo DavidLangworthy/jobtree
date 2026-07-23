@@ -102,7 +102,7 @@ fail() {
   echo "FAIL: $1"
   kubectl get run trainer -n default -o yaml || true
   kubectl get pods -n default -o wide || true
-  kubectl get leases.rq.davidlangworthy.io -n default -o custom-columns='NAME:.metadata.name,GPUS:.spec.slice.nodes,REASON:.spec.reason' || true
+  kubectl get gpuleases.rq.davidlangworthy.io -n default -o custom-columns='NAME:.metadata.name,GPUS:.spec.slice.nodes,REASON:.spec.reason' || true
   exit 1
 }
 
@@ -116,7 +116,7 @@ alloc="$(kubectl get run trainer -n default -o jsonpath='{.status.width.allocate
 [ "$alloc" = "4" ] || fail "run allocated width = '$alloc', want 4 after grow"
 
 # The grow was minted by the plugin as "Grow"-reason leases, not by the controller.
-grows="$(kubectl get leases.rq.davidlangworthy.io -n default -o jsonpath='{range .items[*]}{.spec.reason}{"\n"}{end}' | grep -c '^Grow$' || true)"
+grows="$(kubectl get gpuleases.rq.davidlangworthy.io -n default -o jsonpath='{range .items[*]}{.spec.reason}{"\n"}{end}' | grep -c '^Grow$' || true)"
 [ "$grows" -ge 1 ] || fail "expected >=1 plugin-minted Grow lease, got $grows"
 
 echo

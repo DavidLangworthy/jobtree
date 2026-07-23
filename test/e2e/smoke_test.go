@@ -35,7 +35,7 @@ func TestCRDsAreInstalled(t *testing.T) {
 	if err := c.List(ctx, &reservations, client.InNamespace(workNamespace)); err != nil {
 		t.Errorf("list reservations: %v", err)
 	}
-	var leases v1.LeaseList
+	var leases v1.GPULeaseList
 	if err := c.List(ctx, &leases, client.InNamespace(workNamespace)); err != nil {
 		t.Errorf("list leases: %v", err)
 	}

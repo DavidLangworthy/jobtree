@@ -1172,3 +1172,99 @@ now says so and names the phase that will fix it.
 `hack/e2e/versions.env` said installing JobSet was "Track B's prerequisite to add …
 once a Run actually lowers to a JobSet". It never will. The note now says the
 prerequisite is permanently retired, and why.
+
+## R13 + R14 — the `GPULease` clean break, and validation that survives the webhook (2026-07-23)
+
+Landed as one change because R14's CEL rules attach to the very Kind R13 renames;
+splitting them would have meant writing the immutability rule twice.
+
+### The name was taken, not asked
+
+R13's spec carries a heading titled "Decision for David (flagged)" naming two things:
+the kind name and the migration mode. The migration mode has since been decided —
+clean break, project-wide (`SIZING.md`, 2026-07-09). That left the name, and the
+autopilot's park list forbids making an owner decision.
+
+I took **`GPULease`** and did not park it, for three reasons on the record:
+
+1. The design layer already made the call: *"Recommended: `GPULease`"*, and
+   `README.md` says the Fable specs' design decisions **are made** and should not be
+   reopened without a stated reason. `SIZING.md` records the same recommendation.
+2. The playbook's own suggested order lists `R13`+`R14` under the heading
+   **"Suggested order (all unparked, no decisions)"** — it classifies this pair as
+   containing no owner decision.
+3. A kind name is not a policy question. Parking it would have blocked two of the
+   milestone's remaining items on a naming preference with a written recommendation.
+
+If David wants `FundingLease`, the change is another mechanical pass of the same
+shape — and the clean-break rule already says breaking changes get scheduled rather
+than accommodated.
+
+### What "rename the kind" actually touched
+
+73 Go files, and four things that would each have failed silently:
+
+- **RBAC.** `apiGroups: ["rq.davidlangworthy.io"] resources: ["leases"]` is still a
+  syntactically valid rule after the rename, and it grants **nothing**. The scheduler
+  plugin is the sole committer; its PreBind mint would 403, no lease would ever be
+  created, and nothing would ever be funded — with no error anywhere in the chart. The
+  same string one line down, under `coordination.k8s.io`, is the leader-election
+  resource and must NOT change. `hack/ci/helm-assertions.sh` now fails on a `leases`
+  grant in our group, asserts the `gpuleases` grants exist, and asserts the
+  coordination grant survives. Mutation-verified: put `leases` back and the rail reddens.
+- **The validating webhook.** controller-runtime derives the served path from the GVK,
+  so `NewWebhookManagedBy(&v1.GPULease{})` moved to
+  `/validate-rq-davidlangworthy-io-v1-gpulease`. A stale `resources: ["leases"]` rule in
+  the `ValidatingWebhookConfiguration` matches nothing: every GPULease would be admitted
+  unvalidated, quietly. Marker, generated manifest and helm template all moved together.
+- **The anti-fake CRD-fields allowlist** keys entries by `StructName.FieldName`, so
+  `LeaseSpec.CompPath` had to become `GPULeaseSpec.CompPath` or the ratchet would have
+  read as a *stale entry* — which that lint fails on, correctly.
+- **The e2e smoke scripts** all say `kubectl get leases.rq.davidlangworthy.io`. Fully
+  qualified, so they were never ambiguous — and after the rename they select a resource
+  that does not exist, which `kubectl` reports as an error, not as zero results.
+
+Two Go-identifier judgment calls, both toward the smaller diff:
+
+- The **API types** are renamed (`GPULease`, `GPULeaseSpec/Status/Slice/Interval/List`)
+  because controller-gen derives the Kind from the root type name and the rest read
+  incoherently otherwise. **Function names keep the English word**: `CloseLease`,
+  `SetLeaseConditions`, `LeaseConditionActive`. The collision was between two API kinds,
+  not between two uses of a common noun, and renaming the sole closer would have churned
+  `hack/antifake`'s anchor for nothing.
+- The CLI subcommand stays **`kubectl runs leases`**. It is already namespaced under
+  `runs`, so it is unambiguous, and `kubectl runs gpuleases` reads worse.
+
+### R14: the webhook is not where an invariant should live
+
+The spec asks for two things — markers mirroring `validate()`, and **CEL** for lease
+immutability — with the rationale that the webhook is `failurePolicy=Fail`, so a webhook
+outage either blocks every write or (flipped to `Ignore`) drops every check.
+
+CEL now carries the cross-field rules the webhook alone used to hold: malleable
+`min <= max`, `totalGPUs` within min/max and **on the step grid**, desired likewise;
+Reservation's `intendedSlice` must set nodes or domain; both Reservation and GPULease
+specs are immutable; and lease **closure is monotone** (`!oldSelf.closed || self.closed`),
+which is `INV-CLOSED-MONOTONE` made unrepresentable rather than merely detected.
+
+**I did not trim `validate()` down to cross-object checks**, which the spec suggests as
+step 2. The invariant R14 states is "*field-level and immutability invariants hold at the
+apiserver regardless of webhook availability*" — that is achieved by **adding** the CRD
+rules, and deleting the Go copies would only remove validation from the pure-engine
+tests, which never see an apiserver. The real cost of duplication is drift, and this
+repo's own rule about that (three implementations of one obligation is three chances to
+drift, per `CloseLease`) is answered by pinning them together: the new envtest asserts
+the apiserver rejects exactly what `validate()` rejects, so a future edit to one without
+the other reddens.
+
+The verification is the part that matters. `controllers/kube/crd_validation_envtest_test.go`
+**deletes the ValidatingWebhookConfiguration**, runs its assertions against a real
+apiserver with no webhook at all, and restores it in `t.Cleanup` (loudly — a failed
+restore would leave every later test in the package passing for the wrong reason). Both
+CEL rules are mutation-verified: drop `self.spec == oldSelf.spec` and the payer-rewrite
+test goes red; drop the step-grid rule and the off-grid Run is accepted.
+
+R13's own invariant is asked of **discovery**, not of Go: `rq.davidlangworthy.io/v1`
+serves `gpuleases` (kind `GPULease`, short name `gl`) and serves nothing called `leases`,
+while `coordination.k8s.io/v1` still serves its own. A rename that missed the CRD would
+compile perfectly and fail that test.

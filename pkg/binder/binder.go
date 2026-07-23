@@ -116,7 +116,7 @@ const (
 // literal "0" (an unstamped legacy lease, and an absent label, both read as "0"), an
 // elastic-grow step its own number. Stamped by admission.StampGangIdentity at mint so
 // gang membership is recoverable from the lease (R2 pt3 / R4 pt1b).
-func LeaseCohort(lease *v1.Lease) string {
+func LeaseCohort(lease *v1.GPULease) string {
 	if c := lease.Labels[LabelCohort]; c != "" {
 		return c
 	}
@@ -124,7 +124,7 @@ func LeaseCohort(lease *v1.Lease) string {
 }
 
 // LeasePodName is the pod a lease was minted for, or "" on an unstamped legacy lease.
-func LeasePodName(lease *v1.Lease) string {
+func LeasePodName(lease *v1.GPULease) string {
 	return lease.Annotations[AnnotationPodName]
 }
 
@@ -146,7 +146,7 @@ type Request struct {
 // Result contains the Kubernetes objects that should be created.
 type Result struct {
 	Pods   []PodManifest
-	Leases []v1.Lease
+	Leases []v1.GPULease
 }
 
 // PodPhaseSucceeded is the workload-pod phase that signals a slice finished.
@@ -283,7 +283,7 @@ type materializer struct {
 	reason string
 	seq    int
 	pods   []PodManifest
-	leases []v1.Lease
+	leases []v1.GPULease
 }
 
 // assign walks allocation chunks and cover segments as two cursors. Each
@@ -365,12 +365,12 @@ func (m *materializer) buildPod(groupIndex int, slots []nodeSlot, role string) P
 	}
 }
 
-func (m *materializer) buildLease(groupIndex int, slots []nodeSlot, seg cover.Segment, role string) v1.Lease {
+func (m *materializer) buildLease(groupIndex int, slots []nodeSlot, seg cover.Segment, role string) v1.GPULease {
 	nodes := make([]string, len(slots))
 	for i, slot := range slots {
 		nodes[i] = fmt.Sprintf("%s#%d", slot.node, slot.ordinal)
 	}
-	return v1.Lease{
+	return v1.GPULease{
 		ObjectMeta: v1.ObjectMeta{
 			Namespace: m.run.Namespace,
 			// The budget name qualifies envelope names (which repeat across
@@ -384,17 +384,17 @@ func (m *materializer) buildLease(groupIndex int, slots []nodeSlot, seg cover.Se
 				LabelRunRole:    role,
 			},
 		},
-		Spec: v1.LeaseSpec{
+		Spec: v1.GPULeaseSpec{
 			Owner: seg.Owner,
 			RunRef: v1.RunReference{
 				Name:      m.run.Name,
 				Namespace: m.run.Namespace,
 			},
-			Slice: v1.LeaseSlice{
+			Slice: v1.GPULeaseSlice{
 				Nodes: nodes,
 				Role:  role,
 			},
-			Interval: v1.LeaseInterval{
+			Interval: v1.GPULeaseInterval{
 				Start: v1.NewTime(m.now),
 			},
 			PaidByBudgetNamespace: seg.Namespace,

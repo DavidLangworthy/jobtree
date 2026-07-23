@@ -16,24 +16,24 @@ func TestApplyResolutionCountsOnlyAppliedActions(t *testing.T) {
 	t.Cleanup(metrics.Reset)
 
 	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	open := v1.Lease{
+	open := v1.GPULease{
 		ObjectMeta: v1.ObjectMeta{Namespace: "default", Name: "lease-open"},
-		Spec: v1.LeaseSpec{
+		Spec: v1.GPULeaseSpec{
 			RunRef: v1.RunReference{Namespace: "default", Name: "run-a"},
-			Slice:  v1.LeaseSlice{Nodes: []string{"node-a#0"}, Role: "Active"},
+			Slice:  v1.GPULeaseSlice{Nodes: []string{"node-a#0"}, Role: "Active"},
 		},
 	}
-	closed := v1.Lease{
+	closed := v1.GPULease{
 		ObjectMeta: v1.ObjectMeta{Namespace: "default", Name: "lease-closed"},
-		Spec: v1.LeaseSpec{
+		Spec: v1.GPULeaseSpec{
 			RunRef: v1.RunReference{Namespace: "default", Name: "run-a"},
-			Slice:  v1.LeaseSlice{Nodes: []string{"node-a#1"}, Role: "Active"},
+			Slice:  v1.GPULeaseSlice{Nodes: []string{"node-a#1"}, Role: "Active"},
 		},
-		Status: v1.LeaseStatus{Closed: true},
+		Status: v1.GPULeaseStatus{Closed: true},
 	}
 	state := &ClusterState{
 		Runs:   map[string]*v1.Run{},
-		Leases: []v1.Lease{open, closed},
+		Leases: []v1.GPULease{open, closed},
 	}
 	controller := &RunController{State: state}
 

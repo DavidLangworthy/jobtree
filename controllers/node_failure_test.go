@@ -24,19 +24,19 @@ func nodeFailureNodes() []topology.SourceNode {
 	return []topology.SourceNode{mk("node-a"), mk("node-b")}
 }
 
-func nfLease(name, run, owner, budget string, slots []string, role string, now time.Time) v1.Lease {
+func nfLease(name, run, owner, budget string, slots []string, role string, now time.Time) v1.GPULease {
 	return nfLeaseGroup(name, run, owner, budget, "0", slots, role, now)
 }
 
-func nfLeaseGroup(name, run, owner, budget, group string, slots []string, role string, now time.Time) v1.Lease {
-	return v1.Lease{
+func nfLeaseGroup(name, run, owner, budget, group string, slots []string, role string, now time.Time) v1.GPULease {
+	return v1.GPULease{
 		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: "default",
 			Labels: map[string]string{binder.LabelRunName: run, binder.LabelGroupIndex: group, binder.LabelRunRole: role}},
-		Spec: v1.LeaseSpec{
+		Spec: v1.GPULeaseSpec{
 			Owner:          owner,
 			RunRef:         v1.RunReference{Name: run, Namespace: "default"},
-			Slice:          v1.LeaseSlice{Nodes: slots, Role: role},
-			Interval:       v1.LeaseInterval{Start: v1.NewTime(now.Add(-time.Minute))},
+			Slice:          v1.GPULeaseSlice{Nodes: slots, Role: role},
+			Interval:       v1.GPULeaseInterval{Start: v1.NewTime(now.Add(-time.Minute))},
 			PaidByBudget:   budget,
 			PaidByEnvelope: "west",
 			Reason:         "Start",
@@ -84,7 +84,7 @@ func TestNodeFailureClosesASpareOnlyNode(t *testing.T) {
 		// for more width than its leases hold is a Running run below its minimum:
 		// an illegal state pkg/invariant rejects, and one the engine never builds.
 		Runs: map[string]*v1.Run{"default/run": nfRun("run", "org:ai:team", 2, now)},
-		Leases: []v1.Lease{
+		Leases: []v1.GPULease{
 			nfLease("active", "run", "org:ai:team", "team", []string{"node-a#0", "node-a#1"}, binder.RoleActive, now),
 			nfLease("spare", "run", "org:ai:team", "team", []string{"node-b#0", "node-b#1"}, binder.RoleSpare, now),
 		},
@@ -118,7 +118,7 @@ func TestNodeFailureReturnsTypedSentinelWhenNoLeaseNamesTheNode(t *testing.T) {
 		// 1 GPU, held by the one 1-slot active lease: see the note in
 		// TestNodeFailureClosesASpareOnlyNode on why the widths must agree.
 		Runs:   map[string]*v1.Run{"default/run": nfRun("run", "org:ai:team", 1, now)},
-		Leases: []v1.Lease{nfLease("active", "run", "org:ai:team", "team", []string{"node-a#0"}, binder.RoleActive, now)},
+		Leases: []v1.GPULease{nfLease("active", "run", "org:ai:team", "team", []string{"node-a#0"}, binder.RoleActive, now)},
 	}
 	mirrorPods(state)
 	c := NewRunController(state, runClock{now: now})
@@ -144,7 +144,7 @@ func TestSwapLeavesACoLocatedRunOnOtherSlotsAlone(t *testing.T) {
 			"default/run":       nfRun("run", "org:ai:team", 2, now),
 			"default/neighbour": nfRun("neighbour", "org:ai:other", 2, now),
 		},
-		Leases: []v1.Lease{
+		Leases: []v1.GPULease{
 			nfLease("active", "run", "org:ai:team", "team", []string{"node-a#0", "node-a#1"}, binder.RoleActive, now),
 			nfLease("spare", "run", "org:ai:team", "team", []string{"node-b#0", "node-b#1"}, binder.RoleSpare, now),
 			// Same NODE as the spare, different GPUs. Not a conflict.
@@ -180,7 +180,7 @@ func TestSwapDeclinesRatherThanEvictAFundedRunOnTheSpareSlots(t *testing.T) {
 			"default/run":      nfRun("run", "org:ai:team", 2, now),
 			"default/squatter": nfRun("squatter", "org:ai:other", 2, now),
 		},
-		Leases: []v1.Lease{
+		Leases: []v1.GPULease{
 			nfLease("active", "run", "org:ai:team", "team", []string{"node-a#0", "node-a#1"}, binder.RoleActive, now),
 			nfLease("spare", "run", "org:ai:team", "team", []string{"node-b#0", "node-b#1"}, binder.RoleSpare, now),
 			// Exactly the spare's slots, and FUNDED (owns budget "other").
@@ -242,9 +242,9 @@ func TestRunPhaseDoesNotDependOnLeaseOrder(t *testing.T) {
 		spare0 := nfLeaseGroup("spare-0", "run", "org:ai:team", "team", "0", []string{"node-b#0"}, binder.RoleSpare, now)
 		active1 := nfLeaseGroup("active-1", "run", "org:ai:team", "team", "1", []string{"node-a#1"}, binder.RoleActive, now)
 
-		leases := []v1.Lease{active0, spare0, active1}
+		leases := []v1.GPULease{active0, spare0, active1}
 		if order == "reversed" {
-			leases = []v1.Lease{active1, spare0, active0}
+			leases = []v1.GPULease{active1, spare0, active0}
 		}
 		return &ClusterState{
 			Nodes:   nodeFailureNodes(),
@@ -288,7 +288,7 @@ func TestDecliningTheSwapNeverStrandsTheRunsOwnSpare(t *testing.T) {
 			"default/run":      nfRun("run", "org:ai:team", 2, now),
 			"default/squatter": nfRun("squatter", "org:ai:other", 2, now),
 		},
-		Leases: []v1.Lease{
+		Leases: []v1.GPULease{
 			nfLease("active", "run", "org:ai:team", "team", []string{"node-a#0", "node-a#1"}, binder.RoleActive, now),
 			nfLease("spare", "run", "org:ai:team", "team", []string{"node-b#0", "node-b#1"}, binder.RoleSpare, now),
 			nfLease("squatter", "squatter", "org:ai:other", "other", []string{"node-b#0", "node-b#1"}, binder.RoleActive, now),
@@ -342,7 +342,7 @@ func TestDecliningTheSwapReleasesTheSpareEvenWhenTheRunParksInCheckpointGrace(t 
 			"default/run":      run,
 			"default/squatter": nfRun("squatter", "org:ai:other", 2, now),
 		},
-		Leases: []v1.Lease{
+		Leases: []v1.GPULease{
 			nfLease("active", "run", "org:ai:team", "team", []string{"node-a#0", "node-a#1"}, binder.RoleActive, now),
 			nfLease("spare", "run", "org:ai:team", "team", []string{"node-b#0", "node-b#1"}, binder.RoleSpare, now),
 			nfLease("squatter", "squatter", "org:ai:other", "other", []string{"node-b#0", "node-b#1"}, binder.RoleActive, now),
@@ -383,9 +383,9 @@ func TestFailingARunReleasesEveryLeaseItStillHolds(t *testing.T) {
 		Nodes:   nodeFailureNodes(),
 		Budgets: []v1.Budget{nfBudget("team", "org:ai:team")},
 		Runs:    map[string]*v1.Run{"default/run": run},
-		Leases: []v1.Lease{
+		Leases: []v1.GPULease{
 			// group 0 already lost node-a and was closed by HandleNodeFailure.
-			func() v1.Lease {
+			func() v1.GPULease {
 				l := nfLeaseGroup("active-0", "run", "org:ai:team", "team", "0", []string{"node-a#0"}, binder.RoleActive, now)
 				CloseLease(&l, "NodeFailure", now)
 				return l
@@ -420,7 +420,7 @@ func TestSwapReclaimsAnUnfundedSquatterOnTheSpareSlots(t *testing.T) {
 			"default/run":    nfRun("run", "org:ai:team", 2, now),
 			"default/filler": nfRun("filler", "org:ai:nobody", 2, now),
 		},
-		Leases: []v1.Lease{
+		Leases: []v1.GPULease{
 			nfLease("active", "run", "org:ai:team", "team", []string{"node-a#0", "node-a#1"}, binder.RoleActive, now),
 			nfLease("spare", "run", "org:ai:team", "team", []string{"node-b#0", "node-b#1"}, binder.RoleSpare, now),
 			// Exact slots, no budget of its own -> derives Unfunded.
@@ -452,7 +452,7 @@ func TestSwapNeverTargetsASpareOnTheFailedNode(t *testing.T) {
 		Nodes:   nodeFailureNodes(),
 		Budgets: []v1.Budget{nfBudget("team", "org:ai:team")},
 		Runs:    map[string]*v1.Run{"default/run": nfRun("run", "org:ai:team", 2, now)},
-		Leases: []v1.Lease{
+		Leases: []v1.GPULease{
 			nfLease("active", "run", "org:ai:team", "team", []string{"node-a#0", "node-a#1"}, binder.RoleActive, now),
 			// The only spare is on the very node that failed.
 			nfLease("spare", "run", "org:ai:team", "team", []string{"node-a#2", "node-a#3"}, binder.RoleSpare, now),

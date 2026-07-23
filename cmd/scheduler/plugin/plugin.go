@@ -331,7 +331,7 @@ func (j *JobTree) PreBind(ctx context.Context, _ fwk.CycleState, pod *corev1.Pod
 		// ABA hazard) or a lease of another run means the mint did not happen for us —
 		// swallowing it would leave this gang running with no open lease of its own,
 		// unfunded work the controller never adopts. Reject so the pod retries.
-		var existing v1.Lease
+		var existing v1.GPULease
 		if gerr := j.client.Get(ctx, client.ObjectKey{Namespace: lease.Namespace, Name: leaseName}, &existing); gerr != nil {
 			return fwk.NewStatus(fwk.Error, fmt.Sprintf("jobtree: lease %s exists but cannot be read: %v", leaseName, gerr))
 		}

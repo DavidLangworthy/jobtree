@@ -19,7 +19,7 @@ func NewLeasesCommand(opts *RootOptions, store *StateStore, printer *Printer) *c
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
-			var leases []v1.Lease
+			var leases []v1.GPULease
 			if opts.UseLocal() {
 				state, err := store.Load(opts.StatePath)
 				if err != nil {
@@ -90,9 +90,9 @@ func NewLeasesCommand(opts *RootOptions, store *StateStore, printer *Printer) *c
 	return cmd
 }
 
-func filterLeases(state *controllers.ClusterState, namespace, name string) []v1.Lease {
+func filterLeases(state *controllers.ClusterState, namespace, name string) []v1.GPULease {
 	key := keys.NamespacedKey(namespace, name)
-	leases := make([]v1.Lease, 0)
+	leases := make([]v1.GPULease, 0)
 	for i := range state.Leases {
 		lease := state.Leases[i]
 		if keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name) == key {

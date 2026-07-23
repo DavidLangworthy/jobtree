@@ -19,7 +19,7 @@ func TestResolveShrinkCutsHighestIndexFirstPast10(t *testing.T) {
 	// 12 groups of 8 GPUs; the floor allows exactly three cuts.
 	run.Spec.Malleable = &v1.RunMalleability{MinTotalGPUs: 72, MaxTotalGPUs: 96, StepGPUs: 8}
 
-	var leases []*v1.Lease
+	var leases []*v1.GPULease
 	var nodes []topology.SourceNode
 	for g := 0; g < 12; g++ {
 		node := fmt.Sprintf("node-%02d", g)
@@ -76,7 +76,7 @@ func TestResolveConsidersEmptyNamespaceRunRef(t *testing.T) {
 		SeedSource: "reservation-r5",
 		Now:        now,
 		Nodes:      []topology.SourceNode{sourceNode("node-a", "us-west", "cluster-a", "island-a", "H100", 4)},
-		Leases:     []*v1.Lease{lease},
+		Leases:     []*v1.GPULease{lease},
 		Runs: map[string]*v1.Run{
 			keys.NamespacedKey("default", "victim"): run,
 		},
@@ -108,7 +108,7 @@ func TestResolveFailureLeavesMetricsUnchanged(t *testing.T) {
 		SeedSource: "reservation-r6",
 		Now:        now,
 		Nodes:      []topology.SourceNode{sourceNode("node-a", "us-west", "cluster-a", "island-a", "H100", 4)},
-		Leases:     []*v1.Lease{spare},
+		Leases:     []*v1.GPULease{spare},
 		Runs: map[string]*v1.Run{
 			keys.NamespacedKey(run.Namespace, run.Name): run,
 		},
@@ -138,7 +138,7 @@ func TestResolveSuccessDoesNotCountMetrics(t *testing.T) {
 		SeedSource: "reservation-r6b",
 		Now:        now,
 		Nodes:      []topology.SourceNode{sourceNode("node-a", "us-west", "cluster-a", "island-a", "H100", 4)},
-		Leases:     []*v1.Lease{spare},
+		Leases:     []*v1.GPULease{spare},
 		Runs: map[string]*v1.Run{
 			keys.NamespacedKey(run.Namespace, run.Name): run,
 		},

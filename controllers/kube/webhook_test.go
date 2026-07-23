@@ -96,12 +96,12 @@ func checkAdmission(t *testing.T, err error, wantErr string, schemaRejected bool
 // be non-empty).
 func TestWebhookRejectsInvalidLease(t *testing.T) {
 	requireEnv(t)
-	lease := &v1.Lease{
+	lease := &v1.GPULease{
 		ObjectMeta: metav1.ObjectMeta{Name: "invalid-lease", Namespace: "default"},
-		Spec: v1.LeaseSpec{
+		Spec: v1.GPULeaseSpec{
 			RunRef:         v1.RunReference{Name: "ghost", Namespace: "default"},
-			Slice:          v1.LeaseSlice{Nodes: []string{"node-a#0"}, Role: "Active"},
-			Interval:       v1.LeaseInterval{Start: metav1.NewTime(baseTime)},
+			Slice:          v1.GPULeaseSlice{Nodes: []string{"node-a#0"}, Role: "Active"},
+			Interval:       v1.GPULeaseInterval{Start: metav1.NewTime(baseTime)},
 			PaidByEnvelope: "west",
 			Reason:         "Start",
 		},

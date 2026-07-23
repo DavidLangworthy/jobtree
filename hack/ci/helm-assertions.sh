@@ -195,4 +195,59 @@ if ! helm template ci "$CHART" --namespace "$NS" -f deploy/kustomize/prod/values
   exit 1
 fi
 
+# --- R13: our lease kind must never be spelled `leases` in the rq group -------
+#
+# `rq.davidlangworthy.io/Lease` collided with `coordination.k8s.io/Lease`, which
+# every leader election in the cluster uses. The dangerous half was RBAC: an
+# `apiGroups: ["rq.davidlangworthy.io"] resources: ["leases"]` rule LOOKS like a
+# grant on our objects and, once the CRD is renamed, grants nothing at all — the
+# committer's PreBind mint fails 403 and no work is ever funded. It is also one
+# character away from granting the leader-election resource in the wrong group.
+# So: in the rq group the resource is `gpuleases`, and `leases` there is an error.
+#
+# The coordination.k8s.io rule below it is a DIFFERENT resource and must survive;
+# assert it does, or a future "fix" to this check silently breaks leader election.
+rbac_rendered="$(helm template ci "$CHART" --namespace "$NS" --set scheduler.enabled=true | strip_comments)"
+
+if awk '
+    /apiGroups:.*rq\.davidlangworthy\.io/ { inrq = 1; next }
+    /apiGroups:/                          { inrq = 0 }
+    inrq && /resources:/ && /[]["]leases["]/ { found = 1 }
+    END { exit !found }
+  ' <<<"$rbac_rendered"; then
+  echo "::error::an RBAC rule grants 'leases' in the rq.davidlangworthy.io group; the kind is GPULease and the resource is 'gpuleases' (R13)" >&2
+  exit 1
+fi
+
+for needle in \
+  'resources: ["budgets", "runs", "reservations", "gpuleases"]' \
+  'resources: ["runs", "budgets", "gpuleases"]'; do
+  if ! grep -qF "$needle" <<<"$rbac_rendered"; then
+    echo "::error::rendered RBAC is missing the gpuleases grant: $needle" >&2
+    exit 1
+  fi
+done
+
+if ! grep -qF 'apiGroups: ["coordination.k8s.io"]' <<<"$rbac_rendered"; then
+  echo "::error::the controller lost its coordination.k8s.io leases grant — leader election cannot acquire its lock" >&2
+  exit 1
+fi
+
+# The webhook must intercept the renamed resource; a stale `leases` rule matches
+# nothing, so every GPULease would be admitted unvalidated and silently.
+if ! grep -qF 'resources: ["gpuleases"]' <<<"$rbac_rendered"; then
+  echo "::error::the validating webhook does not select gpuleases (R13)" >&2
+  exit 1
+fi
+
+# The shipped CRD is the renamed one, and the old one is gone from the chart.
+if [ -e "$CHART/crds/rq.davidlangworthy.io_leases.yaml" ]; then
+  echo "::error::the chart still ships the pre-R13 leases CRD; the rename is a clean break, not a side-by-side" >&2
+  exit 1
+fi
+if ! grep -qF "kind: GPULease" "$CHART/crds/rq.davidlangworthy.io_gpuleases.yaml"; then
+  echo "::error::the chart's gpuleases CRD does not declare kind GPULease" >&2
+  exit 1
+fi
+
 echo "helm chart assertions OK"

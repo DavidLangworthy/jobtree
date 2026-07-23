@@ -98,12 +98,12 @@ func TestSpareTopUpDoesNotReprovisionSwapConsumedLowIndex(t *testing.T) {
 
 	// Swap consumes GROUP 0's spare — the LOW index 0: close its lease reason "Swap"
 	// (carrying the consumed pod's name) and remove its pod, as HandleNodeFailure does.
-	consumed := v1.Lease{
-		Spec: v1.LeaseSpec{
+	consumed := v1.GPULease{
+		Spec: v1.GPULeaseSpec{
 			RunRef: v1.RunReference{Name: run.Name, Namespace: run.Namespace},
-			Slice:  v1.LeaseSlice{Nodes: []string{"node-a#0"}, Role: binder.RoleSpare},
+			Slice:  v1.GPULeaseSlice{Nodes: []string{"node-a#0"}, Role: binder.RoleSpare},
 		},
-		Status: v1.LeaseStatus{Closed: true, ClosureReason: "Swap"},
+		Status: v1.GPULeaseStatus{Closed: true, ClosureReason: "Swap"},
 	}
 	consumed.Annotations = map[string]string{binder.AnnotationPodName: sparePodName(run, 0)}
 	state.Leases = append(state.Leases, consumed)

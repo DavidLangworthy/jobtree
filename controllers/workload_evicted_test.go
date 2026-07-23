@@ -84,7 +84,7 @@ func TestRunningGangBelowMinWithNoMintInFlightReAssembles(t *testing.T) {
 		Nodes:   nodeFailureNodes(),
 		Budgets: []v1.Budget{nfBudget("team", "org:ai:team")},
 		Runs:    map[string]*v1.Run{key: run},
-		Leases: []v1.Lease{ // only ONE of the two ranks survives
+		Leases: []v1.GPULease{ // only ONE of the two ranks survives
 			nfLeaseGroup("m0", "job", "org:ai:team", "team", "0", []string{"node-a#0"}, binder.RoleActive, now),
 		},
 	}

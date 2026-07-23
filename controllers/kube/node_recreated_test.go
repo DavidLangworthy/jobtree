@@ -89,17 +89,17 @@ func healthyNode(name string, gpus int64) *corev1.Node {
 	}
 }
 
-func openLeaseOn(name, runName, node string) *v1.Lease {
-	return &v1.Lease{
+func openLeaseOn(name, runName, node string) *v1.GPULease {
+	return &v1.GPULease{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name, Namespace: "default",
 			Labels: map[string]string{binder.LabelRunName: runName, binder.LabelRunRole: binder.RoleActive},
 		},
-		Spec: v1.LeaseSpec{
+		Spec: v1.GPULeaseSpec{
 			Owner:          "org:team",
 			RunRef:         v1.RunReference{Name: runName, Namespace: "default"},
-			Slice:          v1.LeaseSlice{Nodes: []string{node + "#0"}, Role: binder.RoleActive},
-			Interval:       v1.LeaseInterval{Start: metav1.NewTime(time.Now().Add(-time.Minute))},
+			Slice:          v1.GPULeaseSlice{Nodes: []string{node + "#0"}, Role: binder.RoleActive},
+			Interval:       v1.GPULeaseInterval{Start: metav1.NewTime(time.Now().Add(-time.Minute))},
 			PaidByBudget:   "team",
 			PaidByEnvelope: "west",
 			Reason:         "Start",
@@ -118,7 +118,7 @@ func TestStaleFencingVerdictDoesNotCloseARecreatedNodesLeases(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(testScheme()).
 		WithObjects(node, run, lease).
-		WithStatusSubresource(&v1.Run{}, &v1.Lease{}).
+		WithStatusSubresource(&v1.Run{}, &v1.GPULease{}).
 		Build()
 
 	reader := &racyReader{Reader: c, node: node, watch: "node-a"}
@@ -136,7 +136,7 @@ func TestStaleFencingVerdictDoesNotCloseARecreatedNodesLeases(t *testing.T) {
 			"or a node recreated while the reconcile waited for the mutex has its live leases closed", reader.gets)
 	}
 
-	var got v1.Lease
+	var got v1.GPULease
 	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "train-lease"}, &got); err != nil {
 		t.Fatalf("get lease: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestAGenuinelyDeletedNodeStillClosesItsLeases(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(testScheme()).
 		WithObjects(run, lease). // no node: it is really gone
-		WithStatusSubresource(&v1.Run{}, &v1.Lease{}).
+		WithStatusSubresource(&v1.Run{}, &v1.GPULease{}).
 		Build()
 
 	bridge := &Bridge{Client: c, APIReader: c, Clock: controllers.RealClock{}}
@@ -172,7 +172,7 @@ func TestAGenuinelyDeletedNodeStillClosesItsLeases(t *testing.T) {
 		t.Fatalf("reconcile: %v", err)
 	}
 
-	var got v1.Lease
+	var got v1.GPULease
 	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "train-lease"}, &got); err != nil {
 		t.Fatalf("get lease: %v", err)
 	}

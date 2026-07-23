@@ -62,7 +62,7 @@ type ClusterState struct {
 	Runs         map[string]*v1.Run
 	Budgets      []v1.Budget
 	Nodes        []topology.SourceNode
-	Leases       []v1.Lease
+	Leases       []v1.GPULease
 	Pods         []binder.PodManifest
 	Reservations map[string]*v1.Reservation
 }
@@ -481,7 +481,7 @@ func (c *RunController) reclaimForAdmission(run *v1.Run, ev *funding.Evaluation,
 // first-cut reclaim pool. The synthetic leases exist only inside this
 // evaluation; nothing is written to state.
 func (c *RunController) hypotheticalEvaluation(run *v1.Run, plan cover.Plan, now time.Time) *funding.Evaluation {
-	leases := make([]v1.Lease, 0, len(c.State.Leases)+len(plan.Segments))
+	leases := make([]v1.GPULease, 0, len(c.State.Leases)+len(plan.Segments))
 	leases = append(leases, c.State.Leases...)
 	for i, seg := range plan.Segments {
 		if seg.Quantity <= 0 {
@@ -491,16 +491,16 @@ func (c *RunController) hypotheticalEvaluation(run *v1.Run, plan cover.Plan, now
 		for j := range nodes {
 			nodes[j] = fmt.Sprintf("hypothetical#%d", j)
 		}
-		leases = append(leases, v1.Lease{
+		leases = append(leases, v1.GPULease{
 			ObjectMeta: v1.ObjectMeta{
 				Namespace: run.Namespace,
 				Name:      fmt.Sprintf("%s-hypothetical-%d", run.Name, i),
 			},
-			Spec: v1.LeaseSpec{
+			Spec: v1.GPULeaseSpec{
 				Owner:                 seg.Owner,
 				RunRef:                v1.RunReference{Name: run.Name, Namespace: run.Namespace},
-				Slice:                 v1.LeaseSlice{Nodes: nodes, Role: binder.RoleActive},
-				Interval:              v1.LeaseInterval{Start: v1.NewTime(now)},
+				Slice:                 v1.GPULeaseSlice{Nodes: nodes, Role: binder.RoleActive},
+				Interval:              v1.GPULeaseInterval{Start: v1.NewTime(now)},
 				PaidByBudgetNamespace: seg.Namespace,
 				PaidByBudget:          seg.BudgetName,
 				PaidByEnvelope:        seg.EnvelopeName,
@@ -1780,7 +1780,7 @@ func (t runPhaseTracker) apply(run *v1.Run, runKey string, state v1.RunState, ms
 // spareLease is the spare this group holds and will NOT be using — nil on the
 // no-spare path, non-nil when the swap was declined because another funded run
 // holds the spare's exact slots.
-func (c *RunController) failGroupWithoutSpare(run *v1.Run, runKey string, lease, spareLease *v1.Lease, nodeName string, now time.Time, phases runPhaseTracker) {
+func (c *RunController) failGroupWithoutSpare(run *v1.Run, runKey string, lease, spareLease *v1.GPULease, nodeName string, now time.Time, phases runPhaseTracker) {
 	CloseLease(lease, "NodeFailure", now)
 
 	// The group is not runnable, so the spare it was holding can never cover it.
@@ -1859,7 +1859,7 @@ func (c *RunController) failGroupWithoutSpare(run *v1.Run, runKey string, lease,
 // touching FUNDED work. The caller must then decline the swap, exactly as it does
 // for a funded conflict: choosing between funded runs belongs to pkg/resolver,
 // which ranks by class.
-func (c *RunController) reclaimSquatter(lease *v1.Lease, victimKey string, now time.Time, phases runPhaseTracker, ev *funding.Evaluation) bool {
+func (c *RunController) reclaimSquatter(lease *v1.GPULease, victimKey string, now time.Time, phases runPhaseTracker, ev *funding.Evaluation) bool {
 	// THE POD PLANE CANNOT ADDRESS A SLOT.
 	//
 	// The conflict is detected at node#ordinal granularity (leaseOccupiesSlots), but
@@ -1940,8 +1940,8 @@ func (c *RunController) reclaimSquatter(lease *v1.Lease, victimKey string, now t
 // openRunLeasesOnNodes lists the run's OPEN leases — any role — holding at least one
 // slot on any of the given nodes. These are exactly the leases whose containers a
 // node-scoped pod removal would delete, which is why the two must move together.
-func (c *RunController) openRunLeasesOnNodes(runKey string, nodes map[string]int) []*v1.Lease {
-	var out []*v1.Lease
+func (c *RunController) openRunLeasesOnNodes(runKey string, nodes map[string]int) []*v1.GPULease {
+	var out []*v1.GPULease
 	for i := range c.State.Leases {
 		lease := &c.State.Leases[i]
 		if lease.Status.Closed {
@@ -2266,8 +2266,8 @@ func (c *RunController) applyResolution(result resolver.Result, now time.Time) {
 	}
 }
 
-func activeLeasePointers(leases []v1.Lease) []*v1.Lease {
-	var result []*v1.Lease
+func activeLeasePointers(leases []v1.GPULease) []*v1.GPULease {
+	var result []*v1.GPULease
 	for i := range leases {
 		if leases[i].Status.Closed {
 			continue
@@ -2308,7 +2308,7 @@ func totalFreeInScope(snapshot *topology.Snapshot, scope map[string]string) int 
 	return total
 }
 
-func computeUsage(leases []v1.Lease, now time.Time) map[string]int {
+func computeUsage(leases []v1.GPULease, now time.Time) map[string]int {
 	usage := make(map[string]int)
 	for _, lease := range leases {
 		if lease.Status.Closed {
@@ -2687,7 +2687,7 @@ func minRunnableGPUs(run *v1.Run) int {
 //
 // The default is gone. A persisted Lease with no group index is a bug in the mint,
 // and pkg/invariant's INV-GROUP-STAMPED fails the build rather than papering over it.
-func leaseGroupIndex(lease *v1.Lease) string {
+func leaseGroupIndex(lease *v1.GPULease) string {
 	if lease.Labels == nil {
 		return ""
 	}
@@ -2719,7 +2719,7 @@ func podGroupIndex(p *binder.PodManifest) string {
 // permits a cut while `Remaining - grp.GPUs >= MinTotalGPUs`, and `Remaining`
 // counts grow leases. Judging the phase on base width alone therefore failed
 // malleable runs the resolver had deliberately left runnable.
-func runnableGPUsForRun(runKey string, leases []v1.Lease) int {
+func runnableGPUsForRun(runKey string, leases []v1.GPULease) int {
 	total := 0
 	for i := range leases {
 		lease := &leases[i]
@@ -2744,7 +2744,7 @@ func runnableGPUsForRun(runKey string, leases []v1.Lease) int {
 // A Lease records no cohort — Spec.Reason is the only durable signal separating a
 // grow lease from a base one. Swap and Promise leases DO count: each stands in for
 // a base-gang member. (Reconstructing the cohort itself is R2 pt3's job.)
-func baseGangGPUsForRun(runKey string, leases []v1.Lease) int {
+func baseGangGPUsForRun(runKey string, leases []v1.GPULease) int {
 	total := 0
 	for i := range leases {
 		lease := &leases[i]
@@ -2856,7 +2856,7 @@ func nextCohortForRun(pods []binder.PodManifest, run *v1.Run) int {
 // spare node, carrying the spare's funding provenance (owner/budget/envelope) so
 // the plugin mints the Swap lease from it without re-funding. The controller
 // mints nothing.
-func (c *RunController) emitSwapPod(run *v1.Run, groupIndex string, spareLease *v1.Lease, failedNode string, now time.Time) {
+func (c *RunController) emitSwapPod(run *v1.Run, groupIndex string, spareLease *v1.GPULease, failedNode string, now time.Time) {
 	slots := spareLease.Spec.Slice.Nodes
 	if len(slots) == 0 {
 		return
@@ -3236,7 +3236,7 @@ func (c *RunController) shrinkRun(run *v1.Run, target int32, ev *funding.Evaluat
 	return nil
 }
 
-func summarizeRunWidth(run *v1.Run, leases []v1.Lease) *v1.RunWidthStatus {
+func summarizeRunWidth(run *v1.Run, leases []v1.GPULease) *v1.RunWidthStatus {
 	if run == nil {
 		return nil
 	}
@@ -3320,8 +3320,8 @@ func summarizeRunFunding(run *v1.Run, ev *funding.Evaluation) *v1.RunFundingStat
 
 type elasticGroup struct {
 	Index      int
-	Active     []*v1.Lease
-	Spares     []*v1.Lease
+	Active     []*v1.GPULease
+	Spares     []*v1.GPULease
 	ActiveGPUs int
 	// NonOwnedGPUs counts active width whose derived class is not Owned:
 	// shrink returns other people's capacity (shared, borrowed, unfunded)
@@ -3329,7 +3329,7 @@ type elasticGroup struct {
 	NonOwnedGPUs int
 }
 
-func collectElasticGroups(runKey string, leases []v1.Lease, ev *funding.Evaluation) map[int]*elasticGroup {
+func collectElasticGroups(runKey string, leases []v1.GPULease, ev *funding.Evaluation) map[int]*elasticGroup {
 	groups := make(map[int]*elasticGroup)
 	for i := range leases {
 		lease := &leases[i]
@@ -3396,7 +3396,7 @@ func (c *RunController) removePodsForGroups(runKey string, groups map[string]str
 	c.State.Pods = pods
 }
 
-func leaseContainsNode(lease *v1.Lease, node string) bool {
+func leaseContainsNode(lease *v1.GPULease, node string) bool {
 	for _, slot := range lease.Spec.Slice.Nodes {
 		if nodeFromSlot(slot) == node {
 			return true
@@ -3406,7 +3406,7 @@ func leaseContainsNode(lease *v1.Lease, node string) bool {
 }
 
 // openLeaseCountForRun counts the run's non-closed leases.
-func openLeaseCountForRun(leases []v1.Lease, runKey string) int {
+func openLeaseCountForRun(leases []v1.GPULease, runKey string) int {
 	count := 0
 	for i := range leases {
 		lease := &leases[i]
@@ -3420,7 +3420,7 @@ func openLeaseCountForRun(leases []v1.Lease, runKey string) int {
 	return count
 }
 
-func findSpareLease(leases []v1.Lease, runKey, group string) (*v1.Lease, int) {
+func findSpareLease(leases []v1.GPULease, runKey, group string) (*v1.GPULease, int) {
 	for idx := range leases {
 		lease := &leases[idx]
 		if lease.Status.Closed {
@@ -3440,7 +3440,7 @@ func findSpareLease(leases []v1.Lease, runKey, group string) (*v1.Lease, int) {
 	return nil, -1
 }
 
-func leaseNodeNames(lease *v1.Lease) []string {
+func leaseNodeNames(lease *v1.GPULease) []string {
 	result := make([]string, len(lease.Spec.Slice.Nodes))
 	for i, slot := range lease.Spec.Slice.Nodes {
 		result[i] = nodeFromSlot(slot)
@@ -3459,7 +3459,7 @@ func buildSlotSet(slots []string) map[string]struct{} {
 }
 
 // leaseOccupiesSlots reports whether the lease holds any of the exact slots.
-func leaseOccupiesSlots(lease *v1.Lease, slots map[string]struct{}) bool {
+func leaseOccupiesSlots(lease *v1.GPULease, slots map[string]struct{}) bool {
 	for _, slot := range lease.Spec.Slice.Nodes {
 		if _, ok := slots[slot]; ok {
 			return true
@@ -3505,7 +3505,7 @@ func buildNodeSet(nodes []string) map[string]int {
 //
 // Closing is idempotent: a lease already closed keeps its original ending and
 // reason. A Lease is an immutable fact, and the first closure is the true one.
-func CloseLease(lease *v1.Lease, reason string, now time.Time) {
+func CloseLease(lease *v1.GPULease, reason string, now time.Time) {
 	if lease.Status.Closed {
 		return
 	}

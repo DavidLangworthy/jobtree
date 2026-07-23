@@ -14,6 +14,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -37,6 +38,11 @@ var (
 	skipReason  string
 	suiteCtx    context.Context
 	suiteBridge *Bridge // for direct reconciler invocations
+	// restCfg is the apiserver's own config. R14's tests need a client that is
+	// NOT the manager's cache — they delete the ValidatingWebhookConfiguration to
+	// prove the CRD schema still rejects bad objects with the webhook down, and a
+	// cached client would answer from a stale informer while they do it.
+	restCfg *rest.Config
 )
 
 // baseTime is an arbitrary fixed instant; the engine only compares times it
@@ -167,6 +173,7 @@ func runSuite(m *testing.M) int {
 	defer cancel()
 	suiteCtx = ctx
 	kubeClient = mgr.GetClient()
+	restCfg = cfg
 
 	done := make(chan error, 1)
 	go func() { done <- mgr.Start(ctx) }()
@@ -259,7 +266,7 @@ func resetWorld(t *testing.T) {
 	// reconcile that loaded its snapshot before the runs vanished may write
 	// a lease or reservation back after a single sweep has passed.
 	eventually(t, 10*time.Second, func() error {
-		for _, obj := range []client.Object{&v1.Lease{}, &v1.Reservation{}, &v1.Budget{}} {
+		for _, obj := range []client.Object{&v1.GPULease{}, &v1.Reservation{}, &v1.Budget{}} {
 			if err := kubeClient.DeleteAllOf(ctx, obj, ns); err != nil {
 				return fmt.Errorf("delete %T: %w", obj, err)
 			}
@@ -272,7 +279,7 @@ func resetWorld(t *testing.T) {
 		if err := kubeClient.DeleteAllOf(ctx, &corev1.Node{}); err != nil {
 			return fmt.Errorf("delete nodes: %w", err)
 		}
-		var leases v1.LeaseList
+		var leases v1.GPULeaseList
 		if err := kubeClient.List(ctx, &leases); err != nil {
 			return err
 		}

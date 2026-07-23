@@ -24,7 +24,7 @@ func TestSameRunReclaimDropsTheStrandedPod(t *testing.T) {
 		Nodes:   nodeFailureNodes(),
 		Budgets: []v1.Budget{nfBudget("team", "org:ai:team")},
 		Runs:    map[string]*v1.Run{"default/run": nfRun("run", "org:ai:team", 2, now)},
-		Leases: []v1.Lease{
+		Leases: []v1.GPULease{
 			// The base gang: active on node-a (about to fail), spare on node-b.
 			nfLeaseGroup("active", "run", "org:ai:team", "team", "0", []string{"node-a#0", "node-a#1"}, binder.RoleActive, now),
 			nfLeaseGroup("spare", "run", "org:ai:team", "team", "0", []string{"node-b#0", "node-b#1"}, binder.RoleSpare, now),

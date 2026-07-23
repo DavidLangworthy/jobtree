@@ -31,7 +31,7 @@ func TestSwapInheritsFailedMembersRendezvousHostname(t *testing.T) {
 		Nodes:   nodeFailureNodes(),
 		Budgets: []v1.Budget{nfBudget("team", "org:ai:team")},
 		Runs:    map[string]*v1.Run{"default/run": run},
-		Leases:  []v1.Lease{active, spare},
+		Leases:  []v1.GPULease{active, spare},
 		Pods:    []binder.PodManifest{activePod, sparePod},
 	}
 	c := NewRunController(state, runClock{now: now})

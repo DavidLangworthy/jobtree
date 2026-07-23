@@ -29,7 +29,7 @@ func TestDecliningTheSwapDropsTheSparePodNotJustItsLease(t *testing.T) {
 			"default/run":      run,
 			"default/squatter": nfRun("squatter", "org:ai:other", 2, now),
 		},
-		Leases: []v1.Lease{
+		Leases: []v1.GPULease{
 			nfLease("active", "run", "org:ai:team", "team", []string{"node-a#0", "node-a#1"}, binder.RoleActive, now),
 			nfLease("spare", "run", "org:ai:team", "team", []string{"node-b#0", "node-b#1"}, binder.RoleSpare, now),
 			nfLease("squatter", "squatter", "org:ai:other", "other", []string{"node-b#0", "node-b#1"}, binder.RoleActive, now),

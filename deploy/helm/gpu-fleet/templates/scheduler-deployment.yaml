@@ -37,7 +37,7 @@ data:
               - name: jobtree
           postBind:
             # Releases a fully-bound gang's in-memory commit state + phantom
-            # pending-lease guards once the real leases exist (R1).
+            # pending-lease guards once the real gpuleases exist (R1).
             enabled:
               - name: jobtree
           postFilter:
@@ -145,10 +145,11 @@ roleRef:
   name: system:volume-scheduler
 ---
 # The jobtree plugin is the sole committer: at Permit it reads the live funding
-# ledger (runs/budgets/leases) and at PreBind it CREATES a Lease. system:kube-
-# scheduler grants none of this (it only touches coordination.k8s.io leader-
-# election leases), so this dedicated, non-wildcard grant is required — without
-# it PreBind fails "leases.rq.davidlangworthy.io is forbidden".
+# ledger (runs/budgets/gpuleases) and at PreBind it CREATES a GPULease. system:
+# kube-scheduler grants none of this (it only touches coordination.k8s.io leader-
+# election leases, which are not the same resource), so this dedicated,
+# non-wildcard grant is required — without it PreBind fails
+# "gpugpuleases.rq.davidlangworthy.io is forbidden".
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -156,10 +157,10 @@ metadata:
   labels: {{- include "gpu-fleet.labels" . | nindent 4 }}
 rules:
   - apiGroups: ["rq.davidlangworthy.io"]
-    resources: ["runs", "budgets", "leases"]
+    resources: ["runs", "budgets", "gpuleases"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["rq.davidlangworthy.io"]
-    resources: ["leases"]
+    resources: ["gpuleases"]
     verbs: ["create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

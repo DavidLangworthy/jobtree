@@ -160,7 +160,7 @@ func (v Violation) String() string {
 	return fmt.Sprintf("%s: %s: %s", v.ID, v.Subject, v.Detail)
 }
 
-// Lease is the projection of a v1.Lease this package reasons about. The
+// Lease is the projection of a v1.GPULease this package reasons about. The
 // controller builds it; this package never imports the API types, so it cannot
 // drift into a second, competing view of them.
 type Lease struct {

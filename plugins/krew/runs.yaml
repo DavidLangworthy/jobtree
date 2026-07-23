@@ -13,7 +13,7 @@ metadata:
   name: runs
 spec:
   version: v0.1.0
-  shortDescription: "Interact with Jobtree Run, Reservation, and Lease CRDs"
+  shortDescription: "Interact with Jobtree Run, Reservation, and GPULease CRDs"
   homepage: https://github.com/davidlangworthy/jobtree
   platforms:
     - selector:
@@ -58,7 +58,7 @@ spec:
       bin: kubectl-runs
   description: |
     The runs plugin submits, plans, watches, and explains GPU research
-    runs managed by Jobtree against Run, Reservation, and Lease CRDs. By
+    runs managed by Jobtree against Run, Reservation, and GPULease CRDs. By
     default it talks to your current kube-context like any other kubectl
     plugin; pass --local (or --dry-run) to instead drive an offline,
     in-process simulator for docs and demos.

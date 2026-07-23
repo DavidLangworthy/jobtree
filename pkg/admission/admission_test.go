@@ -32,7 +32,7 @@ func node(name string, gpus int) topology.SourceNode {
 
 func i32(v int32) *int32 { return &v }
 
-func totalGPUs(leases []v1.Lease) int {
+func totalGPUs(leases []v1.GPULease) int {
 	n := 0
 	for _, l := range leases {
 		n += len(l.Spec.Slice.Nodes)

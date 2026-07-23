@@ -120,10 +120,10 @@ kubectl wait --for=jsonpath='{.status.phase}'=Failed run/crasher -n default --ti
   || fail "a crashed container must fail the run (9A-3); it stayed $(kubectl get run crasher -n default -o jsonpath='{.status.phase}')"
 
 echo "==> asserting the run's leases closed WorkloadFailed (funding stopped)"
-open="$(kubectl get leases.rq.davidlangworthy.io -n default \
+open="$(kubectl get gpuleases.rq.davidlangworthy.io -n default \
   -l rq.davidlangworthy.io/run=crasher -o jsonpath='{range .items[?(@.status.closed!=true)]}{.metadata.name} {end}')"
 [ -z "$open" ] || fail "the failed run left open lease(s): $open"
-reason="$(kubectl get leases.rq.davidlangworthy.io -n default \
+reason="$(kubectl get gpuleases.rq.davidlangworthy.io -n default \
   -l rq.davidlangworthy.io/run=crasher -o jsonpath='{.items[0].status.closureReason}')"
 [ "$reason" = "WorkloadFailed" ] || fail "lease closure reason = '$reason', want WorkloadFailed"
 

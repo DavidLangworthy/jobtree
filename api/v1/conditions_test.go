@@ -149,7 +149,7 @@ func TestFailedWinsOverEveryOtherCondition(t *testing.T) {
 }
 
 func TestLeaseConditionsMirrorTheClosureFact(t *testing.T) {
-	open := LeaseStatus{}
+	open := GPULeaseStatus{}
 	SetLeaseConditions(&open, 1)
 	if !meta.IsStatusConditionTrue(open.Conditions, LeaseConditionActive) {
 		t.Error("an unclosed lease must report Active=True; it is charging a budget and holding GPUs")
@@ -158,7 +158,7 @@ func TestLeaseConditionsMirrorTheClosureFact(t *testing.T) {
 		t.Error("an unclosed lease must report Closed=False")
 	}
 
-	closed := LeaseStatus{Closed: true, ClosureReason: "RunDeleted"}
+	closed := GPULeaseStatus{Closed: true, ClosureReason: "RunDeleted"}
 	SetLeaseConditions(&closed, 1)
 	if meta.IsStatusConditionTrue(closed.Conditions, LeaseConditionActive) {
 		t.Error("a closed lease must report Active=False")
@@ -222,7 +222,7 @@ func TestBudgetIsUnhealthyExactlyWhenAnEnvelopeIsOvercommitted(t *testing.T) {
 // retry loop, not a cosmetic defect. It wedged the swap path's lease writes (and
 // with them the run's own status) until this sanitiser landed.
 func TestASeededClosureReasonIsSanitisedButNotLost(t *testing.T) {
-	closed := LeaseStatus{Closed: true, ClosureReason: "ReclaimUnfunded(0x2ab536d36c965726)"}
+	closed := GPULeaseStatus{Closed: true, ClosureReason: "ReclaimUnfunded(0x2ab536d36c965726)"}
 	SetLeaseConditions(&closed, 1)
 
 	cond := meta.FindStatusCondition(closed.Conditions, LeaseConditionClosed)
@@ -253,7 +253,7 @@ func TestEveryEmittableReasonSatisfiesTheAPIServer(t *testing.T) {
 		"", "Completed", "RunDeleted", "NodeFailure", "SwapDeclined", "WorkloadFailed",
 		"ReclaimUnfunded(0x2ab536d36c965726)", "Orphaned", "-leading-dash", "()",
 	} {
-		st := LeaseStatus{Closed: true, ClosureReason: raw}
+		st := GPULeaseStatus{Closed: true, ClosureReason: raw}
 		SetLeaseConditions(&st, 1)
 		for _, cond := range st.Conditions {
 			seen[cond.Reason] = true

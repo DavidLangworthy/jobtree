@@ -31,11 +31,11 @@ func roledFailureWorld(policy string, retries int32, phases []string) (*ClusterS
 	for i, phase := range phases {
 		name := cohortPodName(run, "0", i)
 		node := fmt.Sprintf("n%d", i)
-		state.Leases = append(state.Leases, v1.Lease{
+		state.Leases = append(state.Leases, v1.GPULease{
 			ObjectMeta: v1.ObjectMeta{Namespace: keys.DefaultNamespace, Name: name,
 				Labels: map[string]string{binder.LabelRunName: "job", binder.LabelGroupIndex: "0", binder.LabelRunRole: binder.RoleActive}},
-			Spec: v1.LeaseSpec{Owner: "team", RunRef: v1.RunReference{Name: "job", Namespace: keys.DefaultNamespace},
-				Slice: v1.LeaseSlice{Nodes: []string{node + "#0"}, Role: binder.RoleActive}},
+			Spec: v1.GPULeaseSpec{Owner: "team", RunRef: v1.RunReference{Name: "job", Namespace: keys.DefaultNamespace},
+				Slice: v1.GPULeaseSlice{Nodes: []string{node + "#0"}, Role: binder.RoleActive}},
 		})
 		state.Pods = append(state.Pods, binder.PodManifest{
 			Namespace: keys.DefaultNamespace, Name: name, NodeName: node, Phase: phase, GPUs: 1,

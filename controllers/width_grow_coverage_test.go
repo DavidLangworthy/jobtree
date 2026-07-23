@@ -34,7 +34,7 @@ func TestWidthInvariantCountsGrowLeasesNotJustTheBaseGang(t *testing.T) {
 		Nodes:   nodeFailureNodes(),
 		Budgets: []v1.Budget{nfBudget("team", "org:ai:team")},
 		Runs:    map[string]*v1.Run{"default/elastic": run},
-		Leases:  []v1.Lease{base, grow},
+		Leases:  []v1.GPULease{base, grow},
 	}
 	mirrorPods(state) // one pod per open lease so the run is not AwaitingMint
 	c := NewRunController(state, runClock{now: now})

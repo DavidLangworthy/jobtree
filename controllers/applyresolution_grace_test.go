@@ -34,7 +34,7 @@ func TestResolverCutDuringCheckpointGraceDoesNotReapBeforeTheDeadline(t *testing
 		Nodes:   nodeFailureNodes(),
 		Budgets: []v1.Budget{nfBudget("team", "org:ai:team")},
 		Runs:    map[string]*v1.Run{"default/grace": run},
-		Leases: []v1.Lease{
+		Leases: []v1.GPULease{
 			prodLease("grace-g0", "grace", "org:ai:team", "team", []string{"node-a#0", "node-a#1"}, binder.RoleActive, now),
 			prodLease("grace-g1", "grace", "org:ai:team", "team", []string{"node-b#0", "node-b#1"}, binder.RoleActive, now),
 		},

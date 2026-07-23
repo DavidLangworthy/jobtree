@@ -210,7 +210,7 @@ func scnNodeFailureSwap() (*ClusterState, time.Time) {
 	c.Reconcile("default", "run")
 
 	// Opportunistic filler squatting on the spare's node, reclaimed by the swap.
-	var spare *v1.Lease
+	var spare *v1.GPULease
 	for i := range state.Leases {
 		if state.Leases[i].Spec.Slice.Role == binder.RoleSpare {
 			spare = &state.Leases[i]
@@ -218,11 +218,11 @@ func scnNodeFailureSwap() (*ClusterState, time.Time) {
 		}
 	}
 	if spare != nil {
-		state.Leases = append(state.Leases, v1.Lease{
+		state.Leases = append(state.Leases, v1.GPULease{
 			ObjectMeta: v1.ObjectMeta{Name: "filler"},
-			Spec: v1.LeaseSpec{Owner: "org:ai:other", RunRef: v1.RunReference{Name: "filler", Namespace: "default"},
-				Slice:    v1.LeaseSlice{Nodes: append([]string{}, spare.Spec.Slice.Nodes...), Role: binder.RoleActive},
-				Interval: v1.LeaseInterval{Start: v1.NewTime(now)}, PaidByEnvelope: "west", Reason: "Start"},
+			Spec: v1.GPULeaseSpec{Owner: "org:ai:other", RunRef: v1.RunReference{Name: "filler", Namespace: "default"},
+				Slice:    v1.GPULeaseSlice{Nodes: append([]string{}, spare.Spec.Slice.Nodes...), Role: binder.RoleActive},
+				Interval: v1.GPULeaseInterval{Start: v1.NewTime(now)}, PaidByEnvelope: "west", Reason: "Start"},
 		})
 		state.Pods = append(state.Pods, binder.PodManifest{
 			Namespace: "default", Name: "filler", NodeName: nodeFromSlot(spare.Spec.Slice.Nodes[0]),

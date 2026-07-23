@@ -17,5 +17,5 @@
 # fixed by Track F (TESTINFRA) — they're recorded here as an honest,
 # ratcheted baseline for whichever track (mostly D/TRUTH) triages them next.
 
-LeaseSpec.CompPath reason: declared and deep-copied but written and read by zero code today (per-role GPU-hour attribution has no per-role concept yet). make-it-real-plan.md Track E (ROLES-7) populates it at mint once per-role gangs land; do not add a consumer here without that context.
+GPULeaseSpec.CompPath reason: declared and deep-copied but written and read by zero code today (per-role GPU-hour attribution has no per-role concept yet). make-it-real-plan.md Track E (ROLES-7) populates it at mint once per-role gangs land; do not add a consumer here without that context.
 ReservationStatus.CanceledAt reason: newly discovered — declared alongside ActivatedAt/ReleasedAt, which ARE written by controllers/run_controller.go; CanceledAt alone has no writer or reader, implying no cancellation flow is actually wired. Track D triage: wire a real Cancel path or delete the field.

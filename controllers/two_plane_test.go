@@ -37,7 +37,7 @@ func tpPod(name, run, node string) binder.PodManifest {
 
 func tpNodes() []string { return []string{"node-a", "node-b", "node-c"} }
 
-func tpState(now time.Time, leases []v1.Lease, pods []binder.PodManifest, runs map[string]*v1.Run) *ClusterState {
+func tpState(now time.Time, leases []v1.GPULease, pods []binder.PodManifest, runs map[string]*v1.Run) *ClusterState {
 	nodes := nodeFailureNodes()
 	nodes = append(nodes, nodeFailureNodes()[0])
 	nodes[2].Name = "node-c"
@@ -81,7 +81,7 @@ func podNames(state *ClusterState, runName string) []string {
 func TestReclaimingASquatterNeverLeavesALeaseWithoutItsContainer(t *testing.T) {
 	now := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
 	state := tpState(now,
-		[]v1.Lease{
+		[]v1.GPULease{
 			prodLease("active", "run", "org:ai:team", "team", []string{"node-a#0"}, binder.RoleActive, now),
 			prodLease("spare", "run", "org:ai:team", "team", []string{"node-b#0"}, binder.RoleSpare, now),
 			// The squatter, on the spare's exact slot.
@@ -149,7 +149,7 @@ func TestReclaimingASquatterNeverLeavesARunningRunWithNoContainers(t *testing.T)
 	victim.Spec.Malleable = &v1.RunMalleability{MinTotalGPUs: 1, MaxTotalGPUs: 2, StepGPUs: 1}
 
 	state := tpState(now,
-		[]v1.Lease{
+		[]v1.GPULease{
 			prodLease("active", "run", "org:ai:team", "team", []string{"node-a#0"}, binder.RoleActive, now),
 			prodLease("spare", "run", "org:ai:team", "team", []string{"node-b#0"}, binder.RoleSpare, now),
 			prodLease("squat", "filler", "org:ai:nobody", "", []string{"node-b#0"}, binder.RoleActive, now),
@@ -197,7 +197,7 @@ func TestReclaimingASquatterNeverLeavesARunningRunWithNoContainers(t *testing.T)
 func TestSwapDeclinesWhenTheSquattersFundedWorkSharesTheMachine(t *testing.T) {
 	now := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
 	state := tpState(now,
-		[]v1.Lease{
+		[]v1.GPULease{
 			prodLease("active", "run", "org:ai:team", "team", []string{"node-a#0"}, binder.RoleActive, now),
 			prodLease("spare", "run", "org:ai:team", "team", []string{"node-b#0"}, binder.RoleSpare, now),
 			// UNFUNDED: no envelope pays for it. The squatter, on the spare's slot.
@@ -255,7 +255,7 @@ func TestSwapDeclinesWhenTheSquattersFundedWorkSharesTheMachine(t *testing.T) {
 func TestATerminalRunStopsItsContainers(t *testing.T) {
 	now := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
 	state := tpState(now,
-		[]v1.Lease{
+		[]v1.GPULease{
 			prodLease("dead", "run", "org:ai:team", "team", []string{"node-a#0"}, binder.RoleActive, now),
 			// A healthy rank on a healthy machine. Its lease is swept when the gang dies.
 			prodLease("alive", "run", "org:ai:team", "team", []string{"node-b#0"}, binder.RoleActive, now),
@@ -295,7 +295,7 @@ func TestCheckpointGraceKeepsTheContainersRunning(t *testing.T) {
 	run.Spec.Runtime = &v1.RunRuntime{Checkpoint: metav1.Duration{Duration: 30 * time.Minute}}
 
 	state := tpState(now,
-		[]v1.Lease{
+		[]v1.GPULease{
 			prodLease("dead", "run", "org:ai:team", "team", []string{"node-a#0"}, binder.RoleActive, now),
 			prodLease("alive", "run", "org:ai:team", "team", []string{"node-b#0"}, binder.RoleActive, now),
 		},

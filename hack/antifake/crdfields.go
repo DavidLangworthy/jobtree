@@ -25,7 +25,7 @@ import (
 // for real — RunSpec.Runtime + RunRuntime.Checkpoint (checkpoint grace in
 // HandleNodeFailure) and BudgetSpec.AutoRenew + AutoRenewSchedule.NotifyBefore
 // (renewal in BudgetController) — so the ratchet was shrunk 8→4. The remaining
-// four (LeaseSpec.CompPath — deferred to Track E/ROLES; BudgetStatus.Observed
+// four (GPULeaseSpec.CompPath — deferred to Track E/ROLES; BudgetStatus.Observed
 // Generation, RunStatus.Generation, ReservationStatus.CanceledAt — newly
 // surfaced by this lint, awaiting a wire-or-delete triage) stay documented in
 // the allowlist file.

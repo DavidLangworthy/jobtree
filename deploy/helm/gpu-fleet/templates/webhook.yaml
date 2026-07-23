@@ -79,7 +79,7 @@ metadata:
 webhooks:
   {{- range $wh := list
     (dict "name" "vbudget.rq.davidlangworthy.io" "path" "/validate-rq-davidlangworthy-io-v1-budget" "resource" "budgets")
-    (dict "name" "vlease.rq.davidlangworthy.io" "path" "/validate-rq-davidlangworthy-io-v1-lease" "resource" "leases")
+    (dict "name" "vgpulease.rq.davidlangworthy.io" "path" "/validate-rq-davidlangworthy-io-v1-gpulease" "resource" "gpuleases")
     (dict "name" "vreservation.rq.davidlangworthy.io" "path" "/validate-rq-davidlangworthy-io-v1-reservation" "resource" "reservations")
     (dict "name" "vrun.rq.davidlangworthy.io" "path" "/validate-rq-davidlangworthy-io-v1-run" "resource" "runs") }}
   - name: {{ $wh.name }}

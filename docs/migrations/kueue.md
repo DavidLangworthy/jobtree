@@ -93,7 +93,7 @@ packs group-by-group within a fast-fabric domain (`pack-to-empty`):
 
 | Topic | Kueue | Jobtree |
 | --- | --- | --- |
-| Auditing | Workload status | Lease CRD (immutable interval, payer, nodes) |
+| Auditing | Workload status | GPULease CRD (immutable interval, payer, nodes) |
 | Elasticity | Limited (requeue with new size) | Built-in `malleable` width + voluntary shrink |
 | CLI | kubectl + `kueuectl` | `kubectl runs` plugin (plan/watch/explain/budgets) |
 | Forecasting | Queue length estimates | Reservation ETA (scales with deficit size), deficit, real remedies list |

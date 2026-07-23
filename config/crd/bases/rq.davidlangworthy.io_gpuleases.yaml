@@ -4,14 +4,16 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
-  name: leases.rq.davidlangworthy.io
+  name: gpuleases.rq.davidlangworthy.io
 spec:
   group: rq.davidlangworthy.io
   names:
-    kind: Lease
-    listKind: LeaseList
-    plural: leases
-    singular: lease
+    kind: GPULease
+    listKind: GPULeaseList
+    plural: gpuleases
+    shortNames:
+    - gl
+    singular: gpulease
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
@@ -34,9 +36,23 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          Lease records immutable consumption facts.
+          GPULease records immutable consumption facts.
+
+          The kind is GPULease, not Lease. `rq.davidlangworthy.io`'s Lease collided with
+          the core coordination.k8s.io Lease that every leader election in the cluster
+          uses, so `kubectl get leases` was ambiguous and RBAC written against `leases`
+          could grant the wrong resource entirely (R13).
+
           An OPEN lease charges a budget and holds GPUs; make that the first thing
           `kubectl get` shows (R11).
+
+          R14: spec immutability is an APISERVER rule, not a webhook rule. A lease is a
+          funding fact — who paid, for which slots, from when — and the whole ledger is a
+          fold over those facts. If the validating webhook is down (it is
+          failurePolicy=Fail, so "down" means either everything blocks or someone flipped
+          it to Ignore), a webhook-only immutability check evaporates exactly when the
+          cluster is least healthy, and a rewritten payer silently re-attributes spend
+          that already happened. CEL runs in the apiserver, so it holds regardless.
         properties:
           apiVersion:
             description: |-
@@ -56,14 +72,14 @@ spec:
           metadata:
             type: object
           spec:
-            description: LeaseSpec is immutable after creation.
+            description: GPULeaseSpec is immutable after creation.
             properties:
               compPath:
                 items:
                   type: string
                 type: array
               interval:
-                description: LeaseInterval timestamps the lease.
+                description: GPULeaseInterval timestamps the lease.
                 properties:
                   end:
                     format: date-time
@@ -75,6 +91,7 @@ spec:
                 - start
                 type: object
               owner:
+                minLength: 1
                 type: string
               paidByBudget:
                 description: |-
@@ -95,6 +112,10 @@ spec:
                   index entries and are not silently re-pointed.
                 type: string
               paidByEnvelope:
+                description: |-
+                  An open lease with no payer envelope charges nobody while holding real
+                  GPUs, which is the shape of every funding leak on this board.
+                minLength: 1
                 type: string
               reason:
                 type: string
@@ -102,6 +123,7 @@ spec:
                 description: RunReference links to the Run.
                 properties:
                   name:
+                    minLength: 1
                     type: string
                   namespace:
                     type: string
@@ -109,13 +131,19 @@ spec:
                 - name
                 type: object
               slice:
-                description: LeaseSlice describes the bound nodes.
+                description: GPULeaseSlice describes the bound nodes.
                 properties:
                   nodes:
+                    description: Slots, as node#ordinal. A lease holding no slot is
+                      a charge for nothing.
                     items:
                       type: string
+                    minItems: 1
                     type: array
                   role:
+                    enum:
+                    - Active
+                    - Spare
                     type: string
                 required:
                 - nodes
@@ -130,7 +158,14 @@ spec:
             - slice
             type: object
           status:
-            description: LeaseStatus captures closure state.
+            description: |-
+              GPULeaseStatus captures closure state.
+
+              R14: closure is MONOTONE at the apiserver. Reopening a closed lease would make a
+              settled interval start billing again from its original start instant, and
+              pkg/invariant's INV-CLOSED-MONOTONE already treats that as an illegal state — this
+              makes the API refuse to represent it at all, webhook up or down. A transition rule
+              only runs when there is an oldSelf, so a create is unaffected.
             properties:
               closed:
                 type: boolean
@@ -207,7 +242,14 @@ spec:
             required:
             - closed
             type: object
+            x-kubernetes-validations:
+            - message: 'closed is monotone: a closed lease is a settled fact and cannot
+                be reopened'
+              rule: '!oldSelf.closed || self.closed'
         type: object
+        x-kubernetes-validations:
+        - message: spec is immutable; close this lease and mint a new one
+          rule: self.spec == oldSelf.spec
     served: true
     storage: true
     subresources:

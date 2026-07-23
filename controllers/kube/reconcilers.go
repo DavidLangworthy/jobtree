@@ -256,7 +256,7 @@ func (r *RunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("run").
 		For(&v1.Run{}, builder.WithPredicates(runPrimary)).
-		Watches(&v1.Lease{}, handler.EnqueueRequestsFromMapFunc(leaseToRun)).
+		Watches(&v1.GPULease{}, handler.EnqueueRequestsFromMapFunc(leaseToRun)).
 		Watches(&v1.Budget{}, handler.EnqueueRequestsFromMapFunc(r.budgetToRuns),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(podToRun),
@@ -339,7 +339,7 @@ func (r *RunReconciler) budgetToRuns(ctx context.Context, _ client.Object) []rec
 }
 
 func leaseToRun(ctx context.Context, obj client.Object) []reconcile.Request {
-	lease, ok := obj.(*v1.Lease)
+	lease, ok := obj.(*v1.GPULease)
 	if !ok || lease.Spec.RunRef.Name == "" {
 		return nil
 	}
@@ -649,7 +649,7 @@ func (r *BudgetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if err := r.APIReader.List(ctx, &budgetList); err != nil {
 		return ctrl.Result{}, err
 	}
-	var leaseList v1.LeaseList
+	var leaseList v1.GPULeaseList
 	if err := r.APIReader.List(ctx, &leaseList); err != nil {
 		return ctrl.Result{}, err
 	}

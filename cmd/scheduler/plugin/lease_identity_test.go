@@ -32,7 +32,7 @@ func TestMintStampsGangIdentityOntoTheLease(t *testing.T) {
 	}
 	mintPodLease(t, ctx, c, m, pod, "node-a")
 
-	var lease v1.Lease
+	var lease v1.GPULease
 	if err := c.Get(ctx, client.ObjectKey{Namespace: "default", Name: pod.Name + "-lease"}, &lease); err != nil {
 		t.Fatalf("get lease: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestCohortOfNormalizesTheBaseGang(t *testing.T) {
 
 // The readers default an unstamped legacy lease safely: cohort "0", pod name "".
 func TestLeaseIdentityReadersDefaultForLegacyLeases(t *testing.T) {
-	legacy := &v1.Lease{ObjectMeta: v1.ObjectMeta{Name: "old"}}
+	legacy := &v1.GPULease{ObjectMeta: v1.ObjectMeta{Name: "old"}}
 	if got := binder.LeaseCohort(legacy); got != "0" {
 		t.Errorf("LeaseCohort(legacy) = %q, want %q", got, "0")
 	}

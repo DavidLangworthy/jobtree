@@ -288,7 +288,7 @@ func DeriveRunPhase(conditions []metav1.Condition) string {
 	}
 }
 
-// --- Lease -------------------------------------------------------------------
+// --- GPULease -------------------------------------------------------------------
 
 const (
 	// LeaseConditionActive — the lease is open: it charges a budget and holds
@@ -353,7 +353,7 @@ func trimReasonTail(s, fallback string) string {
 // Status.Closed/ClosureReason and writes only Conditions, so it cannot become a
 // second writer of the closure fact — hack/antifake enforces that CloseLease is
 // the only one, and this function must never make that a lie.
-func SetLeaseConditions(status *LeaseStatus, observedGeneration int64) {
+func SetLeaseConditions(status *GPULeaseStatus, observedGeneration int64) {
 	active, closed := metav1.ConditionTrue, metav1.ConditionFalse
 	reason := LeaseReasonMinted
 	message := "open: charging its payer envelope and holding its slice"

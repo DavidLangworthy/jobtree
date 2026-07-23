@@ -266,7 +266,7 @@ func assertDeleteClosesLeases(t *testing.T, name string, del func(*v1.Run) error
 	// And every lease it held is CLOSED — present in the API, auditable, not
 	// cascade-deleted with the Run.
 	for _, seeded := range leases {
-		var got v1.Lease
+		var got v1.GPULease
 		if err := kubeClient.Get(suiteCtx, types.NamespacedName{Namespace: "default", Name: seeded.Name}, &got); err != nil {
 			t.Fatalf("lease %s must survive its Run's deletion as a closed funding record: %v", seeded.Name, err)
 		}

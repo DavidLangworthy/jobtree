@@ -62,7 +62,7 @@ air-gapped cluster, mirror both images and set the two repositories.
 
 What gets installed:
 
-* CRDs for Budget, Run, Reservation, and Lease.
+* CRDs for Budget, Run, Reservation, and GPULease (`kubectl get gpuleases`, short name `gl`).
 * Controller manager Deployment (admission, forecasting/Reservations, lifecycle, webhooks). It
   requests width by creating real, unscheduled workload pods (`schedulerName: jobtree`) — it does
   not place pods or mint Leases itself.

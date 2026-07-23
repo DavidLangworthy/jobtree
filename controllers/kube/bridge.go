@@ -96,7 +96,7 @@ func (b *Bridge) recorderFor() controllers.EventRecorder {
 type worldSnapshot struct {
 	state        *controllers.ClusterState
 	runs         map[string]*v1.Run
-	leases       map[string]*v1.Lease
+	leases       map[string]*v1.GPULease
 	reservations map[string]*v1.Reservation
 	pods         map[string]*corev1.Pod
 }
@@ -191,7 +191,7 @@ func (b *Bridge) load(ctx context.Context) (*worldSnapshot, error) {
 	if err := b.APIReader.List(ctx, &budgetList); err != nil {
 		return nil, fmt.Errorf("list budgets: %w", err)
 	}
-	var leaseList v1.LeaseList
+	var leaseList v1.GPULeaseList
 	if err := b.APIReader.List(ctx, &leaseList); err != nil {
 		return nil, fmt.Errorf("list leases: %w", err)
 	}
@@ -217,7 +217,7 @@ func (b *Bridge) load(ctx context.Context) (*worldSnapshot, error) {
 	snap := &worldSnapshot{
 		state:        state,
 		runs:         make(map[string]*v1.Run, len(runList.Items)),
-		leases:       make(map[string]*v1.Lease, len(leaseList.Items)),
+		leases:       make(map[string]*v1.GPULease, len(leaseList.Items)),
 		reservations: make(map[string]*v1.Reservation, len(reservationList.Items)),
 		pods:         make(map[string]*corev1.Pod, len(podList.Items)),
 	}
@@ -311,7 +311,7 @@ func (b *Bridge) apply(ctx context.Context, snap *worldSnapshot) error {
 			if err := b.Client.Create(ctx, created); err != nil {
 				return fmt.Errorf("create lease %s: %w", key, err)
 			}
-			if !reflect.DeepEqual(status, v1.LeaseStatus{}) {
+			if !reflect.DeepEqual(status, v1.GPULeaseStatus{}) {
 				created.Status = status
 				if err := b.Client.Status().Update(ctx, created); err != nil {
 					return fmt.Errorf("update lease status %s: %w", key, err)

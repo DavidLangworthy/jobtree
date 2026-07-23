@@ -204,7 +204,7 @@ type claim struct {
 
 // leaseFact is one open or closed lease with its parsed placement width.
 type leaseFact struct {
-	lease      *v1.Lease
+	lease      *v1.GPULease
 	width      int32
 	groupIndex int
 	name       string
@@ -225,7 +225,7 @@ func rankLess(a, b *claim) bool {
 }
 
 // LeaseKey names a lease for classification lookups.
-func LeaseKey(lease *v1.Lease) string {
+func LeaseKey(lease *v1.GPULease) string {
 	return keys.NamespacedKey(lease.Namespace, lease.Name)
 }
 

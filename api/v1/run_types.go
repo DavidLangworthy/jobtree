@@ -25,7 +25,17 @@ type Run struct {
 }
 
 // RunSpec defines the desired Run behavior.
+//
+// R14: the malleable/resources relations below were webhook-only. They are the ones
+// a researcher gets wrong by hand — a totalGPUs outside min/max, or off the step grid
+// — and a run admitted with them wedges the elastic path rather than failing loudly at
+// submit. CEL puts them in the apiserver, so `failurePolicy=Ignore` during a webhook
+// outage no longer means "no validation at all".
+//
+// +kubebuilder:validation:XValidation:rule="!has(self.malleable) || (self.resources.totalGPUs >= self.malleable.minTotalGPUs && self.resources.totalGPUs <= self.malleable.maxTotalGPUs)",message="resources.totalGPUs must fall within malleable min/max"
+// +kubebuilder:validation:XValidation:rule="!has(self.malleable) || (self.resources.totalGPUs - self.malleable.minTotalGPUs) % self.malleable.stepGPUs == 0",message="resources.totalGPUs must align with malleable.stepGPUs"
 type RunSpec struct {
+	// +kubebuilder:validation:MinLength=1
 	Owner     string       `json:"owner"`
 	Resources RunResources `json:"resources"`
 	// Roles is the researcher's real workload: one homogeneous pod pool per
@@ -48,8 +58,9 @@ type RunSpec struct {
 	Runtime   *RunRuntime      `json:"runtime,omitempty"`
 	Malleable *RunMalleability `json:"malleable,omitempty"`
 	Funding   *RunFunding      `json:"funding,omitempty"`
-	Spares    *int32           `json:"sparesPerGroup,omitempty"`
-	Follow    *RunFollow       `json:"follow,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	Spares *int32     `json:"sparesPerGroup,omitempty"`
+	Follow *RunFollow `json:"follow,omitempty"`
 }
 
 // GPUTargetContainerName is the convention for the container that receives the
@@ -76,6 +87,9 @@ const (
 type RunRole struct {
 	// Name identifies the role (e.g. "trainer"). It becomes the gang-role label
 	// value and the pod-name prefix, so it must be a non-empty DNS label.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	Name string `json:"name"`
 
 	// Template is the researcher's workload pod. jobtree deep-copies it per
@@ -104,19 +118,23 @@ type RunRole struct {
 	// Width is the number of pods in this role's gang: all of them run, or none
 	// does. Must be positive. Width*GPUsPerPod must equal the Run's
 	// Resources.TotalGPUs in v1 (single role).
+	// +kubebuilder:validation:Minimum=1
 	Width int32 `json:"width"`
 
 	// GPUsPerPod is the nvidia.com/gpu request (== limit, extended resources
 	// are non-overcommit) injected on the GPU-target container of each pod.
 	// Must be positive; the zero-GPU CPU-only role path is a later addition.
+	// +kubebuilder:validation:Minimum=1
 	GPUsPerPod int32 `json:"gpusPerPod"`
 
 	// GroupGPUs optionally overrides spec.locality.groupGPUs for this role: the
 	// number of GPUs packed into one fabric domain. Positive when set.
+	// +kubebuilder:validation:Minimum=1
 	GroupGPUs *int32 `json:"groupGPUs,omitempty"`
 
 	// Spares optionally overrides spec.sparesPerGroup for this role: hot spares
 	// held per group for fast node-failure swap. Non-negative when set.
+	// +kubebuilder:validation:Minimum=0
 	Spares *int32 `json:"spares,omitempty"`
 
 	// FailurePolicy decides what happens when an active pod of this role terminally
@@ -134,6 +152,7 @@ type RunRole struct {
 
 	// Retries is the number of times a Retry-policy role re-emits a failed member
 	// before failing the run. Required (positive) when FailurePolicy is Retry.
+	// +kubebuilder:validation:Minimum=1
 	Retries *int32 `json:"retries,omitempty"`
 
 	// Backoff is an optional delay before re-emitting a failed member under Retry:
@@ -173,6 +192,7 @@ const (
 // grace period so the researcher can fix and resubmit the failed stage, then
 // fails it; "fail" fails this run immediately.
 type RunFollow struct {
+	// +kubebuilder:validation:MinItems=1
 	After []string `json:"after"`
 	// +kubebuilder:validation:Enum="";wait;fail
 	OnUpstreamFailure    string           `json:"onUpstreamFailure,omitempty"`
@@ -181,12 +201,15 @@ type RunFollow struct {
 
 // RunResources describes GPU requirements.
 type RunResources struct {
-	GPUType   string `json:"gpuType"`
-	TotalGPUs int32  `json:"totalGPUs"`
+	// +kubebuilder:validation:MinLength=1
+	GPUType string `json:"gpuType"`
+	// +kubebuilder:validation:Minimum=1
+	TotalGPUs int32 `json:"totalGPUs"`
 }
 
 // RunLocality captures placement preferences.
 type RunLocality struct {
+	// +kubebuilder:validation:Minimum=1
 	GroupGPUs             *int32 `json:"groupGPUs,omitempty"`
 	AllowCrossGroupSpread *bool  `json:"allowCrossGroupSpread,omitempty"`
 }
@@ -197,16 +220,25 @@ type RunRuntime struct {
 }
 
 // RunMalleability allows elastic scaling.
+//
+// +kubebuilder:validation:XValidation:rule="self.minTotalGPUs <= self.maxTotalGPUs",message="malleable.minTotalGPUs must be <= maxTotalGPUs"
+// +kubebuilder:validation:XValidation:rule="!has(self.desiredTotalGPUs) || (self.desiredTotalGPUs >= self.minTotalGPUs && self.desiredTotalGPUs <= self.maxTotalGPUs)",message="malleable.desiredTotalGPUs must fall within min/max"
+// +kubebuilder:validation:XValidation:rule="!has(self.desiredTotalGPUs) || (self.desiredTotalGPUs - self.minTotalGPUs) % self.stepGPUs == 0",message="malleable.desiredTotalGPUs must align with stepGPUs"
 type RunMalleability struct {
-	MinTotalGPUs     int32  `json:"minTotalGPUs"`
-	MaxTotalGPUs     int32  `json:"maxTotalGPUs"`
-	StepGPUs         int32  `json:"stepGPUs"`
+	// +kubebuilder:validation:Minimum=1
+	MinTotalGPUs int32 `json:"minTotalGPUs"`
+	// +kubebuilder:validation:Minimum=1
+	MaxTotalGPUs int32 `json:"maxTotalGPUs"`
+	// +kubebuilder:validation:Minimum=1
+	StepGPUs int32 `json:"stepGPUs"`
+	// +kubebuilder:validation:Minimum=1
 	DesiredTotalGPUs *int32 `json:"desiredTotalGPUs,omitempty"`
 }
 
 // RunFunding captures borrowing intents.
 type RunFunding struct {
-	AllowBorrow   bool     `json:"allowBorrow"`
+	AllowBorrow bool `json:"allowBorrow"`
+	// +kubebuilder:validation:Minimum=0
 	MaxBorrowGPUs *int32   `json:"maxBorrowGPUs,omitempty"`
 	Sponsors      []string `json:"sponsors,omitempty"`
 }

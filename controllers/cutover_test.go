@@ -75,7 +75,7 @@ func seedGrowLeases(t *testing.T, state *ClusterState, runKey string, deltaGPUs 
 // (the spare's payer), on the swap node — the test stand-in for the plugin's
 // provenance-preserving PreBind now that HandleNodeFailure emits a swap pod
 // instead of minting. Returns the minted lease.
-func seedSwapLease(t *testing.T, state *ClusterState, runName string, now time.Time) v1.Lease {
+func seedSwapLease(t *testing.T, state *ClusterState, runName string, now time.Time) v1.GPULease {
 	t.Helper()
 	var pod *binder.PodManifest
 	for i := range state.Pods {
@@ -92,7 +92,7 @@ func seedSwapLease(t *testing.T, state *ClusterState, runName string, now time.T
 	for i := range slots {
 		slots[i] = node + "#" + strconv.Itoa(i)
 	}
-	lease := v1.Lease{
+	lease := v1.GPULease{
 		ObjectMeta: v1.ObjectMeta{
 			Namespace: pod.Namespace,
 			Name:      pod.Name + "-lease",
@@ -102,11 +102,11 @@ func seedSwapLease(t *testing.T, state *ClusterState, runName string, now time.T
 				binder.LabelRunRole:    binder.RoleActive,
 			},
 		},
-		Spec: v1.LeaseSpec{
+		Spec: v1.GPULeaseSpec{
 			Owner:          pod.Annotations[binder.AnnotationPayerOwner],
 			RunRef:         v1.RunReference{Name: pod.Labels[binder.LabelRunName], Namespace: pod.Namespace},
-			Slice:          v1.LeaseSlice{Nodes: slots, Role: binder.RoleActive},
-			Interval:       v1.LeaseInterval{Start: v1.NewTime(now)},
+			Slice:          v1.GPULeaseSlice{Nodes: slots, Role: binder.RoleActive},
+			Interval:       v1.GPULeaseInterval{Start: v1.NewTime(now)},
 			PaidByBudget:   pod.Annotations[binder.AnnotationPayerBudget],
 			PaidByEnvelope: pod.Annotations[binder.AnnotationPayerEnvelope],
 			Reason:         "Swap",
@@ -143,17 +143,17 @@ func seedPromiseLeases(t *testing.T, state *ClusterState, runName string, now ti
 			slots[j] = node + "#" + strconv.Itoa(j)
 		}
 		role := p.Labels[binder.LabelRunRole]
-		state.Leases = append(state.Leases, v1.Lease{
+		state.Leases = append(state.Leases, v1.GPULease{
 			ObjectMeta: v1.ObjectMeta{
 				Namespace: p.Namespace,
 				Name:      p.Name + "-lease",
 				Labels:    map[string]string{binder.LabelRunName: runName, binder.LabelGroupIndex: "0", binder.LabelRunRole: role},
 			},
-			Spec: v1.LeaseSpec{
+			Spec: v1.GPULeaseSpec{
 				Owner:          p.Annotations[binder.AnnotationPayerOwner],
 				RunRef:         v1.RunReference{Name: runName, Namespace: p.Namespace},
-				Slice:          v1.LeaseSlice{Nodes: slots, Role: role},
-				Interval:       v1.LeaseInterval{Start: v1.NewTime(now)},
+				Slice:          v1.GPULeaseSlice{Nodes: slots, Role: role},
+				Interval:       v1.GPULeaseInterval{Start: v1.NewTime(now)},
 				PaidByBudget:   p.Annotations[binder.AnnotationPayerBudget],
 				PaidByEnvelope: p.Annotations[binder.AnnotationPayerEnvelope],
 				Reason:         binder.LeaseReasonPromise,

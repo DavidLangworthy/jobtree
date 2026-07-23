@@ -7,7 +7,9 @@ metadata:
 ---
 # Scoped to exactly what the manager uses (R22): the jobtree CRDs plus their
 # status, read on nodes (node-failure watch), pods (the binder creates and
-# reclaims them), events, and coordination leases for leader election. No
+# reclaims them), events, and coordination.k8s.io leases for leader election
+# (a DIFFERENT resource from our gpuleases — R13 renamed ours precisely so this
+# rule cannot be confused for that one). No
 # wildcard rules — the CI helm-template check asserts this.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -15,10 +17,10 @@ metadata:
   name: {{ include "gpu-fleet.controllerName" . }}
 rules:
   - apiGroups: ["rq.davidlangworthy.io"]
-    resources: ["budgets", "runs", "reservations", "leases"]
+    resources: ["budgets", "runs", "reservations", "gpuleases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["rq.davidlangworthy.io"]
-    resources: ["budgets/status", "runs/status", "reservations/status", "leases/status"]
+    resources: ["budgets/status", "runs/status", "reservations/status", "gpuleases/status"]
     verbs: ["get", "update", "patch"]
   - apiGroups: [""]
     resources: ["nodes"]

@@ -47,7 +47,13 @@ spec:
           metadata:
             type: object
           spec:
-            description: ReservationSpec captures the immutable plan.
+            description: |-
+              ReservationSpec captures the immutable plan.
+
+              R14: a Reservation's spec is immutable for the same reason a lease's is — it is a
+              promise the resolver has already planned around — and that immutability now holds
+              at the apiserver, not only in the webhook. The intendedSlice rule is the webhook's
+              own cross-field check moved down to where it cannot be bypassed.
             properties:
               earliestStart:
                 format: date-time
@@ -65,11 +71,13 @@ spec:
                     type: array
                 type: object
               payingEnvelope:
+                minLength: 1
                 type: string
               runRef:
                 description: RunReference links to the Run.
                 properties:
                   name:
+                    minLength: 1
                     type: string
                   namespace:
                     type: string
@@ -82,6 +90,9 @@ spec:
             - payingEnvelope
             - runRef
             type: object
+            x-kubernetes-validations:
+            - message: spec.intendedSlice must set nodes or domain
+              rule: has(self.intendedSlice.nodes) || has(self.intendedSlice.domain)
           status:
             description: ReservationStatus reports lifecycle transitions.
             properties:
@@ -183,6 +194,9 @@ spec:
                 type: string
             type: object
         type: object
+        x-kubernetes-validations:
+        - message: spec is immutable; cancel and recreate for changes
+          rule: self.spec == oldSelf.spec
     served: true
     storage: true
     subresources:

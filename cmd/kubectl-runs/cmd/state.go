@@ -96,7 +96,7 @@ type snapshot struct {
 	Runs         []v1.Run             `json:"runs,omitempty"`
 	Budgets      []v1.Budget          `json:"budgets,omitempty"`
 	Nodes        []nodeSnapshot       `json:"nodes,omitempty"`
-	Leases       []v1.Lease           `json:"leases,omitempty"`
+	Leases       []v1.GPULease        `json:"leases,omitempty"`
 	Pods         []binder.PodManifest `json:"pods,omitempty"`
 	Reservations []v1.Reservation     `json:"reservations,omitempty"`
 }
@@ -112,7 +112,7 @@ func (s snapshot) toState() *controllers.ClusterState {
 		Runs:         make(map[string]*v1.Run, len(s.Runs)),
 		Budgets:      make([]v1.Budget, len(s.Budgets)),
 		Nodes:        make([]topology.SourceNode, len(s.Nodes)),
-		Leases:       make([]v1.Lease, len(s.Leases)),
+		Leases:       make([]v1.GPULease, len(s.Leases)),
 		Pods:         append([]binder.PodManifest{}, s.Pods...),
 		Reservations: make(map[string]*v1.Reservation, len(s.Reservations)),
 	}

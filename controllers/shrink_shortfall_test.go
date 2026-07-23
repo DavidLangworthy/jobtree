@@ -30,7 +30,7 @@ func TestShrinkShortfallDoesNotStrandClosedGroupsPods(t *testing.T) {
 		Nodes:   nodeFailureNodes(),
 		Budgets: []v1.Budget{nfBudget("team", "org:ai:team")},
 		Runs:    map[string]*v1.Run{runKey: nfRun("run", "org:ai:team", 6, now)},
-		Leases: []v1.Lease{
+		Leases: []v1.GPULease{
 			nfLeaseGroup("g0", "run", "org:ai:team", "team", "0", []string{"node-a#0", "node-a#1"}, binder.RoleActive, now),
 			nfLeaseGroup("g1", "run", "org:ai:team", "team", "1", []string{"node-a#2", "node-a#3"}, binder.RoleActive, now),
 			nfLeaseGroup("g2", "run", "org:ai:team", "team", "2", []string{"node-b#0", "node-b#1"}, binder.RoleActive, now),

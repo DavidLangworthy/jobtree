@@ -64,7 +64,7 @@ type gangCommit struct {
 	// true once pod i's REAL lease has been created (in PreBind), at which point
 	// pending[i] is retired from the fold — the API's real lease now counts it,
 	// so folding the phantom too would double-count (R1).
-	pending []v1.Lease
+	pending []v1.GPULease
 	minted  []bool
 	// lastTouched is the clock reading at the last decide/mint/postBind for this
 	// gang; the sweep drops a gang idle past gangTTL so an abandoned commit (a
@@ -302,7 +302,7 @@ func (m *gangManager) Reconstruct(ctx context.Context) error {
 	if err := m.reader.List(ctx, &budgetList); err != nil {
 		return fmt.Errorf("list budgets: %w", err)
 	}
-	var leaseList v1.LeaseList
+	var leaseList v1.GPULeaseList
 	if err := m.reader.List(ctx, &leaseList); err != nil {
 		return fmt.Errorf("list leases: %w", err)
 	}
@@ -325,7 +325,7 @@ func (m *gangManager) Reconstruct(ctx context.Context) error {
 
 	// Group the OPEN, ACTIVE leases by gang key. Spares are not gang-active-width
 	// members (Permit gates on active width); closed leases are settled facts.
-	byGang := map[string][]*v1.Lease{}
+	byGang := map[string][]*v1.GPULease{}
 	cohortOfGang := map[string]string{}
 	runKeyOfGang := map[string]string{}
 	for i := range leaseList.Items {
@@ -528,7 +528,7 @@ func (m *gangManager) runSweep(ctx context.Context) {
 // attacker cannot fabricate without lease-create RBAC. This backs up the
 // mandatory-scheduler policy (R5/R6); it holds even if that policy is absent.
 func (m *gangManager) spareLeaseProvenanceValid(ctx context.Context, ns, runName string, seg cover.Segment) bool {
-	var leaseList v1.LeaseList
+	var leaseList v1.GPULeaseList
 	if err := m.reader.List(ctx, &leaseList); err != nil {
 		return false
 	}
@@ -640,7 +640,7 @@ func (m *gangManager) loadWorld(ctx context.Context, pod *corev1.Pod) (admission
 	if err := m.reader.List(ctx, &budgetList); err != nil {
 		return admission.Input{}, nil, fmt.Errorf("list budgets: %w", err)
 	}
-	var leaseList v1.LeaseList
+	var leaseList v1.GPULeaseList
 	if err := m.reader.List(ctx, &leaseList); err != nil {
 		return admission.Input{}, nil, fmt.Errorf("list leases: %w", err)
 	}
@@ -678,8 +678,8 @@ func (m *gangManager) loadWorld(ctx context.Context, pod *corev1.Pod) (admission
 // before the real per-pod leases exist. Only the payer and GPU count matter for
 // the cross-gang funding math; nodes are filled with the payer envelope as a
 // stand-in and never persisted.
-func pendingLeases(run *v1.Run, payers []cover.Segment, gpusPerPod int, now time.Time) []v1.Lease {
-	out := make([]v1.Lease, 0, len(payers))
+func pendingLeases(run *v1.Run, payers []cover.Segment, gpusPerPod int, now time.Time) []v1.GPULease {
+	out := make([]v1.GPULease, 0, len(payers))
 	for i, seg := range payers {
 		out = append(out, admission.PodLease(run, seg, fmt.Sprintf("pending-%s-%d", run.Name, i), gpusPerPod, "", now, "Start"))
 	}

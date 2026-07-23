@@ -776,7 +776,7 @@ func TestHandleNodeFailureSwapsToSpare(t *testing.T) {
 	// still-in-engine node-failure spare swap.
 	seedRunning(t, state, "default/run", now)
 
-	var spareLease *v1.Lease
+	var spareLease *v1.GPULease
 	for i := range state.Leases {
 		if state.Leases[i].Spec.Slice.Role == binder.RoleSpare {
 			spareLease = &state.Leases[i]
@@ -790,13 +790,13 @@ func TestHandleNodeFailureSwapsToSpare(t *testing.T) {
 	// Filler work squatting on the spare's node: role is Active (roles are
 	// Active|Spare only now); its unfunded nature would be derived, but all
 	// that matters here is that a swap reclaims it.
-	fillerLease := v1.Lease{
+	fillerLease := v1.GPULease{
 		ObjectMeta: v1.ObjectMeta{Name: "filler"},
-		Spec: v1.LeaseSpec{
+		Spec: v1.GPULeaseSpec{
 			Owner:          "org:ai:other",
 			RunRef:         v1.RunReference{Name: "filler", Namespace: "default"},
-			Slice:          v1.LeaseSlice{Nodes: append([]string{}, spareLease.Spec.Slice.Nodes...), Role: binder.RoleActive},
-			Interval:       v1.LeaseInterval{Start: v1.NewTime(now)},
+			Slice:          v1.GPULeaseSlice{Nodes: append([]string{}, spareLease.Spec.Slice.Nodes...), Role: binder.RoleActive},
+			Interval:       v1.GPULeaseInterval{Start: v1.NewTime(now)},
 			PaidByEnvelope: "west",
 			Reason:         "Start",
 		},
@@ -832,7 +832,7 @@ func TestHandleNodeFailureSwapsToSpare(t *testing.T) {
 	// Swap lease from that provenance — stood in for by seedSwapLease.
 	seedSwapLease(t, state, "run", failTime)
 
-	var activeOnSpare *v1.Lease
+	var activeOnSpare *v1.GPULease
 	fillerClosed := false
 	for i := range state.Leases {
 		lease := state.Leases[i]
@@ -946,14 +946,14 @@ func TestReconcileAdoptsHalfAppliedAdmission(t *testing.T) {
 			},
 			GPUs: 4,
 		}},
-		Leases: []v1.Lease{{
+		Leases: []v1.GPULease{{
 			ObjectMeta: v1.ObjectMeta{Name: "half-g00-team-west-1-0", Namespace: "default",
 				Labels: map[string]string{binder.LabelRunName: "half", binder.LabelGroupIndex: "0", binder.LabelRunRole: binder.RoleActive}},
-			Spec: v1.LeaseSpec{
+			Spec: v1.GPULeaseSpec{
 				Owner:          "org:ai:team",
 				RunRef:         v1.RunReference{Name: "half", Namespace: "default"},
-				Slice:          v1.LeaseSlice{Nodes: []string{"node-a#0", "node-a#1", "node-a#2", "node-a#3"}, Role: binder.RoleActive},
-				Interval:       v1.LeaseInterval{Start: v1.NewTime(now.Add(-time.Minute))},
+				Slice:          v1.GPULeaseSlice{Nodes: []string{"node-a#0", "node-a#1", "node-a#2", "node-a#3"}, Role: binder.RoleActive},
+				Interval:       v1.GPULeaseInterval{Start: v1.NewTime(now.Add(-time.Minute))},
 				PaidByBudget:   "team",
 				PaidByEnvelope: "west",
 				Reason:         "Start",
@@ -1009,14 +1009,14 @@ func TestActivateReservationAdoptsHalfAppliedActivation(t *testing.T) {
 			},
 			GPUs: 4,
 		}},
-		Leases: []v1.Lease{{
+		Leases: []v1.GPULease{{
 			ObjectMeta: v1.ObjectMeta{Name: "half-g00-team-west-1-0", Namespace: "default",
 				Labels: map[string]string{binder.LabelRunName: "half", binder.LabelGroupIndex: "0", binder.LabelRunRole: binder.RoleActive}},
-			Spec: v1.LeaseSpec{
+			Spec: v1.GPULeaseSpec{
 				Owner:          "org:ai:team",
 				RunRef:         v1.RunReference{Name: "half", Namespace: "default"},
-				Slice:          v1.LeaseSlice{Nodes: []string{"node-a#0", "node-a#1", "node-a#2", "node-a#3"}, Role: binder.RoleActive},
-				Interval:       v1.LeaseInterval{Start: v1.NewTime(now.Add(-time.Minute))},
+				Slice:          v1.GPULeaseSlice{Nodes: []string{"node-a#0", "node-a#1", "node-a#2", "node-a#3"}, Role: binder.RoleActive},
+				Interval:       v1.GPULeaseInterval{Start: v1.NewTime(now.Add(-time.Minute))},
 				PaidByBudget:   "team",
 				PaidByEnvelope: "west",
 				Reason:         "Start",

@@ -46,25 +46,25 @@ func TestReconcileBudgetComputesHeadroomAndMetrics(t *testing.T) {
 		keys.NamespacedKey(keys.DefaultNamespace, "run-active"): ownerRun("run-active", "org:a"),
 		keys.NamespacedKey(keys.DefaultNamespace, "run-closed"): ownerRun("run-closed", "org:a"),
 	}
-	leases := []v1.Lease{{
-		Spec: v1.LeaseSpec{
+	leases := []v1.GPULease{{
+		Spec: v1.GPULeaseSpec{
 			Owner:          "org:a",
 			RunRef:         v1.RunReference{Name: "run-active", Namespace: keys.DefaultNamespace},
 			PaidByBudget:   "budget-a",
 			PaidByEnvelope: "env-a",
-			Slice:          v1.LeaseSlice{Nodes: []string{"n1", "n2", "n3"}, Role: "Active"},
-			Interval:       v1.LeaseInterval{Start: start},
+			Slice:          v1.GPULeaseSlice{Nodes: []string{"n1", "n2", "n3"}, Role: "Active"},
+			Interval:       v1.GPULeaseInterval{Start: start},
 		},
 	}, {
-		Spec: v1.LeaseSpec{
+		Spec: v1.GPULeaseSpec{
 			Owner:          "org:a",
 			RunRef:         v1.RunReference{Name: "run-closed", Namespace: keys.DefaultNamespace},
 			PaidByBudget:   "budget-a",
 			PaidByEnvelope: "env-a",
-			Slice:          v1.LeaseSlice{Nodes: []string{"n4", "n5"}, Role: "Active"},
-			Interval:       v1.LeaseInterval{Start: start, End: &v1.Time{Time: now.Add(-time.Hour)}},
+			Slice:          v1.GPULeaseSlice{Nodes: []string{"n4", "n5"}, Role: "Active"},
+			Interval:       v1.GPULeaseInterval{Start: start, End: &v1.Time{Time: now.Add(-time.Hour)}},
 		},
-		Status: v1.LeaseStatus{Closed: true, Ended: &v1.Time{Time: now.Add(-time.Hour)}},
+		Status: v1.GPULeaseStatus{Closed: true, Ended: &v1.Time{Time: now.Add(-time.Hour)}},
 	}}
 
 	metrics := NewBudgetMetrics()

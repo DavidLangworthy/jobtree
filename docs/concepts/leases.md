@@ -1,13 +1,19 @@
 # Leases
 
-A **Lease** is the immutable fact that a Run consumed a slice of the cluster for a period of time.
-Every controller, report, and audit folds over Leases to reconstruct history.
+A **lease** is the immutable fact that a Run consumed a slice of the cluster for a period of time.
+Every controller, report, and audit folds over leases to reconstruct history.
+
+The **kind is `GPULease`** — `kubectl get gpuleases`, short name `gl`. It is not `Lease`,
+because `coordination.k8s.io/Lease` already owns that name in every cluster: `kubectl get
+leases` would be ambiguous, and RBAC written against `leases` could grant the leader-election
+resource instead of this one. This page still says "lease" in prose; that is the English word
+for the thing, and only the API kind was renamed (R13).
 
 ## 1. Schema recap
 
 ```yaml
 apiVersion: rq.davidlangworthy.io/v1
-kind: Lease
+kind: GPULease
 metadata:
   name: lease-abc-0007
 spec:
@@ -103,7 +109,11 @@ Controllers maintain indices on top of Leases:
 
 ## 3. Auditing workflows
 
-* “Who used GPU `n17-04` last night?” → `kubectl get leases --field-selector spec.slice.nodes=n17-04`.
+* “Who used GPU `n17-04` last night?” →
+  `kubectl get gpuleases -A -o jsonpath='{range .items[?(@.spec.slice.nodes[0]=="n17-04#0")]}{.spec.paidByEnvelope}{"\t"}{.spec.interval.start}{"\n"}{end}'`.
+  A **field selector will not work here**: the apiserver supports field selectors on custom
+  resources only for `metadata.name` and `metadata.namespace`, so `--field-selector
+  spec.slice.nodes=…` is rejected outright. Select client-side (JSONPath above) or on a label.
 * “How many GPU-hours did org:ai:mm:vision spend?” → integrate Lease durations where
   `paidByEnvelope` matches the sponsor.
 * “Why was my job preempted?” → find the Lease that ended with reason `RandomPreempt(seed)` and

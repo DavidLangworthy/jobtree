@@ -42,7 +42,7 @@ func TestReconcileInstallsTheFundingClosureFinalizer(t *testing.T) {
 	run := liveRun("fresh") // no finalizer yet
 	c := fake.NewClientBuilder().WithScheme(testScheme()).
 		WithObjects(healthyNode("node-a", 4), run).
-		WithStatusSubresource(&v1.Run{}, &v1.Lease{}).
+		WithStatusSubresource(&v1.Run{}, &v1.GPULease{}).
 		Build()
 	r := &RunReconciler{Bridge: &Bridge{Client: c, APIReader: c, Clock: controllers.RealClock{}}}
 
@@ -68,7 +68,7 @@ func TestDeletingARunClosesItsLeasesBeforeTheObjectIsGone(t *testing.T) {
 	lease := openLeaseOn("dead-0", "dead", "node-a")
 	c := fake.NewClientBuilder().WithScheme(testScheme()).
 		WithObjects(healthyNode("node-a", 4), run, lease).
-		WithStatusSubresource(&v1.Run{}, &v1.Lease{}).
+		WithStatusSubresource(&v1.Run{}, &v1.GPULease{}).
 		Build()
 	r := &RunReconciler{Bridge: &Bridge{Client: c, APIReader: c, Clock: controllers.RealClock{}}}
 
@@ -91,7 +91,7 @@ func TestDeletingARunClosesItsLeasesBeforeTheObjectIsGone(t *testing.T) {
 	}
 
 	// The lease is closed on the accounting-safe reason, before the object goes.
-	var gotLease v1.Lease
+	var gotLease v1.GPULease
 	if err := c.Get(context.Background(), types.NamespacedName{Name: "dead-0", Namespace: "default"}, &gotLease); err != nil {
 		t.Fatalf("get lease: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestADeletingRunIsStillInTheLoadedWorldSoNoOrphanArises(t *testing.T) {
 	lease := openLeaseOn("closing-0", "closing", "node-a")
 	c := fake.NewClientBuilder().WithScheme(testScheme()).
 		WithObjects(healthyNode("node-a", 4), run, lease).
-		WithStatusSubresource(&v1.Run{}, &v1.Lease{}).
+		WithStatusSubresource(&v1.Run{}, &v1.GPULease{}).
 		Build()
 	bridge := &Bridge{Client: c, APIReader: c, Clock: controllers.RealClock{}}
 

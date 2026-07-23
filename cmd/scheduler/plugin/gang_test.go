@@ -125,12 +125,12 @@ func TestDecideObservesHotPathMetrics(t *testing.T) {
 
 	// One unrelated open lease so the ledger fed to the replay is non-empty: the
 	// evaluate-input-size gauge must report it (the O(history) cost signal).
-	sibling := &v1.Lease{
+	sibling := &v1.GPULease{
 		ObjectMeta: v1.ObjectMeta{Name: "sibling-lease", Namespace: "default"},
-		Spec: v1.LeaseSpec{
+		Spec: v1.GPULeaseSpec{
 			Owner:          "org:ai:team",
 			RunRef:         v1.RunReference{Name: "sibling", Namespace: "default"},
-			Slice:          v1.LeaseSlice{Nodes: []string{"node-a#0", "node-a#1"}, Role: binder.RoleActive},
+			Slice:          v1.GPULeaseSlice{Nodes: []string{"node-a#0", "node-a#1"}, Role: binder.RoleActive},
 			PaidByBudget:   "team",
 			PaidByEnvelope: "west",
 		},
@@ -210,12 +210,12 @@ func TestGangKeyCohort(t *testing.T) {
 // decide funds a grow cohort's delta incrementally: with the base run's lease
 // already on an 8-GPU node, a +4 grow cohort funds against the remaining 4.
 func TestGangDecideGrowCohortFundsDelta(t *testing.T) {
-	baseLease := &v1.Lease{
+	baseLease := &v1.GPULease{
 		ObjectMeta: v1.ObjectMeta{Name: "train-base-lease", Namespace: "default"},
-		Spec: v1.LeaseSpec{
+		Spec: v1.GPULeaseSpec{
 			Owner:          "org:ai:team",
 			RunRef:         v1.RunReference{Name: "train", Namespace: "default"},
-			Slice:          v1.LeaseSlice{Nodes: []string{"node-a#0", "node-a#1", "node-a#2", "node-a#3"}, Role: binder.RoleActive},
+			Slice:          v1.GPULeaseSlice{Nodes: []string{"node-a#0", "node-a#1", "node-a#2", "node-a#3"}, Role: binder.RoleActive},
 			PaidByBudget:   "team",
 			PaidByEnvelope: "west",
 			Reason:         "Start",
@@ -439,12 +439,12 @@ func TestGangCommittedCount(t *testing.T) {
 // had a spare in is refused.
 func TestSpareLeaseProvenanceValid(t *testing.T) {
 	ctx := context.Background()
-	spare := &v1.Lease{
+	spare := &v1.GPULease{
 		ObjectMeta: v1.ObjectMeta{Name: "train-spare-lease", Namespace: "default"},
-		Spec: v1.LeaseSpec{
+		Spec: v1.GPULeaseSpec{
 			Owner:          "org:ai:team",
 			RunRef:         v1.RunReference{Name: "train", Namespace: "default"},
-			Slice:          v1.LeaseSlice{Nodes: []string{"node-b#0"}, Role: binder.RoleSpare},
+			Slice:          v1.GPULeaseSlice{Nodes: []string{"node-b#0"}, Role: binder.RoleSpare},
 			PaidByBudget:   "team",
 			PaidByEnvelope: "west",
 		},

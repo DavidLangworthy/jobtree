@@ -41,7 +41,7 @@ func terminalWithTerminatingPod(now time.Time, terminating bool) *ClusterState {
 			"default/dead": terminalRun("dead", "org:ai:team", RunPhaseComplete, now),
 			"default/live": nfRun("live", "org:ai:team", 2, now),
 		},
-		[]v1.Lease{closed},
+		[]v1.GPULease{closed},
 		[]binder.PodManifest{deadPod},
 	)
 }

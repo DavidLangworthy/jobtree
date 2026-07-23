@@ -13,6 +13,7 @@ import (
 // +kubebuilder:printcolumn:name="Run",type=string,JSONPath=`.spec.runRef.name`
 // +kubebuilder:printcolumn:name="Earliest",type=string,JSONPath=`.spec.earliestStart`
 // +kubebuilder:printcolumn:name="State",type=string,JSONPath=`.status.state`
+// +kubebuilder:validation:XValidation:rule="self.spec == oldSelf.spec",message="spec is immutable; cancel and recreate for changes"
 type Reservation struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -22,11 +23,19 @@ type Reservation struct {
 }
 
 // ReservationSpec captures the immutable plan.
+//
+// R14: a Reservation's spec is immutable for the same reason a lease's is — it is a
+// promise the resolver has already planned around — and that immutability now holds
+// at the apiserver, not only in the webhook. The intendedSlice rule is the webhook's
+// own cross-field check moved down to where it cannot be bypassed.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.intendedSlice.nodes) || has(self.intendedSlice.domain)",message="spec.intendedSlice must set nodes or domain"
 type ReservationSpec struct {
-	RunRef         RunReference  `json:"runRef"`
-	IntendedSlice  IntendedSlice `json:"intendedSlice"`
-	PayingEnvelope string        `json:"payingEnvelope"`
-	EarliestStart  metav1.Time   `json:"earliestStart"`
+	RunRef        RunReference  `json:"runRef"`
+	IntendedSlice IntendedSlice `json:"intendedSlice"`
+	// +kubebuilder:validation:MinLength=1
+	PayingEnvelope string      `json:"payingEnvelope"`
+	EarliestStart  metav1.Time `json:"earliestStart"`
 }
 
 // IntendedSlice defines the target topology.
@@ -37,6 +46,7 @@ type IntendedSlice struct {
 
 // RunReference links to the Run.
 type RunReference struct {
+	// +kubebuilder:validation:MinLength=1
 	Name      string `json:"name"`
 	Namespace string `json:"namespace,omitempty"`
 }
