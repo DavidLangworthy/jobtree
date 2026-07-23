@@ -67,7 +67,7 @@ func TestWithWorldSweepsATerminalRunsLeaseAllTheWayToTheAPI(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(testScheme()).
 		WithObjects(healthyNode("node-a", 4), run, lease, pod).
-		WithStatusSubresource(&v1.Run{}, &v1.Lease{}).
+		WithStatusSubresource(&v1.Run{}, &v1.GPULease{}).
 		Build()
 	bridge := &Bridge{Client: c, APIReader: c, Clock: controllers.RealClock{}}
 
@@ -77,7 +77,7 @@ func TestWithWorldSweepsATerminalRunsLeaseAllTheWayToTheAPI(t *testing.T) {
 		t.Fatalf("WithWorld: %v", err)
 	}
 
-	var got v1.Lease
+	var got v1.GPULease
 	if err := c.Get(context.Background(), types.NamespacedName{Name: "dead-lease", Namespace: "default"}, &got); err != nil {
 		t.Fatalf("get lease: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestWithWorldSweepIsSilentOnAHealthyWorld(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(testScheme()).
 		WithObjects(healthyNode("node-a", 4), run, lease, pod).
-		WithStatusSubresource(&v1.Run{}, &v1.Lease{}).
+		WithStatusSubresource(&v1.Run{}, &v1.GPULease{}).
 		Build()
 	bridge := &Bridge{Client: c, APIReader: c, Clock: controllers.RealClock{}}
 
@@ -129,7 +129,7 @@ func TestWithWorldSweepIsSilentOnAHealthyWorld(t *testing.T) {
 		t.Fatalf("WithWorld: %v", err)
 	}
 
-	var got v1.Lease
+	var got v1.GPULease
 	if err := c.Get(context.Background(), types.NamespacedName{Name: "train-lease", Namespace: "default"}, &got); err != nil {
 		t.Fatalf("get lease: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestWithWorldLeavesAnOrphanedLeaseOpenAndAccusesNobody(t *testing.T) {
 	lease := openLeaseOn("ghost-lease", "ghost", "node-a")
 	c := fake.NewClientBuilder().WithScheme(testScheme()).
 		WithObjects(healthyNode("node-a", 4), lease). // no Run: absent from this load
-		WithStatusSubresource(&v1.Run{}, &v1.Lease{}).
+		WithStatusSubresource(&v1.Run{}, &v1.GPULease{}).
 		Build()
 	bridge := &Bridge{Client: c, APIReader: c, Clock: controllers.RealClock{}}
 
@@ -167,7 +167,7 @@ func TestWithWorldLeavesAnOrphanedLeaseOpenAndAccusesNobody(t *testing.T) {
 		t.Fatalf("WithWorld: %v", err)
 	}
 
-	var got v1.Lease
+	var got v1.GPULease
 	if err := c.Get(context.Background(), types.NamespacedName{Name: "ghost-lease", Namespace: "default"}, &got); err != nil {
 		t.Fatalf("get lease: %v", err)
 	}

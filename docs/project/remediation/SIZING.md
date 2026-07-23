@@ -68,13 +68,13 @@ Three multipliers, learned the hard way:
 | ✅ | **R10 / R16 / R17 / R19 / R24** | mechanical + hygiene, all landed |
 | ◐ | **R4** plugin hot path | pt1 metrics, pt2a compaction, **pt1b safe-fold core (#99)** done; pt1b reader-swap (perf) + pt2b settlement store (feature) open |
 | ◐ | **R7** namespace tenancy | pt1 envelope key (#87) done; **pt2 delete `Run.Spec.Owner`** open (authz decision, deferred by ruling) |
-| ◐ | **R11 – R14** k8s conventions | **R11 + R12 done** (2026-07-23); `Lease` rename + CRD validation open |
+| ✅ | **R11 – R14** k8s conventions | all four done (2026-07-23): conditions, ownerRefs/finalizers, the `Lease`→`GPULease` clean break, and CRD/CEL validation |
 | ◐ | **R15 / R18** admin | R15 install/release images **done** (2026-07-23); R18 operator runbook open |
 | ⏳ | **R20 / R23** observability | plugin events for `explain`; logs/pods/artifacts CLI |
 | ⏳ | **R26** ledger auditor | runtime backstop (test-time now covered by the invariant oracle + eviction fuzzer) |
 
 So: **~17 of 26 landed** — 15 complete, plus R4 and R7 with only their deferred perf / feature /
-authz sub-part left. **9 remain** (R11–R14, R15, R18, R20, R23, R26), all P3–P5 conventions /
+authz sub-part left. **4 remain** (R18, R20, R23, R26), all P3–P5 conventions /
 admin / observability, plus the **ROLES** track (XL). The high-severity correctness core — where
 the scheduler plugin is the sole committer and a mistake silently double-spends a budget or strands
 a gang — is done, and it is now guarded by three nets: the invariant oracle (R27), the live
@@ -134,8 +134,8 @@ that the architecture is now compatible with what we have already shipped.
 |---|---|---|---|
 | **R11** status conditions | ✅ **done** | Landed 2026-07-23. Four CRDs gained `status.conditions`; all 25 `Phase`/`Message` writes now name a `v1.RunState` and the phase is derived from what was written. Two things the size estimate missed: the reason for `Unfunded`/`Unschedulable` has to ride on a **False** condition (nothing is True in those states), and stamping lease conditions at the mint is **inert** — `Status` is a subresource, so the plugin's `Create` drops it. `INV-PHASE-DERIVED` now checks the agreement on every engine return, and caught a real drift in the `seedRunning` fixture the day it was added. | — |
 | **R12** ownerRefs/finalizers | ✅ **done** | Smaller than the spec read: the pod OwnerReference landed with R5, the finalizer and the Reservation ownerRef landed 2026-07-10, and the real-apiserver envtest closed it 2026-07-23. The mutation that matters: remove the finalizer install and a world load immediately observes an open lease whose Run is absent — the exact orphan state R27c's deleted sweep rule used to act on. | — |
-| **R13** rename `Lease` | **M** | **Decided: clean break.** 37 files reference the type; individually mechanical. No dual-read, no conversion webhook, no migration Job — that was the **L**. Still touches `pkg/funding`, the plugin's PreBind mint, and the controller at once. | name only (`GPULease` recommended) |
-| **R14** CRD validation + CEL | **M** | Markers mirroring the existing `validate()`, plus CEL immutability on Lease. **Land in the same pass as R13** — the CEL rules attach to the very Kind R13 renames. The pair is ~1 day, not 2–3. | R13 |
+| **R13** rename `Lease` | ✅ **done** | Landed 2026-07-23 as `GPULease` (`gpuleases`, short name `gl`). 73 Go files, the CRD, both RBAC ClusterRoles, the validating webhook's path and resource, five e2e scripts and the docs. The estimate's "37 files" was low and its shape was right: no dual-read, no conversion webhook, no migration Job. The part worth remembering is the **RBAC**: `apiGroups: ["rq.davidlangworthy.io"] resources: ["leases"]` still parses after the rename and grants nothing, so PreBind would 403 and nothing would ever be funded — a helm-assertion rail now fails on it. | — |
+| **R14** CRD validation + CEL | ✅ **done** | Landed with R13, as planned. Markers mirror `validate()`; CEL carries the cross-field rules (malleable min≤max, totalGPUs in range and on the step grid), lease **spec immutability**, and closure **monotonicity**. Verified the only way it can be: the envtest deletes the ValidatingWebhookConfiguration and asserts the apiserver still refuses. Both CEL rules mutation-verified. | — |
 
 R15's finding that the release pipeline never built an image means **no production
 install exists yet**, which makes R13's hard-rename-without-migration very plausible

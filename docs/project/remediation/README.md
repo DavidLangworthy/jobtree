@@ -64,8 +64,8 @@ mechanical, no design needed (implement straight from the audit — Opus/Sonnet)
 |---|---|---|---|---|
 | [R11](R11-status-conditions.md) | No `status.conditions` anywhere | ✅ | ✅ vocabulary in `api/v1`; `Phase` derived; Run/Lease/Reservation/Budget | ✅ unit + envtest + **`INV-PHASE-DERIVED`** oracle (mutation-verified) |
 | [R12](R12-ownerrefs-finalizers.md) | Zero ownerRefs/finalizers; hand-rolled GC — **promoted to P1**, it retires R27c's `orphan-run` sweep rule | ✅ | ✅ finalizer + ownerRefs + `orphan-run` deleted | ✅ fake-client + **envtest** (items 1/2/3/5, mutation-verified) |
-| [R13](R13-lease-rename.md) | `Lease` collides with `coordination.k8s.io/Lease` | ✅ | ⏳ Opus | ⏳ Sonnet |
-| [R14](R14-crd-validation.md) | Near-zero CRD validation; webhook-only immutability | ✅ | ⏳ Opus | ⏳ Sonnet |
+| [R13](R13-lease-rename.md) | `Lease` collides with `coordination.k8s.io/Lease` | ✅ | ✅ hard rename to `GPULease` (2026-07-23) | ✅ discovery envtest + helm RBAC rails |
+| [R14](R14-crd-validation.md) | Near-zero CRD validation; webhook-only immutability | ✅ | ✅ markers + CEL, landed with R13 | ✅ webhook-DOWN envtest, mutation-verified |
 
 **P4 — admin, release & project hygiene**
 
@@ -225,8 +225,10 @@ Collected here so they are not lost in the specs. Each is also flagged inline.
   pod-creation path (JobSet has no funded, workload-less spare). Our controller
   stays the sole pod creator. Cancels the JOBSET track's XL. R8 is absorbed as
   phase 9A-3 **at its own L cost** — we build the failure edge, not inherit it.
-- **R13**: ✅ **DECIDED — hard rename, no side-by-side.** Kind name still open
-  (`GPULease` recommended). No dual-read window, no conversion webhook, no migration
+- **R13**: ✅ **DECIDED — hard rename, no side-by-side.** Kind name taken as the
+  design's recommendation, **`GPULease`** (`kubectl get gpuleases`, short name `gl`),
+  shipped 2026-07-23; see the implementation log for why that was read as an
+  implementation choice and not an owner decision. No dual-read window, no conversion webhook, no migration
   Job; a breaking change is scheduled, jobs stopped, and restarted. R15 established
   there is no production install to migrate.
 - **R19**: ✅ **DECIDED — no licence yet.** *"I'm not ready to give this away yet,

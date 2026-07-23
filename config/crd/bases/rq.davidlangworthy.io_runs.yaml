@@ -54,7 +54,14 @@ spec:
           metadata:
             type: object
           spec:
-            description: RunSpec defines the desired Run behavior.
+            description: |-
+              RunSpec defines the desired Run behavior.
+
+              R14: the malleable/resources relations below were webhook-only. They are the ones
+              a researcher gets wrong by hand — a totalGPUs outside min/max, or off the step grid
+              — and a run admitted with them wedges the elastic path rather than failing loudly at
+              submit. CEL puts them in the apiserver, so `failurePolicy=Ignore` during a webhook
+              outage no longer means "no validation at all".
             properties:
               follow:
                 description: |-
@@ -68,6 +75,7 @@ spec:
                   after:
                     items:
                       type: string
+                    minItems: 1
                     type: array
                   onUpstreamFailure:
                     enum:
@@ -87,6 +95,7 @@ spec:
                     type: boolean
                   maxBorrowGPUs:
                     format: int32
+                    minimum: 0
                     type: integer
                   sponsors:
                     items:
@@ -102,6 +111,7 @@ spec:
                     type: boolean
                   groupGPUs:
                     format: int32
+                    minimum: 1
                     type: integer
                 type: object
               malleable:
@@ -109,30 +119,46 @@ spec:
                 properties:
                   desiredTotalGPUs:
                     format: int32
+                    minimum: 1
                     type: integer
                   maxTotalGPUs:
                     format: int32
+                    minimum: 1
                     type: integer
                   minTotalGPUs:
                     format: int32
+                    minimum: 1
                     type: integer
                   stepGPUs:
                     format: int32
+                    minimum: 1
                     type: integer
                 required:
                 - maxTotalGPUs
                 - minTotalGPUs
                 - stepGPUs
                 type: object
+                x-kubernetes-validations:
+                - message: malleable.minTotalGPUs must be <= maxTotalGPUs
+                  rule: self.minTotalGPUs <= self.maxTotalGPUs
+                - message: malleable.desiredTotalGPUs must fall within min/max
+                  rule: '!has(self.desiredTotalGPUs) || (self.desiredTotalGPUs >=
+                    self.minTotalGPUs && self.desiredTotalGPUs <= self.maxTotalGPUs)'
+                - message: malleable.desiredTotalGPUs must align with stepGPUs
+                  rule: '!has(self.desiredTotalGPUs) || (self.desiredTotalGPUs - self.minTotalGPUs)
+                    % self.stepGPUs == 0'
               owner:
+                minLength: 1
                 type: string
               resources:
                 description: RunResources describes GPU requirements.
                 properties:
                   gpuType:
+                    minLength: 1
                     type: string
                   totalGPUs:
                     format: int32
+                    minimum: 1
                     type: integer
                 required:
                 - gpuType
@@ -193,29 +219,36 @@ spec:
                         are non-overcommit) injected on the GPU-target container of each pod.
                         Must be positive; the zero-GPU CPU-only role path is a later addition.
                       format: int32
+                      minimum: 1
                       type: integer
                     groupGPUs:
                       description: |-
                         GroupGPUs optionally overrides spec.locality.groupGPUs for this role: the
                         number of GPUs packed into one fabric domain. Positive when set.
                       format: int32
+                      minimum: 1
                       type: integer
                     name:
                       description: |-
                         Name identifies the role (e.g. "trainer"). It becomes the gang-role label
                         value and the pod-name prefix, so it must be a non-empty DNS label.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                       type: string
                     retries:
                       description: |-
                         Retries is the number of times a Retry-policy role re-emits a failed member
                         before failing the run. Required (positive) when FailurePolicy is Retry.
                       format: int32
+                      minimum: 1
                       type: integer
                     spares:
                       description: |-
                         Spares optionally overrides spec.sparesPerGroup for this role: hot spares
                         held per group for fast node-failure swap. Non-negative when set.
                       format: int32
+                      minimum: 0
                       type: integer
                     template:
                       description: |-
@@ -244,6 +277,7 @@ spec:
                         does. Must be positive. Width*GPUsPerPod must equal the Run's
                         Resources.TotalGPUs in v1 (single role).
                       format: int32
+                      minimum: 1
                       type: integer
                   required:
                   - gpusPerPod
@@ -260,11 +294,19 @@ spec:
                 type: object
               sparesPerGroup:
                 format: int32
+                minimum: 0
                 type: integer
             required:
             - owner
             - resources
             type: object
+            x-kubernetes-validations:
+            - message: resources.totalGPUs must fall within malleable min/max
+              rule: '!has(self.malleable) || (self.resources.totalGPUs >= self.malleable.minTotalGPUs
+                && self.resources.totalGPUs <= self.malleable.maxTotalGPUs)'
+            - message: resources.totalGPUs must align with malleable.stepGPUs
+              rule: '!has(self.malleable) || (self.resources.totalGPUs - self.malleable.minTotalGPUs)
+                % self.malleable.stepGPUs == 0'
           status:
             description: RunStatus reports lifecycle information.
             properties:

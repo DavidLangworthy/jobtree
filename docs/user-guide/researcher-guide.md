@@ -68,7 +68,7 @@ trustworthy completion signal).
 ```bash
 kubectl runs submit -f resnet-small.yaml
 kubectl runs watch resnet-small
-kubectl runs leases resnet-small  # show who paid for each Lease
+kubectl runs leases resnet-small  # show who paid for each GPULease
 ```
 
 The controller checks the demand against your team's Budget and requests placement for the 8

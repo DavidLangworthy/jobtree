@@ -56,9 +56,9 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
-      path: /validate-rq-davidlangworthy-io-v1-lease
+      path: /validate-rq-davidlangworthy-io-v1-gpulease
   failurePolicy: Fail
-  name: vlease.rq.davidlangworthy.io
+  name: vgpulease.rq.davidlangworthy.io
   rules:
   - apiGroups:
     - rq.davidlangworthy.io
@@ -68,7 +68,7 @@ webhooks:
     - CREATE
     - UPDATE
     resources:
-    - leases
+    - gpuleases
   sideEffects: None
 - admissionReviewVersions:
   - v1

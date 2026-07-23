@@ -25,7 +25,7 @@ func addKnownTypes(s *runtime.Scheme) error {
 	s.AddKnownTypes(GroupVersion,
 		&Run{}, &RunList{},
 		&Budget{}, &BudgetList{},
-		&Lease{}, &LeaseList{},
+		&GPULease{}, &GPULeaseList{},
 		&Reservation{}, &ReservationList{},
 	)
 	metav1.AddToGroupVersion(s, GroupVersion)

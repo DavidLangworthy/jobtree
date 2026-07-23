@@ -36,7 +36,7 @@ func TestResolveDropsSparesFirst(t *testing.T) {
 			},
 			GPUs: 4,
 		}},
-		Leases: []*v1.Lease{lease},
+		Leases: []*v1.GPULease{lease},
 		Runs: map[string]*v1.Run{
 			keys.NamespacedKey(run.Namespace, run.Name): run,
 		},
@@ -79,7 +79,7 @@ func TestResolveShrinksBeforeLottery(t *testing.T) {
 			sourceNode("node-a", "us-west", "cluster-a", "island-a", "H100", 8),
 			sourceNode("node-b", "us-west", "cluster-a", "island-a", "H100", 8),
 		},
-		Leases: []*v1.Lease{leaseA, leaseB},
+		Leases: []*v1.GPULease{leaseA, leaseB},
 		Runs: map[string]*v1.Run{
 			keys.NamespacedKey(run.Namespace, run.Name): run,
 		},
@@ -122,7 +122,7 @@ func TestResolveLotteryDeterministic(t *testing.T) {
 			sourceNode("node-a", "us-west", "cluster-a", "island-a", "H100", 8),
 			sourceNode("node-b", "us-west", "cluster-a", "island-a", "H100", 8),
 		},
-		Leases: []*v1.Lease{leaseA, leaseB},
+		Leases: []*v1.GPULease{leaseA, leaseB},
 		Runs: map[string]*v1.Run{
 			keys.NamespacedKey(runA.Namespace, runA.Name): runA,
 			keys.NamespacedKey(runB.Namespace, runB.Name): runB,
@@ -174,7 +174,7 @@ func TestResolveLotteryDeterministicWithinOwner(t *testing.T) {
 			sourceNode("node-a", "us-west", "cluster-a", "island-a", "H100", 4),
 			sourceNode("node-b", "us-west", "cluster-a", "island-a", "H100", 4),
 		},
-		Leases: []*v1.Lease{leaseA1, leaseA2},
+		Leases: []*v1.GPULease{leaseA1, leaseA2},
 		Runs: map[string]*v1.Run{
 			keys.NamespacedKey(runA1.Namespace, runA1.Name): runA1,
 			keys.NamespacedKey(runA2.Namespace, runA2.Name): runA2,
@@ -214,8 +214,8 @@ func buildRun(owner, namespace, name, flavor string) *v1.Run {
 	return run
 }
 
-func buildLease(run *v1.Run, groupIndex, role string, nodes []string, now time.Time) *v1.Lease {
-	lease := &v1.Lease{
+func buildLease(run *v1.Run, groupIndex, role string, nodes []string, now time.Time) *v1.GPULease {
+	lease := &v1.GPULease{
 		ObjectMeta: v1.ObjectMeta{
 			Namespace: run.Namespace,
 			Name:      fmt.Sprintf("%s-%s", run.Name, groupIndex),
@@ -224,17 +224,17 @@ func buildLease(run *v1.Run, groupIndex, role string, nodes []string, now time.T
 				binder.LabelGroupIndex: groupIndex,
 			},
 		},
-		Spec: v1.LeaseSpec{
+		Spec: v1.GPULeaseSpec{
 			Owner: run.Spec.Owner,
 			RunRef: v1.RunReference{
 				Name:      run.Name,
 				Namespace: run.Namespace,
 			},
-			Slice: v1.LeaseSlice{
+			Slice: v1.GPULeaseSlice{
 				Nodes: nodes,
 				Role:  role,
 			},
-			Interval: v1.LeaseInterval{
+			Interval: v1.GPULeaseInterval{
 				Start: v1.NewTime(now),
 			},
 			PaidByEnvelope: "env",

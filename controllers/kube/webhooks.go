@@ -18,7 +18,7 @@ import (
 // +kubebuilder:webhook:path=/mutate-rq-davidlangworthy-io-v1-run,mutating=true,failurePolicy=fail,sideEffects=None,groups=rq.davidlangworthy.io,resources=runs,verbs=create;update,versions=v1,name=mrun.rq.davidlangworthy.io,admissionReviewVersions=v1
 // +kubebuilder:webhook:path=/validate-rq-davidlangworthy-io-v1-run,mutating=false,failurePolicy=fail,sideEffects=None,groups=rq.davidlangworthy.io,resources=runs,verbs=create;update,versions=v1,name=vrun.rq.davidlangworthy.io,admissionReviewVersions=v1
 // +kubebuilder:webhook:path=/validate-rq-davidlangworthy-io-v1-budget,mutating=false,failurePolicy=fail,sideEffects=None,groups=rq.davidlangworthy.io,resources=budgets,verbs=create;update,versions=v1,name=vbudget.rq.davidlangworthy.io,admissionReviewVersions=v1
-// +kubebuilder:webhook:path=/validate-rq-davidlangworthy-io-v1-lease,mutating=false,failurePolicy=fail,sideEffects=None,groups=rq.davidlangworthy.io,resources=leases,verbs=create;update,versions=v1,name=vlease.rq.davidlangworthy.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-rq-davidlangworthy-io-v1-gpulease,mutating=false,failurePolicy=fail,sideEffects=None,groups=rq.davidlangworthy.io,resources=gpuleases,verbs=create;update,versions=v1,name=vgpulease.rq.davidlangworthy.io,admissionReviewVersions=v1
 // +kubebuilder:webhook:path=/validate-rq-davidlangworthy-io-v1-reservation,mutating=false,failurePolicy=fail,sideEffects=None,groups=rq.davidlangworthy.io,resources=reservations,verbs=create;update,versions=v1,name=vreservation.rq.davidlangworthy.io,admissionReviewVersions=v1
 
 // SetupWebhooks registers the validating and defaulting webhooks for every
@@ -35,10 +35,10 @@ func SetupWebhooks(mgr ctrl.Manager) error {
 		Complete(); err != nil {
 		return fmt.Errorf("budget webhook: %w", err)
 	}
-	if err := ctrl.NewWebhookManagedBy(mgr, &v1.Lease{}).
+	if err := ctrl.NewWebhookManagedBy(mgr, &v1.GPULease{}).
 		WithCustomValidator(legacyValidator{}).
 		Complete(); err != nil {
-		return fmt.Errorf("lease webhook: %w", err)
+		return fmt.Errorf("gpulease webhook: %w", err)
 	}
 	if err := ctrl.NewWebhookManagedBy(mgr, &v1.Reservation{}).
 		WithCustomValidator(legacyValidator{}).

@@ -186,9 +186,9 @@ func waitForRunPhase(t *testing.T, name, phase string) *v1.Run {
 	return &run
 }
 
-func listRunLeases(t *testing.T, runName string) []v1.Lease {
+func listRunLeases(t *testing.T, runName string) []v1.GPULease {
 	t.Helper()
-	var list v1.LeaseList
+	var list v1.GPULeaseList
 	if err := kubeClient.List(suiteCtx, &list, client.MatchingLabels{binder.LabelRunName: runName}); err != nil {
 		t.Fatalf("list leases: %v", err)
 	}
@@ -198,9 +198,9 @@ func listRunLeases(t *testing.T, runName string) []v1.Lease {
 // waitForRunLeases polls until the run has exactly want leases: the cached
 // client's lease list can lag the run-status event that ended the previous
 // wait, so a bare list right after waitForRunPhase is a flake.
-func waitForRunLeases(t *testing.T, runName string, want int) []v1.Lease {
+func waitForRunLeases(t *testing.T, runName string, want int) []v1.GPULease {
 	t.Helper()
-	var leases []v1.Lease
+	var leases []v1.GPULease
 	eventually(t, 15*time.Second, func() error {
 		leases = listRunLeases(t, runName)
 		if len(leases) != want {
@@ -242,7 +242,7 @@ func waitForRunPods(t *testing.T, runName string, want int) []corev1.Pod {
 // cluster (proven end-to-end by hack/e2e/plugin-smoke.sh). It is the envtest,
 // client-side twin of the pure-engine seedRunning in controllers/cutover_test.go,
 // writing real Lease CRs instead of appending to an in-memory ClusterState.
-func seedPluginLeases(t *testing.T, runName string) []v1.Lease {
+func seedPluginLeases(t *testing.T, runName string) []v1.GPULease {
 	t.Helper()
 	now := clock.Now()
 
@@ -254,7 +254,7 @@ func seedPluginLeases(t *testing.T, runName string) []v1.Lease {
 	if err := kubeClient.List(suiteCtx, &runList); err != nil {
 		t.Fatalf("seedPluginLeases list runs: %v", err)
 	}
-	var leaseList v1.LeaseList
+	var leaseList v1.GPULeaseList
 	if err := kubeClient.List(suiteCtx, &leaseList); err != nil {
 		t.Fatalf("seedPluginLeases list leases: %v", err)
 	}
@@ -351,7 +351,7 @@ func dumpRunLedger(t *testing.T, runName string) {
 		t.Logf("run %s: cannot get run: %v", runName, err)
 	}
 
-	var leases v1.LeaseList
+	var leases v1.GPULeaseList
 	if err := kubeClient.List(suiteCtx, &leases, client.MatchingLabels{binder.LabelRunName: runName}); err != nil {
 		t.Logf("ledger for %s: cannot list leases: %v", runName, err)
 		return
@@ -843,7 +843,7 @@ func seedSwapLease(t *testing.T, runName string) {
 	for i := range slots {
 		slots[i] = fmt.Sprintf("%s#%d", node, i)
 	}
-	lease := &v1.Lease{
+	lease := &v1.GPULease{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "default",
 			Name:      swapPod.Name + "-lease",
@@ -855,11 +855,11 @@ func seedSwapLease(t *testing.T, runName string) {
 				binder.LabelRunRole:    binder.RoleActive,
 			},
 		},
-		Spec: v1.LeaseSpec{
+		Spec: v1.GPULeaseSpec{
 			Owner:          swapPod.Annotations[binder.AnnotationPayerOwner],
 			RunRef:         v1.RunReference{Name: runName, Namespace: "default"},
-			Slice:          v1.LeaseSlice{Nodes: slots, Role: binder.RoleActive},
-			Interval:       v1.LeaseInterval{Start: v1.NewTime(clock.Now())},
+			Slice:          v1.GPULeaseSlice{Nodes: slots, Role: binder.RoleActive},
+			Interval:       v1.GPULeaseInterval{Start: v1.NewTime(clock.Now())},
 			PaidByBudget:   swapPod.Annotations[binder.AnnotationPayerBudget],
 			PaidByEnvelope: swapPod.Annotations[binder.AnnotationPayerEnvelope],
 			Reason:         "Swap",
@@ -926,7 +926,7 @@ func TestNodeFailureSwapsToSpare(t *testing.T) {
 	waitForRunPhase(t, "resilient", "Running")
 
 	leases := waitForRunLeases(t, "resilient", 2)
-	var spare *v1.Lease
+	var spare *v1.GPULease
 	for i := range leases {
 		if leases[i].Spec.Slice.Role == binder.RoleSpare {
 			spare = &leases[i]
@@ -972,7 +972,7 @@ func TestNodeFailureSwapsToSpare(t *testing.T) {
 	seedSwapLease(t, "resilient")
 
 	leases = waitForRunLeases(t, "resilient", 3) // closed active, closed spare, open swap
-	var swap *v1.Lease
+	var swap *v1.GPULease
 	closedReasons := map[string]string{}
 	for i := range leases {
 		lease := &leases[i]

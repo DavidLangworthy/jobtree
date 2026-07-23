@@ -24,7 +24,7 @@ func TestSweepLeavesMalformedEmptyRunNameObjectsAlone(t *testing.T) {
 
 	state := settleState(now,
 		map[string]*v1.Run{},
-		[]v1.Lease{lease},
+		[]v1.GPULease{lease},
 		[]binder.PodManifest{pod})
 
 	sweep := SettleLeases(state, now)

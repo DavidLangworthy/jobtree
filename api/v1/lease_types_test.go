@@ -6,12 +6,12 @@ import (
 )
 
 func TestLeaseValidation(t *testing.T) {
-	lease := &Lease{
-		Spec: LeaseSpec{
+	lease := &GPULease{
+		Spec: GPULeaseSpec{
 			Owner:          "org",
 			RunRef:         RunReference{Name: "run"},
-			Slice:          LeaseSlice{Nodes: []string{"n1"}, Role: "Active"},
-			Interval:       LeaseInterval{Start: NewTime(time.Now())},
+			Slice:          GPULeaseSlice{Nodes: []string{"n1"}, Role: "Active"},
+			Interval:       GPULeaseInterval{Start: NewTime(time.Now())},
 			PaidByEnvelope: "env",
 			Reason:         "Start",
 		},

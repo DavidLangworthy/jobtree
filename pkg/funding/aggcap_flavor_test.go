@@ -26,7 +26,7 @@ func TestAggregateCapDoesNotCountAcrossFlavors(t *testing.T) {
 
 	runH100 := runOf("run-h100", "team", base, false)
 	runA100 := runOf("run-a100", "team", base.Add(time.Minute), false)
-	leases := []v1.Lease{
+	leases := []v1.GPULease{
 		leaseOf("l-h100", "run-h100", "team", "team-budget", "h100env", 4, base),
 		leaseOf("l-a100", "run-a100", "team", "team-budget", "a100env", 4, base),
 	}

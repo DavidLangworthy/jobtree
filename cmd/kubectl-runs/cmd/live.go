@@ -101,12 +101,12 @@ func liveListBudgets(ctx context.Context, c client.Client, namespace string) ([]
 // label index scopes Leases to a Run yet, so this filters client-side after
 // a namespaced List — the same filter the local simulator's filterLeases
 // applies to its in-memory snapshot.
-func liveListLeases(ctx context.Context, c client.Client, namespace, runName string) ([]v1.Lease, error) {
-	var list v1.LeaseList
+func liveListLeases(ctx context.Context, c client.Client, namespace, runName string) ([]v1.GPULease, error) {
+	var list v1.GPULeaseList
 	if err := c.List(ctx, &list, client.InNamespace(namespace)); err != nil {
 		return nil, fmt.Errorf("list leases: %w", err)
 	}
-	leases := make([]v1.Lease, 0, len(list.Items))
+	leases := make([]v1.GPULease, 0, len(list.Items))
 	for _, lease := range list.Items {
 		if lease.Spec.RunRef.Name == runName {
 			leases = append(leases, lease)

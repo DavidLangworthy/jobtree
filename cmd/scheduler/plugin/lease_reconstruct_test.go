@@ -16,16 +16,16 @@ import (
 // mintedLease builds an OPEN active lease shaped like one the plugin mints for a
 // base-gang member: run + role + group labels, the durable gang identity (cohort +
 // pod name), and its own funding provenance.
-func mintedLease(name, podName, node string) v1.Lease {
-	l := v1.Lease{
+func mintedLease(name, podName, node string) v1.GPULease {
+	l := v1.GPULease{
 		ObjectMeta: v1.ObjectMeta{
 			Namespace: "default", Name: name,
 			Labels: map[string]string{binder.LabelRunName: "train", binder.LabelRunRole: binder.RoleActive, binder.LabelGroupIndex: "0"},
 		},
-		Spec: v1.LeaseSpec{
+		Spec: v1.GPULeaseSpec{
 			Owner:          "org:ai:team",
 			RunRef:         v1.RunReference{Name: "train", Namespace: "default"},
-			Slice:          v1.LeaseSlice{Nodes: []string{node}, Role: binder.RoleActive},
+			Slice:          v1.GPULeaseSlice{Nodes: []string{node}, Role: binder.RoleActive},
 			PaidByBudget:   "team",
 			PaidByEnvelope: "west",
 		},

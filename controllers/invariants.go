@@ -114,7 +114,7 @@ func (c *RunController) snapshotWorld() invariant.World {
 	return w
 }
 
-func endedUnixNano(lease *v1.Lease) int64 {
+func endedUnixNano(lease *v1.GPULease) int64 {
 	if lease.Status.Ended == nil || lease.Status.Ended.IsZero() {
 		return 0
 	}
@@ -125,7 +125,7 @@ func endedUnixNano(lease *v1.Lease) int64 {
 // encoding/json emits struct fields in declaration order, so equal specs
 // fingerprint equally. A marshalling error cannot make two different specs look
 // the same: it makes every spec look distinct, which fails closed.
-func specFingerprint(lease *v1.Lease) string {
+func specFingerprint(lease *v1.GPULease) string {
 	raw, err := json.Marshal(lease.Spec)
 	if err != nil {
 		return fmt.Sprintf("unmarshalable:%s:%v", lease.Name, err)

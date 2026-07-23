@@ -35,7 +35,7 @@ func TestCRDsAreInstalled(t *testing.T) {
 	if err := c.List(ctx, &reservations, client.InNamespace(workNamespace)); err != nil {
 		t.Errorf("list reservations: %v", err)
 	}
-	var leases v1.LeaseList
+	var leases v1.GPULeaseList
 	if err := c.List(ctx, &leases, client.InNamespace(workNamespace)); err != nil {
 		t.Errorf("list leases: %v", err)
 	}
@@ -73,11 +73,13 @@ func TestValidatingWebhookRejectsInvalidRun(t *testing.T) {
 		_ = c.Delete(ctx, bad)
 		t.Fatalf("expected the real validating webhook to reject a Run with no owner, but Create succeeded")
 	}
-	// A ValidatingWebhookConfiguration denial with no explicit Result.Code
-	// comes back from the apiserver as 403 Forbidden (not 422 Invalid) —
-	// verified against a live kind cluster while building this harness.
-	if !apierrors.IsForbidden(err) {
-		t.Fatalf("expected a Forbidden admission-webhook-denied error, got: %v", err)
+	// R14 added a CRD-schema minLength on spec.owner, so the apiserver now rejects a
+	// missing owner with 422 Invalid (schema validation) *before* it reaches the
+	// validating webhook (which denies with 403 Forbidden). Either layer is a valid
+	// rejection by the admission chain; what matters is that the invalid Run is not
+	// created. (This is R14's point — validation stops depending on the webhook alone.)
+	if !apierrors.IsForbidden(err) && !apierrors.IsInvalid(err) {
+		t.Fatalf("expected a Forbidden (webhook) or Invalid (CRD schema) rejection, got: %v", err)
 	}
 }
 

@@ -567,33 +567,33 @@ func TestSwapLeaseKeepsFundingProvenance(t *testing.T) {
 	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	run := h100Run("train", "org:team", 2)
 	run.Status.Phase = RunPhaseRunning
-	active := v1.Lease{
+	active := v1.GPULease{
 		ObjectMeta: v1.ObjectMeta{Namespace: "default", Name: "train-active", Labels: map[string]string{
 			binder.LabelRunName:    "train",
 			binder.LabelGroupIndex: "0",
 			binder.LabelRunRole:    binder.RoleActive,
 		}},
-		Spec: v1.LeaseSpec{
+		Spec: v1.GPULeaseSpec{
 			Owner:          "org:team",
 			RunRef:         v1.RunReference{Namespace: "default", Name: "train"},
-			Slice:          v1.LeaseSlice{Nodes: []string{"node-a#0", "node-a#1"}, Role: binder.RoleActive},
-			Interval:       v1.LeaseInterval{Start: v1.NewTime(now.Add(-time.Hour))},
+			Slice:          v1.GPULeaseSlice{Nodes: []string{"node-a#0", "node-a#1"}, Role: binder.RoleActive},
+			Interval:       v1.GPULeaseInterval{Start: v1.NewTime(now.Add(-time.Hour))},
 			PaidByBudget:   "team",
 			PaidByEnvelope: "west",
 			Reason:         "Start",
 		},
 	}
-	spare := v1.Lease{
+	spare := v1.GPULease{
 		ObjectMeta: v1.ObjectMeta{Namespace: "default", Name: "train-spare", Labels: map[string]string{
 			binder.LabelRunName:    "train",
 			binder.LabelGroupIndex: "0",
 			binder.LabelRunRole:    binder.RoleSpare,
 		}},
-		Spec: v1.LeaseSpec{
+		Spec: v1.GPULeaseSpec{
 			Owner:          "org:sponsor",
 			RunRef:         v1.RunReference{Namespace: "default", Name: "train"},
-			Slice:          v1.LeaseSlice{Nodes: []string{"node-b#0", "node-b#1"}, Role: binder.RoleSpare},
-			Interval:       v1.LeaseInterval{Start: v1.NewTime(now.Add(-time.Hour))},
+			Slice:          v1.GPULeaseSlice{Nodes: []string{"node-b#0", "node-b#1"}, Role: binder.RoleSpare},
+			Interval:       v1.GPULeaseInterval{Start: v1.NewTime(now.Add(-time.Hour))},
 			PaidByBudget:   "sponsor",
 			PaidByEnvelope: "west",
 			Reason:         "Start",
@@ -602,7 +602,7 @@ func TestSwapLeaseKeepsFundingProvenance(t *testing.T) {
 	state := &ClusterState{
 		Nodes:  []topology.SourceNode{h100Node("node-a", 2), h100Node("node-b", 2)},
 		Runs:   map[string]*v1.Run{"default/train": run},
-		Leases: []v1.Lease{active, spare},
+		Leases: []v1.GPULease{active, spare},
 	}
 
 	controller := NewRunController(state, runClock{now: now})
@@ -614,7 +614,7 @@ func TestSwapLeaseKeepsFundingProvenance(t *testing.T) {
 	// The provenance is what must survive, so this is exactly what the test checks.
 	seedSwapLease(t, state, "train", now)
 
-	var swap *v1.Lease
+	var swap *v1.GPULease
 	for i := range state.Leases {
 		if state.Leases[i].Spec.Reason == "Swap" && !state.Leases[i].Status.Closed {
 			swap = &state.Leases[i]

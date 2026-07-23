@@ -57,16 +57,21 @@ spec:
                     envelopes:
                       items:
                         type: string
+                      minItems: 1
                       type: array
                     flavor:
+                      minLength: 1
                       type: string
                     maxConcurrency:
                       format: int32
+                      minimum: 0
                       type: integer
                     maxGPUHours:
                       format: int64
+                      minimum: 0
                       type: integer
                     name:
+                      minLength: 1
                       type: string
                   required:
                   - envelopes
@@ -87,16 +92,20 @@ spec:
                 - period
                 type: object
               envelopes:
+                description: A Budget with no envelope funds nothing; every run against
+                  it is unfunded.
                 items:
                   description: BudgetEnvelope defines a location/time scoped limit.
                   properties:
                     concurrency:
                       format: int32
+                      minimum: 0
                       type: integer
                     end:
                       format: date-time
                       type: string
                     flavor:
+                      minLength: 1
                       type: string
                     lending:
                       description: LendingPolicy specifies optional lending configuration.
@@ -105,9 +114,11 @@ spec:
                           type: boolean
                         maxConcurrency:
                           format: int32
+                          minimum: 0
                           type: integer
                         maxGPUHours:
                           format: int64
+                          minimum: 0
                           type: integer
                         to:
                           items:
@@ -118,8 +129,10 @@ spec:
                       type: object
                     maxGPUHours:
                       format: int64
+                      minimum: 0
                       type: integer
                     name:
+                      minLength: 1
                       type: string
                     preActivation:
                       description: PreActivationPolicy controls reservation/admission
@@ -155,8 +168,10 @@ spec:
                   - name
                   - selector
                   type: object
+                minItems: 1
                 type: array
               owner:
+                minLength: 1
                 type: string
               parents:
                 items:

@@ -13,7 +13,7 @@ you can get productive immediately.
 | Job script (`sbatch`) | Run manifest (`kubectl runs submit -f run.yaml`) |
 | `squeue` | `kubectl runs watch <run>` (per-run) or `kubectl runs state --all` |
 | `scontrol show job` | `kubectl runs explain <run>` (includes Reservation + lottery proof) |
-| `sacct` | `kubectl runs leases --owner <team>` (Leases are immutable usage records) |
+| `sacct` | `kubectl runs leases --owner <team>` (GPULeases are immutable usage records) |
 | Reservations (`scontrol create reservation`) | Automatically generated when admission is not immediate |
 
 ## 2. Submitting jobs

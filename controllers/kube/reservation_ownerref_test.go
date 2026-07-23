@@ -27,7 +27,7 @@ func TestApplyStampsTheRunOwnerReferenceOntoANewReservation(t *testing.T) {
 	}
 	c := fake.NewClientBuilder().WithScheme(testScheme()).
 		WithObjects(healthyNode("node-a", 4), run).
-		WithStatusSubresource(&v1.Run{}, &v1.Lease{}, &v1.Reservation{}).
+		WithStatusSubresource(&v1.Run{}, &v1.GPULease{}, &v1.Reservation{}).
 		Build()
 	bridge := &Bridge{Client: c, APIReader: c, Clock: controllers.RealClock{}}
 

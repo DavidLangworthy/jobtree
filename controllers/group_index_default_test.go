@@ -15,15 +15,15 @@ import (
 // a legitimately stamped group and never fire. Nothing else pins this directly, so
 // a mutation from "" to "0" survives every other test — this is its guard.
 func TestLeaseGroupIndexMissingIsEmptyNotZero(t *testing.T) {
-	unlabelled := &v1.Lease{ObjectMeta: v1.ObjectMeta{Name: "l"}}
+	unlabelled := &v1.GPULease{ObjectMeta: v1.ObjectMeta{Name: "l"}}
 	if got := leaseGroupIndex(unlabelled); got != "" {
 		t.Fatalf("leaseGroupIndex(unlabelled) = %q, want \"\" — a missing group must never default to \"0\"", got)
 	}
-	nilLabels := &v1.Lease{ObjectMeta: v1.ObjectMeta{Name: "l", Labels: map[string]string{"other": "x"}}}
+	nilLabels := &v1.GPULease{ObjectMeta: v1.ObjectMeta{Name: "l", Labels: map[string]string{"other": "x"}}}
 	if got := leaseGroupIndex(nilLabels); got != "" {
 		t.Fatalf("leaseGroupIndex(no group label) = %q, want \"\"", got)
 	}
-	labelled := &v1.Lease{ObjectMeta: v1.ObjectMeta{Name: "l", Labels: map[string]string{binder.LabelGroupIndex: "2"}}}
+	labelled := &v1.GPULease{ObjectMeta: v1.ObjectMeta{Name: "l", Labels: map[string]string{binder.LabelGroupIndex: "2"}}}
 	if got := leaseGroupIndex(labelled); got != "2" {
 		t.Fatalf("leaseGroupIndex = %q, want \"2\"", got)
 	}

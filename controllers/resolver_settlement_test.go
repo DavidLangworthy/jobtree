@@ -55,7 +55,7 @@ func TestResolverEndingARunReleasesTheLeasesItStillHolds(t *testing.T) {
 		},
 		Budgets: []v1.Budget{nfBudget("team-budget", "org:ai:team")},
 		Runs:    map[string]*v1.Run{runKey: nfRun("victim", "org:ai:team", 1, now)},
-		Leases: []v1.Lease{
+		Leases: []v1.GPULease{
 			nfLeaseGroup("victim-active", "victim", "org:ai:team", "team-budget", "0",
 				[]string{"node-a#0"}, binder.RoleActive, now),
 			nfLeaseGroup("victim-spare", "victim", "org:ai:team", "team-budget", "0",
@@ -133,7 +133,7 @@ func fixedWidthTwoGroups(now time.Time) *ClusterState {
 		Nodes:   nodeFailureNodes(),
 		Budgets: []v1.Budget{nfBudget("team", "org:ai:team")},
 		Runs:    map[string]*v1.Run{"default/run": nfRun("run", "org:ai:team", 4, now)},
-		Leases: []v1.Lease{
+		Leases: []v1.GPULease{
 			nfLeaseGroup("g0", "run", "org:ai:team", "team", "0", []string{"node-a#0", "node-a#1"}, binder.RoleActive, now),
 			nfLeaseGroup("g1", "run", "org:ai:team", "team", "1", []string{"node-b#0", "node-b#1"}, binder.RoleActive, now),
 		},
@@ -258,7 +258,7 @@ func TestResolverKeepsAMalleableRunRunningWhenGrowWidthCoversItsMinimum(t *testi
 		Nodes:   nodeFailureNodes(),
 		Budgets: []v1.Budget{nfBudget("team", "org:ai:team")},
 		Runs:    map[string]*v1.Run{"default/run": run},
-		Leases:  []v1.Lease{base, grow},
+		Leases:  []v1.GPULease{base, grow},
 	}
 	mirrorPods(state) // the surviving grow group keeps a running pod behind its open lease
 	c := NewRunController(state, runClock{now: now})
@@ -302,11 +302,11 @@ func TestResolverKeepsAMalleableRunRunningWhenGrowWidthCoversItsMinimum(t *testi
 // in the test. A fixture richer than reality proves nothing about reality. Keep this
 // function in lock-step with PodLeaseWithRole, and prefer it to nfLeaseGroup wherever
 // a test reasons about what production does.
-func prodLease(name, run, owner, budget string, slots []string, role string, now time.Time) v1.Lease {
+func prodLease(name, run, owner, budget string, slots []string, role string, now time.Time) v1.GPULease {
 	return prodLeaseGroup(name, run, owner, budget, "0", slots, role, now)
 }
 
-func prodLeaseGroup(name, run, owner, budget, group string, slots []string, role string, now time.Time) v1.Lease {
+func prodLeaseGroup(name, run, owner, budget, group string, slots []string, role string, now time.Time) v1.GPULease {
 	return nfLeaseGroup(name, run, owner, budget, group, slots, role, now)
 }
 
@@ -320,7 +320,7 @@ func TestReclaimedSquatterIsEvictedInBothPlanesWithAProductionShapedLease(t *tes
 			"default/run":    nfRun("run", "org:ai:team", 2, now),
 			"default/filler": nfRun("filler", "org:ai:nobody", 2, now),
 		},
-		Leases: []v1.Lease{
+		Leases: []v1.GPULease{
 			prodLease("active", "run", "org:ai:team", "team", []string{"node-a#0", "node-a#1"}, binder.RoleActive, now),
 			prodLease("spare", "run", "org:ai:team", "team", []string{"node-b#0", "node-b#1"}, binder.RoleSpare, now),
 			prodLease("filler", "filler", "org:ai:nobody", "", []string{"node-b#0", "node-b#1"}, binder.RoleActive, now),
@@ -374,7 +374,7 @@ func TestReclaimedSquatterIsEvictedInBothPlanes(t *testing.T) {
 			"default/run":    nfRun("run", "org:ai:team", 2, now),
 			"default/filler": nfRun("filler", "org:ai:nobody", 2, now),
 		},
-		Leases: []v1.Lease{
+		Leases: []v1.GPULease{
 			nfLease("active", "run", "org:ai:team", "team", []string{"node-a#0", "node-a#1"}, binder.RoleActive, now),
 			nfLease("spare", "run", "org:ai:team", "team", []string{"node-b#0", "node-b#1"}, binder.RoleSpare, now),
 			// Exact slots, no budget of its own -> derives Unfunded.

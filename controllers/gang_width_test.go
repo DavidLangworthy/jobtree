@@ -57,18 +57,18 @@ func gangWidthState() *ClusterState {
 }
 
 // memberLease is one pod-lease of the gang: a single GPU slot on node-a.
-func memberLease(slot int, role, reason string, now time.Time) v1.Lease {
-	return v1.Lease{
+func memberLease(slot int, role, reason string, now time.Time) v1.GPULease {
+	return v1.GPULease{
 		ObjectMeta: v1.ObjectMeta{
 			Name:      "gang-lease-" + string(rune('a'+slot)),
 			Namespace: "default",
 			Labels:    map[string]string{binder.LabelRunName: "gang", binder.LabelGroupIndex: "0", binder.LabelRunRole: role},
 		},
-		Spec: v1.LeaseSpec{
+		Spec: v1.GPULeaseSpec{
 			Owner:          "org:ai:team",
 			RunRef:         v1.RunReference{Name: "gang", Namespace: "default"},
-			Slice:          v1.LeaseSlice{Nodes: []string{"node-a#" + string(rune('0'+slot))}, Role: role},
-			Interval:       v1.LeaseInterval{Start: v1.NewTime(now.Add(-time.Minute))},
+			Slice:          v1.GPULeaseSlice{Nodes: []string{"node-a#" + string(rune('0'+slot))}, Role: role},
+			Interval:       v1.GPULeaseInterval{Start: v1.NewTime(now.Add(-time.Minute))},
 			PaidByBudget:   "team",
 			PaidByEnvelope: "west",
 			Reason:         reason,

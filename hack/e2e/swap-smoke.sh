@@ -121,7 +121,7 @@ fail() {
   echo "FAIL: $1"
   kubectl get run resilient -n default -o yaml || true
   kubectl get pods -n default -o wide || true
-  kubectl get leases.rq.davidlangworthy.io -n default \
+  kubectl get gpuleases.rq.davidlangworthy.io -n default \
     -o custom-columns='NAME:.metadata.name,ROLE:.spec.slice.role,NODES:.spec.slice.nodes,REASON:.spec.reason,OWNER:.spec.owner,ENV:.spec.paidByEnvelope,CLOSED:.status.closed' || true
   exit 1
 }
@@ -131,7 +131,7 @@ kubectl wait --for=jsonpath='{.status.phase}'=Running run/resilient -n default -
 
 # The spare must be HELD live: a RoleSpare lease minted by the plugin.
 for _ in $(seq 1 30); do
-  spares="$(kubectl get leases.rq.davidlangworthy.io -n default \
+  spares="$(kubectl get gpuleases.rq.davidlangworthy.io -n default \
     -o jsonpath='{range .items[?(@.spec.slice.role=="Spare")]}{.metadata.name}{"\n"}{end}' | grep -c . || true)"
   [ "$spares" -ge 1 ] && break
   sleep 2
@@ -139,9 +139,9 @@ done
 [ "${spares:-0}" -ge 1 ] || fail "no held RoleSpare lease — CASCADE-3b spare not materialized live"
 
 # Identify the active node (to fail) and the spare node (to swap onto).
-active_node="$(kubectl get leases.rq.davidlangworthy.io -n default \
+active_node="$(kubectl get gpuleases.rq.davidlangworthy.io -n default \
   -o jsonpath='{range .items[?(@.spec.slice.role=="Active")]}{.spec.slice.nodes[0]}{"\n"}{end}' | head -1 | cut -d'#' -f1)"
-spare_node="$(kubectl get leases.rq.davidlangworthy.io -n default \
+spare_node="$(kubectl get gpuleases.rq.davidlangworthy.io -n default \
   -o jsonpath='{range .items[?(@.spec.slice.role=="Spare")]}{.spec.slice.nodes[0]}{"\n"}{end}' | head -1 | cut -d'#' -f1)"
 [ -n "$active_node" ] || fail "could not find the active lease's node"
 [ -n "$spare_node" ] || fail "could not find the spare lease's node"
@@ -149,9 +149,9 @@ spare_node="$(kubectl get leases.rq.davidlangworthy.io -n default \
 echo "    active on $active_node, spare held on $spare_node"
 
 # Capture the run's funding provenance to prove the swap preserves it.
-want_owner="$(kubectl get leases.rq.davidlangworthy.io -n default \
+want_owner="$(kubectl get gpuleases.rq.davidlangworthy.io -n default \
   -o jsonpath='{range .items[?(@.spec.slice.role=="Spare")]}{.spec.owner}{"\n"}{end}' | head -1)"
-want_env="$(kubectl get leases.rq.davidlangworthy.io -n default \
+want_env="$(kubectl get gpuleases.rq.davidlangworthy.io -n default \
   -o jsonpath='{range .items[?(@.spec.slice.role=="Spare")]}{.spec.paidByEnvelope}{"\n"}{end}' | head -1)"
 
 # NEITHER A CORDON NOR A NOTREADY KUBELET IS A FAILURE (R21). This script used to
@@ -161,7 +161,7 @@ want_env="$(kubectl get leases.rq.davidlangworthy.io -n default \
 # node.kubernetes.io/out-of-service taint) licenses moving a rank.
 assert_no_swap() {
   sleep 10
-  if kubectl get leases.rq.davidlangworthy.io -n default \
+  if kubectl get gpuleases.rq.davidlangworthy.io -n default \
        -o jsonpath='{range .items[?(@.spec.reason=="Swap")]}{.metadata.name}{"\n"}{end}' | grep -q .; then
     fail "$1 triggered a swap -- R21 has regressed, and two copies of a rank may now be live"
   fi
@@ -190,7 +190,7 @@ kubectl delete node "$active_node" --wait=false >/dev/null
 echo "==> waiting for the plugin to mint the Swap lease on $spare_node (from the spare's provenance)"
 swap_name=""
 for _ in $(seq 1 60); do
-  swap_name="$(kubectl get leases.rq.davidlangworthy.io -n default \
+  swap_name="$(kubectl get gpuleases.rq.davidlangworthy.io -n default \
     -o jsonpath='{range .items[?(@.spec.reason=="Swap")]}{.metadata.name}{"|"}{.status.closed}{"\n"}{end}' \
     | awk -F'|' '$2!="true"{print $1; exit}')"
   [ -n "$swap_name" ] && break
@@ -211,7 +211,7 @@ phase="$(kubectl get run resilient -n default -o jsonpath='{.status.phase}')"
 [ "$phase" = "Running" ] || fail "run phase '$phase' after swap, want Running"
 
 # The held spare's pod on the swap node was freed (its lease closed with reason Swap).
-spare_closed="$(kubectl get leases.rq.davidlangworthy.io -n default \
+spare_closed="$(kubectl get gpuleases.rq.davidlangworthy.io -n default \
   -o jsonpath='{range .items[?(@.spec.slice.role=="Spare")]}{.status.closureReason}{"\n"}{end}' | grep -c '^Swap$' || true)"
 [ "$spare_closed" -ge 1 ] || fail "spare lease was not closed with reason Swap"
 

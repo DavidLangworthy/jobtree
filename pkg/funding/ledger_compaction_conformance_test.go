@@ -54,7 +54,7 @@ type ledgerModelProjection struct {
 
 type ledgerConformanceWorld struct {
 	input   Input
-	leases  [ledgerModelLeaseCount]v1.Lease
+	leases  [ledgerModelLeaseCount]v1.GPULease
 	present [ledgerModelLeaseCount]bool
 }
 
@@ -305,7 +305,7 @@ func newLedgerConformanceWorld(history ledgerModelHistory) ledgerConformanceWorl
 		env(ledgerConformanceEnvelope, ledgerModelCapacity))
 	world := ledgerConformanceWorld{}
 	var runs []*v1.Run
-	var leases []v1.Lease
+	var leases []v1.GPULease
 	for i, shape := range history {
 		if !shape.enabled {
 			continue

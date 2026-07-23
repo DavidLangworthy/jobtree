@@ -214,7 +214,7 @@ func TestLeaseConditionsSurviveTheAPIServer(t *testing.T) {
 	leases := waitForRunLeases(t, "leased", 1)
 
 	eventually(t, 15*time.Second, func() error {
-		var lease v1.Lease
+		var lease v1.GPULease
 		if err := kubeClient.Get(suiteCtx, types.NamespacedName{Namespace: "default", Name: leases[0].Name}, &lease); err != nil {
 			return err
 		}
@@ -230,7 +230,7 @@ func TestLeaseConditionsSurviveTheAPIServer(t *testing.T) {
 		t.Fatalf("delete run: %v", err)
 	}
 	eventually(t, 30*time.Second, func() error {
-		var lease v1.Lease
+		var lease v1.GPULease
 		if err := kubeClient.Get(suiteCtx, types.NamespacedName{Namespace: "default", Name: leases[0].Name}, &lease); err != nil {
 			return err
 		}

@@ -12,7 +12,7 @@ import (
 // ALIVE, because the way a sweep fails is not by missing a corpse — it is by
 // closing a healthy run's leases and calling that housekeeping.
 
-func settleState(now time.Time, runs map[string]*v1.Run, leases []v1.Lease, pods []binder.PodManifest) *ClusterState {
+func settleState(now time.Time, runs map[string]*v1.Run, leases []v1.GPULease, pods []binder.PodManifest) *ClusterState {
 	return &ClusterState{
 		Nodes:   nodeFailureNodes(),
 		Budgets: []v1.Budget{nfBudget("team", "org:ai:team")},
@@ -37,7 +37,7 @@ func TestSweepClosesTheLeasesOfATerminalRun(t *testing.T) {
 		t.Run(phase, func(t *testing.T) {
 			state := settleState(now,
 				map[string]*v1.Run{"default/dead": terminalRun("dead", "org:ai:team", phase, now)},
-				[]v1.Lease{prodLease("dead-0", "dead", "org:ai:team", "team", []string{"node-a#0"}, binder.RoleActive, now)},
+				[]v1.GPULease{prodLease("dead-0", "dead", "org:ai:team", "team", []string{"node-a#0"}, binder.RoleActive, now)},
 				[]binder.PodManifest{tpPod("dead-active-0", "dead", "node-a")})
 
 			sweep := SettleLeases(state, now)
@@ -67,7 +67,7 @@ func TestSweepIgnoresALeaseWhoseRunIsAbsent(t *testing.T) {
 	now := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
 	state := settleState(now,
 		map[string]*v1.Run{},
-		[]v1.Lease{prodLease("ghost-0", "ghost", "org:ai:team", "team", []string{"node-a#0"}, binder.RoleActive, now)},
+		[]v1.GPULease{prodLease("ghost-0", "ghost", "org:ai:team", "team", []string{"node-a#0"}, binder.RoleActive, now)},
 		[]binder.PodManifest{tpPod("ghost-active-0", "ghost", "node-a")})
 
 	sweep := SettleLeases(state, now)
@@ -89,7 +89,7 @@ func TestSweepLeavesAHealthyRunAlone(t *testing.T) {
 	now := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
 	state := settleState(now,
 		map[string]*v1.Run{"default/alive": nfRun("alive", "org:ai:team", 2, now)},
-		[]v1.Lease{
+		[]v1.GPULease{
 			prodLease("alive-0", "alive", "org:ai:team", "team", []string{"node-a#0"}, binder.RoleActive, now),
 			prodLease("alive-1", "alive", "org:ai:team", "team", []string{"node-a#1"}, binder.RoleActive, now),
 		},
@@ -116,7 +116,7 @@ func TestSweepLeavesARunInCheckpointGraceAlone(t *testing.T) {
 
 	state := settleState(now,
 		map[string]*v1.Run{"default/recovering": run},
-		[]v1.Lease{prodLease("survivor", "recovering", "org:ai:team", "team", []string{"node-b#0"}, binder.RoleActive, now)},
+		[]v1.GPULease{prodLease("survivor", "recovering", "org:ai:team", "team", []string{"node-b#0"}, binder.RoleActive, now)},
 		[]binder.PodManifest{tpPod("recovering-active-0", "recovering", "node-b")})
 
 	if sweep := SettleLeases(state, now); !sweep.Empty() {
@@ -133,7 +133,7 @@ func TestSweepLeavesASpareOnlyRunAlone(t *testing.T) {
 	now := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
 	state := settleState(now,
 		map[string]*v1.Run{"default/spare-only": nfRun("spare-only", "org:ai:team", 2, now)},
-		[]v1.Lease{prodLease("standby", "spare-only", "org:ai:team", "team", []string{"node-b#0"}, binder.RoleSpare, now)},
+		[]v1.GPULease{prodLease("standby", "spare-only", "org:ai:team", "team", []string{"node-b#0"}, binder.RoleSpare, now)},
 		nil)
 	state.Runs["default/spare-only"].Status.Phase = RunPhasePending
 
@@ -152,7 +152,7 @@ func TestSweepDoesNotTouchAlreadyClosedLeases(t *testing.T) {
 
 	state := settleState(now,
 		map[string]*v1.Run{"default/dead": terminalRun("dead", "org:ai:team", RunPhaseComplete, now)},
-		[]v1.Lease{settled}, nil)
+		[]v1.GPULease{settled}, nil)
 
 	if sweep := SettleLeases(state, now); !sweep.Empty() {
 		t.Fatalf("a closed lease is a settled fact and must not be swept again: %+v", sweep.Leases)
@@ -172,7 +172,7 @@ func TestSweepIsIdempotent(t *testing.T) {
 	now := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
 	state := settleState(now,
 		map[string]*v1.Run{"default/dead": terminalRun("dead", "org:ai:team", RunPhaseFailed, now)},
-		[]v1.Lease{prodLease("dead-0", "dead", "org:ai:team", "team", []string{"node-a#0"}, binder.RoleActive, now)},
+		[]v1.GPULease{prodLease("dead-0", "dead", "org:ai:team", "team", []string{"node-a#0"}, binder.RoleActive, now)},
 		[]binder.PodManifest{tpPod("dead-active-0", "dead", "node-a")})
 
 	if first := SettleLeases(state, now); first.Empty() {

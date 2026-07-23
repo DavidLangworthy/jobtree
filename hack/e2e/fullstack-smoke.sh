@@ -105,15 +105,15 @@ fail() {
   echo "FAIL: $1"
   echo "--- run ---"; kubectl get run train -n default -o yaml || true
   echo "--- pods ---"; kubectl get pods -n default -o wide || true
-  echo "--- leases ---"; kubectl get leases.rq.davidlangworthy.io -n default -o yaml || true
+  echo "--- leases ---"; kubectl get gpuleases.rq.davidlangworthy.io -n default -o yaml || true
   echo "--- manager log tail ---"; tail -30 "$WORK/manager.log" || true
   exit 1
 }
 
 # The plugin (not the controller) minted exactly one lease for the run, on the node.
-leases="$(kubectl get leases.rq.davidlangworthy.io -n default -o jsonpath='{.items[*].metadata.name}')"
+leases="$(kubectl get gpuleases.rq.davidlangworthy.io -n default -o jsonpath='{.items[*].metadata.name}')"
 [ -n "$leases" ] || fail "no lease was minted"
-payer="$(kubectl get leases.rq.davidlangworthy.io -n default -o jsonpath='{.items[0].spec.paidByBudget}/{.items[0].spec.paidByEnvelope}')"
+payer="$(kubectl get gpuleases.rq.davidlangworthy.io -n default -o jsonpath='{.items[0].spec.paidByBudget}/{.items[0].spec.paidByEnvelope}')"
 [ "$payer" = "team/west" ] || fail "lease payer '$payer', want team/west"
 
 # The pod is a real workload pod the plugin placed (schedulerName jobtree, bound to the node).

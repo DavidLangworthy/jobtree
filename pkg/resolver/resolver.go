@@ -42,7 +42,7 @@ type Input struct {
 	SeedSource string
 	Now        time.Time
 	Nodes      []topology.SourceNode
-	Leases     []*v1.Lease
+	Leases     []*v1.GPULease
 	Runs       map[string]*v1.Run
 	// Evaluation supplies the derived funding classes; when set, entirely
 	// unfunded groups are reclaimed before any structural cut touches
@@ -57,7 +57,7 @@ type Input struct {
 // Action describes a lease that should be ended.
 type Action struct {
 	Kind       ActionKind
-	Lease      *v1.Lease
+	Lease      *v1.GPULease
 	Run        *v1.Run
 	GroupIndex string
 	GPUs       int
@@ -145,7 +145,7 @@ func Resolve(in Input) (Result, error) {
 }
 
 type leaseCandidate struct {
-	Lease      *v1.Lease
+	Lease      *v1.GPULease
 	Run        *v1.Run
 	GroupIndex string
 	GPUs       int
@@ -246,7 +246,7 @@ func gatherCandidates(in Input, nodeIndex map[string]map[string]string) candidat
 	return result
 }
 
-func leaseInScope(lease *v1.Lease, nodeIndex map[string]map[string]string, scope map[string]string) bool {
+func leaseInScope(lease *v1.GPULease, nodeIndex map[string]map[string]string, scope map[string]string) bool {
 	if len(scope) == 0 {
 		return true
 	}
@@ -277,7 +277,7 @@ func leaseInScope(lease *v1.Lease, nodeIndex map[string]map[string]string, scope
 //
 // A lease with no group index now buckets under "", which pkg/invariant rejects at the
 // engine's door.
-func leaseGroupIndex(lease *v1.Lease) string {
+func leaseGroupIndex(lease *v1.GPULease) string {
 	if lease.Labels == nil {
 		return ""
 	}

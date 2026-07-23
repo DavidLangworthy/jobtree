@@ -102,7 +102,7 @@ func TestNodeFailureOutcomeIsInvariantUnderLeaseOrder(t *testing.T) {
 	// not. The lattice restores the deterministic, correct answer, which is also what
 	// the code did before reclaimSquatter existed.
 	build := func(order []int) *ClusterState {
-		all := []v1.Lease{
+		all := []v1.GPULease{
 			nfLeaseGroup("active-0", "run", "org:ai:team", "team", "0", []string{"node-a#0"}, binder.RoleActive, now),
 			nfLeaseGroup("spare-0", "run", "org:ai:team", "team", "0", []string{"node-b#0"}, binder.RoleSpare, now),
 			nfLeaseGroup("active-1", "run", "org:ai:team", "team", "1", []string{"node-a#1"}, binder.RoleActive, now),
@@ -113,7 +113,7 @@ func TestNodeFailureOutcomeIsInvariantUnderLeaseOrder(t *testing.T) {
 			// spare: failGroupWithoutSpare's victim, in the same pass.
 			nfLeaseGroup("filler-rank", "filler", "org:ai:nobody", "", "1", []string{"node-a#2"}, binder.RoleActive, now),
 		}
-		leases := make([]v1.Lease, 0, len(all))
+		leases := make([]v1.GPULease, 0, len(all))
 		for _, i := range order {
 			leases = append(leases, all[i])
 		}
@@ -195,7 +195,7 @@ func TestApplyResolutionOutcomeIsInvariantUnderMapIteration(t *testing.T) {
 				"default/b": nfRun("b", "org:ai:team", 2, now),
 				"default/c": nfRun("c", "org:ai:team", 2, now),
 			},
-			Leases: []v1.Lease{
+			Leases: []v1.GPULease{
 				nfLeaseGroup("a0", "a", "org:ai:team", "team", "0", []string{"node-a#0", "node-a#1"}, binder.RoleActive, now),
 				nfLeaseGroup("b0", "b", "org:ai:team", "team", "0", []string{"node-b#0", "node-b#1"}, binder.RoleActive, now),
 				nfLeaseGroup("c0", "c", "org:ai:team", "team", "0", []string{"node-a#2", "node-a#3"}, binder.RoleActive, now),

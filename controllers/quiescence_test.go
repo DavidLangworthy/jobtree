@@ -480,7 +480,7 @@ func runQuiescenceSeed(t *testing.T, seed int64) {
 			qBudget("beta", qOwnerBeta, 8),
 		},
 		Runs:   map[string]*v1.Run{},
-		Leases: []v1.Lease{},
+		Leases: []v1.GPULease{},
 	}
 	w := &qWorld{
 		t: t, state: state, now: now,

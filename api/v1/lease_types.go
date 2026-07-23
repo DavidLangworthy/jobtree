@@ -7,8 +7,15 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Lease records immutable consumption facts.
+// GPULease records immutable consumption facts.
+//
+// The kind is GPULease, not Lease. `rq.davidlangworthy.io`'s Lease collided with
+// the core coordination.k8s.io Lease that every leader election in the cluster
+// uses, so `kubectl get leases` was ambiguous and RBAC written against `leases`
+// could grant the wrong resource entirely (R13).
+//
 // +kubebuilder:object:root=true
+// +kubebuilder:resource:path=gpuleases,shortName=gl
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Run",type=string,JSONPath=`.spec.runRef.name`
 // +kubebuilder:printcolumn:name="Role",type=string,JSONPath=`.spec.slice.role`
@@ -17,21 +24,32 @@ import (
 // `kubectl get` shows (R11).
 // +kubebuilder:printcolumn:name="Closed",type=boolean,JSONPath=`.status.closed`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.closureReason`
-type Lease struct {
+//
+// R14: spec immutability is an APISERVER rule, not a webhook rule. A lease is a
+// funding fact — who paid, for which slots, from when — and the whole ledger is a
+// fold over those facts. If the validating webhook is down (it is
+// failurePolicy=Fail, so "down" means either everything blocks or someone flipped
+// it to Ignore), a webhook-only immutability check evaporates exactly when the
+// cluster is least healthy, and a rewritten payer silently re-attributes spend
+// that already happened. CEL runs in the apiserver, so it holds regardless.
+//
+// +kubebuilder:validation:XValidation:rule="self.spec == oldSelf.spec",message="spec is immutable; close this lease and mint a new one"
+type GPULease struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   LeaseSpec   `json:"spec,omitempty"`
-	Status LeaseStatus `json:"status,omitempty"`
+	Spec   GPULeaseSpec   `json:"spec,omitempty"`
+	Status GPULeaseStatus `json:"status,omitempty"`
 }
 
-// LeaseSpec is immutable after creation.
-type LeaseSpec struct {
-	Owner    string        `json:"owner"`
-	RunRef   RunReference  `json:"runRef"`
-	CompPath []string      `json:"compPath,omitempty"`
-	Slice    LeaseSlice    `json:"slice"`
-	Interval LeaseInterval `json:"interval"`
+// GPULeaseSpec is immutable after creation.
+type GPULeaseSpec struct {
+	// +kubebuilder:validation:MinLength=1
+	Owner    string           `json:"owner"`
+	RunRef   RunReference     `json:"runRef"`
+	CompPath []string         `json:"compPath,omitempty"`
+	Slice    GPULeaseSlice    `json:"slice"`
+	Interval GPULeaseInterval `json:"interval"`
 	// PaidByBudgetNamespace scopes PaidByBudget: Budgets are namespaced, so the
 	// budget name alone does not identify one — two tenants can each own a Budget
 	// of the same name in their own namespace. The funding index keys on all three
@@ -45,25 +63,39 @@ type LeaseSpec struct {
 	// within one budget, and one owner can hold several budgets. Empty on
 	// leases written before the field existed; those fall back to
 	// owner+envelope attribution.
-	PaidByBudget   string `json:"paidByBudget,omitempty"`
+	PaidByBudget string `json:"paidByBudget,omitempty"`
+	// An open lease with no payer envelope charges nobody while holding real
+	// GPUs, which is the shape of every funding leak on this board.
+	// +kubebuilder:validation:MinLength=1
 	PaidByEnvelope string `json:"paidByEnvelope"`
 	Reason         string `json:"reason"`
 }
 
-// LeaseSlice describes the bound nodes.
-type LeaseSlice struct {
+// GPULeaseSlice describes the bound nodes.
+type GPULeaseSlice struct {
+	// Slots, as node#ordinal. A lease holding no slot is a charge for nothing.
+	// +kubebuilder:validation:MinItems=1
 	Nodes []string `json:"nodes"`
-	Role  string   `json:"role"`
+	// +kubebuilder:validation:Enum=Active;Spare
+	Role string `json:"role"`
 }
 
-// LeaseInterval timestamps the lease.
-type LeaseInterval struct {
+// GPULeaseInterval timestamps the lease.
+type GPULeaseInterval struct {
 	Start metav1.Time  `json:"start"`
 	End   *metav1.Time `json:"end,omitempty"`
 }
 
-// LeaseStatus captures closure state.
-type LeaseStatus struct {
+// GPULeaseStatus captures closure state.
+//
+// R14: closure is MONOTONE at the apiserver. Reopening a closed lease would make a
+// settled interval start billing again from its original start instant, and
+// pkg/invariant's INV-CLOSED-MONOTONE already treats that as an illegal state — this
+// makes the API refuse to represent it at all, webhook up or down. A transition rule
+// only runs when there is an oldSelf, so a create is unaffected.
+//
+// +kubebuilder:validation:XValidation:rule="!oldSelf.closed || self.closed",message="closed is monotone: a closed lease is a settled fact and cannot be reopened"
+type GPULeaseStatus struct {
 	// Conditions mirrors Closed/ClosureReason as Active/Closed conditions (R11)
 	// so an open lease — the object that charges a budget and holds GPUs — is
 	// selectable and waitable. SetLeaseConditions DERIVES these from the two
@@ -79,24 +111,24 @@ type LeaseStatus struct {
 	ClosureReason string             `json:"closureReason,omitempty"`
 }
 
-// LeaseList lists leases.
+// GPULeaseList lists GPU leases.
 // +kubebuilder:object:root=true
-type LeaseList struct {
+type GPULeaseList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []Lease `json:"items"`
+	Items           []GPULease `json:"items"`
 }
 
-// ValidateCreate ensures lease is consistent.
-func (l *Lease) ValidateCreate() error {
+// ValidateCreate ensures the lease is consistent.
+func (l *GPULease) ValidateCreate() error {
 	return l.validate()
 }
 
 // ValidateUpdate enforces immutability except status.
-func (l *Lease) ValidateUpdate(old RuntimeObject) error {
-	prev, ok := old.(*Lease)
+func (l *GPULease) ValidateUpdate(old RuntimeObject) error {
+	prev, ok := old.(*GPULease)
 	if !ok {
-		return fmt.Errorf("expected Lease in update")
+		return fmt.Errorf("expected GPULease in update")
 	}
 	if !reflect.DeepEqual(l.Spec, prev.Spec) {
 		return fmt.Errorf("spec is immutable; close and recreate")
@@ -105,11 +137,11 @@ func (l *Lease) ValidateUpdate(old RuntimeObject) error {
 }
 
 // ValidateDelete always allows deletion.
-func (l *Lease) ValidateDelete() error {
+func (l *GPULease) ValidateDelete() error {
 	return nil
 }
 
-func (l *Lease) validate() error {
+func (l *GPULease) validate() error {
 	if l.Spec.Owner == "" {
 		return fmt.Errorf("spec.owner is required")
 	}

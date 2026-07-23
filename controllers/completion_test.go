@@ -20,17 +20,17 @@ func completionWorld(activePhases []string, sparePhase string) (*ClusterState, s
 	key := keys.NamespacedKey(run.Namespace, run.Name)
 	state := &ClusterState{Runs: map[string]*v1.Run{key: run}}
 
-	mkLease := func(name, role string) v1.Lease {
-		return v1.Lease{
+	mkLease := func(name, role string) v1.GPULease {
+		return v1.GPULease{
 			ObjectMeta: v1.ObjectMeta{
 				Namespace: keys.DefaultNamespace, Name: name,
 				// Every minted lease names its placement group (R28b).
 				Labels: map[string]string{binder.LabelRunName: "job", binder.LabelGroupIndex: "0", binder.LabelRunRole: role},
 			},
-			Spec: v1.LeaseSpec{
+			Spec: v1.GPULeaseSpec{
 				Owner:  "team",
 				RunRef: v1.RunReference{Name: "job", Namespace: keys.DefaultNamespace},
-				Slice:  v1.LeaseSlice{Nodes: []string{"n1#0"}, Role: role},
+				Slice:  v1.GPULeaseSlice{Nodes: []string{"n1#0"}, Role: role},
 			},
 		}
 	}

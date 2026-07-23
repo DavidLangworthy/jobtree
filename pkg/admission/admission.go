@@ -39,7 +39,7 @@ type Input struct {
 	Run     *v1.Run
 	Budgets []v1.Budget
 	Runs    map[string]*v1.Run // keyed by keys.NamespacedKey, for funding.Evaluate
-	Leases  []v1.Lease         // the live ledger (open + closed)
+	Leases  []v1.GPULease      // the live ledger (open + closed)
 	Nodes   []topology.SourceNode
 	Now     time.Time
 	Period  time.Duration // funding accounting horizon; <=0 uses funding.DefaultPeriod
@@ -61,7 +61,7 @@ type Input struct {
 type Result struct {
 	Pack   pack.Plan
 	Cover  cover.Plan
-	Leases []v1.Lease
+	Leases []v1.GPULease
 	Pods   []binder.PodManifest
 }
 
@@ -208,7 +208,7 @@ func leaseLabels(runName, role, groupIndex string) map[string]string {
 // plugin's mint at PreBind — the single point a Lease becomes a fact. name must
 // be unique and stable for the pod (the plugin uses the pod's own name) so the
 // create is idempotent across PreBind retries.
-func PodLease(run *v1.Run, seg cover.Segment, node string, gpusPerPod int, name string, now time.Time, reason string) v1.Lease {
+func PodLease(run *v1.Run, seg cover.Segment, node string, gpusPerPod int, name string, now time.Time, reason string) v1.GPULease {
 	return PodLeaseWithRole(run, seg, node, gpusPerPod, name, now, reason, binder.RoleActive, "")
 }
 
@@ -224,7 +224,7 @@ func PodLease(run *v1.Run, seg cover.Segment, node string, gpusPerPod int, name 
 // R28b this function stamped no group at all, every pod was stamped "0", and none of
 // those three could address anything. An empty groupIndex is accepted here only for
 // the plugin's in-memory phantom pending leases, which never reach the API.
-func PodLeaseWithRole(run *v1.Run, seg cover.Segment, node string, gpusPerPod int, name string, now time.Time, reason, role, groupIndex string) v1.Lease {
+func PodLeaseWithRole(run *v1.Run, seg cover.Segment, node string, gpusPerPod int, name string, now time.Time, reason, role, groupIndex string) v1.GPULease {
 	if reason == "" {
 		reason = "Start"
 	}
@@ -235,17 +235,17 @@ func PodLeaseWithRole(run *v1.Run, seg cover.Segment, node string, gpusPerPod in
 	for i := range slots {
 		slots[i] = fmt.Sprintf("%s#%d", node, i)
 	}
-	lease := v1.Lease{
+	lease := v1.GPULease{
 		ObjectMeta: v1.ObjectMeta{
 			Namespace: run.Namespace,
 			Name:      name,
 			Labels:    leaseLabels(run.Name, role, groupIndex),
 		},
-		Spec: v1.LeaseSpec{
+		Spec: v1.GPULeaseSpec{
 			Owner:                 seg.Owner,
 			RunRef:                v1.RunReference{Name: run.Name, Namespace: run.Namespace},
-			Slice:                 v1.LeaseSlice{Nodes: slots, Role: role},
-			Interval:              v1.LeaseInterval{Start: v1.NewTime(now)},
+			Slice:                 v1.GPULeaseSlice{Nodes: slots, Role: role},
+			Interval:              v1.GPULeaseInterval{Start: v1.NewTime(now)},
 			PaidByBudgetNamespace: seg.Namespace,
 			PaidByBudget:          seg.BudgetName,
 			PaidByEnvelope:        seg.EnvelopeName,
@@ -269,7 +269,7 @@ func PodLeaseWithRole(run *v1.Run, seg cover.Segment, node string, gpusPerPod in
 // so restart reconstruction (R2 pt3) and a staleness-robust cache fold (R4 pt1b) can
 // key gang identity off the lease itself. One function so the plugin and its test
 // simulator cannot drift.
-func StampGangIdentity(lease *v1.Lease, cohort, podName string) {
+func StampGangIdentity(lease *v1.GPULease, cohort, podName string) {
 	if cohort == "" {
 		cohort = "0"
 	}
@@ -322,7 +322,7 @@ func deriveLocation(plan pack.Plan) map[string]string {
 	}
 }
 
-func computeUsage(leases []v1.Lease, now time.Time) map[string]int {
+func computeUsage(leases []v1.GPULease, now time.Time) map[string]int {
 	usage := make(map[string]int)
 	for _, lease := range leases {
 		if lease.Status.Closed {
@@ -342,7 +342,7 @@ func computeUsage(leases []v1.Lease, now time.Time) map[string]int {
 	return usage
 }
 
-func leaseSeqBase(runKey string, leases []v1.Lease) int {
+func leaseSeqBase(runKey string, leases []v1.GPULease) int {
 	count := 0
 	for i := range leases {
 		lease := &leases[i]

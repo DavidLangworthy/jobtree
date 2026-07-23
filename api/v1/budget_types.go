@@ -27,7 +27,10 @@ type Budget struct {
 
 // BudgetSpec describes available resource envelopes for a particular owner.
 type BudgetSpec struct {
-	Owner         string             `json:"owner"`
+	// +kubebuilder:validation:MinLength=1
+	Owner string `json:"owner"`
+	// A Budget with no envelope funds nothing; every run against it is unfunded.
+	// +kubebuilder:validation:MinItems=1
 	Envelopes     []BudgetEnvelope   `json:"envelopes"`
 	AggregateCaps []AggregateCap     `json:"aggregateCaps,omitempty"`
 	Parents       []string           `json:"parents,omitempty"`
@@ -51,13 +54,17 @@ const (
 
 // BudgetEnvelope defines a location/time scoped limit.
 type BudgetEnvelope struct {
-	Name        string            `json:"name"`
-	Flavor      string            `json:"flavor"`
-	Selector    map[string]string `json:"selector"`
-	Concurrency int32             `json:"concurrency"`
-	MaxGPUHours *int64            `json:"maxGPUHours,omitempty"`
-	Start       *metav1.Time      `json:"start,omitempty"`
-	End         *metav1.Time      `json:"end,omitempty"`
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+	// +kubebuilder:validation:MinLength=1
+	Flavor   string            `json:"flavor"`
+	Selector map[string]string `json:"selector"`
+	// +kubebuilder:validation:Minimum=0
+	Concurrency int32 `json:"concurrency"`
+	// +kubebuilder:validation:Minimum=0
+	MaxGPUHours *int64       `json:"maxGPUHours,omitempty"`
+	Start       *metav1.Time `json:"start,omitempty"`
+	End         *metav1.Time `json:"end,omitempty"`
 	// Sharing controls family access to this envelope's excess: "" or
 	// "family" allows it, "none" opts out.
 	// +kubebuilder:validation:Enum="";family;none
@@ -74,19 +81,26 @@ type PreActivationPolicy struct {
 
 // LendingPolicy specifies optional lending configuration.
 type LendingPolicy struct {
-	Allow          bool     `json:"allow"`
-	To             []string `json:"to,omitempty"`
-	MaxConcurrency *int32   `json:"maxConcurrency,omitempty"`
-	MaxGPUHours    *int64   `json:"maxGPUHours,omitempty"`
+	Allow bool     `json:"allow"`
+	To    []string `json:"to,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	MaxConcurrency *int32 `json:"maxConcurrency,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	MaxGPUHours *int64 `json:"maxGPUHours,omitempty"`
 }
 
 // AggregateCap bounds the sum across envelopes.
 type AggregateCap struct {
-	Name           string   `json:"name"`
-	Flavor         string   `json:"flavor"`
-	Envelopes      []string `json:"envelopes"`
-	MaxConcurrency *int32   `json:"maxConcurrency,omitempty"`
-	MaxGPUHours    *int64   `json:"maxGPUHours,omitempty"`
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+	// +kubebuilder:validation:MinLength=1
+	Flavor string `json:"flavor"`
+	// +kubebuilder:validation:MinItems=1
+	Envelopes []string `json:"envelopes"`
+	// +kubebuilder:validation:Minimum=0
+	MaxConcurrency *int32 `json:"maxConcurrency,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	MaxGPUHours *int64 `json:"maxGPUHours,omitempty"`
 }
 
 // BudgetStatus surfaces derived accounting data.

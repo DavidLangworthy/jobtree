@@ -114,7 +114,7 @@ jobs:
             echo "  name: runs"
             echo "spec:"
             echo "  version: ${VERSION}"
-            echo "  shortDescription: \"Interact with Jobtree Run, Reservation, and Lease CRDs\""
+            echo "  shortDescription: \"Interact with Jobtree Run, Reservation, and GPULease CRDs\""
             echo "  homepage: https://github.com/davidlangworthy/jobtree"
             echo "  platforms:"
             for platform in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
@@ -133,7 +133,7 @@ jobs:
             done
             echo "  description: |"
             echo "    The runs plugin submits, plans, watches, and explains GPU research"
-            echo "    runs managed by Jobtree against Run, Reservation, and Lease CRDs."
+            echo "    runs managed by Jobtree against Run, Reservation, and GPULease CRDs."
           } > dist/runs.yaml
 
       - name: Validate krew manifest

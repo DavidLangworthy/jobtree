@@ -31,17 +31,17 @@ func trackedRunOf(name, owner string, created time.Time) *v1.Run {
 	return run
 }
 
-func leaseOf(name, runName, budget, envelope string, width int, start time.Time) v1.Lease {
+func leaseOf(name, runName, budget, envelope string, width int, start time.Time) v1.GPULease {
 	nodes := make([]string, width)
 	for i := range nodes {
 		nodes[i] = name + "-node-" + string(rune('a'+i))
 	}
-	return v1.Lease{
+	return v1.GPULease{
 		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: "default"},
-		Spec: v1.LeaseSpec{
+		Spec: v1.GPULeaseSpec{
 			RunRef:         v1.RunReference{Name: runName, Namespace: "default"},
-			Slice:          v1.LeaseSlice{Nodes: nodes, Role: "Active"},
-			Interval:       v1.LeaseInterval{Start: v1.NewTime(start)},
+			Slice:          v1.GPULeaseSlice{Nodes: nodes, Role: "Active"},
+			Interval:       v1.GPULeaseInterval{Start: v1.NewTime(start)},
 			PaidByBudget:   budget,
 			PaidByEnvelope: envelope,
 			Reason:         "Start",
@@ -186,7 +186,7 @@ func TestComputeRemediesVariesWithRealSignals(t *testing.T) {
 
 	// Case 2: an unfunded lease and a spare lease exist on the same
 	// envelope/flavor, and a malleable run of the same flavor is present.
-	leases := []v1.Lease{
+	leases := []v1.GPULease{
 		leaseOf("l-unfunded", "orphan", "team-budget", "west", 40, now.Add(-time.Hour)), // exceeds concurrency 32, tail goes unfunded
 	}
 	spareLease := leaseOf("l-spare", "steady", "team-budget", "west", 1, now.Add(-time.Hour))
@@ -403,7 +403,7 @@ func TestPlanDeficitRespectsClaimRanking(t *testing.T) {
 		trackedRunOf("latecomer", "org:ai:team", now.Add(-30*time.Minute)),
 		trackedRunOf("guest", "org:ai:peer", now.Add(-2*time.Hour)),
 	)
-	leases := []v1.Lease{
+	leases := []v1.GPULease{
 		leaseOf("l-steady", "steady", "team-budget", "west", 2, now.Add(-3*time.Hour)),
 		leaseOf("l-late", "latecomer", "team-budget", "west", 2, now.Add(-30*time.Minute)),
 		// Family excess needs no lending policy (Decision 2); this funds as

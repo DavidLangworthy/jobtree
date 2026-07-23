@@ -118,21 +118,21 @@ func TestLiveListBudgetsSortedByName(t *testing.T) {
 }
 
 func TestLiveListLeasesFiltersByRunRef(t *testing.T) {
-	mine := &v1.Lease{
+	mine := &v1.GPULease{
 		ObjectMeta: v1.ObjectMeta{Name: "lease-mine", Namespace: "default"},
-		Spec: v1.LeaseSpec{
+		Spec: v1.GPULeaseSpec{
 			Owner:          "org:team-a",
 			RunRef:         v1.RunReference{Name: "train-1", Namespace: "default"},
-			Slice:          v1.LeaseSlice{Nodes: []string{"node-a1"}, Role: "Active"},
+			Slice:          v1.GPULeaseSlice{Nodes: []string{"node-a1"}, Role: "Active"},
 			PaidByEnvelope: "west-h100",
 		},
 	}
-	other := &v1.Lease{
+	other := &v1.GPULease{
 		ObjectMeta: v1.ObjectMeta{Name: "lease-other", Namespace: "default"},
-		Spec: v1.LeaseSpec{
+		Spec: v1.GPULeaseSpec{
 			Owner:          "org:team-a",
 			RunRef:         v1.RunReference{Name: "train-2", Namespace: "default"},
-			Slice:          v1.LeaseSlice{Nodes: []string{"node-a2"}, Role: "Active"},
+			Slice:          v1.GPULeaseSlice{Nodes: []string{"node-a2"}, Role: "Active"},
 			PaidByEnvelope: "west-h100",
 		},
 	}

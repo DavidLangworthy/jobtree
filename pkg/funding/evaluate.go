@@ -27,7 +27,7 @@ const integralEpsilon = 1e-9
 // (CRD specs, lease intervals, the clock) — never a stored classification.
 type Input struct {
 	Budgets []v1.Budget
-	Leases  []v1.Lease
+	Leases  []v1.GPULease
 	Runs    map[string]*v1.Run // keyed by keys.NamespacedKey
 	Now     time.Time
 	Period  time.Duration // accounting horizon; <= 0 uses DefaultPeriod
@@ -309,7 +309,7 @@ func buildLeaseFacts(in Input, compact bool) []*leaseFact {
 // leaseSettled reports whether a lease's accrual ended at or before the horizon
 // (so it belongs to the settled epoch, not the retained replay). An open lease
 // (zero effectiveEnd) is never settled.
-func leaseSettled(lease *v1.Lease, horizon time.Time) bool {
+func leaseSettled(lease *v1.GPULease, horizon time.Time) bool {
 	end := effectiveEnd(lease)
 	return !end.IsZero() && !end.After(horizon)
 }
@@ -377,7 +377,7 @@ func SettleAccrual(in Input, horizon time.Time) map[EnvelopeKey]SettledAccrual {
 	epoch.Now = horizon
 	epoch.SettlementHorizon = time.Time{}
 	epoch.PriorAccrual = nil
-	var settled []v1.Lease
+	var settled []v1.GPULease
 	for i := range in.Leases {
 		if leaseSettled(&in.Leases[i], horizon) {
 			settled = append(settled, in.Leases[i])
@@ -440,7 +440,7 @@ func eventTimes(in Input, facts []*leaseFact) []time.Time {
 // effectiveEnd returns when the lease stops accruing, or the zero time for
 // an open-ended lease. A Closed lease without an end fact is defensive
 // territory (the engine always stamps Ended): treat it as never accruing.
-func effectiveEnd(lease *v1.Lease) time.Time {
+func effectiveEnd(lease *v1.GPULease) time.Time {
 	var end time.Time
 	if lease.Spec.Interval.End != nil && !lease.Spec.Interval.End.IsZero() {
 		end = lease.Spec.Interval.End.Time
@@ -1111,7 +1111,7 @@ func aggregateMember(acct *EnvelopeAccount, agg *aggregateAccount) bool {
 
 // Class returns the derived class of an open lease at Now. Leases outside
 // the evaluation (closed before Now) report ok=false.
-func (ev *Evaluation) Class(lease *v1.Lease) (Class, bool) {
+func (ev *Evaluation) Class(lease *v1.GPULease) (Class, bool) {
 	class, ok := ev.classes[LeaseKey(lease)]
 	return class, ok
 }

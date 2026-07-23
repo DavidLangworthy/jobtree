@@ -118,7 +118,7 @@ fail() { echo "FAIL: $1"; kubectl get pod train-pod-0 -n default -o yaml; exit 1
 node="$(kubectl get pod train-pod-0 -n default -o jsonpath='{.spec.nodeName}')"
 [ "$node" = "$NODE" ] || fail "pod bound to '$node', want '$NODE'"
 
-leases="$(kubectl get leases.rq.davidlangworthy.io -n default -o jsonpath='{.items[*].metadata.name}')"
+leases="$(kubectl get gpuleases.rq.davidlangworthy.io -n default -o jsonpath='{.items[*].metadata.name}')"
 [ "$leases" = "train-pod-0-lease" ] || fail "expected one lease 'train-pod-0-lease', got '$leases'"
 payer="$(kubectl get lease.rq.davidlangworthy.io train-pod-0-lease -n default -o jsonpath='{.spec.paidByBudget}/{.spec.paidByEnvelope}')"
 [ "$payer" = "team/west" ] || fail "lease payer '$payer', want 'team/west'"
