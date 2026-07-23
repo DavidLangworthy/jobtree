@@ -26,11 +26,17 @@ boards have drifted before. If a row is already done, fix the board instead.
   [`remediation/IMPLEMENTATION-LOG.md`](remediation/IMPLEMENTATION-LOG.md)** with its
   rationale (the standing "don't interrupt me, log the judgment call" convention), and
   proceed.
-- **Stack the PRs.** Base each item's branch on the **previous item's branch**, not
-  `main`, so the whole series reviews as one coherent progression and later items can build
-  on earlier ones without waiting for a merge. Open each PR against its parent branch, push
-  every branch, keep the stack in order. **Never `gh pr merge`** — `main` is protected and
-  merging is David's call.
+- **Base each item on `origin/main`; stack only real dependencies.** Run `git fetch origin`
+  before each item and branch it off `origin/main` — that pulls in whatever merged since
+  (your earlier items, other agents' PRs, David's redirects). Only base on a previous
+  *unmerged* branch when the item genuinely depends on its code (say so in the PR); once that
+  dependency merges, go back to basing on `origin/main`. Open each PR, push each branch.
+  **Never `gh pr merge`** — `main` is protected and merging is David's call.
+- **Staying current & redirects.** Each item, `git fetch origin` and re-read this playbook
+  and `docs/project/AUTOPILOT-CONTROL.md` from `origin/main` (`git show origin/main:<path>`).
+  David steers you by pushing to those on `main` — **obey a redirect the moment you see it**,
+  even if it changes priorities mid-run. Do **not** rebase an in-flight stack mid-run
+  (unattended conflicts halt you); prefer starting the next item off fresh `main`.
 - **Small, honest commits.** Follow the repo's message style; end with the
   `Co-Authored-By: Claude` trailer.
 
