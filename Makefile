@@ -1,3 +1,4 @@
+.PHONY: e2e-runbook
 .PHONY: verify fmt-check vet test-race golden-clean build-bins helm-assert krew-validate test envtest fmt generate manifests verify-generate spec-check spec-counterexamples node-failure-spec-check node-failure-spec-counterexamples node-failure-spec-pdf ledger-compaction-apalache-check ledger-compaction-apalache-counterexamples ledger-compaction-store-apalache-check ledger-compaction-store-apalache-counterexamples ledger-compaction-accounting-apalache-check ledger-compaction-accounting-apalache-counterexamples ledger-compaction-accounting-witness-check ledger-compaction-accounting-witness-counterexamples helm-lint cli-build cli-test antifake kind-up kind-down e2e-build e2e-load e2e-image e2e-bins e2e-build-fast build-flags-agree e2e disk-hygiene
 
 # ---------------------------------------------------------------------------
@@ -172,6 +173,36 @@ e2e-build-fast: e2e-bins
 
 e2e:
 	hack/e2e/run-e2e.sh
+
+# R18: the break-glass levers and the uninstall order, against a real cluster.
+#
+# The rollout restart after the install is not ceremony. With webhook.generateCert=true
+# the chart mints a fresh self-signed CA on EVERY `helm upgrade`, so on a re-run the
+# webhook configuration carries the new CA while the still-running manager serves the
+# old cert, and every Run/Budget write fails x509 until the pod restarts. That is a real
+# upgrade hazard (documented in docs/operator-guide/runbook.md), and here it is also the
+# difference between this target being idempotent and only working on a clean cluster.
+# Separate from `e2e` because it ends by UNINSTALLING the chart and deleting the
+# CRDs — it is a teardown test, so it must not share a cluster with the others.
+# Uses the fast image path; the levers are about manifests, not about the binary.
+e2e-runbook: kind-up e2e-build-fast e2e-load
+	@set -a; . hack/e2e/versions.env; set +a; \
+	set -e; \
+	helm upgrade --install "$$E2E_HELM_RELEASE" deploy/helm/gpu-fleet \
+	  --namespace "$$E2E_NAMESPACE" --create-namespace \
+	  -f hack/e2e/values-e2e.yaml \
+	  --set "controller.image.repository=$${E2E_IMAGE%:*}" \
+	  --set "controller.image.tag=$${E2E_IMAGE##*:}" \
+	  --set "scheduler.enabled=true" \
+	  --set "scheduler.image.repository=$${E2E_SCHEDULER_IMAGE%:*}" \
+	  --set "scheduler.image.tag=$${E2E_SCHEDULER_IMAGE##*:}" \
+	  --set "podPolicy.enabled=true" \
+	  --wait --timeout 180s; \
+	kubectl rollout restart deployment -n "$$E2E_NAMESPACE" \
+	  -l "app.kubernetes.io/instance=$$E2E_HELM_RELEASE"; \
+	kubectl rollout status deployment -n "$$E2E_NAMESPACE" \
+	  -l "app.kubernetes.io/instance=$$E2E_HELM_RELEASE" --timeout=180s; \
+	hack/e2e/runbook-smoke.sh
 
 cli-build:
 	@mkdir -p bin

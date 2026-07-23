@@ -74,7 +74,7 @@ mechanical, no design needed (implement straight from the audit — Opus/Sonnet)
 | R15 | Documented install can't work; phantom notifier | **mech** | ✅ release images + real `image.tag` + notifier deleted | ✅ helm-assertions (2 new rails, mutation-verified) |
 | R16 | ServiceMonitor selector mismatch; Prom-Operator hard dep | **mech** | ✅ label + capability gate | ✅ helm-assertions |
 | R17 | Prod overlay: 3 replicas, leader-election off; scheduler off | **mech** | ✅ flag wired + overlays fixed | ✅ helm-assertions |
-| [R18](R18-operator-runbook.md) | No break-glass / uninstall / CRD-upgrade story | ✅ | ⏳ Sonnet | ⏳ Sonnet |
+| [R18](R18-operator-runbook.md) | No break-glass / uninstall / CRD-upgrade story | ✅ | ✅ runbook.md + `break-glass.sh` / `uninstall.sh` (2026-07-23) | ✅ `make e2e-runbook` — live kind proof of all three procedures |
 | [R19](R19-license-governance.md) | No LICENSE; fictional governance | ✅ | ✅ all-rights-reserved + real MAINTAINERS/SECURITY | ✅ |
 
 **P5 — observability & correctness papercuts**
