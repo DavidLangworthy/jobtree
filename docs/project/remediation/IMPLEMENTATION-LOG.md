@@ -26,6 +26,92 @@ The README compose note lists R5/R6 first. I moved the two P0 correctness bugs
 
 ## Decisions (chronological)
 
+### R26 — the ledger auditor, the runtime backstop (2026-07-23, unattended run)
+
+`funding.Evaluate` is a fuzz-tested pure function that replays a ledger nobody audits:
+there was no loop comparing open leases against the pods and nodes that are actually
+there. Every known leak on this board is the same shape — an open lease charging a
+budget with no live work behind it — and the point fixes (R8, R25, eviction recovery)
+each close a KNOWN leak at its cause. R26 is the net UNDER them: a periodic
+`LedgerAuditor` that reads the whole world and enforces two invariants, so ledger
+integrity is a CHECKED property, not the sum of the leaks we have thought of. This is
+a **sole-closer-path change** — flagged for the milestone review as F6.
+
+The judgement is a pure function (`controllers/ledger_audit.go`, `AuditLedger`) so it
+is unit-testable against hand-built worlds; the controller (`controllers/kube`) does
+the I/O, grace timing, and repair.
+
+**The design is conservative by construction — a wrong auditor is a reaper, which is
+worse than the leak.** Every decision below trades coverage for a guarantee of no
+false close:
+
+- **The dead-node rule keys off the Node OBJECT's existence, never its readiness.**
+  This is the same fencing rule as the swap path (`node-failure-needs-fencing`): a
+  NotReady or cordoned node still exists and its lease is not orphaned; only a deleted
+  Node is a real loss. Crucially, the auditor does **not** reuse the bridge's world
+  load, because that load drops UNUSABLE nodes — a NotReady node would vanish from it
+  and look deleted. `loadWorld` lists ALL Node objects unfiltered. Mutation-verified:
+  make the existence check fire on present nodes and both the dead-node and the
+  present-node-is-not-dead tests redden.
+- **The no-pod rule acts only on POSITIVE evidence and defers what it does not own.**
+  It fires only for an open Active lease of a run that is PRESENT and NON-TERMINAL,
+  whose durably-annotated pod is genuinely absent. An absent run is left to the
+  finalizer / cleanupDeletedRun (guessing there rebuilds the R27c orphan-run reaper R12
+  deleted); a terminal run's leases are left to SettleLeases (racing it would close the
+  same lease with two different reasons); a legacy lease with no pod-name annotation is
+  declined rather than matched by a guess. A Pending pod counts as live — it is the
+  rank being re-provisioned by recoverEvictedRanks, and closing its lease would race the
+  recovery. Mutation-verified: drop the terminal-run defer and the defer test reddens.
+- **Repair is budget-safe only, and gated on a GRACE window.** The destructive
+  direction CLOSES leases (stops a charge) via the sole closer with the DISTINCT reason
+  `"Orphaned"` — never `Completed` (laundering a leak as a completion is how it stays
+  invisible) and never `SweptTerminalRun` (that means the run was terminal; the auditor
+  closes leases of runs still wrongly alive). It NEVER deletes a pod: a pod running
+  without a lease is ALARMED, not killed, because killing it is a policy call (R5/R6)
+  the auditor does not own. A violation is acted on only after it has PERSISTED across
+  a grace window (default 2× the sweep interval, clamped up if set smaller) so a healthy
+  in-flight mint/swap — a failed lease closed one instant, its replacement minted the
+  next — is never repaired. The grace window must exceed the swap window; that is the
+  clamp. Mutation-verified: drop the grace gate and the auditor closes within the
+  window, reddening the before/after-grace test — the reaper the design exists to
+  prevent.
+- **Invariant 2 is checked at RUN granularity, not pod granularity.** "A live run with
+  jobtree pods and ZERO open leases" is the signal, not "a pod with no lease of its
+  own" — because a forming gang legitimately has some open leases and a not-yet-minted
+  pod (the AwaitingMint transient `pkg/invariant` already documents). Run-granularity
+  makes that healthy window invisible where a pod-level check would cry wolf on every
+  gang still assembling.
+- **The gauge reports SUSTAINED violations, not instantaneous ones.**
+  `jobtree_ledger_violations{kind}` is set to the count PAST the grace window, and all
+  three kinds are enumerated each sweep so a kind that clears is published as 0, not
+  left at its last value. `jobtree_ledger_repairs_total{reason}` counts every close —
+  each increment is both a repair and a bug report that a causal path should have closed
+  it first. This is a small deliberate departure from the spec's "gauge of current
+  violations": an instantaneous gauge flickers on every healthy mint/swap window, which
+  is noise for a signal whose whole purpose is "the ledger is actually broken."
+- **The auditor runs off its own client, not the Bridge.** It must OBSERVE the engine,
+  not run it: going through `Bridge.WithWorld` would execute the whole
+  engine/settle/apply pipeline on the auditor's schedule. It is a manager `Runnable`
+  driven by a ticker (a periodic sweep, not an object reconciler), invocable as `Sweep`
+  for deterministic tests, and its `repair` closes through the sole closer + a
+  `Status().Update` with conflict retry — it is not a second writer of the closure
+  fields, which keeps `hack/antifake`'s sole-closer lint true.
+
+**Verification.** The pure `AuditLedger` has thorough unit coverage (dead-node vs
+no-pod precedence, fencing, terminal/absent-run defers, closed-lease and legacy-lease
+skips, spare exclusion, the AwaitingMint non-trip, a clean healthy world). The
+controller has fake-client Sweep tests (close-only-after-grace, the sustained-gauge
+semantics, alarm-without-touching for pod-no-lease, a healthy world left alone) and a
+real-apiserver **read-path** envtest proving `loadWorld` projects live Node/lease/run
+objects into the world AuditLedger expects (a present node read as present, a ghost-node
+lease flagged). Three load-bearing rules — fencing, terminal-defer, grace — are
+mutation-verified. The apiserver's acceptance of the `Orphaned` close is covered by the
+fake-client close test and R14's existing closure-monotonicity envtests; a write-path
+envtest was dropped deliberately because the shared suite manager actively reconciles
+the orphan run and races the lease status, which tests the manager's run-failure timing
+(the run fails, the auditor then correctly DEFERS to SettleLeases), not the auditor.
+`make verify` green (incl. envtest + the 800-seed eviction fuzzer).
+
 ### R23 — from a Run to its pods, logs, and outputs (2026-07-23, unattended run)
 
 The CLI could show scheduling and accounting but never the workload itself: once a run

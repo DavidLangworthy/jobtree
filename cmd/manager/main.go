@@ -120,6 +120,19 @@ func main() {
 		log.Error(err, "unable to create controller", "controller", "budget")
 		os.Exit(1)
 	}
+	// R26: the runtime ledger auditor — the backstop that makes lease/pod/node
+	// integrity a checked property, not the sum of the point fixes. Its own
+	// APIReader/Client (not the Bridge): it must not run the engine, only observe
+	// it and close leases the causal paths left open.
+	if err := (&kube.LedgerAuditor{
+		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
+		Clock:     controllers.RealClock{},
+		Recorder:  mgr.GetEventRecorderFor("jobtree-ledger-auditor"),
+	}).SetupWithManager(mgr); err != nil {
+		log.Error(err, "unable to create controller", "controller", "ledger-auditor")
+		os.Exit(1)
+	}
 	if enableWebhooks {
 		if err := kube.SetupWebhooks(mgr); err != nil {
 			log.Error(err, "unable to register webhooks")

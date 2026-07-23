@@ -28,6 +28,8 @@ var (
 	elasticWidth        = make(map[string]float64)
 	decideLatency       = make(map[string]*histogram)
 	evaluateInputSize   float64
+	ledgerViolations    = make(map[string]float64) // R26: sustained lease/pod/node discrepancies, by kind
+	ledgerRepairs       = make(map[string]float64) // R26: leases the auditor closed, by reason
 )
 
 var defaultBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
@@ -187,6 +189,34 @@ func IncSweptLease(rule string) {
 	mu.Unlock()
 }
 
+// SetLedgerViolations sets the gauge of currently-SUSTAINED ledger violations of a
+// kind (R26). The auditor sets this to the number of discrepancies that have
+// persisted past the grace window — a transient mint/swap window is not a
+// violation — so any nonzero value is a real drift between the ledger and reality:
+// an open lease charging for a rank that is not running, a lease on a deleted node,
+// or a run with live pods and no lease. Alert on nonzero. Kinds must be enumerated
+// so a kind that drops to zero is REPORTED as zero, not left at its last value.
+func SetLedgerViolations(counts map[string]float64) {
+	mu.Lock()
+	defer mu.Unlock()
+	ledgerViolations = make(map[string]float64, len(counts))
+	for kind, n := range counts {
+		ledgerViolations[kind] = n
+	}
+}
+
+// IncLedgerRepair counts one lease the auditor closed "Orphaned" because the work
+// behind it was gone (R26). Every increment is both a repair and a bug report: some
+// causal path (R8, R25, eviction recovery) should have closed it first and did not.
+func IncLedgerRepair(reason string) {
+	if reason == "" {
+		return
+	}
+	mu.Lock()
+	ledgerRepairs[reason]++
+	mu.Unlock()
+}
+
 // IncResolverAction increments the resolver action counter for the kind.
 func IncResolverAction(kind string) {
 	if kind == "" {
@@ -311,6 +341,8 @@ type MetricsSnapshot struct {
 	ElasticWidth        map[string]float64
 	DecideLatency       map[string]Histogram
 	EvaluateInputSize   float64
+	LedgerViolations    map[string]float64
+	LedgerRepairs       map[string]float64
 }
 
 // Snapshot returns the current metrics data for inspection/testing.
@@ -332,6 +364,8 @@ func Snapshot() MetricsSnapshot {
 		ElasticWidth:        make(map[string]float64, len(elasticWidth)),
 		DecideLatency:       make(map[string]Histogram, len(decideLatency)),
 		EvaluateInputSize:   evaluateInputSize,
+		LedgerViolations:    make(map[string]float64, len(ledgerViolations)),
+		LedgerRepairs:       make(map[string]float64, len(ledgerRepairs)),
 	}
 
 	for flavor, byResult := range admissionLatency {
@@ -370,6 +404,13 @@ func Snapshot() MetricsSnapshot {
 
 	for rule, count := range sweptLeases {
 		snap.SweptLeases[rule] = count
+	}
+
+	for kind, count := range ledgerViolations {
+		snap.LedgerViolations[kind] = count
+	}
+	for reason, count := range ledgerRepairs {
+		snap.LedgerRepairs[reason] = count
 	}
 
 	for key, usage := range budgetData {
@@ -418,6 +459,8 @@ func Reset() {
 	elasticWidth = make(map[string]float64)
 	decideLatency = make(map[string]*histogram)
 	evaluateInputSize = 0
+	ledgerViolations = make(map[string]float64)
+	ledgerRepairs = make(map[string]float64)
 }
 
 // Handler exposes the metrics using Prometheus' text exposition format.
@@ -502,6 +545,16 @@ func WritePrometheus(w io.Writer) {
 	writeHeader(buf, "jobtree_swept_leases_total", "Leases closed by the production settle sweep because an engine path left them open. Nonzero rule=terminal-run is a bug.", "counter")
 	for _, rule := range sortedKeys(snap.SweptLeases) {
 		writeSample(buf, "jobtree_swept_leases_total", map[string]string{"rule": rule}, formatFloat(snap.SweptLeases[rule]))
+	}
+
+	writeHeader(buf, "jobtree_ledger_violations", "Sustained discrepancies between the open-lease ledger and reality (R26 auditor): kind=lease_no_pod|lease_dead_node|pod_no_lease. Any nonzero value is real drift; alert on it.", "gauge")
+	for _, kind := range sortedKeys(snap.LedgerViolations) {
+		writeSample(buf, "jobtree_ledger_violations", map[string]string{"kind": kind}, formatFloat(snap.LedgerViolations[kind]))
+	}
+
+	writeHeader(buf, "jobtree_ledger_repairs_total", "Leases the R26 auditor closed 'Orphaned' because the work behind them was gone. Every increment is a leak some causal path should have closed first.", "counter")
+	for _, reason := range sortedKeys(snap.LedgerRepairs) {
+		writeSample(buf, "jobtree_ledger_repairs_total", map[string]string{"reason": reason}, formatFloat(snap.LedgerRepairs[reason]))
 	}
 
 	writeHeader(buf, "jobtree_resolver_actions_total", "Structural actions performed by the resolver.", "counter")
