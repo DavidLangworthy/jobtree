@@ -162,6 +162,11 @@ measuring whether the models earn their seats rather than assuming it. One revie
   unless the user explicitly requests otherwise.
 - **Never `git checkout -- <file>` to undo a scratch edit.** It restores to `HEAD`, not to what you had a
   minute ago, and it has silently destroyed uncommitted work here. Copy the file first, or commit.
+- **Merging a stack of PRs: use `gh pr merge --merge` (merge commits), never `--squash`, and never
+  `--delete-branch`.** Squashing a lower PR rewrites its commits into one new SHA, so every PR above it
+  then conflicts with `main` and needs a rebase dance; merge-commits preserve the original SHAs, so each
+  PR merges cleanly. And `--delete-branch` on a stacked PR **closes** every child PR based on that branch.
+  Merge bottom-up, retargeting each child to `main` as its parent lands.
 - Sub-agents must never run mutating git commands, and must never spawn sub-agents.
 - Prefer a compiled, running reproduction over an argument. The engine is pure: `ClusterState` plus a
   static clock **is** a simulator, so any hypothesis about engine behaviour is a few minutes of work.
