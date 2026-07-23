@@ -48,26 +48,35 @@ Three multipliers, learned the hard way:
 
 ## Where we actually are
 
+> **Reconciled 2026-07-11 against `origin/main`.** The "Honest schedule" section further down
+> still predates the correctness sprint (it says ~13–16 days remaining); treat the table here as
+> current and that schedule as an overestimate pending its own refresh. Correctness work is now
+> tracked in [correctness-closeout-plan.md](correctness-closeout-plan.md).
+
 | | Item | Status |
 |---|---|---|
-| ✅ | **R1** phantom-lease leak | complete |
-| ✅ | **R3** opportunistic → Promise path | complete |
-| ✅ | **R5 + R6** provenance trust anchor + mandatory-scheduler VAP | complete (VAP CEL still wants a kind verify) |
-| ◐ | **R2** gang recovery | pt1 de-wedge ✅, pt2 adopt-at-width ✅, **pt3 restart reconstruction** open |
-| ◐ | **R4** plugin hot path | pt1 metrics ✅, pt2a compaction primitive ✅, **pt1b caching** + **pt2b settlement** open |
+| ✅ | **R1 / R3 / R5 / R6** — P0 trust anchor + Promise + mandatory-scheduler VAP | complete (R5/R6 VAP CEL still wants a kind verify) |
+| ✅ | **R2** gang recovery | pt1 de-wedge, pt2 adopt-at-width, pt3 restart reconstruction (#98) — all done |
+| ✅ | **R8 / R9** workload lifecycle | R9 9A-0…9A-4 + R8 built as 9A-3 (#88); live kind proofs green |
+| ✅ | **R21 / R22 / R25** node-failure bundle | fencing + slot-exact reclaim + spare-leak (#72) |
+| ✅ | **R10 / R16 / R17 / R19 / R24** | mechanical + hygiene, all landed |
+| ◐ | **R4** plugin hot path | pt1 metrics, pt2a compaction, **pt1b safe-fold core (#99)** done; pt1b reader-swap (perf) + pt2b settlement store (feature) open |
+| ◐ | **R7** namespace tenancy | pt1 envelope key (#87) done; **pt2 delete `Run.Spec.Owner`** open (authz decision, deferred by ruling) |
+| ⏳ | **R11 – R14** k8s conventions | status conditions, ownerRefs/finalizers, `Lease` rename, CRD validation |
+| ⏳ | **R15 / R18** admin | install/release images; operator runbook |
+| ⏳ | **R20 / R23** observability | plugin events for `explain`; logs/pods/artifacts CLI |
+| ⏳ | **R26** ledger auditor | runtime backstop (test-time now covered by the invariant oracle + eviction fuzzer) |
 
-So: **4 of 26 complete, 2 substantially underway** — call it 5.2 of 26 by weight.
-Plus off-board infrastructure that was not in the R-list: the e2e-image fix, the
-three silent passes (`make verify`, envtest fail-closed, unique CI check names),
-the fail-closed review harness, and the CI wall-clock work.
-
-That is slower than the raw count suggests, and it is the right trade. The five
-finished items are the P0 correctness core — the ones where the scheduler plugin
-is the sole committer of GPU funding and a mistake silently double-spends a
-budget or strands a gang. Four of them shipped **because** an adversarial review
-found a real defect before merge: a cross-tenant charge (R3), a double-fund (R4
-pt1), a live lease settled past the clock (R4 pt2a), and a malleable run killed at
-its checkpoint grace (R2 pt2). The remaining set is, on average, materially easier.
+So: **~17 of 26 landed** — 15 complete, plus R4 and R7 with only their deferred perf / feature /
+authz sub-part left. **9 remain** (R11–R14, R15, R18, R20, R23, R26), all P3–P5 conventions /
+admin / observability, plus the **ROLES** track (XL). The high-severity correctness core — where
+the scheduler plugin is the sole committer and a mistake silently double-spends a budget or strands
+a gang — is done, and it is now guarded by three nets: the invariant oracle (R27), the live
+eviction fuzzer, and the TLA+ ledger / node-failure specs. Off-board infrastructure landed too: the
+e2e-image fix, the three silent passes, the fail-closed review harness, and the CI wall-clock work.
+Much of the P0 core shipped **because** an adversarial review caught a real defect before merge — a
+cross-tenant charge (R3), a double-fund (R4 pt1), a live lease settled past the clock (R4 pt2a), a
+malleable run killed at its checkpoint grace (R2 pt2). The remaining set is, on average, easier.
 
 ## The board
 
