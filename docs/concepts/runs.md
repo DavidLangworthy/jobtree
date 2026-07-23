@@ -73,6 +73,54 @@ is borrowed for as long as the arithmetic says so. `unfunded` is the honest name
 work nobody's envelope covers — it runs opportunistically, and it is the first thing
 reclaimed.
 
+## Status: conditions, and the phase derived from them
+
+`Run.status.conditions` is the machine-readable state, and `status.phase` is
+**derived** from it — the same write produces both, so they cannot disagree. An
+in-process oracle (`INV-PHASE-DERIVED`) fails any test that produces a run whose
+phase and conditions differ.
+
+| Condition | True when |
+|---|---|
+| `Admitted` | the engine has accepted the run and is working on it (a plan, a reservation, or emitted pods) |
+| `Scheduled` | the full gang holds open leases on real nodes |
+| `Running` | the workload is running at (at least) its minimum runnable width |
+| `Completed` | terminal success |
+| `Failed` | terminal failure |
+| `Blocked` | progress is gated on something outside the run — a follow upstream, or a checkpoint grace window |
+
+Every condition is written on every status update, so `False` always means False
+and never "nobody set it". The `reason` is the stable, machine-readable *why*:
+`GangForming`, `Unfunded`, `Unschedulable`, `FollowWait`, `CheckpointGrace`,
+`GangBound`, `AllSucceeded`, `WorkloadFailed`, `NodeFailureNoSpare`, and so on.
+
+Two details that matter in practice:
+
+- **A reason can ride on a `False` condition.** A run that is Pending because it
+  is `Unfunded` has *nothing* True — and "why is it not admitted" is exactly the
+  question worth answering — so the reason is stamped on `Admitted=False`.
+- **`Blocked` means two different things either side of admission.** Blocked
+  *before* admission is `Waiting` (parked on a follow edge, holding nothing).
+  Blocked *while* admitted is `Pending` — the run still holds GPUs and a
+  checkpoint deadline is running against it. Collapsing them would report a run
+  burning budget as though it were merely queued.
+
+So this works, and is the supported way to script against a run:
+
+```bash
+kubectl wait --for=condition=Running run/train --timeout=30m
+kubectl wait --for=condition=Completed run/train --timeout=24h
+kubectl get run train -o jsonpath='{.status.conditions[?(@.type=="Admitted")].reason}'
+```
+
+`kubectl runs explain <run>` prints the same reason next to the phase.
+
+`Lease` carries `Active` / `Closed` (reason = the closure reason), `Reservation`
+carries `Forecast` / `Activated`, and `Budget` carries `Healthy` — False with
+reason `Overcommitted` when an envelope's headroom has gone negative, which is a
+legal, reportable state rather than an error (quota and capacity vary
+independently and reconcile only at scheduling instants).
+
 ## Pack-to-empty heuristics
 
 The packing engine (`pkg/pack`) uses three rules:

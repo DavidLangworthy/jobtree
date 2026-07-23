@@ -36,7 +36,7 @@ import (
 // real workload pod) and RunRole.GPUsPerPod by run_controller.go's
 // intentPodShape (the per-pod GPU count the controller emits). Back to the
 // original baseline — nothing to shrink before merging to main.
-const maxAllowedUnreadCRDFields = 4
+const maxAllowedUnreadCRDFields = 2
 
 const crdFieldsAllowlistName = "crd-fields-allowlist.txt"
 

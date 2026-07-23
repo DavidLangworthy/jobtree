@@ -183,7 +183,34 @@ Notes:
 * Follow is same-namespace and all-must-complete (`AND`). There is no branching/parallel combinator
   language — compose workflows from runs and follow edges.
 
-## 8. Checklist before you submit
+## 8. Waiting on a run from a script
+
+`status.phase` is a human convenience; `status.conditions` is what to script
+against, and `kubectl wait` speaks it directly:
+
+```bash
+kubectl wait --for=condition=Running   run/train --timeout=30m
+kubectl wait --for=condition=Completed run/train --timeout=24h
+```
+
+When a run is not starting, the reason is the machine-readable answer, and it is
+worth reading before you change anything:
+
+```bash
+kubectl get run train -o jsonpath='{.status.conditions[?(@.type=="Admitted")].reason}'
+```
+
+`Unfunded` means quota (your envelope cannot cover the width — borrow, shrink, or
+wait for a window). `Unschedulable` means capacity (no placement exists — check
+flavor and `groupGPUs`). `GangForming` means it is nearly there and assembling.
+`FollowWait` means it is not your run's problem at all: an upstream has not
+finished. Those are four different next actions, and `Pending` alone does not
+tell them apart. `kubectl runs explain <run>` prints the same reason.
+
+See [concepts/runs.md](../concepts/runs.md#status-conditions-and-the-phase-derived-from-them)
+for the full condition vocabulary.
+
+## 9. Checklist before you submit
 
 * Define `spec.roles[].template` with your real container image/command; `width * gpusPerPod`
   must equal `resources.totalGPUs`.

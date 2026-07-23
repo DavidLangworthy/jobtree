@@ -18,6 +18,4 @@
 # ratcheted baseline for whichever track (mostly D/TRUTH) triages them next.
 
 LeaseSpec.CompPath reason: declared and deep-copied but written and read by zero code today (per-role GPU-hour attribution has no per-role concept yet). make-it-real-plan.md Track E (ROLES-7) populates it at mint once per-role gangs land; do not add a consumer here without that context.
-BudgetStatus.ObservedGeneration reason: newly discovered by this lint, not named in fake-features-audit.md — no code anywhere sets or reads it, despite the standard k8s observedGeneration-vs-metadata.generation freshness convention this name implies. Needs a Track D triage: either the reconciler stamps it and something (CLI/docs) documents the contract, or it should be deleted.
-RunStatus.Generation reason: same shape as BudgetStatus.ObservedGeneration above — newly discovered, unset and unread anywhere. Track D triage: wire or delete.
 ReservationStatus.CanceledAt reason: newly discovered — declared alongside ActivatedAt/ReleasedAt, which ARE written by controllers/run_controller.go; CanceledAt alone has no writer or reader, implying no cancellation flow is actually wired. Track D triage: wire a real Cancel path or delete the field.

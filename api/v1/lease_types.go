@@ -13,6 +13,10 @@ import (
 // +kubebuilder:printcolumn:name="Run",type=string,JSONPath=`.spec.runRef.name`
 // +kubebuilder:printcolumn:name="Role",type=string,JSONPath=`.spec.slice.role`
 // +kubebuilder:printcolumn:name="Start",type=string,JSONPath=`.spec.interval.start`
+// An OPEN lease charges a budget and holds GPUs; make that the first thing
+// `kubectl get` shows (R11).
+// +kubebuilder:printcolumn:name="Closed",type=boolean,JSONPath=`.status.closed`
+// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.closureReason`
 type Lease struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -60,9 +64,19 @@ type LeaseInterval struct {
 
 // LeaseStatus captures closure state.
 type LeaseStatus struct {
-	Closed        bool         `json:"closed"`
-	Ended         *metav1.Time `json:"ended,omitempty"`
-	ClosureReason string       `json:"closureReason,omitempty"`
+	// Conditions mirrors Closed/ClosureReason as Active/Closed conditions (R11)
+	// so an open lease — the object that charges a budget and holds GPUs — is
+	// selectable and waitable. SetLeaseConditions DERIVES these from the two
+	// fields below; it never writes them, because controllers.CloseLease is the
+	// sole closer and hack/antifake enforces it.
+	// +patchMergeKey=type
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=type
+	Conditions    []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
+	Closed        bool               `json:"closed"`
+	Ended         *metav1.Time       `json:"ended,omitempty"`
+	ClosureReason string             `json:"closureReason,omitempty"`
 }
 
 // LeaseList lists leases.

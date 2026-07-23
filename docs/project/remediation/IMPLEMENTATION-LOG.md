@@ -86,6 +86,79 @@ Not done, deliberately: no Helm repository index, and no change to `Chart.yaml`'
 committed `appVersion` (`0.1.0`) — a source checkout is a development install and the
 guide now says so.
 
+### R11 — status conditions, with the phase DERIVED from them (2026-07-23)
+
+The spec's requirement is "`Phase` is a pure function of conditions". The obvious
+reading — invert the controller so each decision point sets a condition and the phase
+falls out at the end — is a rewrite of a 2400-line, funding-adjacent controller with 25
+status-write sites, during a run whose own playbook forbids the adversarial review that
+class of change normally gets. The shape chosen instead gets the same guarantee for a
+fraction of the blast radius:
+
+**A call site names a STATE, not a phase.** `v1.RunState` is a value in the API package
+carrying a reason, the conditions it turns on, and the phase they imply.
+`SetRunState` writes every managed condition and then sets
+`Phase = DeriveRunPhase(status.Conditions)`. So the phase is genuinely derived — not
+written beside the conditions and hoped to match — while each call site still says one
+thing. A state that does not exist is not representable (it is a value, not a map key),
+so there is no unknown-reason branch to get wrong.
+
+**Three judgment calls:**
+
+- **The phase constants moved to `api/v1` and are re-exported from `controllers`.** The
+  spec says "move the phase-string constants into api/v1"; there is now exactly one
+  definition, and the CRD/derivation live beside it. Rewriting ~200 call sites to
+  `v1.RunPhaseRunning` would have buried the taxonomy under an identifier rename, and
+  `RunPhaseRunning` remains the natural spelling inside the engine.
+- **A reason may ride on a `False` condition.** The first draft stamped reasons only on
+  True conditions — which meant `Unfunded` and `Unschedulable`, the two states a
+  researcher most needs explained, had **no reason anywhere**, because in those states
+  nothing is True. `whenFalse` fixes it: the reason goes on `Admitted=False`. This is
+  standard (`Available=False, Reason=MinimumReplicasUnavailable`), and it is the
+  difference between the vocabulary being useful and being decorative.
+  Mutation-verified in both the unit and the envtest layer.
+- **`Blocked` derives differently either side of admission.** Blocked *before*
+  admission is `Waiting`; blocked *while* admitted is `Pending` — the run still holds
+  GPUs and a checkpoint deadline is running against it. Collapsing them would report a
+  run burning budget as though it were merely queued.
+
+**The oracle, not more review.** `INV-PHASE-DERIVED` was added to `pkg/invariant`: if a
+run's persisted phase differs from what its own conditions derive, every engine entry
+point panics under test. The projection feeds `v1.DeriveRunPhase` rather than
+reimplementing it — an oracle that re-derives the rule it checks only proves someone
+wrote the same bug twice. It **immediately caught a real drift**: `seedRunning`, the
+plugin stand-in used across the engine tests, set `Status.Phase = Running` directly on a
+run whose conditions still said Pending. Fixed at the fixture, which now goes through
+the vocabulary as the real adoption path does. The 800-seed eviction fuzzer now checks
+this on every state it generates.
+
+**The envtest caught the first draft being INERT — the class AGENTS.md names.**
+Conditions were stamped in `admission.PodLeaseWithRole`, at the mint. `Status` is a
+subresource, so the plugin's `Create` silently drops it: an open lease persisted **no
+conditions at all**, and every unit test passed. Two ways out, and the cheap-looking one
+is wrong: making the plugin follow its `Create` with a `Status().Update` puts a second
+API write per pod on the sole committer's hot path (the path R4 exists to make faster)
+and adds a create-succeeded-status-failed state. The derivation moved instead to
+`Bridge.apply`, the controller's existing observation point, where the status diff
+already persists lease changes. The committer pays nothing and a minted lease gains its
+conditions on the next pass.
+
+**Two allowlist ratchets shrank 4 → 2, and neither by accepting anything.** The lint
+flagged the wire-or-delete triage the allowlist had been asking for since it was
+written. `BudgetStatus.ObservedGeneration` is now **wired** — the reconciler stamps it,
+which is the freshness contract its name always promised. `RunStatus.Generation` is
+**deleted**: `status.conditions[].observedGeneration` is the standard, per-condition
+version of the same idea, and keeping a second unwritten one is precisely the fake the
+lint exists to catch. Also declined: adding a third entry to the terminal-pod-phase
+allowlist (capped at 2, shrink-only) just to re-prove `kubectl wait` on `Completed` —
+the existing `TestRunCompletesWhenPodsSucceed` owns that injection, and the polling
+mechanism is already proven on `Running`.
+
+Conditions also landed on Lease (`Active`/`Closed`, reason = the closure reason verbatim,
+written from `CloseLease` — the sole closer — so it can never lag the fact),
+Reservation (`Forecast`/`Activated`) and Budget (`Healthy`/`Overcommitted`), each derived
+from status the controller already writes rather than tracked independently.
+
 ### R12 closed out: the ownership edges verified against a real apiserver (2026-07-23)
 
 The code landed 2026-07-10; what was owed was verification, and the board disagreed with

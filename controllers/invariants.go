@@ -102,6 +102,7 @@ func (c *RunController) snapshotWorld() invariant.World {
 		w.Runs = append(w.Runs, invariant.Run{
 			Key:             key,
 			Phase:           run.Status.Phase,
+			DerivedPhase:    derivedPhaseOf(run),
 			Terminal:        run.Status.Phase == RunPhaseFailed || run.Status.Phase == RunPhaseComplete,
 			RunnableGPUs:    runnableGPUsForRun(key, c.State.Leases),
 			MinRunnableGPUs: minRunnableGPUs(run),
@@ -140,4 +141,15 @@ func specFingerprint(lease *v1.Lease) string {
 // `before` may be the zero World; the transition tier is then skipped.
 func (c *RunController) checkInvariants(site string, before invariant.World) {
 	invariant.Check(site, before, c.snapshotWorld())
+}
+
+// derivedPhaseOf is what a run's own conditions say its phase is, or "" for a run
+// that carries no conditions at all (a hand-built pure-engine fixture). Feeding
+// the oracle the API package's own derivation, rather than a copy, is the point:
+// a re-implementation here would only prove the same mistake was made twice.
+func derivedPhaseOf(run *v1.Run) string {
+	if len(run.Status.Conditions) == 0 {
+		return ""
+	}
+	return v1.DeriveRunPhase(run.Status.Conditions)
 }

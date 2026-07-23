@@ -290,6 +290,14 @@ func (b *Bridge) apply(ctx context.Context, snap *worldSnapshot) error {
 	// never deletes and never mutates an existing spec (immutability).
 	for i := range state.Leases {
 		lease := &state.Leases[i]
+		// R11: derive Active/Closed here, at the controller's observation point.
+		// It cannot be done at the mint — Status is a subresource, so the
+		// plugin's Create drops it, and making the sole committer pay a second
+		// API write per pod on its hot path to carry a projection is the wrong
+		// trade. A plugin-minted lease therefore gains its conditions on the
+		// controller's next pass, and the status diff below is what persists
+		// them.
+		v1.SetLeaseConditions(&lease.Status, lease.Generation)
 		key := keys.NamespacedKey(lease.Namespace, lease.Name)
 		before, existed := snap.leases[key]
 		if !existed {
@@ -351,6 +359,12 @@ func (b *Bridge) apply(ctx context.Context, snap *worldSnapshot) error {
 	// Reservations: created by planning, deleted when superseded, status
 	// updated on release/failure/reschedule.
 	for key, res := range state.Reservations {
+		// R11: Forecast/Activated are pure projections of the status fields the
+		// engine just wrote, so they are derived here — at the ONE place a
+		// Reservation is persisted — rather than at each engine write site, where
+		// a missed one would leave the conditions quietly stale. It runs before
+		// the change comparison below so a condition-only change still writes.
+		v1.SetReservationConditions(&res.Status, res.Generation)
 		before, existed := snap.reservations[key]
 		if !existed {
 			created := res.DeepCopy()

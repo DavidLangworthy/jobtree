@@ -167,12 +167,23 @@ func (c *BudgetController) ReconcileBudget(budgetObj *v1.Budget, ev *funding.Eva
 	}
 
 	updated := v1.BudgetStatus{
-		Headroom:          headroom,
-		AggregateHeadroom: aggregateHeadroom,
-		Usage:             usage,
-		UpdatedAt:         ptrTime(v1.NewTime(ev.Now)),
-		PendingRenewals:   pendingRenewals(budgetObj, ev.Now),
+		// The standard freshness contract this field's name always promised and
+		// never kept: a reader can now tell status computed for the current spec
+		// from status left over from the previous edit.
+		ObservedGeneration: budgetObj.Generation,
+		Headroom:           headroom,
+		AggregateHeadroom:  aggregateHeadroom,
+		Usage:              usage,
+		UpdatedAt:          ptrTime(v1.NewTime(ev.Now)),
+		PendingRenewals:    pendingRenewals(budgetObj, ev.Now),
 	}
+	// R11: Healthy is a pure projection of the headroom computed just above, so it
+	// is derived here rather than written independently — an overcommitted envelope
+	// and a Healthy=True condition cannot coexist. Quota and capacity vary
+	// independently and reconcile only at scheduling instants, so overcommit is a
+	// reportable state, not an error.
+	updated.Conditions = budgetObj.Status.Conditions
+	v1.SetBudgetConditions(&updated, budgetObj.Generation)
 	return updated
 }
 
