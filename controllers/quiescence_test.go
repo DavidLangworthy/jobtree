@@ -239,12 +239,13 @@ func (w *qWorld) mintPending() {
 		}
 		seg := cover.Segment{
 			Owner:        pod.Annotations[binder.AnnotationPayerOwner],
+			Namespace:    pod.Annotations[binder.AnnotationPayerNamespace],
 			BudgetName:   pod.Annotations[binder.AnnotationPayerBudget],
 			EnvelopeName: pod.Annotations[binder.AnnotationPayerEnvelope],
 		}
 		if seg.Owner == "" {
 			owner := qOwnerForNS(run.Namespace)
-			seg = cover.Segment{Owner: owner, BudgetName: qBudgetFor(owner), EnvelopeName: "west"}
+			seg = cover.Segment{Owner: owner, Namespace: qNSForOwner(owner), BudgetName: qBudgetFor(owner), EnvelopeName: "west"}
 		}
 		// PreBind refuses to mint a lease for a pod carrying no placement group.
 		// The driver holds it to the same refusal: a pod the plugin would reject

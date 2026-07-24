@@ -21,13 +21,15 @@ import (
 // with team's in default.
 func nfNS(owner string) string {
 	switch owner {
-	case "org:ai:team":
-		return "default"
 	case "org:ai:other":
+		// The only foreign owner that funds its own work (budget "other"): it
+		// needs its own namespace so its runs derive "org:ai:other" and its
+		// leases class Owned, distinct from team's default.
 		return "org-ai-other"
-	case "org:ai:nobody":
-		return "org-ai-nobody"
 	default:
+		// team and the budget-less squatter "org:ai:nobody" both live in
+		// default. nobody never carries a budget, so its leases pay nothing and
+		// derive Unfunded regardless of the namespace it is co-located in.
 		return "default"
 	}
 }
@@ -51,13 +53,14 @@ func nfLeaseGroup(name, run, owner, budget, group string, slots []string, role s
 		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: nfNS(owner),
 			Labels: map[string]string{binder.LabelRunName: run, binder.LabelGroupIndex: group, binder.LabelRunRole: role}},
 		Spec: v1.GPULeaseSpec{
-			Owner:          owner,
-			RunRef:         v1.RunReference{Name: run, Namespace: nfNS(owner)},
-			Slice:          v1.GPULeaseSlice{Nodes: slots, Role: role},
-			Interval:       v1.GPULeaseInterval{Start: v1.NewTime(now.Add(-time.Minute))},
-			PaidByBudget:   budget,
-			PaidByEnvelope: "west",
-			Reason:         "Start",
+			Owner:                 owner,
+			RunRef:                v1.RunReference{Name: run, Namespace: nfNS(owner)},
+			Slice:                 v1.GPULeaseSlice{Nodes: slots, Role: role},
+			Interval:              v1.GPULeaseInterval{Start: v1.NewTime(now.Add(-time.Minute))},
+			PaidByBudget:          budget,
+			PaidByBudgetNamespace: nfNS(owner),
+			PaidByEnvelope:        "west",
+			Reason:                "Start",
 		},
 	}
 }
@@ -159,7 +162,7 @@ func TestSwapLeavesACoLocatedRunOnOtherSlotsAlone(t *testing.T) {
 		Nodes:   nodeFailureNodes(),
 		Budgets: []v1.Budget{nfBudget("team", "org:ai:team"), nfBudget("other", "org:ai:other")},
 		Runs: map[string]*v1.Run{
-			"default/run":       nfRun("run", "org:ai:team", 2, now),
+			"default/run":            nfRun("run", "org:ai:team", 2, now),
 			"org-ai-other/neighbour": nfRun("neighbour", "org:ai:other", 2, now),
 		},
 		Leases: []v1.GPULease{
@@ -195,7 +198,7 @@ func TestSwapDeclinesRatherThanEvictAFundedRunOnTheSpareSlots(t *testing.T) {
 		Nodes:   nodeFailureNodes(),
 		Budgets: []v1.Budget{nfBudget("team", "org:ai:team"), nfBudget("other", "org:ai:other")},
 		Runs: map[string]*v1.Run{
-			"default/run":      nfRun("run", "org:ai:team", 2, now),
+			"default/run":           nfRun("run", "org:ai:team", 2, now),
 			"org-ai-other/squatter": nfRun("squatter", "org:ai:other", 2, now),
 		},
 		Leases: []v1.GPULease{
@@ -303,7 +306,7 @@ func TestDecliningTheSwapNeverStrandsTheRunsOwnSpare(t *testing.T) {
 		Nodes:   nodeFailureNodes(),
 		Budgets: []v1.Budget{nfBudget("team", "org:ai:team"), nfBudget("other", "org:ai:other")},
 		Runs: map[string]*v1.Run{
-			"default/run":      nfRun("run", "org:ai:team", 2, now),
+			"default/run":           nfRun("run", "org:ai:team", 2, now),
 			"org-ai-other/squatter": nfRun("squatter", "org:ai:other", 2, now),
 		},
 		Leases: []v1.GPULease{
@@ -357,7 +360,7 @@ func TestDecliningTheSwapReleasesTheSpareEvenWhenTheRunParksInCheckpointGrace(t 
 		Nodes:   nodeFailureNodes(),
 		Budgets: []v1.Budget{nfBudget("team", "org:ai:team"), nfBudget("other", "org:ai:other")},
 		Runs: map[string]*v1.Run{
-			"default/run":      run,
+			"default/run":           run,
 			"org-ai-other/squatter": nfRun("squatter", "org:ai:other", 2, now),
 		},
 		Leases: []v1.GPULease{
@@ -436,7 +439,7 @@ func TestSwapReclaimsAnUnfundedSquatterOnTheSpareSlots(t *testing.T) {
 		Budgets: []v1.Budget{nfBudget("team", "org:ai:team")},
 		Runs: map[string]*v1.Run{
 			"default/run":    nfRun("run", "org:ai:team", 2, now),
-			"org-ai-nobody/filler": nfRun("filler", "org:ai:nobody", 2, now),
+			"default/filler": nfRun("filler", "org:ai:nobody", 2, now),
 		},
 		Leases: []v1.GPULease{
 			nfLease("active", "run", "org:ai:team", "team", []string{"node-a#0", "node-a#1"}, binder.RoleActive, now),

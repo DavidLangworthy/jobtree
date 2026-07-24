@@ -21,7 +21,7 @@ func TestRunControllerAdmitsRun(t *testing.T) {
 	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	state := &ClusterState{
 		Budgets: []v1.Budget{{
-			ObjectMeta: v1.ObjectMeta{Name: "rai"},
+			ObjectMeta: v1.ObjectMeta{Name: "rai", Namespace: "default"},
 			Spec: v1.BudgetSpec{
 				Owner: "org:ai:rai",
 				Envelopes: []v1.BudgetEnvelope{{
@@ -47,7 +47,6 @@ func TestRunControllerAdmitsRun(t *testing.T) {
 		"default/train-8": {
 			ObjectMeta: v1.ObjectMeta{Name: "train-8", Namespace: "default"},
 			Spec: v1.RunSpec{
-				Owner: "org:ai:rai",
 				Resources: v1.RunResources{
 					GPUType:   "H100-80GB",
 					TotalGPUs: 4,
@@ -85,7 +84,7 @@ func TestRunControllerEmitsHeldSpares(t *testing.T) {
 	spares := int32(2)
 	state := &ClusterState{
 		Budgets: []v1.Budget{{
-			ObjectMeta: v1.ObjectMeta{Name: "rai"},
+			ObjectMeta: v1.ObjectMeta{Name: "rai", Namespace: "default"},
 			Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
 				Name: "west-h100", Flavor: "H100-80GB",
 				Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
@@ -105,7 +104,6 @@ func TestRunControllerEmitsHeldSpares(t *testing.T) {
 		"default/train": {
 			ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"},
 			Spec: v1.RunSpec{
-				Owner:     "org:ai:rai",
 				Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
 				Spares:    &spares,
 			},
@@ -142,7 +140,7 @@ func TestRunControllerCoFundedRunUpdatesFundingStatus(t *testing.T) {
 	state := &ClusterState{
 		Budgets: []v1.Budget{
 			{
-				ObjectMeta: v1.ObjectMeta{Name: "rai"},
+				ObjectMeta: v1.ObjectMeta{Name: "rai", Namespace: "default"},
 				Spec: v1.BudgetSpec{
 					Owner: "org:ai:rai",
 					Envelopes: []v1.BudgetEnvelope{{
@@ -154,7 +152,7 @@ func TestRunControllerCoFundedRunUpdatesFundingStatus(t *testing.T) {
 				},
 			},
 			{
-				ObjectMeta: v1.ObjectMeta{Name: "vision"},
+				ObjectMeta: v1.ObjectMeta{Name: "vision", Namespace: "vision"},
 				Spec: v1.BudgetSpec{
 					Owner: "org:ai:mm:vision",
 					Envelopes: []v1.BudgetEnvelope{{
@@ -192,7 +190,6 @@ func TestRunControllerCoFundedRunUpdatesFundingStatus(t *testing.T) {
 		"default/train-128": {
 			ObjectMeta: v1.ObjectMeta{Name: "train-128", Namespace: "default"},
 			Spec: v1.RunSpec{
-				Owner: "org:ai:rai",
 				Resources: v1.RunResources{
 					GPUType:   "H100-80GB",
 					TotalGPUs: 128,
@@ -237,7 +234,7 @@ func TestRunControllerBorrowLimitCreatesReservation(t *testing.T) {
 	state := &ClusterState{
 		Budgets: []v1.Budget{
 			{
-				ObjectMeta: v1.ObjectMeta{Name: "rai"},
+				ObjectMeta: v1.ObjectMeta{Name: "rai", Namespace: "default"},
 				Spec: v1.BudgetSpec{
 					Owner: "org:ai:rai",
 					Envelopes: []v1.BudgetEnvelope{{
@@ -249,7 +246,7 @@ func TestRunControllerBorrowLimitCreatesReservation(t *testing.T) {
 				},
 			},
 			{
-				ObjectMeta: v1.ObjectMeta{Name: "vision"},
+				ObjectMeta: v1.ObjectMeta{Name: "vision", Namespace: "vision"},
 				Spec: v1.BudgetSpec{
 					Owner: "org:ai:mm:vision",
 					Envelopes: []v1.BudgetEnvelope{{
@@ -286,7 +283,6 @@ func TestRunControllerBorrowLimitCreatesReservation(t *testing.T) {
 		"default/train-128": {
 			ObjectMeta: v1.ObjectMeta{Name: "train-128", Namespace: "default"},
 			Spec: v1.RunSpec{
-				Owner: "org:ai:rai",
 				Resources: v1.RunResources{
 					GPUType:   "H100-80GB",
 					TotalGPUs: 128,
@@ -322,7 +318,7 @@ func TestRunControllerCreatesReservationWhenCapacityMissing(t *testing.T) {
 	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	state := &ClusterState{
 		Budgets: []v1.Budget{{
-			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
 			Spec: v1.BudgetSpec{
 				Owner: "org:ai:team",
 				Envelopes: []v1.BudgetEnvelope{{
@@ -348,7 +344,6 @@ func TestRunControllerCreatesReservationWhenCapacityMissing(t *testing.T) {
 		"default/train-8": {
 			ObjectMeta: v1.ObjectMeta{Name: "train-8", Namespace: "default"},
 			Spec: v1.RunSpec{
-				Owner: "org:ai:team",
 				Resources: v1.RunResources{
 					GPUType:   "H100-80GB",
 					TotalGPUs: 8,
@@ -387,7 +382,7 @@ func TestRunControllerCreatesReservationForFutureWindow(t *testing.T) {
 	start := v1.NewTime(now.Add(2 * time.Hour))
 	state := &ClusterState{
 		Budgets: []v1.Budget{{
-			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
 			Spec: v1.BudgetSpec{
 				Owner: "org:ai:team",
 				Envelopes: []v1.BudgetEnvelope{{
@@ -418,7 +413,6 @@ func TestRunControllerCreatesReservationForFutureWindow(t *testing.T) {
 		"default/train-8": {
 			ObjectMeta: v1.ObjectMeta{Name: "train-8", Namespace: "default"},
 			Spec: v1.RunSpec{
-				Owner:     "org:ai:team",
 				Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 8},
 			},
 		},
@@ -452,7 +446,7 @@ func TestElasticRunGrowsToDesired(t *testing.T) {
 	now := time.Date(2024, 2, 2, 10, 0, 0, 0, time.UTC)
 	state := &ClusterState{
 		Budgets: []v1.Budget{{
-			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
 			Spec: v1.BudgetSpec{
 				Owner: "org:ai:rai",
 				Envelopes: []v1.BudgetEnvelope{{
@@ -482,7 +476,6 @@ func TestElasticRunGrowsToDesired(t *testing.T) {
 		"default/train": {
 			ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"},
 			Spec: v1.RunSpec{
-				Owner: "org:ai:rai",
 				Resources: v1.RunResources{
 					GPUType:   "H100-80GB",
 					TotalGPUs: 96,
@@ -537,7 +530,7 @@ func TestElasticRunVoluntaryShrink(t *testing.T) {
 	now := time.Date(2024, 2, 2, 10, 0, 0, 0, time.UTC)
 	state := &ClusterState{
 		Budgets: []v1.Budget{{
-			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
 			Spec: v1.BudgetSpec{
 				Owner: "org:ai:rai",
 				Envelopes: []v1.BudgetEnvelope{{
@@ -567,7 +560,6 @@ func TestElasticRunVoluntaryShrink(t *testing.T) {
 		"default/train": {
 			ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"},
 			Spec: v1.RunSpec{
-				Owner:     "org:ai:rai",
 				Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 96},
 				Locality:  &v1.RunLocality{GroupGPUs: &group},
 				Malleable: &v1.RunMalleability{
@@ -631,19 +623,19 @@ func TestActivateReservationRunsResolver(t *testing.T) {
 	}
 
 	budgets := []v1.Budget{
-		{ObjectMeta: v1.ObjectMeta{Name: "owner-a"}, Spec: v1.BudgetSpec{Owner: "org:owner:a", Envelopes: []v1.BudgetEnvelope{{
+		{ObjectMeta: v1.ObjectMeta{Name: "owner-a", Namespace: "default"}, Spec: v1.BudgetSpec{Owner: "org:owner:a", Envelopes: []v1.BudgetEnvelope{{
 			Name:        "west",
 			Flavor:      "H100-80GB",
 			Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
 			Concurrency: 16,
 		}}}},
-		{ObjectMeta: v1.ObjectMeta{Name: "owner-b"}, Spec: v1.BudgetSpec{Owner: "org:owner:b", Envelopes: []v1.BudgetEnvelope{{
+		{ObjectMeta: v1.ObjectMeta{Name: "owner-b", Namespace: "org-owner-b"}, Spec: v1.BudgetSpec{Owner: "org:owner:b", Envelopes: []v1.BudgetEnvelope{{
 			Name:        "west",
 			Flavor:      "H100-80GB",
 			Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
 			Concurrency: 16,
 		}}}},
-		{ObjectMeta: v1.ObjectMeta{Name: "owner-c"}, Spec: v1.BudgetSpec{Owner: "org:owner:c", Envelopes: []v1.BudgetEnvelope{{
+		{ObjectMeta: v1.ObjectMeta{Name: "owner-c", Namespace: "org-owner-c"}, Spec: v1.BudgetSpec{Owner: "org:owner:c", Envelopes: []v1.BudgetEnvelope{{
 			Name:        "west",
 			Flavor:      "H100-80GB",
 			Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
@@ -655,11 +647,11 @@ func TestActivateReservationRunsResolver(t *testing.T) {
 	state.Runs = map[string]*v1.Run{
 		"default/run-a": {
 			ObjectMeta: v1.ObjectMeta{Name: "run-a", Namespace: "default"},
-			Spec:       v1.RunSpec{Owner: "org:owner:a", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 8}, Locality: &v1.RunLocality{GroupGPUs: int32Ptr(8)}},
+			Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 8}, Locality: &v1.RunLocality{GroupGPUs: int32Ptr(8)}},
 		},
-		"default/run-b": {
-			ObjectMeta: v1.ObjectMeta{Name: "run-b", Namespace: "default"},
-			Spec:       v1.RunSpec{Owner: "org:owner:b", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 16}, Locality: &v1.RunLocality{GroupGPUs: int32Ptr(8)}, Malleable: &v1.RunMalleability{MinTotalGPUs: 8, MaxTotalGPUs: 16, StepGPUs: 8}},
+		"org-owner-b/run-b": {
+			ObjectMeta: v1.ObjectMeta{Name: "run-b", Namespace: "org-owner-b"},
+			Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 16}, Locality: &v1.RunLocality{GroupGPUs: int32Ptr(8)}, Malleable: &v1.RunMalleability{MinTotalGPUs: 8, MaxTotalGPUs: 16, StepGPUs: 8}},
 		},
 	}
 
@@ -668,15 +660,15 @@ func TestActivateReservationRunsResolver(t *testing.T) {
 	// bound/Running incumbents the scheduler plugin would have produced, so the
 	// activation-time resolver has funded work to preempt (lottery) and shrink.
 	seedRunning(t, state, "default/run-a", now)
-	seedRunning(t, state, "default/run-b", now)
+	seedRunning(t, state, "org-owner-b/run-b", now)
 
 	// Add the pending run that will trigger a reservation.
-	state.Runs["default/run-c"] = &v1.Run{
-		ObjectMeta: v1.ObjectMeta{Name: "run-c", Namespace: "default"},
-		Spec:       v1.RunSpec{Owner: "org:owner:c", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 16}, Locality: &v1.RunLocality{GroupGPUs: int32Ptr(8)}},
+	state.Runs["org-owner-c/run-c"] = &v1.Run{
+		ObjectMeta: v1.ObjectMeta{Name: "run-c", Namespace: "org-owner-c"},
+		Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 16}, Locality: &v1.RunLocality{GroupGPUs: int32Ptr(8)}},
 	}
 
-	if err := controller.Reconcile("default", "run-c"); err != nil {
+	if err := controller.Reconcile("org-owner-c", "run-c"); err != nil {
 		t.Fatalf("run-c reconcile failed: %v", err)
 	}
 
@@ -696,11 +688,11 @@ func TestActivateReservationRunsResolver(t *testing.T) {
 	// run-c's funded activation frees capacity and emits intent pods (Pending);
 	// the scheduler plugin mints its leases — stood in for by seedRunning — to
 	// reach Running.
-	seedRunning(t, state, "default/run-c", activationTime)
+	seedRunning(t, state, "org-owner-c/run-c", activationTime)
 
 	runA := state.Runs["default/run-a"]
-	runB := state.Runs["default/run-b"]
-	runC := state.Runs["default/run-c"]
+	runB := state.Runs["org-owner-b/run-b"]
+	runC := state.Runs["org-owner-c/run-c"]
 
 	if runC.Status.Phase != RunPhaseRunning {
 		t.Fatalf("expected run-c running after activation, got %s", runC.Status.Phase)
@@ -742,7 +734,7 @@ func TestHandleNodeFailureSwapsToSpare(t *testing.T) {
 	now := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
 	state := &ClusterState{
 		Budgets: []v1.Budget{{
-			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
 			Spec: v1.BudgetSpec{
 				Owner: "org:ai:team",
 				Envelopes: []v1.BudgetEnvelope{{
@@ -762,7 +754,6 @@ func TestHandleNodeFailureSwapsToSpare(t *testing.T) {
 		"default/run": {
 			ObjectMeta: v1.ObjectMeta{Name: "run", Namespace: "default"},
 			Spec: v1.RunSpec{
-				Owner:     "org:ai:team",
 				Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
 				Locality:  &v1.RunLocality{GroupGPUs: int32Ptr(4)},
 				Spares:    int32Ptr(2),
@@ -878,7 +869,7 @@ func TestRunControllerParksRunWhenNoMatchingDomain(t *testing.T) {
 	now := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
 	state := &ClusterState{
 		Budgets: []v1.Budget{{
-			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
 			Spec: v1.BudgetSpec{
 				Owner: "org:ai:team",
 				Envelopes: []v1.BudgetEnvelope{{
@@ -894,7 +885,6 @@ func TestRunControllerParksRunWhenNoMatchingDomain(t *testing.T) {
 			"default/stranded": {
 				ObjectMeta: v1.ObjectMeta{Name: "stranded", Namespace: "default"},
 				Spec: v1.RunSpec{
-					Owner:     "org:ai:team",
 					Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 8},
 				},
 			},
@@ -925,7 +915,7 @@ func TestReconcileAdoptsHalfAppliedAdmission(t *testing.T) {
 	now := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
 	state := &ClusterState{
 		Budgets: []v1.Budget{{
-			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
 			Spec: v1.BudgetSpec{
 				Owner: "org:ai:team",
 				Envelopes: []v1.BudgetEnvelope{{
@@ -963,7 +953,6 @@ func TestReconcileAdoptsHalfAppliedAdmission(t *testing.T) {
 			"default/half": {
 				ObjectMeta: v1.ObjectMeta{Name: "half", Namespace: "default"},
 				Spec: v1.RunSpec{
-					Owner:     "org:ai:team",
 					Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
 				},
 				Status: v1.RunStatus{Phase: RunPhasePending},
@@ -1026,7 +1015,6 @@ func TestActivateReservationAdoptsHalfAppliedActivation(t *testing.T) {
 			"default/half": {
 				ObjectMeta: v1.ObjectMeta{Name: "half", Namespace: "default"},
 				Spec: v1.RunSpec{
-					Owner:     "org:ai:team",
 					Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
 				},
 				Status: v1.RunStatus{Phase: RunPhasePending, PendingReservation: ptrString("half-res-1")},
@@ -1078,7 +1066,7 @@ func TestElasticGrowShrinkEmitMetrics(t *testing.T) {
 	now := time.Date(2024, 2, 2, 10, 0, 0, 0, time.UTC)
 	state := &ClusterState{
 		Budgets: []v1.Budget{{
-			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
 			Spec: v1.BudgetSpec{
 				Owner: "org:ai:rai",
 				Envelopes: []v1.BudgetEnvelope{{
@@ -1112,7 +1100,6 @@ func TestElasticGrowShrinkEmitMetrics(t *testing.T) {
 		runKey: {
 			ObjectMeta: v1.ObjectMeta{Name: "train-metrics", Namespace: "default"},
 			Spec: v1.RunSpec{
-				Owner:     "org:ai:rai",
 				Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 96},
 				Locality:  &v1.RunLocality{GroupGPUs: &group},
 				Malleable: &v1.RunMalleability{MinTotalGPUs: 96, MaxTotalGPUs: 160, StepGPUs: 32, DesiredTotalGPUs: &desired},
@@ -1169,7 +1156,7 @@ func TestReservationBacklogMetricLifecycle(t *testing.T) {
 	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	state := &ClusterState{
 		Budgets: []v1.Budget{{
-			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
 			Spec: v1.BudgetSpec{
 				Owner: "org:ai:team",
 				Envelopes: []v1.BudgetEnvelope{{
@@ -1195,7 +1182,6 @@ func TestReservationBacklogMetricLifecycle(t *testing.T) {
 		"default/train-backlog": {
 			ObjectMeta: v1.ObjectMeta{Name: "train-backlog", Namespace: "default"},
 			Spec: v1.RunSpec{
-				Owner:     "org:ai:team",
 				Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 8},
 			},
 		},

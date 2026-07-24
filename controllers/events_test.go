@@ -99,13 +99,13 @@ func TestEngineEmitsEventsIncludingAttestedSeed(t *testing.T) {
 	if err := controller.Reconcile("default", "run-a"); err != nil {
 		t.Fatalf("run-a reconcile failed: %v", err)
 	}
-	if err := controller.Reconcile("default", "run-b"); err != nil {
+	if err := controller.Reconcile("org-owner-b", "run-b"); err != nil {
 		t.Fatalf("run-b reconcile failed: %v", err)
 	}
 	if got := activeIntentPods(state, "default", "run-a"); got != 8 {
 		t.Errorf("expected run-a to emit 8 unscheduled intent pods on the bind path, got %d (events %+v)", got, rec.events)
 	}
-	if got := activeIntentPods(state, "default", "run-b"); got != 16 {
+	if got := activeIntentPods(state, "org-owner-b", "run-b"); got != 16 {
 		t.Errorf("expected run-b to emit 16 unscheduled intent pods on the bind path, got %d (events %+v)", got, rec.events)
 	}
 	if len(state.Leases) != 0 {
@@ -125,13 +125,13 @@ func TestEngineEmitsEventsIncludingAttestedSeed(t *testing.T) {
 	// — the bound state the resolver later shrinks (run-b) and ends by lottery
 	// (run-a) once run-c's reservation activates.
 	seedRunning(t, state, "default/run-a", now)
-	seedRunning(t, state, "default/run-b", now)
+	seedRunning(t, state, "org-owner-b/run-b", now)
 
-	state.Runs["default/run-c"] = &v1.Run{
-		ObjectMeta: v1.ObjectMeta{Name: "run-c", Namespace: "default"},
-		Spec:       v1.RunSpec{Owner: "org:owner:c", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 16}, Locality: &v1.RunLocality{GroupGPUs: int32Ptr(8)}},
+	state.Runs["org-owner-c/run-c"] = &v1.Run{
+		ObjectMeta: v1.ObjectMeta{Name: "run-c", Namespace: "org-owner-c"},
+		Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 16}, Locality: &v1.RunLocality{GroupGPUs: int32Ptr(8)}},
 	}
-	if err := controller.Reconcile("default", "run-c"); err != nil {
+	if err := controller.Reconcile("org-owner-c", "run-c"); err != nil {
 		t.Fatalf("run-c reconcile failed: %v", err)
 	}
 	if !rec.has("run-c", EventTypeNormal, "Reserved", "") {
