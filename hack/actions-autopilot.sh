@@ -8,9 +8,9 @@
 # yours; the GitHub mobile app merges PRs fine). The `hack/autopilot-settings.json` guardrail is
 # passed to Claude so even an errant turn cannot `gh pr merge` or do anything destructive.
 #
-# Steering from your phone: reply to the status issue with a directive
-# ("do R26 next", "stop after this item", "skip R13"). The next turn reads your latest comment
-# and obeys it.
+# Steering from your phone: reply to the status issue with "@autopilot <instruction>"
+# (e.g. "@autopilot do R26 next", "@autopilot stop after this item"). The next turn reads your
+# latest @autopilot comment and obeys it. It stays in force until you post another one.
 #
 # NOTE: this is a first-cut. The likely first-run snags are the Claude install/flags and the Go
 # toolchain for `make verify`; watch the first segment's logs and adjust.
@@ -58,15 +58,28 @@ if [ -z "$ISSUE" ]; then
   TITLE="${AUTOPILOT_NAME:-}"
   [ -z "$TITLE" ] && TITLE="$(printf '%s' "$TASK" | tr '\n' ' ' | sed -E 's/^ *//; s/ +/ /g' | cut -c1-60)"
   ISSUE="$(gh issue create --repo "$REPO" --title "🤖 ${TITLE:-Autopilot $(date -u +%Y-%m-%d)}" \
-    --body $'Unattended autopilot. I post progress here as I go.\n\n**To steer me from your phone:** reply with a directive — e.g. *"do R26 next"*, *"skip R13"*, *"stop after this item"* — and I obey it on my next turn.\n\nI open PRs but do **not** merge; merge them yourself (the mobile app works).' \
+    --body $'Unattended autopilot. I post progress here as I go.\n\n**To steer me from your phone:** reply with **`@autopilot <instruction>`** — e.g. *"@autopilot do R26 next"*, *"@autopilot skip R13"*, *"@autopilot stop after this item"*. I read your latest `@autopilot` comment on my next turn and it stays in force until you post another one.\n\nThe `@autopilot` prefix matters: my own status notes are posted with the same account, so it is how I tell your instructions apart from my own chatter.\n\nI open PRs but do **not** merge; merge them yourself (the mobile app works).' \
     2>/dev/null | grep -oE '[0-9]+$' || true)"
 fi
 note $'▶️ **Segment '"$((CONT+1))"' started.** ['"[logs]($RUN_URL)"$'\n\n**Task:** '"$TASK"
 
-# latest human directive on the issue (skip my own ▶️/✅/⏸/🅿️/🛑 status comments)
+# Latest owner directive: ONLY comments that open with "@autopilot" count.
+#
+# This used to be a blocklist — "anything not starting with a status emoji is David talking" — which
+# worked while my own notes were terse ▶️/⏸/✅ lines. Then the scrum-note change made me post prose
+# ("Reviewing the three lease-mint sites…"), which is indistinguishable from a human directive, so I
+# began reading my OWN last note back as "OWNER DIRECTIVE … overrides priority" on every turn. (Seen
+# live: a segment inherited its own "stand down" note and burned a turn reconciling it against its
+# task.) Author can't discriminate either — I post with David's PAT, so my comments are authored by
+# him with assoc=OWNER. An explicit marker is the one signal I won't accidentally emit; note I do
+# write things like "Autopilot resumed (17:10Z)", so the bare word alone would reintroduce the bug.
+#
+# Also makes a directive STICKY: it stays in force through all my chatter until David posts another,
+# instead of being silently replaced by my next status note.
 owner_directive() {
   gh issue view "$ISSUE" --repo "$REPO" --json comments \
-    --jq '[.comments[] | select(.body | test("^(▶️|✅|⏸|🅿️|🛑|⚠️|🤖)") | not)] | last | .body // ""' 2>/dev/null
+    --jq '[.comments[] | select(.body | test("^\\s*@autopilot\\b"; "i"))] | last
+          | (.body // "") | sub("^\\s*@autopilot\\s*:?\\s*"; ""; "i")' 2>/dev/null
 }
 
 # --- prompts ----------------------------------------------------------------------------
