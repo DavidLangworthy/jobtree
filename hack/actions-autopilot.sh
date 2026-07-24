@@ -71,9 +71,12 @@ ultrathink. You are running UNATTENDED in GitHub Actions. There is no human to a
    AND post a '🅿️ parked: <item> — <why>' comment to issue #$ISSUE.
 4. Per-PR gate = make verify green (+ envtest, + eviction fuzzer for engine/plugin/funding), and
    mutation-verify each fix. That is enough to push.
-5. Post a short progress comment to the status issue as you finish each item, e.g.:
-     gh issue comment $ISSUE --repo $REPO --body '✅ R26 — https://github.com/$REPO/pull/NN'
-   (use ⚠️ if you hit a blocker). Keep them one line.
+5. Post short progress comments to the status issue so it shows a live pulse — NOT just at the
+   end. Post when you START an item, at milestones inside a long one (design read; code done;
+   'make verify' passing; pushing), and when you finish:
+     gh issue comment $ISSUE --repo $REPO --body '🔧 R7 pt2: make verify green, opening the PR'
+     gh issue comment $ISSUE --repo $REPO --body '✅ R7 pt2 — https://github.com/$REPO/pull/NN'
+   (use ⚠️ for a blocker). One line each; a big item should tick a few times before it's done.
 6. Record judgment calls in docs/project/remediation/IMPLEMENTATION-LOG.md; keep the boards in sync.
 
 TASK: $TASK
@@ -90,10 +93,25 @@ PROMPT
 
 # --- one Claude turn; sets LIMIT=1 on a usage-limit signature ----------------------------
 LIMIT=0
+# Render stream-json events as readable lines in the Actions log — LIVE, not buffered to the
+# turn's end the way plain --verbose is. Raw stream is still tee'd to $LOG for the limit grep.
+pretty() {
+  command -v jq >/dev/null 2>&1 || { cat; return; }
+  jq -Rr --unbuffered '
+    (try fromjson catch null) as $j |
+    if   $j == null           then .
+    elif $j.type=="assistant" then ($j.message.content[]? |
+           if   .type=="text"     then (.text | gsub("\n";" ") | .[0:200])
+           elif .type=="tool_use" then "  🔧 " + .name + " " +
+                  ((.input.command // .input.file_path // .input.pattern // .input.description // "") | tostring | .[0:140])
+           else empty end)
+    elif $j.type=="result"    then "  ── turn done (" + ($j.subtype // "ok") + ")"
+    else empty end' 2>/dev/null
+}
 run_turn() {
   local prompt="$1"; LIMIT=0
-  claude --dangerously-skip-permissions --model "$MODEL" --verbose \
-         --settings "$SETTINGS" -p "$prompt" 2>&1 | tee "$LOG"
+  claude --dangerously-skip-permissions --model "$MODEL" \
+         --output-format stream-json --verbose --settings "$SETTINGS" -p "$prompt" 2>&1 | tee "$LOG" | pretty
   local rc=${PIPESTATUS[0]}
   grep -qiE "usage limit|rate limit|reset[s]? (at|in)|too many requests|quota (exceeded|reached)" "$LOG" 2>/dev/null && LIMIT=1
   return "$rc"
