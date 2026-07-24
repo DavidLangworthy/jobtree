@@ -43,7 +43,9 @@ note() { [ -n "$ISSUE" ] && gh issue comment "$ISSUE" --repo "$REPO" --body "$1"
 
 # --- status issue -----------------------------------------------------------------------
 if [ -z "$ISSUE" ]; then
-  ISSUE="$(gh issue create --repo "$REPO" --title "🤖 Autopilot — $(date -u +%Y-%m-%d) — $(git rev-parse --short HEAD)" \
+  # descriptive title from the task's first line (Claude refines it on turn 1); fall back to a date
+  TITLE_SLUG="$(printf '%s' "$TASK" | tr '\n' ' ' | sed -E 's/^ *//; s/ +/ /g' | cut -c1-80)"
+  ISSUE="$(gh issue create --repo "$REPO" --title "🤖 Autopilot — ${TITLE_SLUG:-$(date -u +%Y-%m-%d)}" \
     --body $'Unattended autopilot. I post progress here as I go.\n\n**To steer me from your phone:** reply with a directive — e.g. *"do R26 next"*, *"skip R13"*, *"stop after this item"* — and I obey it on my next turn.\n\nI open PRs but do **not** merge; merge them yourself (the mobile app works).' \
     2>/dev/null | grep -oE '[0-9]+$' || true)"
 fi
@@ -60,6 +62,8 @@ read -r -d '' KICK <<PROMPT || true
 ultrathink. You are running UNATTENDED in GitHub Actions. There is no human to ask.
 
 1. Read AGENTS.md and docs/project/autonomous-run-playbook.md IN FULL, then follow the playbook.
+   First, give this status issue a concise, descriptive title summarising the task:
+     gh issue edit $ISSUE --repo $REPO --title '🤖 <5-8 word summary>'
 2. Do the TASK below. One PR per item, based on origin/main (git fetch first). Push each branch
    and open a PR. Do NOT merge, and do NOT run a per-PR adversarial review.
 3. Obey the PARK LIST — never make an owner decision (R7 pt2, R4 pt1b staleness bound, R4 pt2b,
