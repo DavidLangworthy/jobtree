@@ -73,12 +73,18 @@ ultrathink. You are running UNATTENDED in GitHub Actions. There is no human to a
    AND post a '🅿️ parked: <item> — <why>' comment to issue #$ISSUE.
 4. Per-PR gate = make verify green (+ envtest, + eviction fuzzer for engine/plugin/funding), and
    mutation-verify each fix. That is enough to push.
-5. Post short progress comments to the status issue so it shows a live pulse — NOT just at the
-   end. Post when you START an item, at milestones inside a long one (design read; code done;
-   'make verify' passing; pushing), and when you finish:
-     gh issue comment $ISSUE --repo $REPO --body '🔧 R7 pt2: make verify green, opening the PR'
-     gh issue comment $ISSUE --repo $REPO --body '✅ R7 pt2 — https://github.com/$REPO/pull/NN'
-   (use ⚠️ for a blocker). One line each; a big item should tick a few times before it's done.
+5. Post status like a developer giving standup notes — specific, useful, and paced like a human
+   who's actually working, NOT a machine heartbeat. A reader should skim the issue and know exactly
+   what happened and why. Post when you start something, at each REAL milestone, and when you finish
+   or hit a blocker — never filler, never the same line twice. Good updates:
+     "Reviewing the three lease-mint sites for the namespace derivation."
+     "Found 2 issues: a missing PaidByNamespace on the hypothetical lease, and a golden that wasn't
+      retopologized. Fixing the first now."
+     "make verify + eviction fuzzer green; pushed the fix, #NN updated."
+     "Blocked: the amendment doesn't say whether X — parking it in DECISIONS-NEEDED, moving on."
+   Post with:  gh issue comment $ISSUE --repo $REPO --body '<your standup-style line>'
+   Do NOT narrate mechanics (retries, waits) — the runner handles those. Quality over frequency:
+   a handful of meaningful updates beats a stream of noise.
 6. Record judgment calls in docs/project/remediation/IMPLEMENTATION-LOG.md; keep the boards in sync.
 
 TASK: $TASK
@@ -130,7 +136,7 @@ redispatch() {
 }
 
 # --- the loop ---------------------------------------------------------------------------
-mode=first
+mode=first; errs=0
 while true; do
   [ -f "$SENTINEL" ] && break
 
@@ -149,18 +155,30 @@ while true; do
   mode=resume
 
   if [ "$LIMIT" -eq 1 ]; then
-    # Max-quota reset is on a ~5h window. Napping fits inside a 6h job if the limit hit early;
-    # if we're near the budget, re-dispatch so a fresh segment retries once quota returns.
+    errs=0
+    # Max-quota reset is on a ~5h window. Nap if it fits in the 6h job; else re-dispatch.
     if [ $(((SECONDS + LIMIT_SLEEP)/60)) -lt "$DEADLINE_MIN" ]; then
-      note "⏸ Usage limit — napping $((LIMIT_SLEEP/60))m, then retrying."
+      note "⏸ Usage limit reached — napping $((LIMIT_SLEEP/60))m for the reset, then continuing."
       sleep "$LIMIT_SLEEP"
     else
       redispatch "Usage limit near the segment budget"
       exit 0
     fi
   elif [ "$rc" -ne 0 ]; then
-    note "⚠️ Claude turn exited $rc (no limit signature). Brief backoff, then retry."
-    sleep 60
+    # A turn errored with NO usage-limit text. Do NOT post a comment per retry (that spam is what
+    # buried the last run — 310 identical lines). Escalate the backoff, stay quiet, and after a few
+    # in a row — almost always spent quota whose message we didn't match, or a wedged turn — STAND
+    # DOWN cleanly instead of looping for hours.
+    errs=$((errs+1))
+    if [ "$errs" -ge "${MAX_ERRS:-3}" ]; then
+      note "🛑 **Standing down.** ${errs} turns errored back-to-back with no usage-limit text — most likely the Max quota is spent (and its message didn't match my detector). Stopping rather than spamming retries; re-launch me, or reply here, once quota resets."
+      printf 'stood down after %s consecutive errored turns\n' "$errs" > "$SENTINEL"
+    else
+      [ "$errs" -eq 1 ] && note "⚠️ A turn errored (exit $rc, no limit text). Backing off and retrying quietly; I'll stand down rather than spam if it keeps failing."
+      sleep $((60 * errs))
+    fi
+  else
+    errs=0
   fi
 done
 
