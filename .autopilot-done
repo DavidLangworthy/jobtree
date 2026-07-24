@@ -1,0 +1,1 @@
+R7 pt2 cross-vendor panel: 42 findings/25 sites, 83/85 citations attested; 18 fixed + mutation-verified and pushed to #127 (271f58e, gate + all CI green incl. kind e2e), 2 parked P5/P6, 2 pre-existing to F7; codex-sol raised 2 high findings no Claude lens did; Judge structurally unreachable at 2-wide concurrency (needs more cores, not retries); not merged.

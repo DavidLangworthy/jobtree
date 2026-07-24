@@ -456,3 +456,26 @@ a 2-wide queue — is out of reach on this hardware by a wide margin.
 five-hour serial queue into something that finishes. Until then, this harness produces Review-quality
 output on this hardware, and the archive should say so rather than promising an adjudication that
 never arrives.
+
+### Why the broken smoke scripts could sit there
+
+Worth stating, because it explains the defect's lifetime and it qualifies the green checkmarks on
+this PR. The CI e2e job (`.github/workflows/e2e.yaml`) runs exactly one thing against the cluster:
+
+```yaml
+- name: Run test/e2e (build tag e2e)
+  run: go test ./test/e2e/... -tags=e2e -v -count=1
+```
+
+It does **not** invoke any of the seven `hack/e2e/*-smoke.sh` scripts. Those are manual levers, run
+through `make e2e-runbook` and friends. So a stale field that would hard-fail six of them on strict
+decoding — and silently hollow out the seventh's negative assertion — was invisible to every gate
+this repo has. `make verify` does not read them; the e2e job does not run them; `go vet` cannot see
+inside a heredoc.
+
+The repairs here are therefore verified by inspection and `bash -n` only, and that is the honest
+strength of the claim: **the fix to these seven scripts is not covered by CI.** Everything else in
+this record is covered by `make verify`, envtest, the fuzzer, or a real kind cluster.
+
+That gap is itself worth a decision someone should take: a lever nobody runs is indistinguishable
+from a lever that does not work.
