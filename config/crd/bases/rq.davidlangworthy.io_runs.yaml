@@ -15,9 +15,6 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.owner
-      name: Owner
-      type: string
     - jsonPath: .spec.resources.totalGPUs
       name: GPUs
       type: integer
@@ -147,11 +144,14 @@ spec:
                 - message: malleable.desiredTotalGPUs must align with stepGPUs
                   rule: '!has(self.desiredTotalGPUs) || (self.desiredTotalGPUs - self.minTotalGPUs)
                     % self.stepGPUs == 0'
-              owner:
-                minLength: 1
-                type: string
               resources:
-                description: RunResources describes GPU requirements.
+                description: |-
+                  Owner is DELETED (R7 tenancy amendment §4). The funding principal that
+                  pays for a Run is DERIVED from the Run's namespace — the API server
+                  authenticates metadata.namespace, so it cannot be forged, while a
+                  spec.owner field was checked only for non-emptiness and let any tenant
+                  class Owned against any victim's envelopes. Callers resolve the owner via
+                  funding.Evaluation.OwnerOf(run.Namespace).
                 properties:
                   gpuType:
                     minLength: 1
@@ -297,7 +297,6 @@ spec:
                 minimum: 0
                 type: integer
             required:
-            - owner
             - resources
             type: object
             x-kubernetes-validations:

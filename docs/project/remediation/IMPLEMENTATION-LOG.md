@@ -1596,3 +1596,52 @@ clusters, and notes that the `crd-writes` lever unblocks writes while the rollou
 The additive-upgrade check (verification item 3) is a real additive change, not a no-op
 upgrade: it adds an optional property to a live CRD's schema **while an object of that
 kind exists**, and asserts the object reads back unchanged.
+
+## R7 pt2 — the owner is the namespace (2026-07-24)
+
+**Owner decision:** David APPROVED and UNPARKED R7 pt2, overriding the park-list entry
+(Codex-2 / #63). Implemented per `remediation/R7-tenancy-amendment.md` §4 exactly. Judgment
+calls, recorded rather than interrupting:
+
+**1. `nsForOwner` — one namespace per owner, threaded through every fixture.** The amendment's
+model is one principal per namespace, owner derived from the namespace. The old test corpus put
+several distinct budget *owners* in one namespace (`default`) and let the run name its own owner;
+under derivation that namespace is now *conflicted* (two owners → fail-safe to unbound → every
+lease Unfunded). So every migrated test maps an owner tier to a namespace with a single convention
+— `owner` with `:`/`/` → `-` — applied in the package's `budgetOf`/`runOf` helpers so budgets,
+runs and leases for one owner co-reside and `OwnerOf(ns)` round-trips. Where a lease is *borrowed*
+(run in owner A's namespace, paid by sponsor B's envelope) the run/lease namespace is A's and only
+`PaidByBudgetNamespace` points at B (a `forRunOwner` lease option). The golden and the envtest
+package are the exception: their runs stay in `default` with the single owner's budget co-located
+there, and only a genuine sponsor's budget moves to its own namespace — envtest namespaces are real
+apiserver objects and are not worth creating for single-tenant scenarios.
+
+**2. Pure borrowers must be admin-bound.** The empty-borrower guard means a run whose namespace has
+no Budget derives owner `""` and can borrow from nothing — including `To:["*"]` sponsors. Two funding
+tests relied on a bare borrower declaring its own owner; they now bind the borrower's namespace with
+a nominal one-envelope Budget (amendment §5's pool-consumer pattern). This is the guard working as
+designed, not a test workaround.
+
+**3. `PaidByNamespace` field semantics left as pt1 shipped them.** The amendment §7 wants a *required*
+`PaidByNamespace` plus a *loud rail* (empty payer-namespace surfaced as a defect). pt1 already shipped
+the field as `PaidByBudgetNamespace`, *optional* with a silent legacy-empty fallback (Codex #1). This
+PR stamps it at all three mint sites (already done by pt1) and adds the *binding-conflict* surfacing on
+the `Evaluation` (`Conflicts()`), but does NOT flip the field to required or add the empty-namespace
+loud rail — that would reclassify legacy-empty leases, an owner-facing change to an already-ratified
+pt1 decision. Flagged as sub-question F7(4) in `DECISIONS-NEEDED.md` for the pre-merge review, not
+parked (it does not block pt2).
+
+**4. R26 alarms not wired in this PR.** The engine now exposes `Evaluation.Conflicts()` (multi-owner
+and leaf-owner-collision namespaces) and the amendment asks R26 to alarm on those plus interior-owner
+Runs and empty-payer leases. Wiring the auditor to consume this is a separate small change on R26's
+spec; surfacing the data on the Evaluation (which the fail-safe already needs) is in scope here, the
+auditor consumption is not. Flagged in F7.
+
+**5. `promiseProvenanceValid` → namespace equality.** With `Run.Spec.Owner` gone the plugin's promise
+provenance check drops the two owner-string agreements and gates on `b.Namespace == run.Namespace`
+(forge-proof: the API server authenticates `metadata.namespace`). `seg.Owner` is now cosmetic; the
+security test was rewritten to prove the cross-namespace charge is still refused and that the cosmetic
+owner introduces no laundering path.
+
+Gate: `make verify` + envtest + the eviction fuzzer; the three load-bearing engine fixes
+(empty-borrower guard, leaf-owner injectivity, multi-owner fail-safe) were mutation-verified.
