@@ -187,7 +187,6 @@ apiVersion: rq.davidlangworthy.io/v1
 kind: Run
 metadata: { name: llama-ft, namespace: ml }
 spec:
-  owner: org:ai:rai
   resources: { gpuType: h100, totalGPUs: 16 }
   locality: { groupGPUs: 8 }          # 8-GPU NVLink node per group
   follow: { after: [datagen] }        # replaces --dependency=afterok

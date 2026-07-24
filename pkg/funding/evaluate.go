@@ -77,8 +77,9 @@ type Evaluation struct {
 	// (R7 tenancy amendment §4). A namespace is absent here when it is unbound
 	// (no Budgets) or its binding is conflicted (fail-safe to unbound); OwnerOf
 	// returns "" for those. conflicts records the admin errors that triggered a
-	// fail-safe so R26 can alarm and callers can log — the funding decision has
-	// already coasted the affected leases Unfunded.
+	// fail-safe so a caller CAN alarm and log — though none does yet; see
+	// BindingConflict. The funding decision has already coasted the affected
+	// leases Unfunded either way.
 	ownerByNamespace map[string]string
 	conflicts        []BindingConflict
 
@@ -170,7 +171,15 @@ const (
 )
 
 // BindingConflict names a namespace whose owner derivation failed safe to
-// unbound, and why. R26's ledger auditor consumes these to alarm.
+// unbound, and why.
+//
+// NOTHING CONSUMES THESE YET. R26's ledger auditor is the intended consumer and
+// is NOT wired to them (DECISIONS-NEEDED F7, sub-question 4); `Conflicts()` has
+// no production caller today. An earlier version of this comment said the
+// auditor "consumes these to alarm", which is a claim nothing runs — precisely
+// the comment-as-enforcement class the review playbook names. Until the auditor
+// is wired, an admin who mis-binds a namespace gets a correct fail-safe and NO
+// operator-visible signal: the namespace simply stops funding work.
 type BindingConflict struct {
 	Namespace string
 	Owner     string // the colliding leaf owner, for LeafOwnerSpansNamespaces
@@ -215,20 +224,35 @@ func (ev *Evaluation) deriveOwners(budgets []v1.Budget) {
 
 	// A leaf owner bound in two-plus namespaces poisons every namespace it
 	// touches (the charge could land in any of them).
+	//
+	// Both loops below walk their maps in SORTED key order, and the conflicts are
+	// emitted in sorted namespace order. Go randomizes map iteration per process,
+	// and two owners can collide on the same namespace — so an unsorted walk makes
+	// BindingConflict.Owner (and the order of Conflicts()) a coin flip that
+	// changes between two evaluations of identical input. The funding decision is
+	// safe either way (the namespace derives "" whichever owner wins), but R26's
+	// auditor alarms off these records: a diagnostic that names a different
+	// culprit each sweep is one an operator cannot act on, and an alarm that
+	// reorders is one that looks like new events when nothing changed.
 	collided := make(map[string]string) // namespace → colliding leaf owner
-	for owner, nss := range nsByOwner {
+	for _, owner := range sortedKeys(nsByOwner) {
 		if _, isInterior := interior[owner]; isInterior {
 			continue
 		}
+		nss := nsByOwner[owner]
 		if len(nss) >= 2 {
 			for ns := range nss {
-				collided[ns] = owner
+				// Lexicographically smallest colliding owner wins, deterministically.
+				if prior, ok := collided[ns]; !ok || owner < prior {
+					collided[ns] = owner
+				}
 			}
 		}
 	}
 
 	ev.ownerByNamespace = make(map[string]string, len(ownersByNS))
-	for ns, owners := range ownersByNS {
+	for _, ns := range sortedKeys(ownersByNS) {
+		owners := ownersByNS[ns]
 		if owner, ok := collided[ns]; ok {
 			ev.conflicts = append(ev.conflicts, BindingConflict{
 				Namespace: ns, Owner: owner, Reason: ConflictLeafOwnerSpansNamespaces,
@@ -252,6 +276,14 @@ func (ev *Evaluation) deriveOwners(budgets []v1.Budget) {
 // empty owner is the fail-safe sentinel: cover.Plan refuses a fresh Run with
 // it, and lendingAllows never lends to it (the empty-borrower guard), so an
 // unbound namespace participates in no funding at all.
+//
+// "COAST" IS NOT A PROMISE OF SAFETY. The amendment says pre-existing leases
+// "reclassify Unfunded and coast", and that is true of the funding decision
+// alone: nothing here closes them. But Unfunded is the resolver's FIRST reclaim
+// target by design (quota-semantics.md Decision 1 — opportunistic capacity is
+// what gets cut first), so under any contention the running work of a namespace
+// whose binding an admin just broke is the first thing evicted. Coasting means
+// "not billed and not closed by the engine", not "left alone".
 func (ev *Evaluation) OwnerOf(namespace string) string {
 	return ev.ownerByNamespace[namespace]
 }
@@ -259,6 +291,20 @@ func (ev *Evaluation) OwnerOf(namespace string) string {
 // Conflicts lists the binding fail-safes detected during derivation (R7 §4).
 func (ev *Evaluation) Conflicts() []BindingConflict {
 	return ev.conflicts
+}
+
+// OwnerOfNamespace derives one namespace's funding principal from the Budgets
+// alone, without replaying any leases. It exists for callers on the mint path
+// that hold a Budget list but no Evaluation — the scheduler plugin's promise
+// provenance check — and it runs the SAME deriveOwners the engine runs, so the
+// two can never drift into disagreeing about who pays.
+//
+// It returns "" for an unbound or conflicted namespace, exactly as
+// Evaluation.OwnerOf does.
+func OwnerOfNamespace(budgets []v1.Budget, namespace string) string {
+	ev := &Evaluation{}
+	ev.deriveOwners(budgets)
+	return ev.OwnerOf(namespace)
 }
 
 // Evaluate derives the classification. It replays the lease facts from the

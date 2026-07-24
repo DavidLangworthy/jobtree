@@ -508,13 +508,29 @@ func TestPromiseProvenanceValid(t *testing.T) {
 	if m.promiseProvenanceValid(ctx, "default", "train", forgedNS) {
 		t.Errorf("a promise naming another namespace's budget under the run's namespace must be refused")
 	}
-	// seg.Owner is now COSMETIC — the check no longer reads it. A segment whose
-	// namespace/budget/envelope are the run's own is accepted regardless of a
-	// wrong owner string (the minted lease's Spec.Owner comes from the resolved
-	// segment, not from a forgeable agreement).
-	cosmeticOwner := cover.Segment{Namespace: "default", Owner: "org:whatever", BudgetName: "team", EnvelopeName: "west"}
-	if !m.promiseProvenanceValid(ctx, "default", "train", cosmeticOwner) {
-		t.Errorf("seg.Owner is cosmetic post-R7; a same-namespace own-budget charge must still be accepted")
+	// ASSERTION REVERSED, deliberately. This case used to read "seg.Owner is now
+	// COSMETIC — the check no longer reads it", and accepted a segment carrying
+	// `Owner: "org:whatever"`. The R7 pt2 adversarial review asked precisely the
+	// question DECISIONS-NEEDED F7(3) posed — "confirm that seg.Owner being
+	// cosmetic introduces no laundering path" — and found one.
+	//
+	// seg.Owner is cosmetic to the FUNDING DECISION (Evaluate bills by
+	// EnvelopeKey and reads the owner off the real Budget), but it is copied onto
+	// Lease.Spec.Owner at mint. So an unpinned owner string does not let a forged
+	// Promise pod charge anyone it could not already charge — it lets it write a
+	// FALSE PRINCIPAL onto a real, GPU-holding lease, which is the first field
+	// any audit of this ledger reads. "Cannot mis-charge" and "cannot mis-state
+	// who is holding the GPUs" are different guarantees, and only the first
+	// survived the change.
+	//
+	// It costs nothing to pin: opportunisticCoverPlan builds every legitimate
+	// promise segment with `Owner: ev.OwnerOf(run.Namespace)`
+	// (controllers/run_controller.go), the same value this check derives, so no
+	// real promise is refused by it.
+	forgedOwner := cover.Segment{Namespace: "default", Owner: "org:whatever", BudgetName: "team", EnvelopeName: "west"}
+	if m.promiseProvenanceValid(ctx, "default", "train", forgedOwner) {
+		t.Errorf("a promise carrying an owner string that is not the namespace's derived owner must be refused: " +
+			"it would stamp a false principal onto a real lease")
 	}
 	// A budget in the run's namespace but WITHOUT the named envelope: refused.
 	noEnvelope := cover.Segment{Namespace: "default", Owner: "org:ai:team", BudgetName: "team", EnvelopeName: "east"}

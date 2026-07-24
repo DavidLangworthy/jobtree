@@ -1671,3 +1671,71 @@ findings (diagnostic map nondeterminism at `evaluate.go:225`; `resolver.ownerOf`
 noted UNRESOLVED for the same decision. Working tree left untouched per the owner directive
 ("committed alongside the fixes once the panel lands" — it did not land). Not merged; no
 `.autopilot-done` (milestone review mid-flight).
+
+## 2026-07-24 — R7 pt2 cross-vendor adversarial panel: 13 fixes, 2 parked, verdict BLOCKED
+
+David authorised a pre-merge adversarial review of PR #127, overriding the playbook's
+no-per-PR-review rule, and asked for an OpenAI Codex seat on the panel as a cross-vendor finding
+lens. Full record: `../reviews/2026-07-24-r7-pt2-cross-vendor-panel-0b77fbe/`. Run
+`wf_7b4dc0d8-aa0`, reviewed commit `0b77fbe`.
+
+**Verdict is `BLOCKED`, not green.** Scout and Review completed; the session usage limit killed
+Attest, both retrying lenses, and Judge. Because no lens survived attestation the harness returned
+empty `confirmed`/`unresolved`/`attribution` arrays — fail-closed working as designed. Every
+finding is `UNRESOLVED` except four reproduced here with compiled tests.
+
+**Judgment call: stop before Judge rather than keep feeding a phase that has never completed.**
+The runner has 4 cores, so the harness caps concurrency at 2; Judge over 26 findings is ~150
+agents through a 2-wide queue. This review had already died mid-panel twice (segments 1 and 2) and
+delivered no adjudication either time. Banking verified fixes was worth more than a third attempt.
+Announced on issue #132 before doing it. **The cost, recorded rather than glossed: the fixes below
+were not reaper-checked by the fable consequence seat.**
+
+**Judgment call: replace the dead Attest phase with a deterministic check.** Every citation was
+re-read from `git show 0b77fbe:<file>` — the reviewed commit, not the working tree, which by then
+carried fixes — and matched verbatim within the same ±15-line tolerance the harness allows.
+**57/57 verified; no lens fabricated a citation**, including the cross-vendor relay.
+
+**Judgment call: no `commit` arg to the harness.** It turns `commit` into `git show <sha>`, which
+for an 8-commit stack is the last commit only — a docs-archive commit. Omitting it makes `DIFF`
+fall back to `git diff main...HEAD`; the head SHA went in `context` instead so the archive still
+pins what was reviewed.
+
+**Attribution (n=1, and the harness's own `confirmedFoundByExactlyOneLens` is unavailable because
+nothing was confirmed).** Computed by hand over raised findings: the cross-vendor seat raised two
+`high` findings **no Claude lens raised** — the retroactive GPU-hour rewrite (`evaluate.go:661`,
+now P6) and the unvalidated optional `PaidByBudgetNamespace` (`lease_types.go:61`, already F7(4)).
+The first came with a numeric prediction (4 / 0 / 12 charged GPU-hours across a conflict window)
+that reproduced to the digit. Four sole-lens findings came from **Opus** seats and none from the
+**fable** seat; the fable seat's distinctive contribution was instead to attack a *parking
+decision* — ruling `high` that P5's reaper rationale is unsupported, a verdict shape the harness
+has no name for.
+
+**Fixed (13), each mutation-verified, gate green (`make verify` incl. envtest + the 800-seed
+quiescence/eviction fuzzer under `-race`):** the reservation-activation hard error; the empty-owner
+reclaim/lottery bucket collapse; `deriveOwners` map-order nondeterminism (plus repetition *and*
+permutation rails); the promise path minting for an unbound namespace (via a new
+`funding.OwnerOfNamespace` that shares the engine's own `deriveOwners`, so plugin and engine cannot
+drift); `seg.Owner` pinning; two comments that asserted things nothing runs (R26 consuming
+`Conflicts()`; "coast" implying safety when Unfunded is the resolver's *first* reclaim target);
+the stale `spec.owner` in `internal/manifestcorpus` plus a new envtest proving the API server
+prunes a submitted `spec.owner`; the failing kind e2e; and four user-facing docs still teaching
+`spec.owner` — two of which also lacked a `namespace:`, which under this model shows an unfundable
+Run.
+
+**An existing assertion was reversed**, which class 8 says to record: `TestPromiseProvenanceValid`
+asserted *"seg.Owner is now COSMETIC"*. It is cosmetic to the funding decision but is copied onto
+`Lease.Spec.Owner` at mint, so leaving it unpinned lets a forged Promise pod state a false
+principal on a real GPU-holding lease. "Cannot mis-charge" and "cannot mis-state who holds the
+GPUs" are different guarantees; only the first survived the change. Pinning refuses nothing
+legitimate — `opportunisticCoverPlan` builds every real segment with exactly that owner.
+
+**Parked, not guessed:** **P5** (interior-tier exemption — ratified tenancy text; its reaper leg is
+now contested by the lens that owns it, recorded in the entry) and **P6** (should the fail-safe
+reach backwards through the replay). Both behaviours are now pinned by tests whose failure messages
+say "if this is the decision landing, assert the new semantics here", so neither can change by
+accident. **Not fixed and said so:** `metrics.BudgetKey` lacking a namespace — only reachable
+through the P5 hole, and changing exported metric labels is dashboard-visible; revisit with P5.
+
+Also removed `.autopilot-turn.log` from the branch (it had been committed by accident) and
+gitignored it.

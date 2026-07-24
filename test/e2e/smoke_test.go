@@ -52,34 +52,48 @@ func TestManagerIsRunning(t *testing.T) {
 
 // TestValidatingWebhookRejectsInvalidRun proves the real, running manager's
 // admission webhook — not envtest's — actually rejects a Run that fails
-// RunSpec.validate() (missing spec.owner). If the webhook weren't wired
-// (cert mismatch, service down, CA not injected — the exact R29 failure
-// mode the chart's genCA machinery exists to prevent) this Create would
-// either hang or silently succeed instead of coming back Invalid.
+// RunSpec.validate(). If the webhook weren't wired (cert mismatch, service
+// down, CA not injected — the exact R29 failure mode the chart's genCA
+// machinery exists to prevent) this Create would either hang or silently
+// succeed instead of coming back Forbidden.
+//
+// The stimulus is deliberately one the CRD schema ACCEPTS and only the webhook
+// rejects: `maxBorrowGPUs: 0` with `allowBorrow: true`. The generated schema
+// carries `minimum: 0` on that field, so the apiserver admits it; only
+// RunFunding.Validate() ("maxBorrowGPUs must be positive when set") denies it,
+// with a 403 Forbidden. That keeps this test pointed at its R29 purpose — the
+// webhook is really wired — rather than at CRD schema validation, which
+// TestCRDsAreInstalled already covers.
+//
+// It used to submit a Run with no `spec.owner`. R7 pt2 DELETED that field (the
+// funding principal now derives from the Run's namespace), so that Run became
+// perfectly valid and the test asserted a rejection that can no longer happen.
 func TestValidatingWebhookRejectsInvalidRun(t *testing.T) {
 	c := newClient(t)
 	ctx := context.Background()
 	waitForManagerReady(t, ctx, c)
 
+	zeroBorrow := int32(0)
 	bad := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "e2e-invalid-run", Namespace: workNamespace},
 		Spec: v1.RunSpec{
-			// Owner deliberately omitted: RunSpec.validate() requires it.
 			Resources: v1.RunResources{GPUType: e2eGPUFlavor, TotalGPUs: 1},
+			// Accepted by the CRD schema (minimum: 0), rejected by the webhook:
+			// RunFunding.Validate() requires maxBorrowGPUs > 0 when it is set.
+			Funding: &v1.RunFunding{AllowBorrow: true, MaxBorrowGPUs: &zeroBorrow},
 		},
 	}
 	err := c.Create(ctx, bad)
 	if err == nil {
 		_ = c.Delete(ctx, bad)
-		t.Fatalf("expected the real validating webhook to reject a Run with no owner, but Create succeeded")
+		t.Fatalf("expected the real validating webhook to reject allowBorrow with maxBorrowGPUs=0, but Create succeeded")
 	}
-	// R14 added a CRD-schema minLength on spec.owner, so the apiserver now rejects a
-	// missing owner with 422 Invalid (schema validation) *before* it reaches the
-	// validating webhook (which denies with 403 Forbidden). Either layer is a valid
-	// rejection by the admission chain; what matters is that the invalid Run is not
-	// created. (This is R14's point — validation stops depending on the webhook alone.)
-	if !apierrors.IsForbidden(err) && !apierrors.IsInvalid(err) {
-		t.Fatalf("expected a Forbidden (webhook) or Invalid (CRD schema) rejection, got: %v", err)
+	// Forbidden is the webhook's denial and the only rejection this stimulus can
+	// produce — the CRD schema admits it. Accepting Invalid too would let a schema
+	// rejection masquerade as proof the webhook is wired, which is the whole point
+	// of the test.
+	if !apierrors.IsForbidden(err) {
+		t.Fatalf("expected a Forbidden (webhook) rejection, got: %v", err)
 	}
 }
 

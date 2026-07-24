@@ -470,14 +470,35 @@ func groupIndexLess(a, b string) bool {
 
 // ownerOf keys the reclaim/lottery buckets by the run's funding principal. R7
 // derives the owner from the run's namespace via the evaluation's admin-placed
-// Budgets; when no evaluation is present (pure-scheduling reclaim with no
-// funding facts) the namespace itself is the stable per-tenant key, which is
-// exactly what the owner would resolve to.
+// Budgets.
+//
+// Two cases derive NO owner, and both must still key per TENANT, because these
+// buckets are the lottery's unit of fairness: a victim owner is drawn first and
+// a token second, so N runs sharing one bucket share one ticket. Collapsing
+// distinct namespaces into a single bucket is identity coarsening (playbook
+// class 5) with a directly unfair consequence — one tenant with nine unfunded
+// groups and another with one would together draw as often as a third tenant
+// alone, and the tenant with one group would be evicted at nine times its
+// deserved rate.
+//
+//   - No evaluation at all (pure-scheduling reclaim with no funding facts).
+//   - An UNBOUND or CONFLICTED namespace, which derives the empty owner (R7 §4).
+//     Every such namespace derives the SAME empty string, so bucketing on it
+//     pools unrelated tenants.
+//
+// Both fall back to a namespace-scoped key. The NUL prefix is not decoration:
+// Budget.Spec.Owner is a free-form string checked only for non-emptiness
+// (api/v1/budget_types.go), so any printable prefix could in principle be an
+// owner someone declares, and a bucket key that collides with a real owner
+// reintroduces the pooling it exists to prevent. The key never escapes this
+// package — it is a map key and a sort key, never a message or an Action field.
 func ownerOf(in Input, run *v1.Run) string {
 	if in.Evaluation != nil {
-		return in.Evaluation.OwnerOf(run.Namespace)
+		if owner := in.Evaluation.OwnerOf(run.Namespace); owner != "" {
+			return owner
+		}
 	}
-	return run.Namespace
+	return "\x00unbound-namespace/" + run.Namespace
 }
 
 func buildActions(kind ActionKind, reason string, grp *runGroup) []Action {

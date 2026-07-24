@@ -1,0 +1,55 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "answers", "evidence", "findings"],
+  "properties": {
+    "summary": {
+      "type": "string",
+      "description": "A full paragraph (>=200 chars) describing what you actually read, ran and concluded."
+    },
+    "answers": {
+      "type": "array",
+      "description": "One entry per assigned question, in order.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["question", "conclusion"],
+        "properties": {
+          "question": { "type": "string" },
+          "conclusion": { "type": "string", "description": ">=80 chars, substantive." }
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "description": "At least 5 citations. quote MUST be copied verbatim from that file; an independent agent re-opens the file and checks.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "line", "quote"],
+        "properties": {
+          "file": { "type": "string" },
+          "line": { "type": "integer" },
+          "quote": { "type": "string" }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "severity", "file", "line", "failure_scenario", "verbatim_citation", "taxonomyClass"],
+        "properties": {
+          "title": { "type": "string", "description": ">=20 chars" },
+          "severity": { "type": "string", "enum": ["critical", "high", "medium", "low"] },
+          "file": { "type": "string" },
+          "line": { "type": "integer" },
+          "failure_scenario": { "type": "string", "description": ">=120 chars: concrete inputs/state -> wrong outcome, naming the budget charged and the GPUs held." },
+          "verbatim_citation": { "type": "string", "description": "The exact source line(s) at file:line, copied character-for-character." },
+          "taxonomyClass": { "type": "string" }
+        }
+      }
+    }
+  }
+}

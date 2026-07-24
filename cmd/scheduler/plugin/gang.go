@@ -17,6 +17,7 @@ import (
 	"github.com/davidlangworthy/jobtree/pkg/admission"
 	"github.com/davidlangworthy/jobtree/pkg/binder"
 	"github.com/davidlangworthy/jobtree/pkg/cover"
+	"github.com/davidlangworthy/jobtree/pkg/funding"
 	"github.com/davidlangworthy/jobtree/pkg/keys"
 	"github.com/davidlangworthy/jobtree/pkg/metrics"
 	"github.com/davidlangworthy/jobtree/pkg/pack"
@@ -736,6 +737,35 @@ func (m *gangManager) promiseProvenanceValid(ctx context.Context, ns, runName st
 	// must actually carry the named envelope.
 	var budgetList v1.BudgetList
 	if err := m.reader.List(ctx, &budgetList); err != nil {
+		return false
+	}
+	// R7 §4: an UNBOUND or CONFLICTED namespace has no funding principal, and the
+	// amendment's fail-safe is that a fresh Run there is refused outright — cover
+	// finds no payer. The promise path deliberately SKIPS the funding gate and
+	// mints on carried provenance (that is why this function exists), so without
+	// this check the refusal holds on every path except the one that actually
+	// mints: an admin adds a second-owner Budget, the namespace goes conflicted,
+	// and a Promise pod issued a moment earlier still commits a lease at PreBind.
+	// Namespace equality alone cannot see it — both Budgets are in the run's own
+	// namespace, which is precisely what makes the namespace ambiguous.
+	//
+	// The lease that results is not a cross-tenant charge (it classes Unfunded, so
+	// it bills nobody), but it holds GPUs the fail-safe said this namespace could
+	// not acquire, and the sole committer is the wrong place to discover that.
+	derived := funding.OwnerOfNamespace(budgetList.Items, run.Namespace)
+	if derived == "" {
+		return false
+	}
+	// And pin seg.Owner to the derived owner. It is COSMETIC to the funding
+	// decision — Evaluate bills by EnvelopeKey and reads the owner off the real
+	// Budget — but it is copied onto Lease.Spec.Owner at mint, which is what an
+	// operator sees in `kubectl get gpuleases` and what the ledger reads back.
+	// Before R7 pt2 this field was pinned by the owner-string equality checks
+	// this function replaced; leaving it unpinned lets a forged Promise pod
+	// stamp an arbitrary principal onto a real lease. That is not a charge it
+	// cannot make, it is a LIE about who is holding the GPUs — and every audit
+	// of this ledger starts by reading exactly that field.
+	if seg.Owner != derived {
 		return false
 	}
 	for i := range budgetList.Items {

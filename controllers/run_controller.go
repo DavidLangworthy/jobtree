@@ -1179,6 +1179,34 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 	ev := c.evaluate(now)
 	inventory := cover.NewInventory(ev)
 
+	// R7 §4: an UNBOUND or CONFLICTED namespace derives no owner, so there is
+	// nothing to plan against. Without this refusal the empty owner flows into
+	// cover.Request below and inventory.Plan rejects it as
+	// FailureReasonInvalidRequest ("owner and flavor must be set"), which this
+	// function returns as a HARD ERROR — every tick, forever, with an operator
+	// message about fields the Run does not have.
+	//
+	// That path was unreachable before this change: the owner came from
+	// Run.Spec.Owner, which the CRD's minLength kept non-empty. Deriving it from
+	// the namespace makes InvalidRequest reachable by an ordinary admin action
+	// (placing a second Budget), which is the "making a dead path reachable is
+	// worsening it" case, not a pre-existing one.
+	//
+	// Refuse THIS TICK and say why. Deliberately NOT terminal — failReservationNoEnvelope
+	// exists for genuinely unfundable runs, and using it here would destroy a
+	// legitimate reservation over an admin typo somebody is about to correct.
+	// The countdown and the reservation survive; activation proceeds by itself
+	// once the binding is repaired.
+	if ev.OwnerOf(run.Namespace) == "" {
+		setState(run, v1.RunStateUnfunded, fmt.Sprintf(
+			"namespace %q has no funding principal: it has no Budget, or its Budgets name more than one owner. "+
+				"An administrator must fix the namespace→owner binding; the reservation is held, not cancelled.",
+			run.Namespace))
+		run.Status.Funding = summarizeRunFunding(run, ev)
+		c.refreshReservationBacklog(key, reservation, now)
+		return nil
+	}
+
 	// opportunistic tracks whether funding fell back to the promised-but-
 	// unfunded escape hatch (opportunisticCoverPlan). A funded activation emits
 	// intent pods for the plugin to mint; an opportunistic one is the one narrow
