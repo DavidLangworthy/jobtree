@@ -27,6 +27,16 @@ TASK="${AUTOPILOT_TASK:-}"
 ISSUE="${AUTOPILOT_ISSUE:-}"
 CONT="${AUTOPILOT_CONT:-0}"
 MODEL="${AUTOPILOT_MODEL:-opus}"
+RESUME="${AUTOPILOT_RESUME:-true}"           # persist+resume the session across segments; false = clean slate
+# One stable Claude session id for the whole re-dispatch chain: generated once on segment 0, threaded
+# through every re-dispatch, and used to --resume the restored session so an interrupted harness run
+# cache-hits instead of re-running its (paid) subagents. Also names the saved-session artifact.
+SID="${AUTOPILOT_SID:-}"
+[ -z "$SID" ] && SID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr 'A-Z' 'a-z')"
+[ -n "${GITHUB_ENV:-}" ] && echo "AUTOPILOT_SID=$SID" >> "$GITHUB_ENV"   # the upload step names the artifact from this
+# Keep the three saved-session roots present so the upload artifact's layout is stable (its archive
+# is anchored at the common ancestor of the paths; a missing dir would shift it and break restore).
+mkdir -p "$HOME/.claude/projects" "$HOME/.claude/tasks" "$HOME/.claude/sessions"
 export MAX_THINKING_TOKENS="${MAX_THINKING_TOKENS:-31999}"
 
 DEADLINE_MIN="${AUTOPILOT_DEADLINE_MIN:-330}"   # re-dispatch after 5h30m of work (< the 6h cap)
@@ -96,7 +106,11 @@ PROMPT
 read -r -d '' CONT_MSG <<PROMPT || true
 ultrathink. Continue per docs/project/autonomous-run-playbook.md. git fetch origin first. Keep
 posting per-item progress to issue #$ISSUE, obey the park list, no per-PR reviews, do not merge.
-If everything is done or you hit a stop condition, write .autopilot-done and stop.
+If a Workflow adversarial-review run was in flight when the previous segment ended, RESUME it with
+resumeFromRunId (the runId is in your earlier Workflow tool result, and the persisted script +
+completed subagent journals are on disk under the session dir) rather than starting a new run — a
+fresh run re-bills every subagent you already paid for. If everything is done or you hit a stop
+condition, write .autopilot-done and stop.
 PROMPT
 
 # --- one Claude turn; sets LIMIT=1 on a usage-limit signature ----------------------------
@@ -118,7 +132,19 @@ pretty() {
 }
 run_turn() {
   local prompt="$1"; LIMIT=0
-  claude --dangerously-skip-permissions --model "$MODEL" \
+  # Resume the pinned session if it already exists on this disk (a later turn in this job, or a
+  # segment we just restored); otherwise create it with that id. Require it to be NON-EMPTY: a
+  # truncated restore would make --resume fail, and the loop would misread that non-zero exit as
+  # spent quota and stall in a wait cycle. A bad file is discarded and we start clean instead.
+  local sflag sess
+  sess="$(compgen -G "$HOME/.claude/projects/*/$SID.jsonl" 2>/dev/null | head -1)"
+  if [ -n "$sess" ] && [ -s "$sess" ]; then
+    sflag=(--resume "$SID")
+  else
+    [ -n "$sess" ] && { echo "  ⚠️ restored session $SID.jsonl is empty — starting a clean session."; rm -f "$sess"; }
+    sflag=(--session-id "$SID")
+  fi
+  claude --dangerously-skip-permissions --model "$MODEL" "${sflag[@]}" \
          --output-format stream-json --verbose --settings "$SETTINGS" -p "$prompt" 2>&1 | tee "$LOG" | pretty
   local rc=${PIPESTATUS[0]}
   grep -qiE "usage limit|rate limit|reset[s]? (at|in)|too many requests|quota (exceeded|reached)" "$LOG" 2>/dev/null && LIMIT=1
@@ -129,6 +155,7 @@ redispatch() {
   if [ "$CONT" -lt "$MAX_CONT" ]; then
     note "⏸ $1 — re-dispatching segment $((CONT+2))."
     gh workflow run autopilot.yml --repo "$REPO" -f task="$TASK" -f issue="$ISSUE" -f cont="$((CONT+1))" \
+      -f resume="$RESUME" -f sid="$SID" \
       >/dev/null 2>&1 || note "⚠️ re-dispatch failed — run \`gh workflow run autopilot.yml -f issue=$ISSUE\` yourself."
   else
     note "🛑 Hit the re-dispatch chain cap ($MAX_CONT). Stopping; re-launch manually if there's more."
