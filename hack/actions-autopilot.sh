@@ -135,8 +135,43 @@ redispatch() {
   fi
 }
 
+# --- quota-aware waiting (all bash — Claude cannot think once it is limited) -------------
+# Seconds until the usage-limit reset, parsed from a turn's own output ($LOG). Empty if unknown,
+# in which case the caller polls hourly. Best-effort across phrasings; the hourly fallback is the
+# guarantee, the parse is the optimisation.
+parse_reset_seconds() {
+  local now h m ts clock tgt line; now=$(date -u +%s)
+  h=$(grep -oiE "in ([0-9]+) hours?" "$LOG" 2>/dev/null | grep -oE "[0-9]+" | tail -1)
+  m=$(grep -oiE "in ([0-9]+) minutes?" "$LOG" 2>/dev/null | grep -oE "[0-9]+" | tail -1)
+  if [ -n "$h" ] || [ -n "$m" ]; then echo $(( ${h:-0}*3600 + ${m:-0}*60 )); return; fi
+  ts=$(grep -oiE "reset[^0-9]{0,24}(1[0-9]{9})" "$LOG" 2>/dev/null | grep -oE "1[0-9]{9}" | tail -1)
+  if [ -n "$ts" ] && [ "$ts" -gt "$now" ]; then echo $(( ts - now )); return; fi
+  line=$(grep -oiE "reset[s]?( at)? [0-9]{1,2}:[0-9]{2} ?(am|pm)?" "$LOG" 2>/dev/null | tail -1)
+  if [ -n "$line" ]; then
+    clock=$(echo "$line" | grep -oiE "[0-9]{1,2}:[0-9]{2} ?(am|pm)?")
+    tgt=$(date -u -d "$clock" +%s 2>/dev/null || echo "")
+    if [ -n "$tgt" ]; then [ "$tgt" -le "$now" ] && tgt=$((tgt+86400)); echo $(( tgt - now )); return; fi
+  fi
+  echo ""
+}
+# Pause until the quota returns, in-job so the session (and any in-flight review) survives. Posts
+# a single "paused" note the first time (the loop posts "resumed" on the next success).
+wait_for_quota() {
+  local secs; secs="$(parse_reset_seconds)"
+  if [ -n "$secs" ] && [ "$secs" -gt 0 ] && [ "$secs" -lt 21600 ]; then
+    secs=$(( secs + 300 ))
+    [ "$limited" -eq 0 ] && note "⏸ **Usage limit.** Its reset reads ~$((secs/60))m out — sleeping until then, then resuming this same run."
+  else
+    secs=3600
+    [ "$limited" -eq 0 ] && note "⏸ **Usage limit** — no clear reset time in the output, so I'll retry **hourly** and pick up where I left off."
+  fi
+  limited=1
+  if [ $(((SECONDS + secs)/60)) -lt "$DEADLINE_MIN" ]; then sleep "$secs"
+  else redispatch "Quota wait exceeds this segment's budget — a fresh job keeps waiting"; exit 0; fi
+}
+
 # --- the loop ---------------------------------------------------------------------------
-mode=first; errs=0
+mode=first; waits=0; limited=0
 while true; do
   [ -f "$SENTINEL" ] && break
 
@@ -155,30 +190,22 @@ while true; do
   mode=resume
 
   if [ "$LIMIT" -eq 1 ]; then
-    errs=0
-    # Max-quota reset is on a ~5h window. Nap if it fits in the 6h job; else re-dispatch.
-    if [ $(((SECONDS + LIMIT_SLEEP)/60)) -lt "$DEADLINE_MIN" ]; then
-      note "⏸ Usage limit reached — napping $((LIMIT_SLEEP/60))m for the reset, then continuing."
-      sleep "$LIMIT_SLEEP"
-    else
-      redispatch "Usage limit near the segment budget"
-      exit 0
-    fi
+    waits=$((waits+1)); wait_for_quota
   elif [ "$rc" -ne 0 ]; then
-    # A turn errored with NO usage-limit text. Do NOT post a comment per retry (that spam is what
-    # buried the last run — 310 identical lines). Escalate the backoff, stay quiet, and after a few
-    # in a row — almost always spent quota whose message we didn't match, or a wedged turn — STAND
-    # DOWN cleanly instead of looping for hours.
-    errs=$((errs+1))
-    if [ "$errs" -ge "${MAX_ERRS:-3}" ]; then
-      note "🛑 **Standing down.** ${errs} turns errored back-to-back with no usage-limit text — most likely the Max quota is spent (and its message didn't match my detector). Stopping rather than spamming retries; re-launch me, or reply here, once quota resets."
-      printf 'stood down after %s consecutive errored turns\n' "$errs" > "$SENTINEL"
+    # A non-zero exit with no matched limit text is, in THIS workload, almost always spent quota
+    # whose message we didn't catch (that's what buried the last run in 310 retry lines). Treat it
+    # as a limit and WAIT — hourly, quietly, resuming when quota returns — not spam, not an early
+    # stand-down. A cap bounds a genuine hard error so it can't wait forever.
+    waits=$((waits+1))
+    if [ "$waits" -ge "${MAX_WAITS:-10}" ]; then
+      note "🛑 **Standing down** after ${waits} quota-waits with no successful turn. Re-launch me once you know quota is back, or reply here."
+      printf 'stood down after %s quota-waits\n' "$waits" > "$SENTINEL"
     else
-      [ "$errs" -eq 1 ] && note "⚠️ A turn errored (exit $rc, no limit text). Backing off and retrying quietly; I'll stand down rather than spam if it keeps failing."
-      sleep $((60 * errs))
+      wait_for_quota
     fi
   else
-    errs=0
+    [ "$limited" -eq 1 ] && { note "▶️ **Quota's back — resuming.**"; limited=0; }
+    waits=0
   fi
 done
 
