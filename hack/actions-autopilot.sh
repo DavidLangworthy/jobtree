@@ -44,8 +44,10 @@ note() { [ -n "$ISSUE" ] && gh issue comment "$ISSUE" --repo "$REPO" --body "$1"
 # --- status issue -----------------------------------------------------------------------
 if [ -z "$ISSUE" ]; then
   # descriptive title from the task's first line (Claude refines it on turn 1); fall back to a date
-  TITLE_SLUG="$(printf '%s' "$TASK" | tr '\n' ' ' | sed -E 's/^ *//; s/ +/ /g' | cut -c1-80)"
-  ISSUE="$(gh issue create --repo "$REPO" --title "🤖 Autopilot — ${TITLE_SLUG:-$(date -u +%Y-%m-%d)}" \
+  # prefer the short --name label; else a trimmed slug of the task; else a date
+  TITLE="${AUTOPILOT_NAME:-}"
+  [ -z "$TITLE" ] && TITLE="$(printf '%s' "$TASK" | tr '\n' ' ' | sed -E 's/^ *//; s/ +/ /g' | cut -c1-60)"
+  ISSUE="$(gh issue create --repo "$REPO" --title "🤖 ${TITLE:-Autopilot $(date -u +%Y-%m-%d)}" \
     --body $'Unattended autopilot. I post progress here as I go.\n\n**To steer me from your phone:** reply with a directive — e.g. *"do R26 next"*, *"skip R13"*, *"stop after this item"* — and I obey it on my next turn.\n\nI open PRs but do **not** merge; merge them yourself (the mobile app works).' \
     2>/dev/null | grep -oE '[0-9]+$' || true)"
 fi
