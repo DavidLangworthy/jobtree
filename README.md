@@ -66,3 +66,4 @@ The long-term directory structure is documented in [`docs/architecture/directory
 - Read the Docs implementation notes: [`docs/website/readthedocs.md`](docs/website/readthedocs.md)
 - Cluster visualization guide: [`docs/visualizations/cluster-allocation.md`](docs/visualizations/cluster-allocation.md)
 - Researcher budget UX spec: [`docs/product/researcher-budget-ux.md`](docs/product/researcher-budget-ux.md)
+- Unattended autopilot (GitHub Actions): [`.github/workflows/autopilot.yml`](.github/workflows/autopilot.yml) — runs the remediation backlog per [`docs/project/autonomous-run-playbook.md`](docs/project/autonomous-run-playbook.md), steered via [`docs/project/AUTOPILOT-CONTROL.md`](docs/project/AUTOPILOT-CONTROL.md).
