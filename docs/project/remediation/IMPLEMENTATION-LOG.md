@@ -1645,3 +1645,29 @@ owner introduces no laundering path.
 
 Gate: `make verify` + envtest + the eviction fuzzer; the three load-bearing engine fixes
 (empty-borrower guard, leaf-owner injectivity, multi-owner fail-safe) were mutation-verified.
+
+## 2026-07-24 — R7 pt2 milestone review PAUSED; interior-exemption finding parked (not fixed)
+
+The owner-launched fail-closed adversarial panel (runId `wf_cd9db73e-4d3`, `git diff main...HEAD`
+@ `f52d3cf`) was **interrupted by a usage limit at 13:30Z, mid-Review** — Attest and Judge never
+ran. The prior turn intended to resume it after the quota reset, but workflow `resumeFromRunId` is
+same-session-only and this turn is a new session, so cache-replay resume is unavailable; a fresh
+full panel is a day's-quota run reserved for David (AGENTS.md, playbook).
+
+**Judgment call: do NOT autonomously fix the one confirmed finding; park it.** The completed lenses
+(+ the cached codex-sol finding + my own compiled reproduction on `f52d3cf`) converge on a CRITICAL
+defect: the interior-tier exemption at `pkg/funding/evaluate.go:220` lets an owner that is both
+directly leaf-bound in ≥2 runnable namespaces AND interior evade `ConflictLeafOwnerSpansNamespaces`,
+minting a non-recallable cross-tenant Owned charge. I reproduced it: with an interior child,
+`OwnerOf(alice)==OwnerOf(bob)=="org:ai"` and `conflicts==[]`; without it, the fail-safe fires.
+
+Why parked rather than fixed: the exemption is **intentional** per `R7-tenancy-amendment.md`
+§4/§5/C-4 ("interior tiers may span admin namespaces"), with the residual hazard deliberately booked
+to the RBAC precondition + R26 alarm 3. Narrowing the exemption is a **tenancy design decision** that
+risks breaking the legitimately-allowed multi-namespace-pool case (a reaper), and the panel's
+reaper-veto lens never ran to vet any fix. Recorded as PARKED item **P5** in `DECISIONS-NEEDED.md`;
+review archived (PAUSED) under `reviews/2026-07-24-r7-pt2-owner-from-namespace-f52d3cf/`. Two LOW
+findings (diagnostic map nondeterminism at `evaluate.go:225`; `resolver.ownerOf` namespace fallback)
+noted UNRESOLVED for the same decision. Working tree left untouched per the owner directive
+("committed alongside the fixes once the panel lands" — it did not land). Not merged; no
+`.autopilot-done` (milestone review mid-flight).

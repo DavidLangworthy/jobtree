@@ -50,5 +50,6 @@ The verdict line is the least interesting part. Three things repay attention:
 
 | Date | Review | Commit | Verdict | Confirmed |
 |---|---|---|---|---|
+| 2026-07-24 | [R7 pt2 — namespace-derived funding owner](2026-07-24-r7-pt2-owner-from-namespace-f52d3cf/) | `f52d3cf` | ⏸ PAUSED (usage limit, mid-Review) | 1 critical CONFIRMED-by-reproduction (interior-owner exemption), deferred → owner decision; 3 UNRESOLVED. No Attest/Judge. |
 | 2026-07-10 | [R27 branch — oracle, sweep, quiescence driver](2026-07-10-r27-invariant-oracle-c74e0ef/) | `c74e0ef` | DEFECTS CONFIRMED | 5 critical (4 fixed, 1 refuted); panel hand-adjudicated |
 | 2026-07-09 | [R27 — the invariant oracle](2026-07-09-r27-invariant-oracle-98b602d/) | `98b602d` | DEFECTS CONFIRMED | see record |
