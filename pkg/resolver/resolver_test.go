@@ -1,8 +1,8 @@
 package resolver
 
 import (
-	"strings"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 

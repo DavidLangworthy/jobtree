@@ -28,7 +28,7 @@ func mintedLease(name, podName, node string) v1.GPULease {
 			Slice:                 v1.GPULeaseSlice{Nodes: []string{node}, Role: binder.RoleActive},
 			PaidByBudgetNamespace: "default",
 			PaidByBudget:          "team",
-			PaidByEnvelope: "west",
+			PaidByEnvelope:        "west",
 		},
 	}
 	admission.StampGangIdentity(&l, "0", podName)
