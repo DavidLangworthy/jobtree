@@ -24,7 +24,6 @@ func seedStateFile(t *testing.T) string {
 			keys.NamespacedKey("default", "train"): {
 				ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"},
 				Spec: v1.RunSpec{
-					Owner:     "org:team-a",
 					Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
 				},
 			},
@@ -118,7 +117,6 @@ func TestStateStoreLockPreventsLostWrites(t *testing.T) {
 			state.Runs[keys.NamespacedKey("default", name)] = &v1.Run{
 				ObjectMeta: v1.ObjectMeta{Name: name, Namespace: "default"},
 				Spec: v1.RunSpec{
-					Owner:     "org:team-a",
 					Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 1},
 				},
 			}

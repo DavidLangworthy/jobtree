@@ -18,7 +18,7 @@ func TestCompleteCommandFinishesRunAndClosesLeases(t *testing.T) {
 
 	run := &v1.Run{
 		ObjectMeta: v1.ObjectMeta{Name: "job", Namespace: "default"},
-		Spec:       v1.RunSpec{Owner: "org:team", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4}},
+		Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4}},
 		Status:     v1.RunStatus{Phase: "Running"},
 	}
 	lease := v1.GPULease{

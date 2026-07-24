@@ -1,6 +1,7 @@
 package resolver
 
 import (
+	"strings"
 	"fmt"
 	"testing"
 	"time"
@@ -200,17 +201,32 @@ func TestResolveLotteryDeterministicWithinOwner(t *testing.T) {
 	}
 }
 
+// nsForOwner maps an owner tier to its namespace. R7 derives the funding owner
+// from the run's namespace, and the resolver's reclaim/lottery buckets runs by
+// that derived owner (falling back to the namespace when no evaluation is
+// supplied, as in these tests). Keeping one owner per namespace preserves the
+// per-owner fairness these tests exercise.
+func nsForOwner(owner string) string {
+	if owner == "" {
+		return "default"
+	}
+	return strings.NewReplacer(":", "-", "/", "-").Replace(owner)
+}
+
 func buildRun(owner, namespace, name, flavor string) *v1.Run {
 	run := &v1.Run{
-		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: namespace},
+		// The passed namespace is superseded by the owner-derived namespace so
+		// OwnerOf(run.Namespace) round-trips to `owner` (R7). Callers that need a
+		// specific namespace set it on the returned run.
+		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: nsForOwner(owner)},
 		Spec: v1.RunSpec{
-			Owner: owner,
 			Resources: v1.RunResources{
 				GPUType:   flavor,
 				TotalGPUs: 8,
 			},
 		},
 	}
+	_ = namespace
 	return run
 }
 
@@ -225,7 +241,7 @@ func buildLease(run *v1.Run, groupIndex, role string, nodes []string, now time.T
 			},
 		},
 		Spec: v1.GPULeaseSpec{
-			Owner: run.Spec.Owner,
+			Owner: run.Namespace,
 			RunRef: v1.RunReference{
 				Name:      run.Name,
 				Namespace: run.Namespace,

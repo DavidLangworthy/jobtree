@@ -163,7 +163,6 @@ func genScenario(f *byteFeed) (fuzzScenario, bool) {
 	}
 
 	run := &v1.Run{ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"}}
-	run.Spec.Owner = "org:ai:rai"
 	req := Request{
 		Run:       run,
 		PackPlan:  pack.Plan{Flavor: "H100-80GB", TotalGPUs: total, Groups: groups},

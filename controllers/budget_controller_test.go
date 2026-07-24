@@ -19,7 +19,7 @@ func TestReconcileBudgetComputesHeadroomAndMetrics(t *testing.T) {
 	now := time.Date(2025, 11, 1, 12, 0, 0, 0, time.UTC)
 	start := v1.NewTime(now.Add(-2 * time.Hour))
 	budgetObj := &v1.Budget{
-		ObjectMeta: v1.ObjectMeta{Name: "budget-a"},
+		ObjectMeta: v1.ObjectMeta{Name: "budget-a", Namespace: keys.DefaultNamespace},
 		Spec: v1.BudgetSpec{
 			Owner: "org:a",
 			Envelopes: []v1.BudgetEnvelope{{
@@ -116,7 +116,7 @@ func TestReconcileBudgetComputesHeadroomAndMetrics(t *testing.T) {
 func ownerRun(name, owner string) *v1.Run {
 	return &v1.Run{
 		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: keys.DefaultNamespace},
-		Spec:       v1.RunSpec{Owner: owner, Resources: v1.RunResources{GPUType: "H100"}},
+		Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: "H100"}},
 	}
 }
 

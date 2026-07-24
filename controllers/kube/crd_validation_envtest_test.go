@@ -188,7 +188,6 @@ func TestTheAPIServerValidatesRunsWithTheWebhookDown(t *testing.T) {
 		return &v1.Run{
 			ObjectMeta: metav1.ObjectMeta{Name: "schema-probe", Namespace: "default"},
 			Spec: v1.RunSpec{
-				Owner:     "org:team",
 				Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 8},
 			},
 		}
@@ -201,7 +200,6 @@ func TestTheAPIServerValidatesRunsWithTheWebhookDown(t *testing.T) {
 	}{
 		{"totalGPUs=0", "totalGPUs", func(r *v1.Run) { r.Spec.Resources.TotalGPUs = 0 }},
 		{"empty gpuType", "gpuType", func(r *v1.Run) { r.Spec.Resources.GPUType = "" }},
-		{"empty owner", "owner", func(r *v1.Run) { r.Spec.Owner = "" }},
 		{"negative spares", "sparesPerGroup", func(r *v1.Run) { n := int32(-1); r.Spec.Spares = &n }},
 		{"malleable min > max", "minTotalGPUs", func(r *v1.Run) {
 			r.Spec.Malleable = &v1.RunMalleability{MinTotalGPUs: 16, MaxTotalGPUs: 8, StepGPUs: 8}

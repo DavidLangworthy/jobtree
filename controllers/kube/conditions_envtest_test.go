@@ -68,7 +68,6 @@ func TestAnUnadmittedRunPersistsAReadableReason(t *testing.T) {
 	run := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "nowhere", Namespace: "default"},
 		Spec: v1.RunSpec{
-			Owner:     "org:team",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
 		},
 	}
@@ -107,7 +106,6 @@ func TestRunConditionsSurviveTheAPIServerAcrossTheLifecycle(t *testing.T) {
 	run := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "conditioned", Namespace: "default"},
 		Spec: v1.RunSpec{
-			Owner:     "org:team",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
 		},
 	}
@@ -201,7 +199,6 @@ func TestLeaseConditionsSurviveTheAPIServer(t *testing.T) {
 	run := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "leased", Namespace: "default"},
 		Spec: v1.RunSpec{
-			Owner:     "org:team",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
 		},
 	}

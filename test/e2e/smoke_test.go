@@ -107,7 +107,6 @@ func TestRunAdmitsAndBindsOnRealCluster(t *testing.T) {
 	run := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "e2e-train", Namespace: workNamespace},
 		Spec: v1.RunSpec{
-			Owner:     "org:e2e-team",
 			Resources: v1.RunResources{GPUType: e2eGPUFlavor, TotalGPUs: 1},
 		},
 	}

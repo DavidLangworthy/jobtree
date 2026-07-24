@@ -58,17 +58,17 @@ func TestEngineEmitsEventsIncludingAttestedSeed(t *testing.T) {
 		{Name: "node-c", GPUs: 8, Labels: map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a", topology.LabelGPUFlavor: "H100-80GB"}},
 	}
 	budgets := []v1.Budget{
-		{ObjectMeta: v1.ObjectMeta{Name: "owner-a"}, Spec: v1.BudgetSpec{Owner: "org:owner:a", Envelopes: []v1.BudgetEnvelope{{
+		{ObjectMeta: v1.ObjectMeta{Name: "owner-a", Namespace: "default"}, Spec: v1.BudgetSpec{Owner: "org:owner:a", Envelopes: []v1.BudgetEnvelope{{
 			Name: "west", Flavor: "H100-80GB",
 			Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
 			Concurrency: 16,
 		}}}},
-		{ObjectMeta: v1.ObjectMeta{Name: "owner-b"}, Spec: v1.BudgetSpec{Owner: "org:owner:b", Envelopes: []v1.BudgetEnvelope{{
+		{ObjectMeta: v1.ObjectMeta{Name: "owner-b", Namespace: "org-owner-b"}, Spec: v1.BudgetSpec{Owner: "org:owner:b", Envelopes: []v1.BudgetEnvelope{{
 			Name: "west", Flavor: "H100-80GB",
 			Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
 			Concurrency: 16,
 		}}}},
-		{ObjectMeta: v1.ObjectMeta{Name: "owner-c"}, Spec: v1.BudgetSpec{Owner: "org:owner:c", Envelopes: []v1.BudgetEnvelope{{
+		{ObjectMeta: v1.ObjectMeta{Name: "owner-c", Namespace: "org-owner-c"}, Spec: v1.BudgetSpec{Owner: "org:owner:c", Envelopes: []v1.BudgetEnvelope{{
 			Name: "west", Flavor: "H100-80GB",
 			Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
 			Concurrency: 16,
@@ -79,11 +79,11 @@ func TestEngineEmitsEventsIncludingAttestedSeed(t *testing.T) {
 	state.Runs = map[string]*v1.Run{
 		"default/run-a": {
 			ObjectMeta: v1.ObjectMeta{Name: "run-a", Namespace: "default"},
-			Spec:       v1.RunSpec{Owner: "org:owner:a", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 8}, Locality: &v1.RunLocality{GroupGPUs: int32Ptr(8)}},
+			Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 8}, Locality: &v1.RunLocality{GroupGPUs: int32Ptr(8)}},
 		},
-		"default/run-b": {
-			ObjectMeta: v1.ObjectMeta{Name: "run-b", Namespace: "default"},
-			Spec:       v1.RunSpec{Owner: "org:owner:b", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 16}, Locality: &v1.RunLocality{GroupGPUs: int32Ptr(8)}, Malleable: &v1.RunMalleability{MinTotalGPUs: 8, MaxTotalGPUs: 16, StepGPUs: 8}},
+		"org-owner-b/run-b": {
+			ObjectMeta: v1.ObjectMeta{Name: "run-b", Namespace: "org-owner-b"},
+			Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 16}, Locality: &v1.RunLocality{GroupGPUs: int32Ptr(8)}, Malleable: &v1.RunMalleability{MinTotalGPUs: 8, MaxTotalGPUs: 16, StepGPUs: 8}},
 		},
 	}
 

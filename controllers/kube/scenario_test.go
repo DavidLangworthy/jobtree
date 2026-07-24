@@ -433,7 +433,6 @@ func TestManagerBindsRunEndToEnd(t *testing.T) {
 	run := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "train", Namespace: "default"},
 		Spec: v1.RunSpec{
-			Owner:     "org:team",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
 		},
 	}
@@ -506,7 +505,6 @@ func TestRunCompletesWhenPodsSucceed(t *testing.T) {
 	run := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "finish", Namespace: "default"},
 		Spec: v1.RunSpec{
-			Owner:     "org:team",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
 		},
 	}
@@ -561,7 +559,7 @@ func TestFollowGatesUntilUpstreamCompletes(t *testing.T) {
 
 	prep := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "prep", Namespace: "default"},
-		Spec:       v1.RunSpec{Owner: "org:team", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4}},
+		Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4}},
 	}
 	if err := kubeClient.Create(suiteCtx, prep); err != nil {
 		t.Fatalf("create prep: %v", err)
@@ -573,7 +571,6 @@ func TestFollowGatesUntilUpstreamCompletes(t *testing.T) {
 	train := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "train", Namespace: "default"},
 		Spec: v1.RunSpec{
-			Owner:     "org:team",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
 			Follow:    &v1.RunFollow{After: []string{"prep"}},
 		},
@@ -615,7 +612,6 @@ func TestETAMirroredFromPodAnnotation(t *testing.T) {
 	run := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "eta-run", Namespace: "default"},
 		Spec: v1.RunSpec{
-			Owner:     "org:team",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
 		},
 	}
@@ -671,7 +667,6 @@ func TestReservationActivatesWhenCapacityArrives(t *testing.T) {
 	run := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "train8", Namespace: "default"},
 		Spec: v1.RunSpec{
-			Owner:     "org:team",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 8},
 		},
 	}
@@ -882,7 +877,6 @@ func TestNodeFailureSwapsToSpare(t *testing.T) {
 	run := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "resilient", Namespace: "default"},
 		Spec: v1.RunSpec{
-			Owner:     "org:team",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
 			Locality:  &v1.RunLocality{GroupGPUs: &groupGPUs},
 			Spares:    &spares,
@@ -1014,7 +1008,6 @@ func TestNodeFailureSwapsToSpare(t *testing.T) {
 	opportunist := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "opportunist", Namespace: "default"},
 		Spec: v1.RunSpec{
-			Owner:     "org:team",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
 		},
 	}
@@ -1049,7 +1042,6 @@ func TestSpareNodeFailureIsAbsorbed(t *testing.T) {
 	run := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "steady", Namespace: "default"},
 		Spec: v1.RunSpec{
-			Owner:     "org:team",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
 			Locality:  &v1.RunLocality{GroupGPUs: &groupGPUs},
 			Spares:    &spares,
@@ -1116,7 +1108,6 @@ func TestRunDeletionReleasesItsWorld(t *testing.T) {
 	run := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "ephemeral", Namespace: "default"},
 		Spec: v1.RunSpec{
-			Owner:     "org:team",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
 		},
 	}
@@ -1162,7 +1153,6 @@ func TestRunWithoutAnyMatchingDomainParksCleanly(t *testing.T) {
 	run := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "stranded", Namespace: "default"},
 		Spec: v1.RunSpec{
-			Owner:     "org:team",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
 		},
 	}
@@ -1224,7 +1214,6 @@ func TestRunReconcilerRequeuesParkedRun(t *testing.T) {
 	run := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "parked", Namespace: "default"},
 		Spec: v1.RunSpec{
-			Owner:     "org:team",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
 		},
 	}

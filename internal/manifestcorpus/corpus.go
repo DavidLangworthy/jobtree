@@ -35,11 +35,6 @@ var Runs = []Case{
 		}`,
 	},
 	{
-		Name:     "missing owner",
-		Manifest: `{"spec": {"resources": {"gpuType": "H100-80GB", "totalGPUs": 8}}}`,
-		WantErr:  "spec.owner is required",
-	},
-	{
 		Name:     "missing gpuType",
 		Manifest: `{"spec": {"owner": "org:ai", "resources": {"totalGPUs": 8}}}`,
 		WantErr:  "spec.resources.gpuType is required",

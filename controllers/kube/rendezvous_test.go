@@ -23,7 +23,7 @@ func TestApplyGivesPodsRendezvousIdentityAndAHeadlessService(t *testing.T) {
 
 	run := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "train", Namespace: "default", UID: "train-uid-1"},
-		Spec:       v1.RunSpec{Owner: "org:team", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 2}},
+		Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 2}},
 		Status:     v1.RunStatus{Phase: controllers.RunPhaseRunning},
 	}
 	c := fake.NewClientBuilder().WithScheme(testScheme()).

@@ -19,7 +19,6 @@ func runOf(name, owner string, totalGPUs int32) *v1.Run {
 	return &v1.Run{
 		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: "default"},
 		Spec: v1.RunSpec{
-			Owner:     owner,
 			Resources: v1.RunResources{GPUType: testFlavor, TotalGPUs: totalGPUs},
 		},
 	}
@@ -39,12 +38,13 @@ func leaseOf(name, runName, budget, envelope string, width int, start time.Time)
 	return v1.GPULease{
 		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: "default"},
 		Spec: v1.GPULeaseSpec{
-			RunRef:         v1.RunReference{Name: runName, Namespace: "default"},
-			Slice:          v1.GPULeaseSlice{Nodes: nodes, Role: "Active"},
-			Interval:       v1.GPULeaseInterval{Start: v1.NewTime(start)},
-			PaidByBudget:   budget,
-			PaidByEnvelope: envelope,
-			Reason:         "Start",
+			RunRef:                v1.RunReference{Name: runName, Namespace: "default"},
+			Slice:                 v1.GPULeaseSlice{Nodes: nodes, Role: "Active"},
+			Interval:              v1.GPULeaseInterval{Start: v1.NewTime(start)},
+			PaidByBudgetNamespace: "default",
+			PaidByBudget:          budget,
+			PaidByEnvelope:        envelope,
+			Reason:                "Start",
 		},
 	}
 }
@@ -76,7 +76,7 @@ func TestPlanFromCapacityDeficit(t *testing.T) {
 	}
 
 	budgets := []v1.Budget{{
-		ObjectMeta: v1.ObjectMeta{Name: "team"},
+		ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
 		Spec: v1.BudgetSpec{
 			Owner: "org:ai:team",
 			Envelopes: []v1.BudgetEnvelope{{
@@ -94,7 +94,7 @@ func TestPlanFromCapacityDeficit(t *testing.T) {
 		Now:          now,
 		Snapshot:     snapshot,
 		PackErr:      &pack.PlanError{Reason: pack.FailureReasonInsufficientCapacity},
-		CoverRequest: cover.Request{Owner: run.Spec.Owner},
+		CoverRequest: cover.Request{Owner: ev.OwnerOf(run.Namespace)},
 		Evaluation:   ev,
 	})
 	if err != nil {
@@ -156,7 +156,7 @@ func TestComputeRemediesVariesWithRealSignals(t *testing.T) {
 	run := runOf("train", "org:ai:team", 8)
 
 	budgets := []v1.Budget{{
-		ObjectMeta: v1.ObjectMeta{Name: "team-budget"},
+		ObjectMeta: v1.ObjectMeta{Name: "team-budget", Namespace: "default"},
 		Spec: v1.BudgetSpec{
 			Owner: "org:ai:team",
 			Envelopes: []v1.BudgetEnvelope{{
@@ -174,7 +174,7 @@ func TestComputeRemediesVariesWithRealSignals(t *testing.T) {
 		Run:          run,
 		Now:          now,
 		CoverErr:     &cover.PlanError{Reason: cover.FailureReasonInsufficientCapacity},
-		CoverRequest: cover.Request{Owner: run.Spec.Owner},
+		CoverRequest: cover.Request{Owner: ev.OwnerOf(run.Namespace)},
 		Evaluation:   ev,
 	})
 	if err != nil {
@@ -203,7 +203,7 @@ func TestComputeRemediesVariesWithRealSignals(t *testing.T) {
 		Run:          run,
 		Now:          now,
 		CoverErr:     &cover.PlanError{Reason: cover.FailureReasonInsufficientCapacity},
-		CoverRequest: cover.Request{Owner: run.Spec.Owner},
+		CoverRequest: cover.Request{Owner: ev.OwnerOf(run.Namespace)},
 		Evaluation:   ev2,
 		Runs:         runs,
 	})
@@ -234,7 +234,7 @@ func TestPlanFutureWindow(t *testing.T) {
 	}}}
 
 	budgets := []v1.Budget{{
-		ObjectMeta: v1.ObjectMeta{Name: "team"},
+		ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
 		Spec: v1.BudgetSpec{
 			Owner: "org:ai:team",
 			Envelopes: []v1.BudgetEnvelope{{
@@ -254,7 +254,7 @@ func TestPlanFutureWindow(t *testing.T) {
 		Now:          now,
 		PackPlan:     plan,
 		CoverErr:     &cover.PlanError{Reason: cover.FailureReasonNoMatchingEnvelope},
-		CoverRequest: cover.Request{Owner: run.Spec.Owner, Location: map[string]string{topology.LabelRegion: "us-west"}},
+		CoverRequest: cover.Request{Owner: ev.OwnerOf(run.Namespace), Location: map[string]string{topology.LabelRegion: "us-west"}},
 		Evaluation:   ev,
 	})
 	if err != nil {
@@ -278,7 +278,7 @@ func TestPlanBorrowLimitReason(t *testing.T) {
 	run := runOf("train", "org:ai:team", 16)
 
 	budgets := []v1.Budget{{
-		ObjectMeta: v1.ObjectMeta{Name: "team"},
+		ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
 		Spec: v1.BudgetSpec{
 			Owner: "org:ai:team",
 			Envelopes: []v1.BudgetEnvelope{{
@@ -296,7 +296,7 @@ func TestPlanBorrowLimitReason(t *testing.T) {
 		Run:          run,
 		Now:          now,
 		CoverErr:     &cover.PlanError{Reason: cover.FailureReasonBorrowLimit},
-		CoverRequest: cover.Request{Owner: run.Spec.Owner, MaxBorrowGPUs: &borrowCap},
+		CoverRequest: cover.Request{Owner: ev.OwnerOf(run.Namespace), MaxBorrowGPUs: &borrowCap},
 		Evaluation:   ev,
 	})
 	if err != nil {
@@ -323,7 +323,7 @@ func TestPlanHeadroomExcludesFamilyEnvelopes(t *testing.T) {
 
 	budgets := []v1.Budget{
 		{
-			ObjectMeta: v1.ObjectMeta{Name: "ai-budget"},
+			ObjectMeta: v1.ObjectMeta{Name: "ai-budget", Namespace: "org-ai"},
 			Spec: v1.BudgetSpec{
 				Owner: "org:ai",
 				Envelopes: []v1.BudgetEnvelope{{
@@ -335,7 +335,7 @@ func TestPlanHeadroomExcludesFamilyEnvelopes(t *testing.T) {
 			},
 		},
 		{
-			ObjectMeta: v1.ObjectMeta{Name: "team-budget"},
+			ObjectMeta: v1.ObjectMeta{Name: "team-budget", Namespace: "default"},
 			Spec: v1.BudgetSpec{
 				Owner:   "org:ai:team",
 				Parents: []string{"org:ai"},
@@ -354,7 +354,7 @@ func TestPlanHeadroomExcludesFamilyEnvelopes(t *testing.T) {
 		Run:          run,
 		Now:          now,
 		CoverErr:     &cover.PlanError{Reason: cover.FailureReasonInsufficientCapacity},
-		CoverRequest: cover.Request{Owner: run.Spec.Owner},
+		CoverRequest: cover.Request{Owner: ev.OwnerOf(run.Namespace)},
 		Evaluation:   ev,
 	})
 	if err != nil {
@@ -380,7 +380,7 @@ func TestPlanDeficitRespectsClaimRanking(t *testing.T) {
 
 	budgets := []v1.Budget{
 		{
-			ObjectMeta: v1.ObjectMeta{Name: "team-budget"},
+			ObjectMeta: v1.ObjectMeta{Name: "team-budget", Namespace: "default"},
 			Spec: v1.BudgetSpec{
 				Owner:   "org:ai:team",
 				Parents: []string{"org:ai"},
@@ -392,23 +392,31 @@ func TestPlanDeficitRespectsClaimRanking(t *testing.T) {
 				}},
 			},
 		},
-		// The sibling needs a budget only to appear in the family graph.
+		// The sibling needs a budget only to appear in the family graph. R7: a
+		// distinct owner lives in a distinct namespace (org-ai-peer), so its runs
+		// derive the peer tier rather than colliding with team in "default".
 		{
-			ObjectMeta: v1.ObjectMeta{Name: "peer-budget"},
+			ObjectMeta: v1.ObjectMeta{Name: "peer-budget", Namespace: "org-ai-peer"},
 			Spec:       v1.BudgetSpec{Owner: "org:ai:peer", Parents: []string{"org:ai"}},
 		},
 	}
+	// guest is the sibling: it lives in the peer's namespace and SHARES the
+	// team's envelope (RunRef in org-ai-peer, paid by team-budget in default).
+	guest := trackedRunOf("guest", "org:ai:peer", now.Add(-2*time.Hour))
+	guest.Namespace = "org-ai-peer"
 	runs := runsMap(
 		trackedRunOf("steady", "org:ai:team", now.Add(-3*time.Hour)),
 		trackedRunOf("latecomer", "org:ai:team", now.Add(-30*time.Minute)),
-		trackedRunOf("guest", "org:ai:peer", now.Add(-2*time.Hour)),
+		guest,
 	)
+	guestLease := leaseOf("l-guest", "guest", "team-budget", "west", 2, now.Add(-2*time.Hour))
+	guestLease.Spec.RunRef.Namespace = "org-ai-peer"
 	leases := []v1.GPULease{
 		leaseOf("l-steady", "steady", "team-budget", "west", 2, now.Add(-3*time.Hour)),
 		leaseOf("l-late", "latecomer", "team-budget", "west", 2, now.Add(-30*time.Minute)),
 		// Family excess needs no lending policy (Decision 2); this funds as
 		// shared and stays recallable by the owner.
-		leaseOf("l-guest", "guest", "team-budget", "west", 2, now.Add(-2*time.Hour)),
+		guestLease,
 	}
 	ev := funding.Evaluate(funding.Input{Budgets: budgets, Leases: leases, Runs: runs, Now: now})
 
@@ -417,7 +425,7 @@ func TestPlanDeficitRespectsClaimRanking(t *testing.T) {
 		Now:      now,
 		CoverErr: &cover.PlanError{Reason: cover.FailureReasonInsufficientCapacity},
 		// The run keeps the rank of its original admission when it grows.
-		CoverRequest: cover.Request{Owner: run.Spec.Owner, Admitted: now.Add(-time.Hour)},
+		CoverRequest: cover.Request{Owner: ev.OwnerOf(run.Namespace), Admitted: now.Add(-time.Hour)},
 		Evaluation:   ev,
 	})
 	if err != nil {
@@ -445,7 +453,7 @@ func TestPlanHeadroomMeteredAndWindowGated(t *testing.T) {
 	maxHours := int64(48) // two GPUs' worth of the default 24h period
 	start := v1.NewTime(now.Add(2 * time.Hour))
 	budgets := []v1.Budget{{
-		ObjectMeta: v1.ObjectMeta{Name: "team-budget"},
+		ObjectMeta: v1.ObjectMeta{Name: "team-budget", Namespace: "default"},
 		Spec: v1.BudgetSpec{
 			Owner: "org:ai:team",
 			Envelopes: []v1.BudgetEnvelope{
@@ -472,7 +480,7 @@ func TestPlanHeadroomMeteredAndWindowGated(t *testing.T) {
 		Run:          run,
 		Now:          now,
 		CoverErr:     &cover.PlanError{Reason: cover.FailureReasonInsufficientCapacity},
-		CoverRequest: cover.Request{Owner: run.Spec.Owner},
+		CoverRequest: cover.Request{Owner: ev.OwnerOf(run.Namespace)},
 		Evaluation:   ev,
 	})
 	if err != nil {

@@ -14,6 +14,24 @@ import (
 
 // R21 + R22 + R25 all live in HandleNodeFailure. These pin each one.
 
+// nfNS maps an owner tier to its namespace (R7: the funding owner is derived
+// from the run's namespace, and no namespace may hold two owners). The run under
+// test ("org:ai:team") keeps the default namespace; every foreign run/budget
+// lands in its own namespace so its owner derives cleanly and never collides
+// with team's in default.
+func nfNS(owner string) string {
+	switch owner {
+	case "org:ai:team":
+		return "default"
+	case "org:ai:other":
+		return "org-ai-other"
+	case "org:ai:nobody":
+		return "org-ai-nobody"
+	default:
+		return "default"
+	}
+}
+
 func nodeFailureNodes() []topology.SourceNode {
 	mk := func(name string) topology.SourceNode {
 		return topology.SourceNode{Name: name, GPUs: 4, Labels: map[string]string{
@@ -30,11 +48,11 @@ func nfLease(name, run, owner, budget string, slots []string, role string, now t
 
 func nfLeaseGroup(name, run, owner, budget, group string, slots []string, role string, now time.Time) v1.GPULease {
 	return v1.GPULease{
-		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: "default",
+		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: nfNS(owner),
 			Labels: map[string]string{binder.LabelRunName: run, binder.LabelGroupIndex: group, binder.LabelRunRole: role}},
 		Spec: v1.GPULeaseSpec{
 			Owner:          owner,
-			RunRef:         v1.RunReference{Name: run, Namespace: "default"},
+			RunRef:         v1.RunReference{Name: run, Namespace: nfNS(owner)},
 			Slice:          v1.GPULeaseSlice{Nodes: slots, Role: role},
 			Interval:       v1.GPULeaseInterval{Start: v1.NewTime(now.Add(-time.Minute))},
 			PaidByBudget:   budget,
@@ -46,15 +64,15 @@ func nfLeaseGroup(name, run, owner, budget, group string, slots []string, role s
 
 func nfRun(name, owner string, gpus int32, now time.Time) *v1.Run {
 	return &v1.Run{
-		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: "default", CreationTimestamp: v1.NewTime(now.Add(-time.Hour))},
-		Spec:       v1.RunSpec{Owner: owner, Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: gpus}},
+		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: nfNS(owner), CreationTimestamp: v1.NewTime(now.Add(-time.Hour))},
+		Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: gpus}},
 		Status:     v1.RunStatus{Phase: RunPhaseRunning},
 	}
 }
 
 func nfBudget(name, owner string) v1.Budget {
 	return v1.Budget{
-		ObjectMeta: v1.ObjectMeta{Name: name},
+		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: nfNS(owner)},
 		Spec: v1.BudgetSpec{Owner: owner, Envelopes: []v1.BudgetEnvelope{{
 			Name: "west", Flavor: "H100-80GB", Concurrency: 16,
 			Selector: map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
@@ -142,7 +160,7 @@ func TestSwapLeavesACoLocatedRunOnOtherSlotsAlone(t *testing.T) {
 		Budgets: []v1.Budget{nfBudget("team", "org:ai:team"), nfBudget("other", "org:ai:other")},
 		Runs: map[string]*v1.Run{
 			"default/run":       nfRun("run", "org:ai:team", 2, now),
-			"default/neighbour": nfRun("neighbour", "org:ai:other", 2, now),
+			"org-ai-other/neighbour": nfRun("neighbour", "org:ai:other", 2, now),
 		},
 		Leases: []v1.GPULease{
 			nfLease("active", "run", "org:ai:team", "team", []string{"node-a#0", "node-a#1"}, binder.RoleActive, now),
@@ -178,7 +196,7 @@ func TestSwapDeclinesRatherThanEvictAFundedRunOnTheSpareSlots(t *testing.T) {
 		Budgets: []v1.Budget{nfBudget("team", "org:ai:team"), nfBudget("other", "org:ai:other")},
 		Runs: map[string]*v1.Run{
 			"default/run":      nfRun("run", "org:ai:team", 2, now),
-			"default/squatter": nfRun("squatter", "org:ai:other", 2, now),
+			"org-ai-other/squatter": nfRun("squatter", "org:ai:other", 2, now),
 		},
 		Leases: []v1.GPULease{
 			nfLease("active", "run", "org:ai:team", "team", []string{"node-a#0", "node-a#1"}, binder.RoleActive, now),
@@ -286,7 +304,7 @@ func TestDecliningTheSwapNeverStrandsTheRunsOwnSpare(t *testing.T) {
 		Budgets: []v1.Budget{nfBudget("team", "org:ai:team"), nfBudget("other", "org:ai:other")},
 		Runs: map[string]*v1.Run{
 			"default/run":      nfRun("run", "org:ai:team", 2, now),
-			"default/squatter": nfRun("squatter", "org:ai:other", 2, now),
+			"org-ai-other/squatter": nfRun("squatter", "org:ai:other", 2, now),
 		},
 		Leases: []v1.GPULease{
 			nfLease("active", "run", "org:ai:team", "team", []string{"node-a#0", "node-a#1"}, binder.RoleActive, now),
@@ -340,7 +358,7 @@ func TestDecliningTheSwapReleasesTheSpareEvenWhenTheRunParksInCheckpointGrace(t 
 		Budgets: []v1.Budget{nfBudget("team", "org:ai:team"), nfBudget("other", "org:ai:other")},
 		Runs: map[string]*v1.Run{
 			"default/run":      run,
-			"default/squatter": nfRun("squatter", "org:ai:other", 2, now),
+			"org-ai-other/squatter": nfRun("squatter", "org:ai:other", 2, now),
 		},
 		Leases: []v1.GPULease{
 			nfLease("active", "run", "org:ai:team", "team", []string{"node-a#0", "node-a#1"}, binder.RoleActive, now),
@@ -418,7 +436,7 @@ func TestSwapReclaimsAnUnfundedSquatterOnTheSpareSlots(t *testing.T) {
 		Budgets: []v1.Budget{nfBudget("team", "org:ai:team")},
 		Runs: map[string]*v1.Run{
 			"default/run":    nfRun("run", "org:ai:team", 2, now),
-			"default/filler": nfRun("filler", "org:ai:nobody", 2, now),
+			"org-ai-nobody/filler": nfRun("filler", "org:ai:nobody", 2, now),
 		},
 		Leases: []v1.GPULease{
 			nfLease("active", "run", "org:ai:team", "team", []string{"node-a#0", "node-a#1"}, binder.RoleActive, now),
