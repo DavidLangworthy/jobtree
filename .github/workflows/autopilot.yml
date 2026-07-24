@@ -15,13 +15,17 @@
 #                             GITHUB_TOKEN neither triggers CI on pushed PRs nor lets the job
 #                             re-dispatch this workflow. The PAT does both.
 name: autopilot
-run-name: "autopilot: ${{ inputs.task || 'remediation backlog' }} (seg ${{ inputs.cont }})"
+run-name: "autopilot: ${{ inputs.name || inputs.task || 'remediation backlog' }}"
 
 on:
   workflow_dispatch:
     inputs:
       task:
         description: "What to work on (blank = the open remediation backlog per the playbook)"
+        required: false
+        default: ""
+      name:
+        description: "Short label for this run (the run title + issue name). Keep it a few words."
         required: false
         default: ""
       issue:
@@ -78,6 +82,7 @@ jobs:
           CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
           GH_TOKEN: ${{ secrets.AUTOPILOT_PAT }}      # gh CLI + git push + re-dispatch
           AUTOPILOT_TASK: ${{ inputs.task }}
+          AUTOPILOT_NAME: ${{ inputs.name }}
           AUTOPILOT_ISSUE: ${{ inputs.issue }}
           AUTOPILOT_CONT: ${{ inputs.cont }}
         run: bash hack/actions-autopilot.sh
