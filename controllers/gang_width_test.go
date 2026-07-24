@@ -22,7 +22,7 @@ import (
 func gangWidthState() *ClusterState {
 	return &ClusterState{
 		Budgets: []v1.Budget{{
-			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
 			Spec: v1.BudgetSpec{
 				Owner: "org:ai:team",
 				Envelopes: []v1.BudgetEnvelope{{
@@ -47,7 +47,6 @@ func gangWidthState() *ClusterState {
 			"default/gang": {
 				ObjectMeta: v1.ObjectMeta{Name: "gang", Namespace: "default"},
 				Spec: v1.RunSpec{
-					Owner:     "org:ai:team",
 					Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
 				},
 				Status: v1.RunStatus{Phase: RunPhasePending},

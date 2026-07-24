@@ -17,7 +17,6 @@ import (
 
 func reviewReproRun() *v1.Run {
 	run := &v1.Run{ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"}}
-	run.Spec.Owner = "org:ai:rai"
 	return run
 }
 

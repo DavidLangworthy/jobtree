@@ -48,7 +48,7 @@ mechanical, no design needed (implement straight from the audit — Opus/Sonnet)
 |---|---|---|---|---|
 | [R5](R5-provenance-trust-anchor.md) | Forgeable funding provenance (swap mint) | ✅ | ✅ plugin+VAP | ◐ unit; VAP CEL needs kind |
 | [R6](R6-mandatory-scheduler.md) | Budget is opt-in for GPU pods | ✅ | ✅ VAP (off by default) | ◐ VAP CEL needs kind |
-| [R7](R7-tenancy-envelope-namespace.md) | Namespaces are not a tenancy boundary | ✅ | ◐ pt1 namespace envelope key (#87); **pt2 delete `Run.Spec.Owner` open** — authz decision, deferred by owner ruling | ◐ pt1 unit + golden; pt2 pending |
+| [R7](R7-tenancy-amendment.md) | Namespaces are not a tenancy boundary | ✅ | ✅ pt1 namespace envelope key (#87); **pt2 delete `Run.Spec.Owner`, owner derived from namespace** (APPROVED & UNPARKED by David 2026-07-24; PR open, flagged for the pre-merge sole-committer review — DECISIONS-NEEDED F7) | pt1 unit + golden; pt2 tenancy unit + fail-safe/injectivity/empty-borrower mutation-verified + retopologized golden |
 
 **P2 — workload lifecycle (blocks "usable for ML")**
 

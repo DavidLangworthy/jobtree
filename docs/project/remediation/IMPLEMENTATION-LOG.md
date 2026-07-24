@@ -1596,3 +1596,146 @@ clusters, and notes that the `crd-writes` lever unblocks writes while the rollou
 The additive-upgrade check (verification item 3) is a real additive change, not a no-op
 upgrade: it adds an optional property to a live CRD's schema **while an object of that
 kind exists**, and asserts the object reads back unchanged.
+
+## R7 pt2 — the owner is the namespace (2026-07-24)
+
+**Owner decision:** David APPROVED and UNPARKED R7 pt2, overriding the park-list entry
+(Codex-2 / #63). Implemented per `remediation/R7-tenancy-amendment.md` §4 exactly. Judgment
+calls, recorded rather than interrupting:
+
+**1. `nsForOwner` — one namespace per owner, threaded through every fixture.** The amendment's
+model is one principal per namespace, owner derived from the namespace. The old test corpus put
+several distinct budget *owners* in one namespace (`default`) and let the run name its own owner;
+under derivation that namespace is now *conflicted* (two owners → fail-safe to unbound → every
+lease Unfunded). So every migrated test maps an owner tier to a namespace with a single convention
+— `owner` with `:`/`/` → `-` — applied in the package's `budgetOf`/`runOf` helpers so budgets,
+runs and leases for one owner co-reside and `OwnerOf(ns)` round-trips. Where a lease is *borrowed*
+(run in owner A's namespace, paid by sponsor B's envelope) the run/lease namespace is A's and only
+`PaidByBudgetNamespace` points at B (a `forRunOwner` lease option). The golden and the envtest
+package are the exception: their runs stay in `default` with the single owner's budget co-located
+there, and only a genuine sponsor's budget moves to its own namespace — envtest namespaces are real
+apiserver objects and are not worth creating for single-tenant scenarios.
+
+**2. Pure borrowers must be admin-bound.** The empty-borrower guard means a run whose namespace has
+no Budget derives owner `""` and can borrow from nothing — including `To:["*"]` sponsors. Two funding
+tests relied on a bare borrower declaring its own owner; they now bind the borrower's namespace with
+a nominal one-envelope Budget (amendment §5's pool-consumer pattern). This is the guard working as
+designed, not a test workaround.
+
+**3. `PaidByNamespace` field semantics left as pt1 shipped them.** The amendment §7 wants a *required*
+`PaidByNamespace` plus a *loud rail* (empty payer-namespace surfaced as a defect). pt1 already shipped
+the field as `PaidByBudgetNamespace`, *optional* with a silent legacy-empty fallback (Codex #1). This
+PR stamps it at all three mint sites (already done by pt1) and adds the *binding-conflict* surfacing on
+the `Evaluation` (`Conflicts()`), but does NOT flip the field to required or add the empty-namespace
+loud rail — that would reclassify legacy-empty leases, an owner-facing change to an already-ratified
+pt1 decision. Flagged as sub-question F7(4) in `DECISIONS-NEEDED.md` for the pre-merge review, not
+parked (it does not block pt2).
+
+**4. R26 alarms not wired in this PR.** The engine now exposes `Evaluation.Conflicts()` (multi-owner
+and leaf-owner-collision namespaces) and the amendment asks R26 to alarm on those plus interior-owner
+Runs and empty-payer leases. Wiring the auditor to consume this is a separate small change on R26's
+spec; surfacing the data on the Evaluation (which the fail-safe already needs) is in scope here, the
+auditor consumption is not. Flagged in F7.
+
+**5. `promiseProvenanceValid` → namespace equality.** With `Run.Spec.Owner` gone the plugin's promise
+provenance check drops the two owner-string agreements and gates on `b.Namespace == run.Namespace`
+(forge-proof: the API server authenticates `metadata.namespace`). `seg.Owner` is now cosmetic; the
+security test was rewritten to prove the cross-namespace charge is still refused and that the cosmetic
+owner introduces no laundering path.
+
+Gate: `make verify` + envtest + the eviction fuzzer; the three load-bearing engine fixes
+(empty-borrower guard, leaf-owner injectivity, multi-owner fail-safe) were mutation-verified.
+
+## 2026-07-24 — R7 pt2 milestone review PAUSED; interior-exemption finding parked (not fixed)
+
+The owner-launched fail-closed adversarial panel (runId `wf_cd9db73e-4d3`, `git diff main...HEAD`
+@ `f52d3cf`) was **interrupted by a usage limit at 13:30Z, mid-Review** — Attest and Judge never
+ran. The prior turn intended to resume it after the quota reset, but workflow `resumeFromRunId` is
+same-session-only and this turn is a new session, so cache-replay resume is unavailable; a fresh
+full panel is a day's-quota run reserved for David (AGENTS.md, playbook).
+
+**Judgment call: do NOT autonomously fix the one confirmed finding; park it.** The completed lenses
+(+ the cached codex-sol finding + my own compiled reproduction on `f52d3cf`) converge on a CRITICAL
+defect: the interior-tier exemption at `pkg/funding/evaluate.go:220` lets an owner that is both
+directly leaf-bound in ≥2 runnable namespaces AND interior evade `ConflictLeafOwnerSpansNamespaces`,
+minting a non-recallable cross-tenant Owned charge. I reproduced it: with an interior child,
+`OwnerOf(alice)==OwnerOf(bob)=="org:ai"` and `conflicts==[]`; without it, the fail-safe fires.
+
+Why parked rather than fixed: the exemption is **intentional** per `R7-tenancy-amendment.md`
+§4/§5/C-4 ("interior tiers may span admin namespaces"), with the residual hazard deliberately booked
+to the RBAC precondition + R26 alarm 3. Narrowing the exemption is a **tenancy design decision** that
+risks breaking the legitimately-allowed multi-namespace-pool case (a reaper), and the panel's
+reaper-veto lens never ran to vet any fix. Recorded as PARKED item **P5** in `DECISIONS-NEEDED.md`;
+review archived (PAUSED) under `reviews/2026-07-24-r7-pt2-owner-from-namespace-f52d3cf/`. Two LOW
+findings (diagnostic map nondeterminism at `evaluate.go:225`; `resolver.ownerOf` namespace fallback)
+noted UNRESOLVED for the same decision. Working tree left untouched per the owner directive
+("committed alongside the fixes once the panel lands" — it did not land). Not merged; no
+`.autopilot-done` (milestone review mid-flight).
+
+## 2026-07-24 — R7 pt2 cross-vendor adversarial panel: 13 fixes, 2 parked, verdict BLOCKED
+
+David authorised a pre-merge adversarial review of PR #127, overriding the playbook's
+no-per-PR-review rule, and asked for an OpenAI Codex seat on the panel as a cross-vendor finding
+lens. Full record: `../reviews/2026-07-24-r7-pt2-cross-vendor-panel-0b77fbe/`. Run
+`wf_7b4dc0d8-aa0`, reviewed commit `0b77fbe`.
+
+**Verdict is `BLOCKED`, not green.** Scout and Review completed; the session usage limit killed
+Attest, both retrying lenses, and Judge. Because no lens survived attestation the harness returned
+empty `confirmed`/`unresolved`/`attribution` arrays — fail-closed working as designed. Every
+finding is `UNRESOLVED` except four reproduced here with compiled tests.
+
+**Judgment call: stop before Judge rather than keep feeding a phase that has never completed.**
+The runner has 4 cores, so the harness caps concurrency at 2; Judge over 26 findings is ~150
+agents through a 2-wide queue. This review had already died mid-panel twice (segments 1 and 2) and
+delivered no adjudication either time. Banking verified fixes was worth more than a third attempt.
+Announced on issue #132 before doing it. **The cost, recorded rather than glossed: the fixes below
+were not reaper-checked by the fable consequence seat.**
+
+**Judgment call: replace the dead Attest phase with a deterministic check.** Every citation was
+re-read from `git show 0b77fbe:<file>` — the reviewed commit, not the working tree, which by then
+carried fixes — and matched verbatim within the same ±15-line tolerance the harness allows.
+**57/57 verified; no lens fabricated a citation**, including the cross-vendor relay.
+
+**Judgment call: no `commit` arg to the harness.** It turns `commit` into `git show <sha>`, which
+for an 8-commit stack is the last commit only — a docs-archive commit. Omitting it makes `DIFF`
+fall back to `git diff main...HEAD`; the head SHA went in `context` instead so the archive still
+pins what was reviewed.
+
+**Attribution (n=1, and the harness's own `confirmedFoundByExactlyOneLens` is unavailable because
+nothing was confirmed).** Computed by hand over raised findings: the cross-vendor seat raised two
+`high` findings **no Claude lens raised** — the retroactive GPU-hour rewrite (`evaluate.go:661`,
+now P6) and the unvalidated optional `PaidByBudgetNamespace` (`lease_types.go:61`, already F7(4)).
+The first came with a numeric prediction (4 / 0 / 12 charged GPU-hours across a conflict window)
+that reproduced to the digit. Four sole-lens findings came from **Opus** seats and none from the
+**fable** seat; the fable seat's distinctive contribution was instead to attack a *parking
+decision* — ruling `high` that P5's reaper rationale is unsupported, a verdict shape the harness
+has no name for.
+
+**Fixed (13), each mutation-verified, gate green (`make verify` incl. envtest + the 800-seed
+quiescence/eviction fuzzer under `-race`):** the reservation-activation hard error; the empty-owner
+reclaim/lottery bucket collapse; `deriveOwners` map-order nondeterminism (plus repetition *and*
+permutation rails); the promise path minting for an unbound namespace (via a new
+`funding.OwnerOfNamespace` that shares the engine's own `deriveOwners`, so plugin and engine cannot
+drift); `seg.Owner` pinning; two comments that asserted things nothing runs (R26 consuming
+`Conflicts()`; "coast" implying safety when Unfunded is the resolver's *first* reclaim target);
+the stale `spec.owner` in `internal/manifestcorpus` plus a new envtest proving the API server
+prunes a submitted `spec.owner`; the failing kind e2e; and four user-facing docs still teaching
+`spec.owner` — two of which also lacked a `namespace:`, which under this model shows an unfundable
+Run.
+
+**An existing assertion was reversed**, which class 8 says to record: `TestPromiseProvenanceValid`
+asserted *"seg.Owner is now COSMETIC"*. It is cosmetic to the funding decision but is copied onto
+`Lease.Spec.Owner` at mint, so leaving it unpinned lets a forged Promise pod state a false
+principal on a real GPU-holding lease. "Cannot mis-charge" and "cannot mis-state who holds the
+GPUs" are different guarantees; only the first survived the change. Pinning refuses nothing
+legitimate — `opportunisticCoverPlan` builds every real segment with exactly that owner.
+
+**Parked, not guessed:** **P5** (interior-tier exemption — ratified tenancy text; its reaper leg is
+now contested by the lens that owns it, recorded in the entry) and **P6** (should the fail-safe
+reach backwards through the replay). Both behaviours are now pinned by tests whose failure messages
+say "if this is the decision landing, assert the new semantics here", so neither can change by
+accident. **Not fixed and said so:** `metrics.BudgetKey` lacking a namespace — only reachable
+through the P5 hole, and changing exported metric labels is dashboard-visible; revisit with P5.
+
+Also removed `.autopilot-turn.log` from the branch (it had been committed by accident) and
+gitignored it.

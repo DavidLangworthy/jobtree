@@ -19,7 +19,7 @@ import (
 func TestBuildPodStampsRunNonce(t *testing.T) {
 	run := &v1.Run{
 		ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default", UID: types.UID("0123456789abcdef-aaaa-bbbb")},
-		Spec:       v1.RunSpec{Owner: "org:ai:team", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 1}},
+		Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 1}},
 	}
 	manifest := binder.PodManifest{
 		Namespace: "default", Name: "train-active-0", GPUs: 1,
@@ -61,7 +61,6 @@ func TestBuildPodFromRoleTemplate(t *testing.T) {
 	run := &v1.Run{
 		ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"},
 		Spec: v1.RunSpec{
-			Owner:     "org:ai:team",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 8},
 			Roles: []v1.RunRole{{
 				Name: "trainer", Width: 2, GPUsPerPod: 4,
@@ -128,7 +127,7 @@ func TestBuildPodFromRoleTemplate(t *testing.T) {
 func TestBuildPodLegacyRolelessUsesRealDefault(t *testing.T) {
 	run := &v1.Run{
 		ObjectMeta: v1.ObjectMeta{Name: "legacy", Namespace: "default"},
-		Spec:       v1.RunSpec{Owner: "org:ai:team", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 1}},
+		Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 1}},
 	}
 	manifest := binder.PodManifest{
 		Namespace: "default", Name: "legacy-pod-0", GPUs: 1,
@@ -154,7 +153,7 @@ func TestBuildPodLegacyRolelessUsesRealDefault(t *testing.T) {
 func TestBuildPodCarriesCohortAnnotation(t *testing.T) {
 	run := &v1.Run{
 		ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"},
-		Spec:       v1.RunSpec{Owner: "org:ai:team", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 2}},
+		Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 2}},
 	}
 	manifest := binder.PodManifest{
 		Namespace: "default", Name: "train-c1-active-0", GPUs: 1,
@@ -181,7 +180,6 @@ func TestBuildPodSpareIsLongLivedGPUHolder(t *testing.T) {
 	run := &v1.Run{
 		ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"},
 		Spec: v1.RunSpec{
-			Owner:     "org:ai:team",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
 			Roles: []v1.RunRole{{
 				Name: "trainer", Width: 4, GPUsPerPod: 1,
@@ -220,7 +218,7 @@ func TestBuildPodSpareIsLongLivedGPUHolder(t *testing.T) {
 func TestBuildPodSwapHardTargetsAndCarriesProvenance(t *testing.T) {
 	run := &v1.Run{
 		ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"},
-		Spec:       v1.RunSpec{Owner: "org:ai:team", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 1}},
+		Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 1}},
 	}
 	manifest := binder.PodManifest{
 		Namespace: "default", Name: "train-g0-swap-1", GPUs: 1,

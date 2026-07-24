@@ -15,7 +15,7 @@ import (
 func followRun(name string, after ...string) *v1.Run {
 	r := &v1.Run{
 		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: keys.DefaultNamespace, CreationTimestamp: v1.NewTime(qsBase)},
-		Spec:       v1.RunSpec{Owner: "team", Resources: v1.RunResources{GPUType: qsFlavor, TotalGPUs: 4}},
+		Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: qsFlavor, TotalGPUs: 4}},
 	}
 	if len(after) > 0 {
 		r.Spec.Follow = &v1.RunFollow{After: after}

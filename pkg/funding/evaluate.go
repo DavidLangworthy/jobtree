@@ -73,6 +73,16 @@ type Evaluation struct {
 	envelopes map[EnvelopeKey]*EnvelopeAccount
 	runs      map[string]*RunAccount
 
+	// ownerByNamespace binds each namespace to its single admin-declared owner
+	// (R7 tenancy amendment §4). A namespace is absent here when it is unbound
+	// (no Budgets) or its binding is conflicted (fail-safe to unbound); OwnerOf
+	// returns "" for those. conflicts records the admin errors that triggered a
+	// fail-safe so a caller CAN alarm and log — though none does yet; see
+	// BindingConflict. The funding decision has already coasted the affected
+	// leases Unfunded either way.
+	ownerByNamespace map[string]string
+	conflicts        []BindingConflict
+
 	// ranked claim state at Now, kept for AvailableWidth (admission).
 	claimsByEnv map[EnvelopeKey][]*claim
 	fundedWidth map[claimKey]int32
@@ -146,6 +156,157 @@ type aggregateAccount struct {
 	consumed float64
 }
 
+// ConflictReason classifies a detected binding fail-safe.
+type ConflictReason string
+
+const (
+	// ConflictMultipleOwners: a namespace's Budgets carry two or more distinct
+	// owners, so "who pays" is ambiguous (R7 amendment §4).
+	ConflictMultipleOwners ConflictReason = "MultipleOwners"
+	// ConflictLeafOwnerSpansNamespaces: one LEAF owner (a tier named in no
+	// Budget's Parents) is bound in two or more namespaces. Cover resolution is
+	// owner-keyed cluster-wide, so this would let a Run in one namespace mint an
+	// Owned charge across the boundary — the hazard R7 §4 (S-1) closes.
+	ConflictLeafOwnerSpansNamespaces ConflictReason = "LeafOwnerSpansNamespaces"
+)
+
+// BindingConflict names a namespace whose owner derivation failed safe to
+// unbound, and why.
+//
+// NOTHING CONSUMES THESE YET. R26's ledger auditor is the intended consumer and
+// is NOT wired to them (DECISIONS-NEEDED F7, sub-question 4); `Conflicts()` has
+// no production caller today. An earlier version of this comment said the
+// auditor "consumes these to alarm", which is a claim nothing runs — precisely
+// the comment-as-enforcement class the review playbook names. Until the auditor
+// is wired, an admin who mis-binds a namespace gets a correct fail-safe and NO
+// operator-visible signal: the namespace simply stops funding work.
+type BindingConflict struct {
+	Namespace string
+	Owner     string // the colliding leaf owner, for LeafOwnerSpansNamespaces
+	Reason    ConflictReason
+}
+
+// deriveOwners computes the namespace→owner binding from the admin-placed
+// Budgets (R7 tenancy amendment §4). The owner is NOT a run-writable field; it
+// is a function of the run's namespace. Two admin-error configurations fail
+// safe to "unbound" (empty owner: fresh runs are refused by cover, pre-existing
+// leases coast Unfunded) and are recorded as conflicts:
+//
+//   - a namespace whose Budgets carry two or more distinct owners
+//     (one-principal-per-namespace); and
+//   - a LEAF owner whose Budgets span two or more namespaces
+//     (one-namespace-per-leaf-owner — the converse invariant, needed because
+//     cover.NewInventory buckets by owner cluster-wide, so a leaf owner in two
+//     namespaces mints a senior, non-recallable Owned charge across the
+//     boundary that the namespaced EnvelopeKey is powerless to separate).
+//
+// Interior tiers (a pool named as some Budget's Parent) are exempt from the
+// converse invariant: nothing ever classes Owned against a pool, and pools are
+// admin-written at both ends.
+func (ev *Evaluation) deriveOwners(budgets []v1.Budget) {
+	ownersByNS := make(map[string]map[string]struct{})
+	nsByOwner := make(map[string]map[string]struct{})
+	interior := make(map[string]struct{})
+	for i := range budgets {
+		b := &budgets[i]
+		if ownersByNS[b.Namespace] == nil {
+			ownersByNS[b.Namespace] = make(map[string]struct{})
+		}
+		ownersByNS[b.Namespace][b.Spec.Owner] = struct{}{}
+		if nsByOwner[b.Spec.Owner] == nil {
+			nsByOwner[b.Spec.Owner] = make(map[string]struct{})
+		}
+		nsByOwner[b.Spec.Owner][b.Namespace] = struct{}{}
+		for _, parent := range b.Spec.Parents {
+			interior[parent] = struct{}{}
+		}
+	}
+
+	// A leaf owner bound in two-plus namespaces poisons every namespace it
+	// touches (the charge could land in any of them).
+	//
+	// Both loops below walk their maps in SORTED key order, and the conflicts are
+	// emitted in sorted namespace order. Go randomizes map iteration per process,
+	// and two owners can collide on the same namespace — so an unsorted walk makes
+	// BindingConflict.Owner (and the order of Conflicts()) a coin flip that
+	// changes between two evaluations of identical input. The funding decision is
+	// safe either way (the namespace derives "" whichever owner wins), but R26's
+	// auditor alarms off these records: a diagnostic that names a different
+	// culprit each sweep is one an operator cannot act on, and an alarm that
+	// reorders is one that looks like new events when nothing changed.
+	collided := make(map[string]string) // namespace → colliding leaf owner
+	for _, owner := range sortedKeys(nsByOwner) {
+		if _, isInterior := interior[owner]; isInterior {
+			continue
+		}
+		nss := nsByOwner[owner]
+		if len(nss) >= 2 {
+			for ns := range nss {
+				// Lexicographically smallest colliding owner wins, deterministically.
+				if prior, ok := collided[ns]; !ok || owner < prior {
+					collided[ns] = owner
+				}
+			}
+		}
+	}
+
+	ev.ownerByNamespace = make(map[string]string, len(ownersByNS))
+	for _, ns := range sortedKeys(ownersByNS) {
+		owners := ownersByNS[ns]
+		if owner, ok := collided[ns]; ok {
+			ev.conflicts = append(ev.conflicts, BindingConflict{
+				Namespace: ns, Owner: owner, Reason: ConflictLeafOwnerSpansNamespaces,
+			})
+			continue
+		}
+		if len(owners) >= 2 {
+			ev.conflicts = append(ev.conflicts, BindingConflict{
+				Namespace: ns, Reason: ConflictMultipleOwners,
+			})
+			continue
+		}
+		for owner := range owners {
+			ev.ownerByNamespace[ns] = owner
+		}
+	}
+}
+
+// OwnerOf returns the admin-derived owner of a namespace, or "" when the
+// namespace is unbound (no Budgets) or its binding is conflicted (R7 §4). An
+// empty owner is the fail-safe sentinel: cover.Plan refuses a fresh Run with
+// it, and lendingAllows never lends to it (the empty-borrower guard), so an
+// unbound namespace participates in no funding at all.
+//
+// "COAST" IS NOT A PROMISE OF SAFETY. The amendment says pre-existing leases
+// "reclassify Unfunded and coast", and that is true of the funding decision
+// alone: nothing here closes them. But Unfunded is the resolver's FIRST reclaim
+// target by design (quota-semantics.md Decision 1 — opportunistic capacity is
+// what gets cut first), so under any contention the running work of a namespace
+// whose binding an admin just broke is the first thing evicted. Coasting means
+// "not billed and not closed by the engine", not "left alone".
+func (ev *Evaluation) OwnerOf(namespace string) string {
+	return ev.ownerByNamespace[namespace]
+}
+
+// Conflicts lists the binding fail-safes detected during derivation (R7 §4).
+func (ev *Evaluation) Conflicts() []BindingConflict {
+	return ev.conflicts
+}
+
+// OwnerOfNamespace derives one namespace's funding principal from the Budgets
+// alone, without replaying any leases. It exists for callers on the mint path
+// that hold a Budget list but no Evaluation — the scheduler plugin's promise
+// provenance check — and it runs the SAME deriveOwners the engine runs, so the
+// two can never drift into disagreeing about who pays.
+//
+// It returns "" for an unbound or conflicted namespace, exactly as
+// Evaluation.OwnerOf does.
+func OwnerOfNamespace(budgets []v1.Budget, namespace string) string {
+	ev := &Evaluation{}
+	ev.deriveOwners(budgets)
+	return ev.OwnerOf(namespace)
+}
+
 // Evaluate derives the classification. It replays the lease facts from the
 // earliest event so that GPU-hour integrals only count hours accrued while
 // funded: exhaustion demotes every claim the envelope was covering — the
@@ -169,6 +330,7 @@ func Evaluate(in Input) *Evaluation {
 		fundedWidth: make(map[claimKey]int32),
 		aggWidth:    make(map[*aggregateAccount]int32),
 	}
+	ev.deriveOwners(in.Budgets)
 
 	envIndex := make(map[EnvelopeKey]*EnvelopeAccount)
 	var envOrder []EnvelopeKey
@@ -542,7 +704,7 @@ func (ev *Evaluation) fill(in Input, facts []*leaseFact, envOrder []EnvelopeKey,
 			run := in.Runs[runKey]
 			cl = &claim{key: ck, name: runKey}
 			if run != nil {
-				cl.tier = ev.Graph.Tier(acct.Owner, run.Spec.Owner)
+				cl.tier = ev.Graph.Tier(acct.Owner, ev.OwnerOf(run.Namespace))
 				cl.sponsored = cl.tier == tierNone
 				cl.admitted = run.CreationTimestamp.Time
 				cl.malleable = run.Spec.Malleable != nil
@@ -633,7 +795,7 @@ func (ev *Evaluation) fill(in Input, facts []*leaseFact, envOrder []EnvelopeKey,
 		for _, cl := range ef.sponsors {
 			run := in.Runs[cl.key.runKey]
 			eligible := ef.acct.Spec.Lending != nil && ef.acct.Spec.Lending.Allow &&
-				run != nil && lendingAllows(ef.acct.Spec.Lending, run.Spec.Owner)
+				run != nil && lendingAllows(ef.acct.Spec.Lending, ev.OwnerOf(run.Namespace))
 			if !eligible {
 				res.markClaim(cl, nil, ef.acct)
 				continue
@@ -922,6 +1084,15 @@ func (ev *Evaluation) runAccount(runKey string) *RunAccount {
 
 func lendingAllows(policy *v1.LendingPolicy, borrower string) bool {
 	if policy == nil {
+		return false
+	}
+	// The empty-borrower guard (R7 amendment §4). An unbound or conflicted
+	// namespace derives owner "", and an open policy (To: [] or "*") would
+	// otherwise lend to it — so a pre-existing Borrowed lease would survive its
+	// namespace becoming conflicted, contradicting the fail-safe. An empty
+	// borrower is never lendable: to participate in funding at all, the admin
+	// must have bound your namespace.
+	if borrower == "" {
 		return false
 	}
 	if len(policy.To) == 0 {

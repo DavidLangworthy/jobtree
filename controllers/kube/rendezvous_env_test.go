@@ -15,7 +15,6 @@ func roledRun(name string, width, gpusPerPod int32, malleable bool) *v1.Run {
 	run := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
 		Spec: v1.RunSpec{
-			Owner:     "org:team",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: width * gpusPerPod},
 			Roles: []v1.RunRole{{
 				Name: "worker", Width: width, GPUsPerPod: gpusPerPod,

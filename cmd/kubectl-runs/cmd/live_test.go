@@ -25,7 +25,6 @@ func newTestRun(namespace, name string) *v1.Run {
 	return &v1.Run{
 		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: v1.RunSpec{
-			Owner:     "org:team-a",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
 		},
 	}

@@ -9,3 +9,6 @@ specs/states/
 .claude/worktrees/
 .claude/scheduled_tasks.lock
 .autopilot-last.log
+
+# Per-run autopilot scratch log; never belongs in a PR branch.
+.autopilot-turn.log

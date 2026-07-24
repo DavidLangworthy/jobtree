@@ -14,7 +14,6 @@ func TestMaterializeSplitsCoverAcrossAllocations(t *testing.T) {
 	run := &v1.Run{}
 	run.Name = "train"
 	run.Namespace = "default"
-	run.Spec.Owner = "org:ai:rai"
 
 	packPlan := pack.Plan{
 		Flavor:    "H100-80GB",
@@ -86,7 +85,6 @@ func TestMaterializeErrorsWhenSegmentsInsufficient(t *testing.T) {
 	run := &v1.Run{}
 	run.Name = "train"
 	run.Namespace = "default"
-	run.Spec.Owner = "org:ai:rai"
 
 	packPlan := pack.Plan{
 		Flavor:    "H100-80GB",
@@ -114,7 +112,6 @@ func TestMaterializeIncludesSpares(t *testing.T) {
 	run := &v1.Run{}
 	run.Name = "train"
 	run.Namespace = "default"
-	run.Spec.Owner = "org:ai:rai"
 
 	packPlan := pack.Plan{
 		Flavor:      "H100-80GB",
@@ -163,7 +160,6 @@ func TestMaterializeIncludesSpares(t *testing.T) {
 
 func TestMaterializeAppliesOffsetAndReason(t *testing.T) {
 	run := &v1.Run{ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"}}
-	run.Spec.Owner = "org:ai:rai"
 	packPlan := pack.Plan{
 		Flavor:    "H100-80GB",
 		TotalGPUs: 4,

@@ -1,0 +1,9 @@
+report 1: checked — 14/14 citations verified
+report 2: checked — 10/10 citations verified
+report 3: checked — 14/14 citations verified
+report 4: checked — 6/6 citations verified
+report 5: checked — 7/7 citations verified
+report 6: SKIPPED (degenerate schema probe, not a lens report)
+report 7: checked — 6/6 citations verified
+
+TOTAL: 57/57 citations verified verbatim against 0b77fbe

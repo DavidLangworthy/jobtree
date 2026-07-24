@@ -35,8 +35,8 @@ apiVersion: rq.davidlangworthy.io/v1
 kind: Run
 metadata:
   name: train-32
+  namespace: rai-sys          # the namespace IS the funding principal (R7)
 spec:
-  owner: org:ai:rai:sys
   resources:
     gpuType: H100-80GB
     totalGPUs: 32

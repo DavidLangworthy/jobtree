@@ -46,7 +46,6 @@ func giRun(name string, totalGPUs, groupGPUs int32) *v1.Run {
 	run := &v1.Run{
 		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: "default"},
 		Spec: v1.RunSpec{
-			Owner:     "org:ai:team",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: totalGPUs},
 		},
 	}

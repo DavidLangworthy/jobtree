@@ -5,7 +5,6 @@
     "name": "train-128"
   },
   "spec": {
-    "owner": "org:example:sys",
     "resources": {
       "gpuType": "H100-80GB",
       "totalGPUs": 128

@@ -79,7 +79,6 @@ metadata:
   name: j2
   namespace: team-b
 spec:
-  owner: org:team-b
   resources:
     gpuType: H100-80GB
     totalGPUs: 24

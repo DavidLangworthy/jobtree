@@ -22,7 +22,7 @@ func TestApplyStampsTheRunOwnerReferenceOntoANewReservation(t *testing.T) {
 
 	run := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: "default", UID: "run-uid-123"},
-		Spec:       v1.RunSpec{Owner: "org:team", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 1}},
+		Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 1}},
 		Status:     v1.RunStatus{Phase: controllers.RunPhaseRunning},
 	}
 	c := fake.NewClientBuilder().WithScheme(testScheme()).

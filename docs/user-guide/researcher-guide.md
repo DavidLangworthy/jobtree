@@ -41,7 +41,6 @@ metadata:
   name: resnet-small
   namespace: rai-sys
 spec:
-  owner: org:ai:rai:sys
   resources:
     gpuType: H100-80GB
     totalGPUs: 8
@@ -58,6 +57,12 @@ spec:
   runtime:
     checkpoint: "10m"
 ```
+
+There is no `spec.owner`: a Run's funding principal is derived from its
+**namespace**. The admin places a Budget in your namespace declaring who pays
+(`Budget.spec.owner`) and where you sit in the family tree; the API server
+authenticates `metadata.namespace`, so which budget a Run draws on cannot be
+forged. Submit into the namespace whose Budget should pay.
 
 `width * gpusPerPod` must equal `resources.totalGPUs`. `template` is your ordinary
 `PodTemplateSpec` — image, command, env, volumes, resources are all yours; jobtree only
@@ -80,7 +85,6 @@ pod and mints its Lease at bind time. No Reservation is created because the Run 
 
 ```yaml
 spec:
-  owner: org:ai:rai:sys
   resources:
     gpuType: H100-80GB
     totalGPUs: 128

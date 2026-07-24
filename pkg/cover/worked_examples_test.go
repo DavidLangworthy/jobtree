@@ -29,15 +29,17 @@ func evalWithOccupancy(now time.Time, flavor string, budgets []v1.Budget, occ []
 	var leases []v1.GPULease
 	for i, o := range occ {
 		runName := fmt.Sprintf("occ-%d", i)
-		runKey := keys.NamespacedKey(keys.DefaultNamespace, runName)
+		// R7: the owner is derived from the run's namespace, so each occupancy's
+		// run/lease lives in ITS owner's namespace (an occupancy is owned).
+		ns := nsForOwner(o.owner)
+		runKey := keys.NamespacedKey(ns, runName)
 		runs[runKey] = &v1.Run{
 			ObjectMeta: v1.ObjectMeta{
 				Name:              runName,
-				Namespace:         keys.DefaultNamespace,
+				Namespace:         ns,
 				CreationTimestamp: v1.NewTime(now.Add(-time.Hour)),
 			},
 			Spec: v1.RunSpec{
-				Owner:     o.owner,
 				Resources: v1.RunResources{GPUType: flavor, TotalGPUs: int32(o.gpus)},
 			},
 		}
@@ -46,14 +48,15 @@ func evalWithOccupancy(now time.Time, flavor string, budgets []v1.Budget, occ []
 			nodes[j] = fmt.Sprintf("occ-%d-node#%d", i, j)
 		}
 		leases = append(leases, v1.GPULease{
-			ObjectMeta: v1.ObjectMeta{Name: fmt.Sprintf("occ-lease-%d", i), Namespace: keys.DefaultNamespace},
+			ObjectMeta: v1.ObjectMeta{Name: fmt.Sprintf("occ-lease-%d", i), Namespace: ns},
 			Spec: v1.GPULeaseSpec{
-				Owner:          o.owner,
-				RunRef:         v1.RunReference{Name: runName, Namespace: keys.DefaultNamespace},
-				Slice:          v1.GPULeaseSlice{Nodes: nodes, Role: "Active"},
-				Interval:       v1.GPULeaseInterval{Start: v1.NewTime(now.Add(-time.Hour))},
-				PaidByBudget:   o.budget,
-				PaidByEnvelope: o.envelope,
+				Owner:                 o.owner,
+				RunRef:                v1.RunReference{Name: runName, Namespace: ns},
+				Slice:                 v1.GPULeaseSlice{Nodes: nodes, Role: "Active"},
+				Interval:              v1.GPULeaseInterval{Start: v1.NewTime(now.Add(-time.Hour))},
+				PaidByBudgetNamespace: ns,
+				PaidByBudget:          o.budget,
+				PaidByEnvelope:        o.envelope,
 			},
 		})
 	}

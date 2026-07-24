@@ -111,7 +111,7 @@ func TestStaleFencingVerdictDoesNotCloseARecreatedNodesLeases(t *testing.T) {
 	node := healthyNode("node-a", 4)
 	run := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "train", Namespace: "default"},
-		Spec:       v1.RunSpec{Owner: "org:team", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 1}},
+		Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 1}},
 		Status:     v1.RunStatus{Phase: controllers.RunPhaseRunning},
 	}
 	lease := openLeaseOn("train-lease", "train", "node-a")
@@ -153,7 +153,7 @@ func TestStaleFencingVerdictDoesNotCloseARecreatedNodesLeases(t *testing.T) {
 func TestAGenuinelyDeletedNodeStillClosesItsLeases(t *testing.T) {
 	run := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "train", Namespace: "default"},
-		Spec:       v1.RunSpec{Owner: "org:team", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 1}},
+		Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 1}},
 		Status:     v1.RunStatus{Phase: controllers.RunPhaseRunning},
 	}
 	lease := openLeaseOn("train-lease", "train", "node-a")

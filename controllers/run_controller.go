@@ -348,7 +348,7 @@ func (c *RunController) Reconcile(namespace, name string) error {
 				inventory = cover.NewInventory(ev)
 				continue
 			}
-			request := cover.Request{Owner: run.Spec.Owner, Flavor: run.Spec.Resources.GPUType, Quantity: run.Spec.Resources.TotalGPUs, Now: now, Admitted: run.CreationTimestamp.Time, RunKey: key, AllowBorrow: run.Spec.Funding != nil && run.Spec.Funding.AllowBorrow}
+			request := cover.Request{Owner: ev.OwnerOf(run.Namespace), Flavor: run.Spec.Resources.GPUType, Quantity: run.Spec.Resources.TotalGPUs, Now: now, Admitted: run.CreationTimestamp.Time, RunKey: key, AllowBorrow: run.Spec.Funding != nil && run.Spec.Funding.AllowBorrow}
 			if run.Spec.Funding != nil {
 				request.Sponsors = append(request.Sponsors, run.Spec.Funding.Sponsors...)
 			}
@@ -364,7 +364,7 @@ func (c *RunController) Reconcile(namespace, name string) error {
 		spareTotal := expectedSpareTotal(run, &packPlan)
 		quantity := run.Spec.Resources.TotalGPUs + spareTotal
 		request := cover.Request{
-			Owner:       run.Spec.Owner,
+			Owner:       ev.OwnerOf(run.Namespace),
 			Flavor:      run.Spec.Resources.GPUType,
 			Quantity:    quantity,
 			Location:    location,
@@ -433,7 +433,7 @@ func (c *RunController) reclaimForAdmission(run *v1.Run, ev *funding.Evaluation,
 		return false
 	}
 	request := cover.Request{
-		Owner:       run.Spec.Owner,
+		Owner:       ev.OwnerOf(run.Namespace),
 		Flavor:      run.Spec.Resources.GPUType,
 		Quantity:    run.Spec.Resources.TotalGPUs + expectedSpareTotal(run, nil),
 		Now:         now,
@@ -1179,6 +1179,34 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 	ev := c.evaluate(now)
 	inventory := cover.NewInventory(ev)
 
+	// R7 §4: an UNBOUND or CONFLICTED namespace derives no owner, so there is
+	// nothing to plan against. Without this refusal the empty owner flows into
+	// cover.Request below and inventory.Plan rejects it as
+	// FailureReasonInvalidRequest ("owner and flavor must be set"), which this
+	// function returns as a HARD ERROR — every tick, forever, with an operator
+	// message about fields the Run does not have.
+	//
+	// That path was unreachable before this change: the owner came from
+	// Run.Spec.Owner, which the CRD's minLength kept non-empty. Deriving it from
+	// the namespace makes InvalidRequest reachable by an ordinary admin action
+	// (placing a second Budget), which is the "making a dead path reachable is
+	// worsening it" case, not a pre-existing one.
+	//
+	// Refuse THIS TICK and say why. Deliberately NOT terminal — failReservationNoEnvelope
+	// exists for genuinely unfundable runs, and using it here would destroy a
+	// legitimate reservation over an admin typo somebody is about to correct.
+	// The countdown and the reservation survive; activation proceeds by itself
+	// once the binding is repaired.
+	if ev.OwnerOf(run.Namespace) == "" {
+		setState(run, v1.RunStateUnfunded, fmt.Sprintf(
+			"namespace %q has no funding principal: it has no Budget, or its Budgets name more than one owner. "+
+				"An administrator must fix the namespace→owner binding; the reservation is held, not cancelled.",
+			run.Namespace))
+		run.Status.Funding = summarizeRunFunding(run, ev)
+		c.refreshReservationBacklog(key, reservation, now)
+		return nil
+	}
+
 	// opportunistic tracks whether funding fell back to the promised-but-
 	// unfunded escape hatch (opportunisticCoverPlan). A funded activation emits
 	// intent pods for the plugin to mint; an opportunistic one is the one narrow
@@ -1188,7 +1216,7 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 
 	location := reservation.Spec.IntendedSlice.Domain
 	request := cover.Request{
-		Owner:       run.Spec.Owner,
+		Owner:       ev.OwnerOf(run.Namespace),
 		Flavor:      run.Spec.Resources.GPUType,
 		Quantity:    run.Spec.Resources.TotalGPUs,
 		Location:    location,
@@ -1425,10 +1453,11 @@ func runHasPromisePods(pods []binder.PodManifest, run *v1.Run) bool {
 // attribute the work to and nothing to re-fund from, so the caller must not
 // admit — the reservation fails terminally instead.
 func (c *RunController) opportunisticCoverPlan(run *v1.Run, reservation *v1.Reservation, ev *funding.Evaluation, quantity int32) (cover.Plan, bool) {
-	segment := cover.Segment{Owner: run.Spec.Owner, Quantity: quantity}
+	owner := ev.OwnerOf(run.Namespace)
+	segment := cover.Segment{Owner: owner, Quantity: quantity}
 	found := false
 	for _, acct := range ev.Envelopes() {
-		if acct.Owner != run.Spec.Owner {
+		if acct.Owner != owner {
 			continue
 		}
 		// Prefer the reservation's intended envelope; fall back to any

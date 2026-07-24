@@ -103,7 +103,6 @@ func TestRunOwnedObjectsCarryAnOwnerReferenceTheRealGCWouldResolve(t *testing.T)
 	run := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "owned", Namespace: "default"},
 		Spec: v1.RunSpec{
-			Owner:     "org:team",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
 		},
 	}
@@ -154,7 +153,6 @@ func TestAReservationIsOwnedByItsRun(t *testing.T) {
 	run := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "reserved", Namespace: "default"},
 		Spec: v1.RunSpec{
-			Owner:     "org:team",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 8},
 		},
 	}
@@ -218,7 +216,6 @@ func assertDeleteClosesLeases(t *testing.T, name string, del func(*v1.Run) error
 	run := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
 		Spec: v1.RunSpec{
-			Owner:     "org:team",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
 		},
 	}
@@ -298,7 +295,6 @@ func TestNoOpenLeaseIsEverLoadedWithoutItsRun(t *testing.T) {
 	run := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "vanishing", Namespace: "default"},
 		Spec: v1.RunSpec{
-			Owner:     "org:team",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
 		},
 	}

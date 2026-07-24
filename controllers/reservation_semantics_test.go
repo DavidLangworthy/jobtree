@@ -25,9 +25,20 @@ func h100Node(name string, gpus int) topology.SourceNode {
 	}
 }
 
+// h100NS maps an owner tier to its namespace (R7: the funding owner is derived
+// from the run's namespace, one principal per namespace). org:team keeps the
+// default namespace; every other owner lands in its own so two owners never
+// collide when their runs share a fixture.
+func h100NS(owner string) string {
+	if owner == "org:team" {
+		return "default"
+	}
+	return strings.NewReplacer(":", "-", "/", "-").Replace(owner)
+}
+
 func h100Budget(budgetName, owner string, concurrency int32) v1.Budget {
 	return v1.Budget{
-		ObjectMeta: v1.ObjectMeta{Name: budgetName},
+		ObjectMeta: v1.ObjectMeta{Name: budgetName, Namespace: h100NS(owner)},
 		Spec: v1.BudgetSpec{
 			Owner: owner,
 			Envelopes: []v1.BudgetEnvelope{{
@@ -42,9 +53,8 @@ func h100Budget(budgetName, owner string, concurrency int32) v1.Budget {
 
 func h100Run(name, owner string, gpus int32) *v1.Run {
 	return &v1.Run{
-		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: "default"},
+		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: h100NS(owner)},
 		Spec: v1.RunSpec{
-			Owner:     owner,
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: gpus},
 		},
 	}
@@ -98,8 +108,8 @@ func TestActivateReservationBudgetOnlyShortfallAdmitsOpportunistically(t *testin
 		},
 	}
 	state.Runs = map[string]*v1.Run{
-		"default/hog":       h100Run("hog", "org:team", 4),
-		"default/bystander": h100Run("bystander", "org:bystander", 2),
+		"default/hog":             h100Run("hog", "org:team", 4),
+		"org-bystander/bystander": h100Run("bystander", "org:bystander", 2),
 	}
 
 	controller := NewRunController(state, runClock{now: now})
@@ -107,10 +117,10 @@ func TestActivateReservationBudgetOnlyShortfallAdmitsOpportunistically(t *testin
 	// bystander — Reconcile no longer mints on the admission path, so seed the
 	// bound/Running state the old in-controller commit used to reach.
 	seedRunning(t, state, "default/hog", now)
-	seedRunning(t, state, "default/bystander", now)
-	if state.Runs["default/hog"].Status.Phase != RunPhaseRunning || state.Runs["default/bystander"].Status.Phase != RunPhaseRunning {
+	seedRunning(t, state, "org-bystander/bystander", now)
+	if state.Runs["default/hog"].Status.Phase != RunPhaseRunning || state.Runs["org-bystander/bystander"].Status.Phase != RunPhaseRunning {
 		t.Fatalf("expected hog and bystander running, got %s and %s",
-			state.Runs["default/hog"].Status.Phase, state.Runs["default/bystander"].Status.Phase)
+			state.Runs["default/hog"].Status.Phase, state.Runs["org-bystander/bystander"].Status.Phase)
 	}
 
 	// blocked needs 4 GPUs: 6 are free (capacity fine), but org:team's
@@ -249,14 +259,14 @@ func TestActivateReservationCapacityDeficitStillResolves(t *testing.T) {
 		},
 	}
 	state.Runs = map[string]*v1.Run{
-		"default/victim": h100Run("victim", "org:victim", 8),
+		"org-victim/victim": h100Run("victim", "org:victim", 8),
 	}
 
 	controller := NewRunController(state, runClock{now: now})
 	// SETUP: victim is already bound/Running (holding the whole node) via the
 	// plugin's mint — Reconcile no longer binds on admission. Seed it so the
 	// capacity-deficit reservation and preemption below have work to reclaim.
-	seedRunning(t, state, "default/victim", now)
+	seedRunning(t, state, "org-victim/victim", now)
 
 	// waiter needs all 8 GPUs; the node is full — a pure capacity deficit.
 	state.Runs["default/waiter"] = h100Run("waiter", "org:team", 8)
@@ -282,7 +292,7 @@ func TestActivateReservationCapacityDeficitStillResolves(t *testing.T) {
 	if phase := state.Runs["default/waiter"].Status.Phase; phase != RunPhaseRunning {
 		t.Fatalf("expected waiter running after preemption, got %s", phase)
 	}
-	if phase := state.Runs["default/victim"].Status.Phase; phase != RunPhaseFailed {
+	if phase := state.Runs["org-victim/victim"].Status.Phase; phase != RunPhaseFailed {
 		t.Fatalf("expected victim preempted, got %s", phase)
 	}
 	assertInvariantNoPendingReservationForRunningRun(t, state)
@@ -359,13 +369,13 @@ func TestDirectBindReleasesPendingReservation(t *testing.T) {
 		},
 	}
 	state.Runs = map[string]*v1.Run{
-		"default/hog": h100Run("hog", "org:hog", 8),
+		"org-hog/hog": h100Run("hog", "org:hog", 8),
 	}
 
 	controller := NewRunController(state, runClock{now: now})
 	// SETUP: hog is already bound/Running holding the whole node via the plugin's
 	// mint — Reconcile no longer binds on admission.
-	seedRunning(t, state, "default/hog", now)
+	seedRunning(t, state, "org-hog/hog", now)
 
 	// waiter can't place while hog holds the node: it reserves.
 	state.Runs["default/waiter"] = h100Run("waiter", "org:team", 8)
@@ -523,8 +533,15 @@ func TestActivateReservationDoesNotResurrectFailedRun(t *testing.T) {
 func TestActivateReservationFailsTerminallyWhenReforecastFails(t *testing.T) {
 	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	state := &ClusterState{
-		Nodes:   []topology.SourceNode{h100Node("node-a", 8)},
-		Budgets: nil, // the budget was deleted after the reservation was made
+		Nodes: []topology.SourceNode{h100Node("node-a", 8)},
+		// The owner binding survives (the admin's Budget object still names
+		// org:team in this namespace, so the run's owner still derives — R7),
+		// but every envelope was removed: there is nothing left to fund or
+		// attribute unfunded hours to, so the re-forecast fails permanently.
+		Budgets: []v1.Budget{{
+			ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
+			Spec:       v1.BudgetSpec{Owner: "org:team"},
+		}},
 	}
 	state.Runs = map[string]*v1.Run{"default/blocked": h100Run("blocked", "org:team", 4)}
 	past := v1.NewTime(now.Add(-time.Hour))

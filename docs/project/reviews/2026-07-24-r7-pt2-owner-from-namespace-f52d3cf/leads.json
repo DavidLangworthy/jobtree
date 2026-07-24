@@ -1,0 +1,44 @@
+{
+  "agentId": "a6855e2a016220438",
+  "model": "sonnet",
+  "phase": "scout",
+  "summary": "I read docs/project/adversarial-review-playbook.md in full and then ran `git diff main...HEAD --stat` (76 files, +870/-427) and full diffs of the funding/tenancy surface (pkg/funding/evaluate.go, pkg/funding/evaluate_test.go, pkg/funding/tenancy_r7_test.go, pkg/resolver/resolver.go, pkg/forecast/forecast.go, pkg/admission/admission.go, controllers/run_controller.go, cmd/scheduler/plugin/gang.go, api/v1/run_types.go) plus a grep for class-2 comment tells and a check of .autopilot-turn.log and any Status.Closed/RunPhaseFailed/CloseLease touches. The change deletes Run.Spec.Owner and derives the funding owner from the run's namespace via a new Evaluation.OwnerOf/deriveOwners with two conflict fail-safes. I confirmed mechanically (not adjudicated) that the diff reproduces the pre-flagged HIGH lead almost verbatim: deriveOwners' interior-tier exemption (`if _, isInterior := interior[owner]; isInterior { continue }`) skips the span-namespaces injectivity check for ANY owner appearing in any Budget.Spec.Parents, including one that is simultaneously directly bound (as a leaf Budget.Spec.Owner) in two namespaces \u2014 the new test TestInteriorTierExemptFromInjectivity only covers the benign case (pool with no direct leaf budgets of its own) and never constructs the dangerous case, which is a class-8 'test proves the safe subcase, not the dangerous one' pattern. I also confirmed the resolver.ownerOf fallback-to-namespace lead: when in.Evaluation is nil, pkg/resolver/resolver.go's new `ownerOf` helper returns run.Namespace directly as the funding-lottery bucket key, re-introducing a namespace-as-owner path in exactly the callers (reclaimUnfunded, runLottery) the amendment's stated purpose was to remove owner from being a raw field; the comment beside it asserts this is 'exactly what the owner would resolve to' \u2014 an unenforced claim (class 2) since no evaluation is being used to check it in that branch. I did not find any class-1 immortal-lease, class-3 last-writer-wins, class-4 signal-vs-reality, class-5 identity-coarsening, or class-7 cloned-Status.Closed hits in the touched files \u2014 the diff's mechanical rewiring of `run.Spec.Owner` to `ev.OwnerOf(run.Namespace)` across resolver/forecast/admission/run_controller/gang.go is uniform single-return-path substitution with no new early exits or phase/closure writes, and I explicitly grepped for RunPhaseFailed/RunPhaseComplete/CloseLease/Status.Closed churn in the touched controller files and found only one pre-existing unchanged phase literal in a test fixture. The .autopilot-turn.log hygiene issue (an accidentally committed local trust-dialog log line) is present and unrelated to correctness.",
+  "leads": [
+    {
+      "taxonomyClass": "1 (indirect) / correctness",
+      "file": "pkg/funding/evaluate.go",
+      "line": 220,
+      "why": "The interior-tier exemption `if _, isInterior := interior[owner]; isInterior { continue }` skips the leaf-owner span-namespaces conflict check for any owner named in any Budget.Spec.Parents; an owner that is BOTH interior (named as a parent somewhere) and directly leaf-bound in two namespaces (via its own Budget.Spec.Owner in each) evades ConflictLeafOwnerSpansNamespaces entirely, so OwnerOf(nsA)==OwnerOf(nsB) with zero recorded conflicts and a Run in tenant-a can mint an Owned lease charged against tenant-b's envelope \u2014 an immortal, cross-tenant charge that is never flagged."
+    },
+    {
+      "taxonomyClass": "8 (test asserts the safe subcase, not the dangerous one)",
+      "file": "pkg/funding/tenancy_r7_test.go",
+      "line": 95,
+      "why": "TestInteriorTierExemptFromInjectivity only constructs a pool budget with no leaf-owner collision of its own (two children naming the same parent); it never constructs the case named in the HIGH lead \u2014 an owner that is simultaneously a Parent AND directly bound via its own leaf Budget.Spec.Owner in two namespaces \u2014 so the exemption's dangerous branch is never exercised by any test in the diff, and a suite run would stay green even if the exemption is wrong."
+    },
+    {
+      "taxonomyClass": "2 comment-as-enforcement / re-introduced namespace-as-owner",
+      "file": "pkg/resolver/resolver.go",
+      "line": 471,
+      "why": "The new `ownerOf` helper falls back to `run.Namespace` (raw, unvalidated by any Budget) when `in.Evaluation` is nil, so the reclaim/lottery bucket key silently becomes namespace-as-owner in that branch \u2014 exactly the coupling the amendment's stated purpose (owner is admin-derived, not a raw identifier) was meant to eliminate; the adjacent comment asserts this 'is exactly what the owner would resolve to' but nothing checks that claim against actual Budgets in this code path."
+    },
+    {
+      "taxonomyClass": "6 guard-before-predicate (benign but touches an auth-relevant check)",
+      "file": "cmd/scheduler/plugin/gang.go",
+      "line": 737,
+      "why": "promiseProvenanceValid's budget-list loop guard changed from `if b.Name != seg.BudgetName` to a combined `if b.Namespace != run.Namespace || b.Name != seg.BudgetName { continue }`, removing the prior explicit `b.Spec.Owner != run.Spec.Owner` ownership check entirely and replacing it with a namespace-equality filter placed before the envelope-name match predicate; worth confirming the combined filter is strictly equivalent to the deleted ownership check across all budget/namespace configurations, since a filter combining role/type and match conditions in one line is exactly the shape class 6 warns about even though order here does not obviously suppress a legitimate match."
+    },
+    {
+      "taxonomyClass": "2 comment-as-enforcement",
+      "file": "api/v1/run_types.go",
+      "line": 15,
+      "why": "The comment states 'the API server authenticates metadata.namespace, so it cannot be forged' as the justification for deleting the spec.owner validation; this is an assertion about a property enforced entirely outside this file (by the API server/RBAC), not by any code in this diff, and its correctness for every caller (including any future direct-etcd or admission-bypass path) is not checked anywhere in the change."
+    },
+    {
+      "taxonomyClass": "hygiene (explicitly flagged, not correctness)",
+      "file": ".autopilot-turn.log",
+      "line": 1,
+      "why": "A local trust-dialog diagnostic line was accidentally committed to the branch; harmless to funding correctness but should be removed before merge per the pre-flagged lead list."
+    }
+  ]
+}
