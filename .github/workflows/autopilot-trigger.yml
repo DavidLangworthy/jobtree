@@ -1,0 +1,46 @@
+# Launch the autopilot from your phone — no Actions tab.
+#
+# Open an issue titled  "autopilot: <what to do>"  (body = any extra detail). This fires on that
+# issue, confirms YOU (the repo owner) opened it, and dispatches autopilot.yml with the task —
+# using THIS issue as the live status + steering thread. The autopilot posts progress here; reply
+# to steer it ("stop after this item", "do R26 next").
+#
+# Security: only the OWNER can launch it (`author_association == OWNER`), so a passer-by opening
+# an "autopilot:" issue on this public repo does nothing. The issue title/body reach the launcher
+# only through env vars, never inlined into the shell — no script-injection surface.
+name: autopilot-trigger
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  actions: write     # dispatch autopilot.yml
+  issues: write      # acknowledge on the issue
+
+jobs:
+  launch:
+    # only the owner, only "autopilot:" issues (the autopilot's own "🤖 Autopilot …" status
+    # issues start with the robot emoji, so they never match — no recursion)
+    if: >-
+      github.event.issue.author_association == 'OWNER' &&
+      ( startsWith(github.event.issue.title, 'autopilot:') ||
+        startsWith(github.event.issue.title, 'Autopilot:') )
+    runs-on: ubuntu-latest
+    steps:
+      - name: Launch autopilot on this issue's task
+        env:
+          GH_TOKEN: ${{ secrets.AUTOPILOT_PAT }}    # PAT: the built-in token can't dispatch workflows
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+          TITLE: ${{ github.event.issue.title }}
+          BODY: ${{ github.event.issue.body }}
+        run: |
+          set -euo pipefail
+          task="$(printf '%s' "$TITLE" | sed -E 's/^[Aa]utopilot:[[:space:]]*//')"
+          if [ -n "${BODY:-}" ]; then
+            task="$(printf '%s\n\n%s' "$task" "$BODY")"
+          fi
+          gh workflow run autopilot.yml --repo "$REPO" -f task="$task" -f issue="$ISSUE" -f cont=0
+          gh issue comment "$ISSUE" --repo "$REPO" --body \
+            "🚀 **Launched.** Starting on this task; I'll post progress here — reply to steer me (e.g. \"stop after this item\"). One autopilot runs at a time, so if another is going this one queues behind it."
