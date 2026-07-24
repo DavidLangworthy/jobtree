@@ -29,7 +29,7 @@ const (
 )
 
 var ledgerConformanceEnvelopeKey = EnvelopeKey{
-	Namespace: "default",
+	Namespace: nsForOwner(ledgerConformanceOwner),
 	Budget:    ledgerConformanceBudget,
 	Envelope:  ledgerConformanceEnvelope,
 }
@@ -425,7 +425,7 @@ func assertLedgerEvaluation(
 		if !included {
 			continue
 		}
-		run := got.Run("default/" + ledgerConformanceRunName(i))
+		run := got.Run(nsForOwner(ledgerConformanceOwner) + "/" + ledgerConformanceRunName(i))
 		fundedHours := float64(0)
 		unfundedHours := float64(0)
 		ownedWidth := int32(0)
@@ -459,7 +459,7 @@ func assertLedgerEvaluation(
 func assertSettledRunsDropped(t *testing.T, got *Evaluation, history ledgerModelHistory, horizon int, context string) {
 	t.Helper()
 	for i, settled := range history.settledBy(horizon) {
-		if settled && got.Run("default/"+ledgerConformanceRunName(i)) != nil {
+		if settled && got.Run(nsForOwner(ledgerConformanceOwner)+"/"+ledgerConformanceRunName(i)) != nil {
 			t.Fatalf("%s: safe compact replay retained settled run %d", context, i+1)
 		}
 	}

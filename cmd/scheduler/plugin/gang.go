@@ -723,13 +723,16 @@ func (m *gangManager) promiseProvenanceValid(ctx context.Context, ns, runName st
 	if run == nil {
 		return false
 	}
-	// seg.Owner is not what Evaluate charges, but a legitimate segment always has
-	// it equal to the run owner; keep it consistent so the minted lease's
-	// Spec.Owner is not misleading.
-	if seg.Owner != run.Spec.Owner {
+	// R7: the promise path only ever charges the run's OWN envelopes, so the
+	// charged Budget must live in the run's own namespace — which the API server
+	// authenticates (metadata.namespace cannot be forged). Namespace equality is
+	// forge-proof where the old owner-string equality was two writable fields
+	// agreeing with each other; with Run.Spec.Owner deleted it is also the only
+	// check available, and it is strictly stronger.
+	if seg.Namespace != run.Namespace {
 		return false
 	}
-	// The charge itself: the named budget must be owned by the run's owner and
+	// The charge itself: the named budget must live in the run's namespace and
 	// must actually carry the named envelope.
 	var budgetList v1.BudgetList
 	if err := m.reader.List(ctx, &budgetList); err != nil {
@@ -737,11 +740,8 @@ func (m *gangManager) promiseProvenanceValid(ctx context.Context, ns, runName st
 	}
 	for i := range budgetList.Items {
 		b := &budgetList.Items[i]
-		if b.Name != seg.BudgetName {
+		if b.Namespace != run.Namespace || b.Name != seg.BudgetName {
 			continue
-		}
-		if b.Spec.Owner != run.Spec.Owner {
-			return false
 		}
 		for _, env := range b.Spec.Envelopes {
 			if env.Name == seg.EnvelopeName {

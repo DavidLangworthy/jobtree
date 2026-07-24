@@ -348,7 +348,7 @@ func (c *RunController) Reconcile(namespace, name string) error {
 				inventory = cover.NewInventory(ev)
 				continue
 			}
-			request := cover.Request{Owner: run.Spec.Owner, Flavor: run.Spec.Resources.GPUType, Quantity: run.Spec.Resources.TotalGPUs, Now: now, Admitted: run.CreationTimestamp.Time, RunKey: key, AllowBorrow: run.Spec.Funding != nil && run.Spec.Funding.AllowBorrow}
+			request := cover.Request{Owner: ev.OwnerOf(run.Namespace), Flavor: run.Spec.Resources.GPUType, Quantity: run.Spec.Resources.TotalGPUs, Now: now, Admitted: run.CreationTimestamp.Time, RunKey: key, AllowBorrow: run.Spec.Funding != nil && run.Spec.Funding.AllowBorrow}
 			if run.Spec.Funding != nil {
 				request.Sponsors = append(request.Sponsors, run.Spec.Funding.Sponsors...)
 			}
@@ -364,7 +364,7 @@ func (c *RunController) Reconcile(namespace, name string) error {
 		spareTotal := expectedSpareTotal(run, &packPlan)
 		quantity := run.Spec.Resources.TotalGPUs + spareTotal
 		request := cover.Request{
-			Owner:       run.Spec.Owner,
+			Owner:       ev.OwnerOf(run.Namespace),
 			Flavor:      run.Spec.Resources.GPUType,
 			Quantity:    quantity,
 			Location:    location,
@@ -433,7 +433,7 @@ func (c *RunController) reclaimForAdmission(run *v1.Run, ev *funding.Evaluation,
 		return false
 	}
 	request := cover.Request{
-		Owner:       run.Spec.Owner,
+		Owner:       ev.OwnerOf(run.Namespace),
 		Flavor:      run.Spec.Resources.GPUType,
 		Quantity:    run.Spec.Resources.TotalGPUs + expectedSpareTotal(run, nil),
 		Now:         now,
@@ -1188,7 +1188,7 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 
 	location := reservation.Spec.IntendedSlice.Domain
 	request := cover.Request{
-		Owner:       run.Spec.Owner,
+		Owner:       ev.OwnerOf(run.Namespace),
 		Flavor:      run.Spec.Resources.GPUType,
 		Quantity:    run.Spec.Resources.TotalGPUs,
 		Location:    location,
@@ -1425,10 +1425,11 @@ func runHasPromisePods(pods []binder.PodManifest, run *v1.Run) bool {
 // attribute the work to and nothing to re-fund from, so the caller must not
 // admit — the reservation fails terminally instead.
 func (c *RunController) opportunisticCoverPlan(run *v1.Run, reservation *v1.Reservation, ev *funding.Evaluation, quantity int32) (cover.Plan, bool) {
-	segment := cover.Segment{Owner: run.Spec.Owner, Quantity: quantity}
+	owner := ev.OwnerOf(run.Namespace)
+	segment := cover.Segment{Owner: owner, Quantity: quantity}
 	found := false
 	for _, acct := range ev.Envelopes() {
-		if acct.Owner != run.Spec.Owner {
+		if acct.Owner != owner {
 			continue
 		}
 		// Prefer the reservation's intended envelope; fall back to any

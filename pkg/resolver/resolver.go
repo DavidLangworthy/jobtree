@@ -302,7 +302,7 @@ func reclaimUnfunded(deficit int, in Input, candidates candidateSet) ([]Action, 
 			if grp.Marked || !groupEntirelyUnfunded(grp, in.Evaluation) {
 				continue
 			}
-			owner := st.Run.Spec.Owner
+			owner := ownerOf(in, st.Run)
 			tokensByOwner[owner] = append(tokensByOwner[owner], lotteryToken{runKey: runKey, group: grp})
 			owners = append(owners, owner)
 		}
@@ -468,6 +468,18 @@ func groupIndexLess(a, b string) bool {
 	}
 }
 
+// ownerOf keys the reclaim/lottery buckets by the run's funding principal. R7
+// derives the owner from the run's namespace via the evaluation's admin-placed
+// Budgets; when no evaluation is present (pure-scheduling reclaim with no
+// funding facts) the namespace itself is the stable per-tenant key, which is
+// exactly what the owner would resolve to.
+func ownerOf(in Input, run *v1.Run) string {
+	if in.Evaluation != nil {
+		return in.Evaluation.OwnerOf(run.Namespace)
+	}
+	return run.Namespace
+}
+
 func buildActions(kind ActionKind, reason string, grp *runGroup) []Action {
 	actions := make([]Action, 0, len(grp.Leases))
 	for _, lease := range grp.Leases {
@@ -501,7 +513,7 @@ func runLottery(deficit int, in Input, candidates candidateSet) ([]Action, strin
 	owners := make([]string, 0)
 
 	for runKey, st := range candidates.Runs {
-		owner := st.Run.Spec.Owner
+		owner := ownerOf(in, st.Run)
 		available := false
 		for _, grp := range candidates.Groups[runKey] {
 			if grp.Marked {

@@ -111,7 +111,7 @@ func Feasible(in Input) (pack.Plan, cover.Plan, *funding.Evaluation, error) {
 	inventory := cover.NewInventory(ev)
 
 	request := cover.Request{
-		Owner:       run.Spec.Owner,
+		Owner:       ev.OwnerOf(run.Namespace),
 		Flavor:      run.Spec.Resources.GPUType,
 		Quantity:    int32(totalGPUs) + int32(packPlan.TotalSpares),
 		Location:    deriveLocation(packPlan),

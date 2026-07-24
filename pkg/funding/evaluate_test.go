@@ -5,6 +5,7 @@ import (
 	"math"
 	"math/rand"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,18 +49,28 @@ func withLending(policy v1.LendingPolicy) func(*v1.BudgetEnvelope) {
 	return func(e *v1.BudgetEnvelope) { e.Lending = &policy }
 }
 
+// nsForOwner maps an owner tier to its namespace (R7: one principal per
+// namespace, owner derived from namespace). Every fixture budget/run/lease for
+// an owner lands in the same namespace, so funding.OwnerOf(ns) round-trips back
+// to that owner and no namespace ever holds two owners.
+func nsForOwner(owner string) string {
+	if owner == "" {
+		return "default"
+	}
+	return strings.NewReplacer(":", "-", "/", "-").Replace(owner)
+}
+
 func budgetOf(owner, name string, parents []string, envelopes ...v1.BudgetEnvelope) v1.Budget {
 	return v1.Budget{
-		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: "default"},
+		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: nsForOwner(owner)},
 		Spec:       v1.BudgetSpec{Owner: owner, Envelopes: envelopes, Parents: parents},
 	}
 }
 
 func runOf(name, owner string, created time.Time, malleable bool) *v1.Run {
 	run := &v1.Run{
-		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: "default", CreationTimestamp: v1.NewTime(created)},
+		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: nsForOwner(owner), CreationTimestamp: v1.NewTime(created)},
 		Spec: v1.RunSpec{
-			Owner:     owner,
 			Resources: v1.RunResources{GPUType: testFlavor, TotalGPUs: 8},
 		},
 	}
@@ -96,23 +107,38 @@ func withGroup(idx int) leaseOpt {
 	return func(l *v1.GPULease) { l.Labels["rq.davidlangworthy.io/group-index"] = fmt.Sprintf("%d", idx) }
 }
 
+// forRunOwner overrides the run's namespace on a lease whose paying owner is not
+// the run's own owner — a BORROWED lease (run in owner A's namespace, paid by
+// sponsor B's envelope). The lease and its RunRef live with the run (namespace
+// nsForOwner(A)); only PaidByBudgetNamespace points at the sponsor (B).
+func forRunOwner(owner string) leaseOpt {
+	return func(l *v1.GPULease) {
+		l.Namespace = nsForOwner(owner)
+		l.Spec.RunRef.Namespace = nsForOwner(owner)
+	}
+}
+
 func leaseOf(name, runName, payerOwner, budget, envelope string, width int, start time.Time, opts ...leaseOpt) v1.GPULease {
 	nodes := make([]string, width)
 	for i := range nodes {
 		nodes[i] = fmt.Sprintf("node-%s#%d", name, i)
 	}
+	// Default: the run's own envelope pays, so the run, the lease and the payer
+	// budget all share the owner's namespace. forRunOwner overrides the run/lease
+	// namespace for borrowed leases.
+	payerNS := nsForOwner(payerOwner)
 	lease := v1.GPULease{
 		ObjectMeta: v1.ObjectMeta{
 			Name:      name,
-			Namespace: "default",
+			Namespace: payerNS,
 			Labels:    map[string]string{"rq.davidlangworthy.io/group-index": "0"},
 		},
 		Spec: v1.GPULeaseSpec{
 			Owner:                 payerOwner,
-			RunRef:                v1.RunReference{Name: runName, Namespace: "default"},
+			RunRef:                v1.RunReference{Name: runName, Namespace: payerNS},
 			Slice:                 v1.GPULeaseSlice{Nodes: nodes, Role: "Active"},
 			Interval:              v1.GPULeaseInterval{Start: v1.NewTime(start)},
-			PaidByBudgetNamespace: "default", // budgetOf mints every fixture budget in "default"
+			PaidByBudgetNamespace: payerNS,
 			PaidByBudget:          budget,
 			PaidByEnvelope:        envelope,
 			Reason:                "Start",
@@ -156,11 +182,11 @@ func TestOwnerClaimFunded(t *testing.T) {
 	if got := classOf(t, ev, leases, "l1"); got != ClassOwned {
 		t.Fatalf("expected Owned, got %s", got)
 	}
-	acct := ev.Envelope(EnvelopeKey{Namespace: "default", Budget: "team-budget", Envelope: "west"})
+	acct := ev.Envelope(EnvelopeKey{Namespace: "team", Budget: "team-budget", Envelope: "west"})
 	if acct.FundedWidth() != 4 {
 		t.Errorf("expected funded width 4, got %d", acct.FundedWidth())
 	}
-	run := ev.Run("default/train")
+	run := ev.Run("team/train")
 	if run.GPUs[ClassOwned] != 4 || math.Abs(run.GPUHours[ClassOwned]-8) > 1e-9 {
 		t.Errorf("expected 4 owned GPUs and 8 owned GPU-hours, got %d / %v", run.GPUs[ClassOwned], run.GPUHours[ClassOwned])
 	}
@@ -174,7 +200,7 @@ func TestOwnerClaimFunded(t *testing.T) {
 func TestLedgerCompactionRoundTrip(t *testing.T) {
 	horizon := base.Add(5 * time.Hour)
 	now := base.Add(10 * time.Hour)
-	westKey := EnvelopeKey{Namespace: "default", Budget: "team-budget", Envelope: "west"}
+	westKey := EnvelopeKey{Namespace: "team", Budget: "team-budget", Envelope: "west"}
 	budgets := []v1.Budget{budgetOf("team", "team-budget", nil, env("west", 8, withMaxHours(30)))}
 	runs := runsMap(runOf("old", "team", base, false), runOf("new", "team", horizon, false))
 	// Settled: 4 GPUs, base→horizon = 20 GPU-hours. Retained: 4 GPUs open from the
@@ -239,7 +265,7 @@ func TestLedgerCompactionRoundTrip(t *testing.T) {
 func TestLedgerCompactionFallsBackOnStraddle(t *testing.T) {
 	horizon := base.Add(5 * time.Hour)
 	now := base.Add(10 * time.Hour)
-	westKey := EnvelopeKey{Namespace: "default", Budget: "team-budget", Envelope: "west"}
+	westKey := EnvelopeKey{Namespace: "team", Budget: "team-budget", Envelope: "west"}
 	budgets := []v1.Budget{budgetOf("team", "team-budget", nil, env("west", 8))}
 	runs := runsMap(runOf("a", "team", base, false))
 	settled := leaseOf("settled", "a", "team", "team-budget", "west", 4, base, closedAt(horizon))
@@ -271,7 +297,7 @@ func TestLedgerCompactionFallsBackOnStraddle(t *testing.T) {
 func TestLedgerCompactionRefusesFutureHorizon(t *testing.T) {
 	now := base.Add(5 * time.Hour)
 	horizon := base.Add(8 * time.Hour)
-	westKey := EnvelopeKey{Namespace: "default", Budget: "team-budget", Envelope: "west"}
+	westKey := EnvelopeKey{Namespace: "team", Budget: "team-budget", Envelope: "west"}
 	budgets := []v1.Budget{budgetOf("team", "team-budget", nil, env("west", 8))}
 	runs := runsMap(runOf("ghost", "team", base, false))
 	// Live at Now (5h < 7h), yet effectiveEnd (7h) is at or before the horizon (8h).
@@ -341,7 +367,7 @@ func TestFamilyShareAndOwnerRecall(t *testing.T) {
 		budgetOf("team/child", "child-budget", []string{"team"}, env("scratch", 1)),
 	}
 	childRun := runOf("child-train", "team/child", base, false)
-	leases := []v1.GPULease{leaseOf("l-child", "child-train", "team", "team-budget", "west", 8, base)}
+	leases := []v1.GPULease{leaseOf("l-child", "child-train", "team", "team-budget", "west", 8, base, forRunOwner("team/child"))}
 
 	ev := Evaluate(Input{Budgets: budgets, Leases: leases, Runs: runsMap(childRun), Now: base.Add(time.Hour)})
 	if got := classOf(t, ev, leases, "l-child"); got != ClassShared {
@@ -358,7 +384,7 @@ func TestFamilyShareAndOwnerRecall(t *testing.T) {
 	if got := classOf(t, ev, leases, "l-child"); got != ClassUnfunded {
 		t.Errorf("recalled family claim should evaluate Unfunded, got %s", got)
 	}
-	if lenders := ev.Run("default/child-train").Lenders; len(lenders) != 0 {
+	if lenders := ev.Run("team-child/child-train").Lenders; len(lenders) != 0 {
 		t.Errorf("unfunded claim should list no lenders, got %v", lenders)
 	}
 }
@@ -371,7 +397,7 @@ func TestSharingNoneOptsOutFamilyOnly(t *testing.T) {
 	childRun := runOf("child-train", "team/child", base, false)
 	ownerRun := runOf("boss-train", "team", base.Add(time.Minute), false)
 	leases := []v1.GPULease{
-		leaseOf("l-child", "child-train", "team", "team-budget", "west", 2, base),
+		leaseOf("l-child", "child-train", "team", "team-budget", "west", 2, base, forRunOwner("team/child")),
 		leaseOf("l-boss", "boss-train", "team", "team-budget", "west", 2, base),
 	}
 	ev := Evaluate(Input{Budgets: budgets, Leases: leases, Runs: runsMap(childRun, ownerRun), Now: base.Add(time.Hour)})
@@ -390,12 +416,18 @@ func TestSharingNoneOptsOutFamilyOnly(t *testing.T) {
 // recall").
 func TestSponsorContractCarveOut(t *testing.T) {
 	six := int32(6)
-	budgets := []v1.Budget{budgetOf("team", "team-budget", nil,
-		env("west", 8, withLending(v1.LendingPolicy{Allow: true, MaxConcurrency: &six})))}
+	budgets := []v1.Budget{
+		budgetOf("team", "team-budget", nil,
+			env("west", 8, withLending(v1.LendingPolicy{Allow: true, MaxConcurrency: &six}))),
+		// R7: a borrower must have a bound namespace to derive an owner from
+		// (the empty-borrower guard). A pure pool-consumer is bound with a
+		// nominal envelope (§5); here it only ever borrows the lender's west.
+		budgetOf("org:other", "other-budget", nil, env("other", 1)),
+	}
 	stranger := runOf("guest", "org:other", base, false)
 	owner := runOf("boss", "team", base.Add(time.Minute), false)
 	leases := []v1.GPULease{
-		leaseOf("l-guest", "guest", "team", "team-budget", "west", 6, base),
+		leaseOf("l-guest", "guest", "team", "team-budget", "west", 6, base, forRunOwner("org:other")),
 		leaseOf("l-boss", "boss", "team", "team-budget", "west", 4, base.Add(time.Minute)),
 	}
 	ev := Evaluate(Input{Budgets: budgets, Leases: leases, Runs: runsMap(stranger, owner), Now: base.Add(time.Hour)})
@@ -410,15 +442,22 @@ func TestSponsorContractCarveOut(t *testing.T) {
 
 func TestLendingCapsAndACL(t *testing.T) {
 	two := int32(2)
-	budgets := []v1.Budget{budgetOf("team", "team-budget", nil,
-		env("west", 8, withLending(v1.LendingPolicy{Allow: true, To: []string{"org:*"}, MaxConcurrency: &two})))}
+	budgets := []v1.Budget{
+		budgetOf("team", "team-budget", nil,
+			env("west", 8, withLending(v1.LendingPolicy{Allow: true, To: []string{"org:*"}, MaxConcurrency: &two}))),
+		// R7: bind each borrower's namespace so OwnerOf derives its tier; the
+		// lending ACL then matches (or rejects) the DERIVED owner.
+		budgetOf("org:friend", "friend-budget", nil, env("friend", 1)),
+		budgetOf("corp:foe", "foe-budget", nil, env("foe", 1)),
+		budgetOf("org:late", "late-budget", nil, env("late", 1)),
+	}
 	allowed := runOf("guest-a", "org:friend", base, false)
 	denied := runOf("guest-b", "corp:foe", base.Add(time.Minute), false)
 	over := runOf("guest-c", "org:late", base.Add(2*time.Minute), false)
 	leases := []v1.GPULease{
-		leaseOf("l-a", "guest-a", "team", "team-budget", "west", 2, base),
-		leaseOf("l-b", "guest-b", "team", "team-budget", "west", 2, base),
-		leaseOf("l-c", "guest-c", "team", "team-budget", "west", 2, base),
+		leaseOf("l-a", "guest-a", "team", "team-budget", "west", 2, base, forRunOwner("org:friend")),
+		leaseOf("l-b", "guest-b", "team", "team-budget", "west", 2, base, forRunOwner("corp:foe")),
+		leaseOf("l-c", "guest-c", "team", "team-budget", "west", 2, base, forRunOwner("org:late")),
 	}
 	ev := Evaluate(Input{Budgets: budgets, Leases: leases, Runs: runsMap(allowed, denied, over), Now: base.Add(time.Hour)})
 
@@ -445,11 +484,11 @@ func TestIntegralExhaustionDemotes(t *testing.T) {
 	if got := classOf(t, ev, leases, "l1"); got != ClassUnfunded {
 		t.Errorf("exhausted envelope should demote its claim, got %s", got)
 	}
-	acct := ev.Envelope(EnvelopeKey{Namespace: "default", Budget: "team-budget", Envelope: "west"})
+	acct := ev.Envelope(EnvelopeKey{Namespace: "team", Budget: "team-budget", Envelope: "west"})
 	if acct.ConsumedGPUHours > 8+1e-6 {
 		t.Errorf("no overdraft: consumed %v > cap 8", acct.ConsumedGPUHours)
 	}
-	runAcct := ev.Run("default/train")
+	runAcct := ev.Run("team/train")
 	if math.Abs(runAcct.GPUHours[ClassOwned]-8) > 1e-3 || math.Abs(runAcct.GPUHours[ClassUnfunded]-4) > 1e-3 {
 		t.Errorf("expected 8 funded / 4 unfunded GPU-hours, got %v / %v",
 			runAcct.GPUHours[ClassOwned], runAcct.GPUHours[ClassUnfunded])
@@ -477,7 +516,7 @@ func TestWindowReopenRefunds(t *testing.T) {
 	if got := classOf(t, ev, leases, "l1"); got != ClassOwned {
 		t.Errorf("renewed window should re-fund the claim, got %s", got)
 	}
-	acct := ev.Envelope(EnvelopeKey{Namespace: "default", Budget: "team-budget", Envelope: "west"})
+	acct := ev.Envelope(EnvelopeKey{Namespace: "team", Budget: "team-budget", Envelope: "west"})
 	if math.Abs(acct.ConsumedGPUHours-4) > 1e-6 {
 		t.Errorf("only in-window hours charge the integral: expected 4, got %v", acct.ConsumedGPUHours)
 	}
@@ -500,7 +539,7 @@ func TestPreWindowLeaseFundsWhenWindowOpens(t *testing.T) {
 	if got := classOf(t, ev, leases, "l1"); got != ClassOwned {
 		t.Errorf("lease should fund once the window opens, got %s", got)
 	}
-	acct := ev.Envelope(EnvelopeKey{Namespace: "default", Budget: "team-budget", Envelope: "west"})
+	acct := ev.Envelope(EnvelopeKey{Namespace: "team", Budget: "team-budget", Envelope: "west"})
 	if math.Abs(acct.ConsumedGPUHours-4) > 1e-6 {
 		t.Errorf("pre-window hours must not charge the integral: expected 4, got %v", acct.ConsumedGPUHours)
 	}
@@ -523,7 +562,7 @@ func TestMalleablePartialFunding(t *testing.T) {
 	if got := classOf(t, ev, leases, "l-g1"); got != ClassUnfunded {
 		t.Errorf("group 1 should be the unfunded remainder, got %s", got)
 	}
-	runAcct := ev.Run("default/elastic")
+	runAcct := ev.Run("team/elastic")
 	if runAcct.GPUs[ClassOwned] != 4 || runAcct.GPUs[ClassUnfunded] != 4 {
 		t.Errorf("expected 4 owned / 4 unfunded GPUs, got %v", runAcct.GPUs)
 	}
@@ -568,7 +607,7 @@ func TestAggregateCapHonorsOwnerRecall(t *testing.T) {
 	// 'east' sorts before 'west', so pre-fix the family claim on east would
 	// win the aggregate; the owner's claim on west would demote.
 	leases := []v1.GPULease{
-		leaseOf("l-family", "family-run", "team", "team-budget", "east", 8, base),
+		leaseOf("l-family", "family-run", "team", "team-budget", "east", 8, base, forRunOwner("team/child")),
 		leaseOf("l-owner", "owner-run", "team", "team-budget", "west", 8, base),
 	}
 	ev := Evaluate(Input{Budgets: []v1.Budget{budget, child}, Leases: leases, Runs: runsMap(ownerRun, familyRun), Now: base.Add(time.Hour)})
@@ -593,17 +632,17 @@ func TestAvailableWidthRecallsThroughAggregate(t *testing.T) {
 	}}
 	child := budgetOf("team/child", "child-budget", []string{"team"})
 	familyRun := runOf("family-run", "team/child", base, false)
-	leases := []v1.GPULease{leaseOf("l-family", "family-run", "team", "team-budget", "east", 8, base)}
+	leases := []v1.GPULease{leaseOf("l-family", "family-run", "team", "team-budget", "east", 8, base, forRunOwner("team/child"))}
 	ev := Evaluate(Input{Budgets: []v1.Budget{budget, child}, Leases: leases, Runs: runsMap(familyRun), Now: base.Add(time.Hour)})
 
 	// The owner outranks the family borrower everywhere, so it can recall
 	// the borrowed aggregate width on the empty member (west) and on the
 	// member the family currently holds (east) alike.
-	westKey := EnvelopeKey{Namespace: "default", Budget: "team-budget", Envelope: "west"}
+	westKey := EnvelopeKey{Namespace: "team", Budget: "team-budget", Envelope: "west"}
 	if got := ev.AvailableWidth(westKey, "team", base, "", false); got != 8 {
 		t.Errorf("owner should recall the family borrower's aggregate width on west, want 8, got %d", got)
 	}
-	eastKey := EnvelopeKey{Namespace: "default", Budget: "team-budget", Envelope: "east"}
+	eastKey := EnvelopeKey{Namespace: "team", Budget: "team-budget", Envelope: "east"}
 	if got := ev.AvailableWidth(eastKey, "team", base, "", false); got != 8 {
 		t.Errorf("owner should recall the family borrower on east too, want 8, got %d", got)
 	}
@@ -634,10 +673,10 @@ func TestAvailableWidthRecallAndSponsor(t *testing.T) {
 		budgetOf("team/child2", "child2-budget", []string{"team"}, env("scratch", 1)),
 	}
 	childRun := runOf("child-train", "team/child", base, false)
-	leases := []v1.GPULease{leaseOf("l-child", "child-train", "team", "team-budget", "west", 6, base)}
+	leases := []v1.GPULease{leaseOf("l-child", "child-train", "team", "team-budget", "west", 6, base, forRunOwner("team/child"))}
 	ev := Evaluate(Input{Budgets: budgets, Leases: leases, Runs: runsMap(childRun), Now: base.Add(time.Hour), Period: time.Hour})
 
-	key := EnvelopeKey{Namespace: "default", Budget: "team-budget", Envelope: "west"}
+	key := EnvelopeKey{Namespace: "team", Budget: "team-budget", Envelope: "west"}
 	// The owner sees the full envelope: the child's shared claim is
 	// recallable and does not count against an owner admission.
 	if got := ev.AvailableWidth(key, "team", base.Add(time.Hour), "", false); got != 8 {
@@ -671,17 +710,17 @@ func TestAvailableWidthNameTiebreak(t *testing.T) {
 	// child-train (key default/child-train) holds the whole envelope, shared,
 	// admitted at base.
 	childRun := runOf("child-train", "team/child", base, false)
-	leases := []v1.GPULease{leaseOf("l-child", "child-train", "team", "team-budget", "west", 8, base)}
+	leases := []v1.GPULease{leaseOf("l-child", "child-train", "team", "team-budget", "west", 8, base, forRunOwner("team/child"))}
 	ev := Evaluate(Input{Budgets: budgets, Leases: leases, Runs: runsMap(childRun), Now: base.Add(time.Hour)})
-	key := EnvelopeKey{Namespace: "default", Budget: "team-budget", Envelope: "west"}
+	key := EnvelopeKey{Namespace: "team", Budget: "team-budget", Envelope: "west"}
 
 	// Same tier (child), same admission second: a name-senior prospective
 	// outranks the sitting claim and recalls all 8.
-	if got := ev.AvailableWidth(key, "team/child2", base, "default/aaa-run", false); got != 8 {
+	if got := ev.AvailableWidth(key, "team/child2", base, "team-child/aaa-run", false); got != 8 {
 		t.Errorf("name-senior peer should recall the sitting claim, want 8, got %d", got)
 	}
 	// A name-junior prospective ranks below it and sees nothing.
-	if got := ev.AvailableWidth(key, "team/child2", base, "default/zzz-run", false); got != 0 {
+	if got := ev.AvailableWidth(key, "team/child2", base, "team-child/zzz-run", false); got != 0 {
 		t.Errorf("name-junior peer must not recall the sitting claim, want 0, got %d", got)
 	}
 	// Empty name keeps the conservative estimate (every same-time peer
@@ -694,7 +733,7 @@ func TestAvailableWidthNameTiebreak(t *testing.T) {
 func TestAvailableWidthIntegralLookahead(t *testing.T) {
 	budgets := []v1.Budget{budgetOf("team", "team-budget", nil, env("west", 8, withMaxHours(4)))}
 	ev := Evaluate(Input{Budgets: budgets, Now: base, Period: time.Hour})
-	key := EnvelopeKey{Namespace: "default", Budget: "team-budget", Envelope: "west"}
+	key := EnvelopeKey{Namespace: "team", Budget: "team-budget", Envelope: "west"}
 	// 4 GPU-hours remaining at a 1h period funds at most 4 GPUs of new work.
 	if got := ev.AvailableWidth(key, "team", base, "", false); got != 4 {
 		t.Errorf("admission lookahead should cap width at remaining/period = 4, got %d", got)
@@ -791,7 +830,10 @@ func genWorld(rng *rand.Rand) world {
 			b := budgets[rng.Intn(len(budgets))]
 			e := b.Spec.Envelopes[rng.Intn(len(b.Spec.Envelopes))]
 			start := base.Add(time.Duration(rng.Intn(240)-180) * time.Minute)
-			opts := []leaseOpt{withGroup(j)}
+			// The run lives in its OWN owner's namespace; the lease pays budget b
+			// (owner b.Spec.Owner). When they differ the lease is borrowed, so pin
+			// the run/lease namespace to the run's owner via forRunOwner.
+			opts := []leaseOpt{withGroup(j), forRunOwner(owner)}
 			if rng.Intn(4) == 0 {
 				opts = append(opts, closedAt(start.Add(time.Duration(rng.Intn(120))*time.Minute)))
 			}
@@ -931,7 +973,7 @@ func TestPropertyOwnerIndependentOfFamilyBorrowers(t *testing.T) {
 			lease := &w.leases[i]
 			runKey := keys.NamespacedKey(lease.Spec.RunRef.Namespace, lease.Spec.RunRef.Name)
 			run := w.runs[runKey]
-			payerIsRunOwner := run != nil && run.Spec.Owner == lease.Spec.Owner
+			payerIsRunOwner := run != nil && ev.OwnerOf(run.Namespace) == lease.Spec.Owner
 			if payerIsRunOwner {
 				if class, ok := ev.Class(lease); ok {
 					ownerClasses[LeaseKey(lease)] = class
@@ -941,7 +983,7 @@ func TestPropertyOwnerIndependentOfFamilyBorrowers(t *testing.T) {
 			}
 			tier := tierNone
 			if run != nil {
-				tier = ev.Graph.Tier(lease.Spec.Owner, run.Spec.Owner)
+				tier = ev.Graph.Tier(lease.Spec.Owner, ev.OwnerOf(run.Namespace))
 			}
 			if tier == tierNone || run == nil {
 				trimmed = append(trimmed, *lease) // keep sponsors and orphans

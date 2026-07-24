@@ -10,7 +10,6 @@ import (
 // Run captures the researcher-friendly request.
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Owner",type=string,JSONPath=`.spec.owner`
 // +kubebuilder:printcolumn:name="GPUs",type=integer,JSONPath=`.spec.resources.totalGPUs`
 // R11: Phase is DERIVED from status.conditions, so the column and the
 // conditions cannot disagree. Reason is the machine-readable "why".
@@ -35,8 +34,12 @@ type Run struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.malleable) || (self.resources.totalGPUs >= self.malleable.minTotalGPUs && self.resources.totalGPUs <= self.malleable.maxTotalGPUs)",message="resources.totalGPUs must fall within malleable min/max"
 // +kubebuilder:validation:XValidation:rule="!has(self.malleable) || (self.resources.totalGPUs - self.malleable.minTotalGPUs) % self.malleable.stepGPUs == 0",message="resources.totalGPUs must align with malleable.stepGPUs"
 type RunSpec struct {
-	// +kubebuilder:validation:MinLength=1
-	Owner     string       `json:"owner"`
+	// Owner is DELETED (R7 tenancy amendment §4). The funding principal that
+	// pays for a Run is DERIVED from the Run's namespace — the API server
+	// authenticates metadata.namespace, so it cannot be forged, while a
+	// spec.owner field was checked only for non-emptiness and let any tenant
+	// class Owned against any victim's envelopes. Callers resolve the owner via
+	// funding.Evaluation.OwnerOf(run.Namespace).
 	Resources RunResources `json:"resources"`
 	// Roles is the researcher's real workload: one homogeneous pod pool per
 	// role, materialized directly as a cohort of pods that the jobtree
@@ -381,9 +384,6 @@ func (r *Run) ValidateDelete() error {
 }
 
 func (r *Run) validate() error {
-	if r.Spec.Owner == "" {
-		return fmt.Errorf("spec.owner is required")
-	}
 	if r.Spec.Resources.GPUType == "" {
 		return fmt.Errorf("spec.resources.gpuType is required")
 	}
