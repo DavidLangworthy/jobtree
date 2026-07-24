@@ -97,7 +97,6 @@ apiVersion: rq.davidlangworthy.io/v1
 kind: Run
 metadata: { name: crasher, namespace: default }
 spec:
-  owner: org:ai:team
   resources: { gpuType: H100-80GB, totalGPUs: 1 }
   roles:
     - name: worker

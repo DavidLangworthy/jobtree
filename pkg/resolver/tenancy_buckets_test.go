@@ -19,17 +19,23 @@ import (
 
 func conflictedNamespaceEvaluation(t *testing.T, namespaces ...string) *funding.Evaluation {
 	t.Helper()
+	// Every Budget carries an envelope. api/v1 rejects len(Spec.Envelopes) == 0 in
+	// ValidateCreate, so an envelope-less Budget is a state the API server would
+	// never have stored -- and a fixture that constructs an illegal state is not
+	// evidence about a legal system. (The R7 pt2 review caught exactly this in an
+	// earlier version of this helper, and in two older fixtures elsewhere.)
+	envelope := []v1.BudgetEnvelope{{Name: "west", Flavor: "H100", Concurrency: 8}}
 	var budgets []v1.Budget
 	for _, ns := range namespaces {
 		// Two owners in one namespace: ConflictMultipleOwners, fail-safe to "".
 		budgets = append(budgets,
 			v1.Budget{
 				ObjectMeta: v1.ObjectMeta{Name: "one", Namespace: ns},
-				Spec:       v1.BudgetSpec{Owner: "org:" + ns + ":one"},
+				Spec:       v1.BudgetSpec{Owner: "org:" + ns + ":one", Envelopes: envelope},
 			},
 			v1.Budget{
 				ObjectMeta: v1.ObjectMeta{Name: "two", Namespace: ns},
-				Spec:       v1.BudgetSpec{Owner: "org:" + ns + ":two"},
+				Spec:       v1.BudgetSpec{Owner: "org:" + ns + ":two", Envelopes: envelope},
 			})
 	}
 	ev := funding.Evaluate(funding.Input{Budgets: budgets, Now: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)})
@@ -60,6 +66,38 @@ func TestUnboundNamespacesGetDistinctBucketKeys(t *testing.T) {
 	// free-form (Budget.Spec.Owner is checked only for non-emptiness).
 	if got := ownerOf(Input{Evaluation: ev}, &v1.Run{ObjectMeta: v1.ObjectMeta{Name: "x", Namespace: "org:tenant-a:one"}}); got == "org:tenant-a:one" {
 		t.Fatalf("bucket key %q is indistinguishable from a declarable owner string", got)
+	}
+}
+
+// The OTHER branch. The review found ownerOf had zero effective coverage on both
+// sides -- a mutant returning a constant from either survived the whole suite --
+// because no pkg/resolver test set Input.Evaluation, so every existing test
+// exercised the nil path while both production callers always supply one. The
+// test above covers the supplied path; this one pins the fallback, so neither can
+// be replaced by a constant without something going red.
+func TestOwnerOfWithoutAnEvaluationStillKeysPerNamespace(t *testing.T) {
+	runA := &v1.Run{ObjectMeta: v1.ObjectMeta{Name: "a", Namespace: "tenant-a"}}
+	runB := &v1.Run{ObjectMeta: v1.ObjectMeta{Name: "b", Namespace: "tenant-b"}}
+
+	keyA, keyB := ownerOf(Input{}, runA), ownerOf(Input{}, runB)
+	if keyA == keyB {
+		t.Fatalf("with no Evaluation, two namespaces still share the bucket key %q", keyA)
+	}
+	if keyA == "" || keyB == "" {
+		t.Fatalf("the bucket key must never be the empty sentinel: got %q and %q", keyA, keyB)
+	}
+	// It must also not be the bare namespace: that is a string a Budget could
+	// declare as an owner, which is how a namespace and a principal get confused.
+	if keyA == "tenant-a" || keyB == "tenant-b" {
+		t.Fatalf("the no-Evaluation fallback keys by the raw namespace (%q/%q), "+
+			"which is indistinguishable from a declarable owner", keyA, keyB)
+	}
+	// And the two branches must agree: an unbound namespace keys the same whether
+	// or not an Evaluation happens to be supplied, or the same run buckets into two
+	// different tenants depending on the caller.
+	ev := conflictedNamespaceEvaluation(t, "tenant-a")
+	if withEval := ownerOf(Input{Evaluation: ev}, runA); withEval != keyA {
+		t.Fatalf("the same unbound run keys as %q with an Evaluation and %q without", withEval, keyA)
 	}
 }
 

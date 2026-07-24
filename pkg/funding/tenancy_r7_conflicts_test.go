@@ -276,3 +276,38 @@ func TestConflictRetroactivelyErasesAccruedHours(t *testing.T) {
 		"— the conflicted hour is billed retroactively despite having been classed Unfunded throughout",
 		bound, conflicted, resolved)
 }
+
+// A fixture that the API server would reject is not evidence about a legal
+// system — the review's test-integrity lens found three fixtures binding a
+// namespace with an envelope-less Budget, which `api/v1` refuses on create. This
+// pins the repair: every Budget shape these tenancy tests rely on must actually
+// validate. It is deliberately a test about the FIXTURES, not about the engine.
+func TestTenancyFixturesAreLegalBudgets(t *testing.T) {
+	cases := map[string]v1.Budget{
+		"binding-only child (idle envelope of another flavor)": budgetOf(
+			"team/child", "child-budget", []string{"team"}, idleEnvelope()),
+		"ordinary leaf": budgetOf("org:x", "x1", nil, env("west", 8)),
+		"multi-owner conflict participant": {
+			ObjectMeta: v1.ObjectMeta{Name: "one", Namespace: "shared"},
+			Spec: v1.BudgetSpec{Owner: "org:x", Envelopes: []v1.BudgetEnvelope{
+				{Name: "west", Flavor: testFlavor, Selector: map[string]string{"region": "us-west"}, Concurrency: 8},
+			}},
+		},
+	}
+	for name, b := range cases {
+		if err := b.ValidateCreate(); err != nil {
+			t.Errorf("%s: the API server would reject this fixture: %v", name, err)
+		}
+	}
+
+	// And the shape the review caught: an envelope-less Budget really is illegal,
+	// so this test is not vacuous.
+	empty := v1.Budget{
+		ObjectMeta: v1.ObjectMeta{Name: "empty", Namespace: "ns"},
+		Spec:       v1.BudgetSpec{Owner: "org:x"},
+	}
+	if err := empty.ValidateCreate(); err == nil {
+		t.Fatal("expected an envelope-less Budget to be rejected; if it is legal now, " +
+			"the fixtures this test guards no longer need their idle envelopes")
+	}
+}

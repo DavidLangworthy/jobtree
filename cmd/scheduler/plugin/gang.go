@@ -765,6 +765,25 @@ func (m *gangManager) promiseProvenanceValid(ctx context.Context, ns, runName st
 	// stamp an arbitrary principal onto a real lease. That is not a charge it
 	// cannot make, it is a LIE about who is holding the GPUs — and every audit
 	// of this ledger starts by reading exactly that field.
+	//
+	// THE COST OF PINNING, stated so it is reversible rather than discovered.
+	// A refusal here is not free: `emitCohortPods` only TOPS UP to the declared
+	// pod count, so it does not rewrite the annotations of a Promise pod that
+	// already exists. If an admin renames `Budget.Spec.Owner` in this namespace
+	// while a Promise pod is in flight, that pod carries the old owner string,
+	// this check refuses it on every retry, and the run stalls until someone
+	// deletes the pod so the controller re-emits it.
+	//
+	// That was weighed against the alternative — accept the mismatch and
+	// OVERWRITE seg.Owner with `derived` before the mint, which would be
+	// self-healing and equally truthful. It was not taken, deliberately: this is
+	// the sole-committer path, the overwrite would widen what the committer
+	// WRITES rather than what it refuses, and the adversarial panel that would
+	// have vetted it never reached its Judge phase. Refusing is the conservative
+	// act — nothing is minted, nothing is closed, nothing is billed, and the
+	// operator gets a message naming the provenance mismatch. If the stall ever
+	// bites in practice, the overwrite is the fix; it is a smaller change than
+	// this comment.
 	if seg.Owner != derived {
 		return false
 	}

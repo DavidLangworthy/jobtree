@@ -137,11 +137,17 @@ metadata:
   name: $1
   namespace: default
 spec:
-  owner: org:team
   resources: {gpuType: H100-80GB, totalGPUs: 8}
 EOF
 }
 
+# NOTE, and it is load-bearing: this is a NEGATIVE assertion, so it passes when the
+# apply FAILS -- for any reason at all. kubectl has defaulted to server-side strict
+# field validation since v1.25, so a manifest carrying one stale field fails on
+# strict decoding and this check goes green while proving nothing about the webhook.
+# It did exactly that until R7 pt2's review: run_manifest still emitted the deleted
+# `spec.owner`. Keep run_manifest a manifest the apiserver would otherwise ACCEPT,
+# or this lever silently stops being a test.
 patch_services gone-fishing
 if run_manifest blocked-by-a-dead-webhook | kubectl apply --dry-run=server -f - >/dev/null 2>&1; then
   patch_services "$saved_svc"

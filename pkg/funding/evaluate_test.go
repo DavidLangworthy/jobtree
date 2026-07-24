@@ -60,6 +60,23 @@ func nsForOwner(owner string) string {
 	return strings.NewReplacer(":", "-", "/", "-").Replace(owner)
 }
 
+// idleEnvelope gives a binding-only Budget something legal to carry. api/v1
+// rejects a Budget with no envelopes AND an envelope with concurrency <= 0, so
+// "this tier is bound to a namespace but has no capacity of its own" cannot be
+// expressed by an empty Budget — that state would never survive the API server,
+// and a fixture that constructs it is not evidence about a legal system (R7 pt2
+// review, test-integrity lens). An envelope of a DIFFERENT flavor is the legal
+// way to say it: the tier owns something, but nothing the run under test can use,
+// so it must still borrow from its parent exactly as the scenario intends.
+func idleEnvelope() v1.BudgetEnvelope {
+	return v1.BudgetEnvelope{
+		Name:        "idle",
+		Flavor:      "A100-40GB",
+		Selector:    map[string]string{"region": "us-west"},
+		Concurrency: 1,
+	}
+}
+
 func budgetOf(owner, name string, parents []string, envelopes ...v1.BudgetEnvelope) v1.Budget {
 	return v1.Budget{
 		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: nsForOwner(owner)},
@@ -601,7 +618,7 @@ func TestAggregateCapHonorsOwnerRecall(t *testing.T) {
 	budget.Spec.AggregateCaps = []v1.AggregateCap{{
 		Name: "global", Flavor: testFlavor, Envelopes: []string{"east", "west"}, MaxConcurrency: &eight,
 	}}
-	child := budgetOf("team/child", "child-budget", []string{"team"})
+	child := budgetOf("team/child", "child-budget", []string{"team"}, idleEnvelope())
 	ownerRun := runOf("owner-run", "team", base, false)
 	familyRun := runOf("family-run", "team/child", base, false)
 	// 'east' sorts before 'west', so pre-fix the family claim on east would
@@ -630,7 +647,7 @@ func TestAvailableWidthRecallsThroughAggregate(t *testing.T) {
 	budget.Spec.AggregateCaps = []v1.AggregateCap{{
 		Name: "global", Flavor: testFlavor, Envelopes: []string{"east", "west"}, MaxConcurrency: &eight,
 	}}
-	child := budgetOf("team/child", "child-budget", []string{"team"})
+	child := budgetOf("team/child", "child-budget", []string{"team"}, idleEnvelope())
 	familyRun := runOf("family-run", "team/child", base, false)
 	leases := []v1.GPULease{leaseOf("l-family", "family-run", "team", "team-budget", "east", 8, base, forRunOwner("team/child"))}
 	ev := Evaluate(Input{Budgets: []v1.Budget{budget, child}, Leases: leases, Runs: runsMap(familyRun), Now: base.Add(time.Hour)})
@@ -648,7 +665,7 @@ func TestAvailableWidthRecallsThroughAggregate(t *testing.T) {
 	}
 	// A junior cousin does NOT outrank the sitting family claim, so it sees
 	// none of the aggregate width the owner could recall.
-	cousin := budgetOf("team/cousin", "cousin-budget", []string{"team"})
+	cousin := budgetOf("team/cousin", "cousin-budget", []string{"team"}, idleEnvelope())
 	ev2 := Evaluate(Input{Budgets: []v1.Budget{budget, child, cousin}, Leases: leases, Runs: runsMap(familyRun), Now: base.Add(time.Hour)})
 	if got := ev2.AvailableWidth(westKey, "team/cousin", base.Add(time.Minute), "", false); got != 0 {
 		t.Errorf("a later cousin cannot recall the family claim through the aggregate, want 0, got %d", got)

@@ -3,7 +3,15 @@ report 2: checked — 10/10 citations verified
 report 3: checked — 14/14 citations verified
 report 4: checked — 6/6 citations verified
 report 5: checked — 7/7 citations verified
-report 6: SKIPPED (degenerate schema probe, not a lens report)
+report 6: SKIPPED — degenerate schema probe, not a lens report
 report 7: checked — 6/6 citations verified
+report 8: checked — 5/6 citations verified
+report 9: checked — 13/14 citations verified
+report 10: checked — 8/8 citations verified
+report 11: SKIPPED — degenerate schema probe, not a lens report
 
-TOTAL: 57/57 citations verified verbatim against 0b77fbe
+TOTAL: 83/85 citations verified verbatim against 0b77fbe
+
+notes:
+  - report 8: api/v1/lease_types.go:61 QUOTE NOT FOUND: 'PaidByBudgetNamespace string ... omitempty'
+  - report 9: test/e2e/smoke_test.go:68 QUOTE NOT FOUND: '// It used to submit a Run with no `spec.owner`. R7 pt2 DELE'

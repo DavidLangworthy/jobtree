@@ -80,7 +80,6 @@ apiVersion: rq.davidlangworthy.io/v1
 kind: Run
 metadata: { name: trainer, namespace: default }
 spec:
-  owner: org:ai:team
   resources: { gpuType: H100-80GB, totalGPUs: 2 }
   malleable: { minTotalGPUs: 2, maxTotalGPUs: 4, stepGPUs: 2, desiredTotalGPUs: 4 }
   roles:

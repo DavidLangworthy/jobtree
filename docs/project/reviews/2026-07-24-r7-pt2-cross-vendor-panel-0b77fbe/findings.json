@@ -709,58 +709,402 @@
     ],
     "unsupported": []
    }
+  },
+  {
+   "agentId": "a1bc71715e4fe8c47",
+   "report": {
+    "summary": "Cross-vendor seat report (codex/gpt-5.6) on R7 pt2, owner-from-namespace review. The investigator confirms this was a live invocation of /tmp/codex/run-hunt.sh (not a pre-validated artifact), completing with exit code 0 and a well-formed 15,900-byte JSON output containing 5 findings. The investigator spot-checked all 17 evidence citations plus the 5 findings' verbatim_citation lines against actual files at HEAD using sed -n, and all matched character-for-character at or near the claimed line numbers, with no fabricated or mismatched citation. As a supplementary check, the investigator grepped PaidByBudgetNamespace write sites (binder.go:400, admission.go:249, run_controller.go:504) confirming they stamp the field unconditionally at mint time, which reframes codex's Finding 4 as a validation gap rather than a currently-reachable bug. Codex's five findings cover: (1) interior marker laundering duplicate owner across namespaces (critical) - a reconfirmation of an already-known P5 hazard; (2) current owner binding rewriting historical GPU-hour charges (high) - assessed as genuinely novel; (3) empty owner sentinel merging unrelated resolver tenants (medium) - a sharpened version of a scout lead; (4) optional payer namespace permitting uncharged GPU claims (high) - real but currently unreachable via the sole-committer path; (5) binding conflicts having no operational alarm consumer (medium) - a reconfirmation of an already-disclosed, already-triaged deferral documented in IMPLEMENTATION-LOG.md. The investigator recommends the Judge treat Finding 2 as highest priority to independently verify.",
+    "answers": [
+     {
+      "question": "Was this a live invocation of the codex/gpt-5.6 seat, and did it complete successfully?",
+      "conclusion": "Yes. The investigator ran bash /tmp/codex/run-hunt.sh /tmp/codex/out-lens.json /tmp/codex/exec-lens.log directly via Bash with a background wait since it ran past the 600s foreground timeout. This was a live invocation, not the pre-validated artifact \u2014 it completed with CODEX_OK /tmp/codex/out-lens.json and exit code 0, confirmed via the background task's own echoed EXIT_CODE=$? and the task-completion notification reporting exit code 0. The output file was 15,900 bytes, well-formed JSON parsed successfully with python3 -m json.tool, containing 5 findings and answers to all 5 assigned questions."
+     },
+     {
+      "question": "Did the investigator verify codex's evidence citations against the actual source at HEAD?",
+      "conclusion": "Yes. The investigator spot-checked every one of codex's 17 evidence citations and the 5 finding verbatim_citation lines with sed -n against the actual files at HEAD. All matched character-for-character at or within a couple lines of the claimed line number across files including pkg/funding/evaluate.go, pkg/resolver/resolver.go, api/v1/lease_types.go, cmd/scheduler/plugin/gang.go, pkg/cover/cover.go, pkg/funding/funding.go, internal/manifestcorpus/corpus.go, docs/project/remediation/IMPLEMENTATION-LOG.md, and controllers/ledger_audit.go. No fabricated or mismatched citation was found, and no line number needed correction."
+     },
+     {
+      "question": "What is the investigator's own supplementary check regarding PaidByBudgetNamespace, and what did it conclude about Finding 4?",
+      "conclusion": "The investigator grepped all PaidByBudgetNamespace write sites \u2014 pkg/binder/binder.go:400, pkg/admission/admission.go:249, and controllers/run_controller.go:504 \u2014 and found all three stamp it unconditionally at mint time, confirming codex's own statement that production mint constructors stamp PaidByBudgetNamespace. This means Finding 4 (optional field) is a missing-validation/defense-in-depth gap, not a currently-reachable path through the sole-committer flow, since no ValidateCreate rule requires the field non-empty, though it remains a real omission that could matter for future or out-of-band writers."
+     },
+     {
+      "question": "What is the overall assessment of the value of codex's 5 findings?",
+      "conclusion": "Of codex's 5 findings: Finding 1 is a strong independent reconfirmation of the already-known P5 interior-exemption hazard (parked in the prior partial review on f52d3cf), reached without being told P5 existed; Finding 5 is a reconfirmation of an already-disclosed, already-triaged deferral explicitly documented by the authors in IMPLEMENTATION-LOG.md as out of scope (tracked as F7(4) in DECISIONS-NEEDED.md); Finding 3 sharpens a scout lead into a concrete, distinct cross-tenant fairness scenario about empty-owner pooling across genuinely unrelated conflicted namespaces; Finding 4 is real but currently unreachable through the sole-committer path since all mint sites stamp the field unconditionally, making it a validation gap rather than a live charge bug; Finding 2 (temporal replay rewriting historical GPU-hour charges when topology changes) is assessed as the one genuinely novel finding in this review round, not appearing in the scout's priority leads or known/booked list, following a distinct causal chain from pure-recompute-from-current-state colliding with a non-frozen owner design. The investigator recommends the Judge treat Finding 2 as highest priority to independently verify by compiling the exact ClusterState codex specified."
+     }
+    ],
+    "evidence": [
+     {
+      "file": "pkg/funding/evaluate.go",
+      "line": 220,
+      "quote": "if _, isInterior := interior[owner]; isInterior {"
+     },
+     {
+      "file": "pkg/funding/evaluate.go",
+      "line": 661,
+      "quote": "cl.tier = ev.Graph.Tier(acct.Owner, ev.OwnerOf(run.Namespace))"
+     },
+     {
+      "file": "pkg/resolver/resolver.go",
+      "line": 478,
+      "quote": "return in.Evaluation.OwnerOf(run.Namespace)"
+     },
+     {
+      "file": "pkg/resolver/resolver.go",
+      "line": 306,
+      "quote": "tokensByOwner[owner] = append(tokensByOwner[owner], lotteryToken{runKey: runKey, group: grp})"
+     },
+     {
+      "file": "api/v1/lease_types.go",
+      "line": 61,
+      "quote": "PaidByBudgetNamespace string ... omitempty"
+     },
+     {
+      "file": "docs/project/remediation/IMPLEMENTATION-LOG.md",
+      "line": 1634,
+      "quote": "**4. R26 alarms not wired in this PR.** The engine now exposes `Evaluation.Conflicts()` (multi-owner"
+     }
+    ],
+    "findings": [
+     {
+      "title": "Interior marker launders duplicate owner across namespaces",
+      "severity": "critical",
+      "file": "pkg/funding/evaluate.go",
+      "line": 220,
+      "failure_scenario": "Build funding.Input with Budget A/bind owned by X and carrying only an unusable H100 envelope, Budget B/victim also owned by X with an 8-GPU usable H100 envelope, and Budget C/child owned by Y with Parents:[X]. Add Run A/train requesting four H100 GPUs. Assert OwnerOf(A)==X, OwnerOf(B)==X, Conflicts()==empty, cover.Plan selects B/victim, and four one-GPU leases evaluate ClassOwned. Namespace B's victim budget is charged 4 GPUs and 4 GPU-hours per wall-clock hour; the four physical GPUs are held by A's run until those leases close, with senior non-recallable rank across the tenant boundary.",
+      "taxonomyClass": "IDENTITY-COARSENING / EXEMPTION-LAUNDERING"
+     },
+     {
+      "title": "Current owner binding rewrites historical GPU-hour charges on topology replay",
+      "severity": "high",
+      "file": "pkg/funding/evaluate.go",
+      "line": 661,
+      "failure_scenario": "Create ClusterState with namespace A, Budget A/main owned by X, Run A/train, and one open four-GPU lease paid by A/main/west starting at T0. Evaluate at T1=T0+1h and assert main consumed 4 GPU-hours. Add a second Budget in A owned by Y, evaluate at T2=T0+2h, and assert main unexpectedly falls to 0 consumed GPU-hours while the lease still holds four GPUs. Remove Y and evaluate at T3=T0+3h: main jumps to 12 consumed GPU-hours, charging four GPU-hours for the conflicted interval as well as restoring the pre-conflict charge. Expected temporal accounting is 8 charged GPU-hours and 4 unfunded GPU-hours; the actual replay can prematurely exhaust main and demote the still-open four-GPU claim.",
+      "taxonomyClass": "TEMPORAL-IDENTITY / CURRENT-TOPOLOGY-REWRITES-HISTORY"
+     },
+     {
+      "title": "Empty owner sentinel merges unrelated resolver tenants into one lottery bucket",
+      "severity": "medium",
+      "file": "pkg/resolver/resolver.go",
+      "line": 306,
+      "failure_scenario": "Build ClusterState with conflicted namespace A containing ten independent one-GPU running groups and conflicted namespace B containing one one-GPU running group; give every run a valid open lease and an Evaluation in which all eleven leases are Unfunded because both OwnerOf values are empty. Invoke resolver.Resolve with Deficit:1 and a fixed seed. No Budget is charged, and eleven GPUs are initially held. The resolver places all groups in tokensByOwner[\"\"] so A receives 10/11 of the token probability rather than the intended one-owner-one-bucket 1/2 share; one GPU is reclaimed and ten remain held.",
+      "taxonomyClass": "SENTINEL-ALIASING / IDENTITY-COARSENING"
+     },
+     {
+      "title": "Optional payer namespace field permits uncharged GPU claims (validation gap)",
+      "severity": "high",
+      "file": "api/v1/lease_types.go",
+      "line": 61,
+      "failure_scenario": "Create ClusterState with Budget alice/main owner X and envelope west of concurrency four, Run alice/train, and an API-valid open GPULease holding slots n1#0 through n1#3 with PaidByBudget=main and PaidByEnvelope=west but PaidByBudgetNamespace omitted. Evaluation constructs the empty-namespace key, finds no account, and classes the lease Unfunded. The alice/main Budget is charged 0 GPUs and 0 GPU-hours while four physical GPUs remain held for the entire open interval. GPULease.ValidateCreate accepts the object, ClassOf returns Unfunded, alice/main headroom incorrectly remains four, and no Evaluation conflict or ledger-auditor alarm reports the missing payer namespace. Currently unreachable via the sole-committer path since all three production mint sites stamp the field unconditionally.",
+      "taxonomyClass": "OMITTED-OBLIGATION / SILENT-UNFUNDED-PAYER"
+     },
+     {
+      "title": "Binding conflicts have no operational alarm consumer (disclosed, already-triaged deferral)",
+      "severity": "medium",
+      "file": "docs/project/remediation/IMPLEMENTATION-LOG.md",
+      "line": 1634,
+      "failure_scenario": "Build a live ClusterState with namespace alice, an eight-GPU Run and open eight-GPU lease paid by alice/main, then add alice/second with a different owner. Evaluation.Conflicts reports MultipleOwners, alice/main is charged 0 current GPUs while the open lease still holds eight GPUs, and fresh alice Runs are refused. Drive the existing LedgerAuditor across multiple grace windows with matching live pods and nodes; it emits no conflict event or metric and performs no repair, because its only invariants concern lease/pod/node correspondence. The namespace can remain silently unfunded and capacity-constrained indefinitely until an administrator diagnoses it externally. This gap is explicitly documented by the authors as out of scope for this PR.",
+      "taxonomyClass": "OMITTED-OBLIGATION / COMMENT-AS-ENFORCEMENT"
+     }
+    ],
+    "unsupported": []
+   }
+  },
+  {
+   "agentId": "a5bd1cbdd9e3ffd6d",
+   "report": {
+    "summary": "The investigator reviewed an 8-commit R7 pt2 stack (main...HEAD, head 0b77fbe) using playbook class 8 ('the test asserts the bug'), running mutation testing in a scratch copy at /tmp/r7mut/repo (no repo files were created/edited/deleted) plus direct reading of oracle/API-validation code. Ten mutations were run against the real suite. Seven core fail-safes were confirmed genuinely load-bearing (mutants went red): the empty-borrower guard in evaluate.go's lendingAllows, the leaf-owner-span fail-safe, the multi-owner fail-safe, OwnerOf's positive derivation path, and the namespace guards in promiseProvenanceValid. Three defenses were found NOT tested: (a) deleting the interior-tier exemption line in evaluate.go leaves the whole suite green because TestInteriorTierExemptFromInjectivity's pool owner is bound in only one namespace, and a concrete fixture was built reproducing a cross-tenant Owned-claim hazard with Conflicts() empty; (b) pkg/resolver.ownerOf survives both branches being replaced by a constant, and buildRun discards its namespace parameter via `_ = namespace`, structurally forbidding the fixture shape R7 newly makes reachable; (c) two test surfaces excluded from the default build were not updated \u2014 test/e2e/smoke_test.go's TestValidatingWebhookRejectsInvalidRun still provokes rejection via a now-legal stimulus (omitted spec.owner), and seven hack/e2e/*.sh scripts still kubectl-apply Run manifests carrying spec.owner. Additional findings: Evaluation.Conflicts() has zero production consumers despite documentation promising R26 alarms; two fixtures bind namespaces via envelope-less Budgets the API server rejects; and the change deleted the CRD 'empty owner' probe without adding a replacement regression test for the privilege escalation R7 exists to close. One inverted assertion was found in cmd/scheduler/plugin/gang_test.go, where an owner-consistency check was replaced with its opposite, contradicting R7-tenancy-amendment.md's stated rationale for keeping Lease.Spec.Owner as an audit-legible field.",
+    "answers": [
+     {
+      "question": "1. For each test the change adds or modifies: what is the STIMULUS? How does it provoke the behaviour under test? Is that stimulus legitimate \u2014 i.e. does it correspond to something that really happens, and does it really mean what the code takes it to mean?",
+      "conclusion": "Five ADDED tests: TestOwnerOfDerivesFromNamespace, TestMultiOwnerNamespaceFailsSafe, TestLeafOwnerSpanningNamespacesFailsSafe, and TestEmptyBorrowerNeverLends all have legitimate stimuli, matching R7 \u00a74, and are mutation-confirmed load-bearing. TestInteriorTierExemptFromInjectivity has an INVALID stimulus for the property it names: the pool owner is bound in exactly one namespace so the exemption it claims to pin never decides the outcome (deleting the exemption leaves the whole repo green). For modified tests, the shared new stimulus is the helper nsForOwner(owner), checked for collisions and found legitimate but a straitjacket that makes namespace-owner a bijection by construction, so the fail-safe branches are unreachable from retopologized tests. Two illegitimate modified stimuli: envelope-less Budgets used as namespace bindings (forecast_test.go:399-401, evaluate_test.go:604/633) which the API server rejects, and unmodified e2e/shell stimuli \u2014 test/e2e/smoke_test.go provokes rejection by omitting spec.owner (now legal) and seven hack/e2e/*.sh scripts apply Runs carrying spec.owner (a field the CRD no longer has)."
+     },
+     {
+      "question": "2. Read each new assertion as a claim about the WORLD, not about the code, and check it against docs/project/quota-semantics.md and docs/concepts/leases.md (which are binding). Is the asserted state actually DESIRABLE?",
+      "conclusion": "Most new assertions state desirable world-claims endorsed by the binding docs (unbound/conflicted namespace participates in no funding; two owners in one namespace fails safe to unbound \u2014 both match R7 \u00a74). Two assertions do not describe a desirable world: TestInteriorTierExemptFromInjectivity's claim is only true under \u00a75's premise (pool Budget in an admin-managed, non-runnable namespace) which the fixture satisfies but the code never tests, and a legal-looking configuration was shown where believing it hands one tenant a senior, non-recallable Owned claim on another's envelope. TestPromiseProvenanceValid's new assertion that seg.Owner is cosmetic post-R7 contradicts R7-tenancy-amendment.md:187, which keeps Lease.Spec.Owner specifically to make the payer legible in audit output \u2014 a field anyone can set to any string is not legible, and no ledger auditor cross-checks it. A third, weaker case: quota_semantics_test.go's new nominal-envelope pattern is \u00a75-sanctioned but encodes a silent semantic change (an unbudgeted tenant can no longer borrow from a wildcard sponsor) not recorded in user-facing docs."
+     },
+     {
+      "question": "3. MUTATE THE FIX. Delete the load-bearing line the change adds in a scratch copy, and re-run the tests that supposedly cover it. Report exact commands and output.",
+      "conclusion": "Run in /tmp/r7mut/repo (a cp -a copy, no repo file touched). CAUGHT: deleting the empty-borrower guard, the leaf-owner-span loop, and the multi-owner conflict block each fail their respective tests (TestEmptyBorrowerNeverLends, TestLeafOwnerSpanningNamespacesFailsSafe, TestMultiOwnerNamespaceFailsSafe); forcing OwnerOf to always return '' fails 6 packages/30+ tests; stripping both namespace terms from promiseProvenanceValid fails TestPromiseProvenanceValid at gang_test.go:503 and 509. SURVIVED: deleting the interior-tier exemption line (evaluate.go:220) leaves `go test -count=1 ./...` fully green with zero failures (confirmed the mutation applied via grep, and used -count=1 to defeat the build cache); replacing resolver.ownerOf's Evaluation branch with a constant, or its fallback branch with a constant, or both, each leave the whole repo (or pkg/resolver) green."
+     },
+     {
+      "question": "4. Does any test assert on a state that the invariant oracle (pkg/invariant) would reject as illegal?",
+      "conclusion": "pkg/invariant exists with eight IDs (INV-CLOSE-STAMPED, INV-TERMINAL-PRESENT, INV-TERMINAL-NO-PODS, INV-WIDTH-ASSEMBLED, INV-GROUP-STAMPED, INV-CLOSED-MONOTONE, INV-LEASE-HAS-POD, INV-PHASE-DERIVED), none concerning tenancy/ownership, and it is never invoked by any R7 test since those tests build a funding.Input rather than a ClusterState. The illegality found is instead at the API-validation layer: forecast_test.go:399-401 and evaluate_test.go:604/633 bind namespaces with envelope-less Budgets that api/v1/budget_types.go:192 rejects (confirmed by calling ValidateCreate on the fixture objects), and resolver_test.go's buildLease stamps Owner: run.Namespace into a field that holds an owner tier, which the API does not reject but no legitimate cluster state could produce. The missing invariant that would have caught the hazard mechanically \u2014 that every open lease's PaidByBudgetNamespace names a Budget whose namespace derives the lease's run's owner \u2014 was not added."
+     },
+     {
+      "question": "5. Did the change MODIFY or DELETE an existing test? For each, was the old test wrong, or is the new test reshaped to accommodate a defect?",
+      "conclusion": "Roughly 40 files modified, mostly mechanical and correct. Four deserve ruling: (a) INVERTED \u2014 cmd/scheduler/plugin/gang_test.go replaced the old assertion that provenance whose owner is not the run's owner must be refused with the inverse, that a segment carrying an arbitrary Owner must now be accepted; the old assertion describes the correct system, and the new test converted a weakening into a specification. (b) DELETED \u2014 controllers/kube/crd_validation_envtest_test.go dropped the 'empty owner' probe and internal/manifestcorpus/corpus.go dropped the 'missing owner' case; individually correct since the field is gone, but jointly leave zero coverage of the manifest-level surface with nothing replacing them. (c) DELETED-BY-OMISSION \u2014 api/v1/run_types_test.go's error message was genericized so the &Run{} probe no longer distinguishes anything about owner. (d) RESHAPED-BUT-DEFENSIBLE \u2014 controllers/quota_semantics_test.go's synthetic guest-budget follows the \u00a75 nominal-envelope pattern but is a silent semantic change not documented anywhere; and controllers/golden_test.go's six retopologized golden fixtures are byte-identical and contain no owner/payer/budget/envelope field, so the golden corpus cannot observe the funding principal it is meant to regression-test."
+     }
+    ],
+    "evidence": [
+     {
+      "file": "pkg/funding/evaluate.go",
+      "line": 220,
+      "quote": "\t\tif _, isInterior := interior[owner]; isInterior {"
+     },
+     {
+      "file": "pkg/funding/tenancy_r7_test.go",
+      "line": 99,
+      "quote": "\t\t\tSpec: v1.BudgetSpec{Owner: \"org:ai\", Envelopes: []v1.BudgetEnvelope{env(\"west\", 8)}}},"
+     },
+     {
+      "file": "cmd/scheduler/plugin/gang_test.go",
+      "line": 517,
+      "quote": "\t\tt.Errorf(\"seg.Owner is cosmetic post-R7; a same-namespace own-budget charge must still be accepted\")"
+     },
+     {
+      "file": "pkg/resolver/resolver_test.go",
+      "line": 229,
+      "quote": "\t_ = namespace"
+     },
+     {
+      "file": "pkg/resolver/resolver.go",
+      "line": 476,
+      "quote": "func ownerOf(in Input, run *v1.Run) string {"
+     },
+     {
+      "file": "pkg/funding/evaluate.go",
+      "line": 260,
+      "quote": "func (ev *Evaluation) Conflicts() []BindingConflict {"
+     },
+     {
+      "file": "hack/e2e/runbook-smoke.sh",
+      "line": 140,
+      "quote": "  owner: org:team"
+     },
+     {
+      "file": "hack/e2e/plugin-smoke.sh",
+      "line": 88,
+      "quote": "  owner: org:ai:team"
+     },
+     {
+      "file": "test/e2e/smoke_test.go",
+      "line": 68,
+      "quote": "// It used to submit a Run with no `spec.owner`. R7 pt2 DELETED that field (the"
+     },
+     {
+      "file": "pkg/forecast/forecast_test.go",
+      "line": 400,
+      "quote": "\t\t\tSpec:       v1.BudgetSpec{Owner: \"org:ai:peer\", Parents: []string{\"org:ai\"}},"
+     },
+     {
+      "file": "api/v1/budget_types.go",
+      "line": 192,
+      "quote": "\t\treturn fmt.Errorf(\"spec.envelopes must not be empty\")"
+     },
+     {
+      "file": "pkg/funding/evaluate_test.go",
+      "line": 604,
+      "quote": "\tchild := budgetOf(\"team/child\", \"child-budget\", []string{\"team\"})"
+     },
+     {
+      "file": "docs/project/remediation/R7-tenancy-amendment.md",
+      "line": 595,
+      "quote": "binding fails Budget validation.** *Accepted \u2014 fixed with the nominal-envelope pattern, \u00a75.*"
+     },
+     {
+      "file": "pkg/cover/cover.go",
+      "line": 135,
+      "quote": "\tif req.Owner == \"\" || req.Flavor == \"\" {"
+     }
+    ],
+    "findings": [
+     {
+      "title": "Interior-tier exemption line has zero effective test coverage; mutant survives whole suite",
+      "severity": "high",
+      "file": "pkg/funding/evaluate.go",
+      "line": 220,
+      "failure_scenario": "Deleting the three lines `if _, isInterior := interior[owner]; isInterior { continue }` from deriveOwners leaves `go test -count=1 ./...` fully green because TestInteriorTierExemptFromInjectivity binds its pool owner in exactly one namespace, so `len(nss) >= 2` is false and the exemption never decides anything. The investigator built the missing fixture and reproduced a Run in tenant-b minting class Owned against tenant-a's envelope (FundedWidth=4, consumed=4) with Conflicts() empty \u2014 the parked P5 hazard.",
+      "taxonomyClass": "8 THE TEST ASSERTS THE BUG (step 4: mutate the fix)"
+     },
+     {
+      "title": "resolver.ownerOf has zero effective coverage on both branches; buildRun discards its namespace parameter",
+      "severity": "high",
+      "file": "pkg/resolver/resolver_test.go",
+      "line": 229,
+      "failure_scenario": "Replacing `return in.Evaluation.OwnerOf(run.Namespace)` with a constant, or `return run.Namespace` with a different constant, or both, leaves `go test -count=1 ./...` fully green. No pkg/resolver test sets Input.Evaluation while both production callers always do, so tests exercise a branch production never takes. `_ = namespace` in buildRun structurally forbids constructing a run whose namespace derives owner \"\" \u2014 the one fixture shape R7 newly makes reachable \u2014 so in production, N distinct stranded tenants could collapse into one lottery/reclaim bucket keyed \"\" with no test able to observe it.",
+      "taxonomyClass": "8 THE TEST ASSERTS THE BUG (helper masks parameter; mutation survives)"
+     },
+     {
+      "title": "e2e webhook test provokes rejection using a stimulus this change made legal",
+      "severity": "high",
+      "file": "test/e2e/smoke_test.go",
+      "line": 68,
+      "failure_scenario": "TestValidatingWebhookRejectsInvalidRun submits a Run with spec.owner omitted and asserts Create fails, but this change deleted spec.owner and its required-field check, so the Run is now valid and Create succeeds, causing `t.Fatalf(\"expected the real validating webhook to reject a Run with no owner, but Create succeeded\")`. Because the file is behind `//go:build e2e`, `go test ./...` never compiles it, so all 8 commits stayed green while the guarantee this test exists to hold (that the validating webhook is really wired) is now unproven by any test.",
+      "taxonomyClass": "8 THE TEST ASSERTS THE BUG (step 2: the trigger is no longer legitimate)"
+     },
+     {
+      "title": "Seven hack/e2e smoke scripts still apply Run manifests carrying a field the CRD removed",
+      "severity": "medium",
+      "file": "hack/e2e/runbook-smoke.sh",
+      "line": 140,
+      "failure_scenario": "kubectl has defaulted to server-side strict field validation since v1.25, so an unknown `spec.owner` becomes a hard apply error. In runbook-smoke.sh, a negative assertion meant to prove Run writes are refused while the webhook is unreachable would now pass because of the unrelated strict-decoding failure rather than the webhook behaviour it's supposed to test, misattributing the cause. The same stale owner: line appears in failure-smoke.sh, fullstack-smoke.sh, grow-smoke.sh, plugin-smoke.sh, rendezvous-smoke.sh and swap-smoke.sh, none of which appear in `git diff main...HEAD --stat`.",
+      "taxonomyClass": "8 THE TEST ASSERTS THE BUG (step 2) + 3 (green for the wrong reason)"
+     },
+     {
+      "title": "Provenance test inverted: forged seg.Owner is now asserted acceptable, contradicting the audit-legibility rationale for Lease.Spec.Owner",
+      "severity": "critical",
+      "file": "cmd/scheduler/plugin/gang_test.go",
+      "line": 517,
+      "failure_scenario": "With the R5/R6 ValidatingAdmissionPolicy absent (a case this test explicitly exists to cover), an attacker in their own namespace can create a pod with lease-reason=Promise and payer-owner set to any string; promiseProvenanceValid returns true since gang.go no longer reads seg.Owner, PreBind mints a Lease with Owner: seg.Owner, producing an open Lease whose Spec.Owner is a lie, and no controller cross-checks it. This contradicts R7-tenancy-amendment.md:187, which keeps the field specifically to keep the payer legible in audit output.",
+      "taxonomyClass": "8 THE TEST ASSERTS THE BUG (step 5: an existing assertion rewritten to accommodate the change) + 2"
+     },
+     {
+      "title": "Evaluation.Conflicts() has no production consumer despite comment promising R26 alarms",
+      "severity": "medium",
+      "file": "pkg/funding/evaluate.go",
+      "line": 260,
+      "failure_scenario": "A repo-wide grep shows Conflicts()'s only callers are the four assertions in pkg/funding/tenancy_r7_test.go, so an admin misconfiguration that strands an entire namespace (two owners in one namespace, or a leaf owner spanning namespaces) produces no event, metric, log, or status condition anywhere in production; the only human-visible signal is the generic 'owner and flavor must be set' status message, observed during mutation testing as `default/train-1  Pending  owner and flavor must be set`.",
+      "taxonomyClass": "2 THE COMMENT IS THE ONLY ENFORCEMENT (+ omission)"
+     },
+     {
+      "title": "CRD 'empty owner' schema probe deleted with no replacement regression test for the privilege escalation R7 exists to close",
+      "severity": "high",
+      "file": "controllers/kube/crd_validation_envtest_test.go",
+      "line": 202,
+      "failure_scenario": "The change deleted the envtest table entry `{\"empty owner\", \"owner\", func(r *v1.Run) { r.Spec.Owner = \"\" }}` and added nothing replacing it; because Run.Spec.Owner no longer exists in Go, no Go fixture can express the attack this change fixes, so if a future refactor reintroduced any run-writable owner input (an annotation, label, or restored field), nothing would fail. internal/manifestcorpus/corpus.go still keeps thirteen Run manifests carrying `\"owner\": \"org:ai\"`, and cmd/kubectl-runs/cmd/root_test.go:57 and doc_examples_test.go:95 still submit Run JSON with an owner field that happens to coincide with the derived owner, so nothing separates a forged owner from a derived one in any test.",
+      "taxonomyClass": "8 THE TEST ASSERTS THE BUG (mutation testing cannot find omissions)"
+     },
+     {
+      "title": "Test fixtures bind namespaces using envelope-less Budgets the API server rejects",
+      "severity": "medium",
+      "file": "pkg/forecast/forecast_test.go",
+      "line": 400,
+      "failure_scenario": "forecast_test.go:399-401 and evaluate_test.go:604/633 construct Budgets with no Envelopes to bind org-ai-peer/team-child namespaces, but api/v1/budget_types.go rejects `len(Spec.Envelopes) == 0` via ValidateCreate, so this state could never exist in a real cluster; in a real cluster these namespaces would be unbound, OwnerOf would return \"\", and with the empty-borrower guard the family/peer claim would evaluate Unfunded rather than Shared, contradicting the world the tests reason about. The investigator noted no current assertion depends on the illegality after rewriting with a legal envelope, but the pattern risks being copied by future authors.",
+      "taxonomyClass": "8 THE TEST ASSERTS THE BUG (step 5: the oracle would reject this state)"
+     }
+    ]
+   }
+  },
+  {
+   "agentId": "ae345faac3583f994",
+   "report": {
+    "summary": "Adversarial review of PR #127 (r7pt2/tenancy-owner-from-namespace, head 0b77fbe) across the half-plane/reapers lens. The investigator grepped the production diff for lease-closure and pod-deletion sites and found none introduced by this change; all newly reachable demotion doors (conflict/unbound namespace -> OwnerOf returning \"\", the lendingAllows empty-borrower guard) feed into three pre-existing, verified two-plane actors: applyResolution (run_controller.go:2157, 2181-2193), reclaimSquatter, and failRun/releaseRun (run_controller.go:2032). The checkpoint-grace exemption in applyResolution keys on run.Status.CheckpointDeadline, not a phase name (run_controller.go:2235). Using two compiled throwaway Go probes against commit 0b77fbe (built at /tmp/r7probe with a replace directive; no repo files were touched), the investigator reconfirmed the previously parked P5 finding: an owner leaf-bound in two namespaces plus named as a child budget's Parent produces zero conflicts and an Owned, non-demoting, cross-tenant charge (Finding 1, adjudicated as real and live on this HEAD). Probe B found map-order nondeterminism in Conflicts() ordering and surfaced Owner field (Finding 2, LOW, diagnostics-only). A latent, currently-unreachable-in-production identity-coarsening fallback in resolver.go was also identified (Finding 3, LOW). The investigator ruled that dropping the isInterior exemption is not a run-reaper under the design's ratified posture, but would create false alarms for legal multi-namespace pools. No pkg/invariant panics are added or strengthened in a way that trips on any legal state found; the invariants err too-weak (via the exemption) rather than reaper-direction. Quantified consequence: Finding 1 lets an attacker mint an unbounded-duration Owned charge (bounded only by victim envelope Concurrency, e.g. 4 of 8 GPUs in the probe) against a victim's budget, silently burning GPU-hours until exhaustion, at which point the victim's own legitimate work becomes reclaimable, with zero conflict/audit signal generated for R26's auditor to consume.",
+    "answers": [
+     {
+      "question": "For every site the change closes a Lease: whose container is still running? For every site it deletes a Pod: whose lease is still open? Name each pairing.",
+      "conclusion": "There are no such sites and therefore no pairings: grepping the production diff for CloseLease, State.Pods, removePods, removeRunPods, removeAllRunPods, removeSparePod, Status.Phase =, and Status.Closed returned nothing \u2014 this change closes no lease and deletes no pod anywhere in production code. The half-plane exposure is entirely indirect: new demotion doors feed leases into three pre-existing actors, each verified two-plane: applyResolution closes the action's lease (run_controller.go:2157) and rebuilds c.State.Pods excluding closedGroups (2181-2193); reclaimSquatter closes the lease and removes the victim's pods or refuses; failRun routes through releaseRun, which closes every lease and calls c.removeAllRunPods(run). The P5 cross-tenant Owned lease is plane-consistent (pod running, lease open); its defect is mis-attribution of the charge, not a half-plane lie, so it is booked under Finding 1 rather than class 9."
+     },
+     {
+      "question": "Does the change reach the checkpoint-grace window? Any sweep or cull that does is a reaper. Check the exemption keys on the deadline, not a phase name.",
+      "conclusion": "Yes, the change can reach it, and the reach is safe. A run parked in grace by failGroupWithoutSpare can still hold open leases on its surviving groups, and this change adds a new way for those leases to demote to Unfunded mid-grace. That cut flows through applyResolution, whose grace arm keys exactly on the deadline: 'case run.Status.CheckpointDeadline != nil && now.Before(run.Status.CheckpointDeadline.Time):' (run_controller.go:2235), not the phase, per the 2026-07-10 ruling quoted in that block, 'Honor the deadline, not the phase.' The cut groups' own pods are removed, which is correct two-plane behavior for a reclaimed group, not a reap of the grace promise (the promise covers the surviving containers). Expiry is likewise clean: Reconcile (run_controller.go:228) fails the run at the deadline via failRun -> releaseRun, both planes. No new sweep or cull in this change keys on a phase name; the change adds no sweep at all."
+     },
+     {
+      "question": "Take each fix in this change. State the legal state its repair would destroy if applied one step more aggressively.",
+      "conclusion": "(1) Owner-from-namespace derivation with fail-safe-to-unbound: one step more aggressive would be fail-safe-to-closure, which would reap the legal, self-correcting state that quota-semantics R14 protects (Unfunded work is demoted-not-killed and re-admits when the admin repairs the binding). (2) The leaf-injectivity conflict (S-1 fix): dropping the isInterior exemption is, per the investigator's ruling, not a run-reaper because the poisoned state (a pool owner's feeder budgets spanning >=2 namespaces) lives in admin-managed, non-runnable namespaces per section 5 that host no Runs and no leases; what it destroys instead is a design-legal multi-namespace pool becoming a standing LeafOwnerSpansNamespaces false alarm on R26's feed, and it would unfund any pool that runs its own maintenance jobs in a feeder namespace. The attack topology and the legal pool topology are structurally indistinguishable in Budget data alone. (3) The empty-borrower guard: more aggressive would be rejecting open lending policies (To:[\"*\"]) outright, which would reap every legal wide-open sponsorship the lending design explicitly supports. (4) promiseProvenanceValid namespace gate: requiring a live OwnerOf resolution in the plugin would wedge PreBind for a legitimately promised gang mid-flight on a transient conflicted binding, failing healthy admissions on a transient admin state."
+     },
+     {
+      "question": "Does the change add or strengthen an INVARIANT? If so, find a legal state this engine really produces that would trip it.",
+      "conclusion": "It adds two conflict checks (one-owner-per-namespace and one-namespace-per-leaf-owner in deriveOwners), but shaped as fail-safe demotions surfaced on Evaluation.Conflicts(), never as a pkg/invariant panic (pkg/invariant is untouched by the diff), so a wrong trip degrades to Unfunded-and-alarmed rather than red CI. No legal state was found that trips them: the single-namespace parent-tier family case does not trip, a legal multi-namespace pool does not trip because the exemption exists precisely to spare it, and the one genuinely legal-yesterday state that would trip ConflictMultipleOwners (pre-section-9 fixtures' many-owners-in-default topology) is retired by the amendment's section 9 'Clean break' ruling and the golden fixtures were retopologized in this stack. The shipped invariants therefore err in the too-weak direction, not the reaper direction: the exemption that prevents false trips is exactly the hole Finding 1 walks through."
+     },
+     {
+      "question": "Assume every finding is real. Which budget is charged, how many GPUs are held, and for how long?",
+      "conclusion": "Finding 1: tenant-b's envelope (bob/b/west in the probe) is charged Owned for the attacker-run's full width, bounded only by the victim envelope's Concurrency (4 of 8 GPUs in the probe, sizeable by the attacker to consume all of it), for an unbounded, attacker-controlled duration \u2014 the probe shows the class still Owned at 20 simulated hours with Conflicts() empty; Owned is senior and non-recallable so no resolver pass ever closes it, and nothing is logged or alarmed since the conflict list the R26 auditor would consume is empty. Every hour silently burns W GPU-hours of the victim's MaxGPUHours; at exhaustion the demotion cascade turns on the victim, coasting its legitimate leases Unfunded and reclaimable. Finding 2: no budget is charged and no GPU is held for any duration \u2014 OwnerOf is \"\" under every ordering; the cost is nondeterministic audit attribution and latent test flakiness. Finding 3: zero charge and zero GPUs today because the fallback is unreachable in production; if a future caller reached it, the miskeying would skew which tenant's group the lottery cuts under deficit, a fairness error bounded by one resolution pass, not an immortal charge."
+     }
+    ],
+    "evidence": [
+     {
+      "file": "pkg/funding/evaluate.go",
+      "line": 220,
+      "quote": "if _, isInterior := interior[owner]; isInterior {"
+     },
+     {
+      "file": "pkg/funding/evaluate.go",
+      "line": 219,
+      "quote": "for owner, nss := range nsByOwner {"
+     },
+     {
+      "file": "pkg/funding/evaluate.go",
+      "line": 1049,
+      "quote": "if borrower == \"\" {"
+     },
+     {
+      "file": "pkg/cover/cover.go",
+      "line": 135,
+      "quote": "if req.Owner == \"\" || req.Flavor == \"\" {"
+     },
+     {
+      "file": "controllers/run_controller.go",
+      "line": 2235,
+      "quote": "case run.Status.CheckpointDeadline != nil && now.Before(run.Status.CheckpointDeadline.Time):"
+     },
+     {
+      "file": "controllers/run_controller.go",
+      "line": 2032,
+      "quote": "// The other plane. Not optional, not a caller's responsibility."
+     },
+     {
+      "file": "pkg/resolver/resolver.go",
+      "line": 478,
+      "quote": "return in.Evaluation.OwnerOf(run.Namespace)"
+     },
+     {
+      "file": "pkg/resolver/resolver.go",
+      "line": 480,
+      "quote": "return run.Namespace"
+     }
+    ],
+    "findings": [
+     {
+      "title": "Interior-owner exemption lets a dual leaf-bound owner mint a permanent cross-tenant Owned charge",
+      "severity": "high",
+      "file": "pkg/funding/evaluate.go",
+      "line": 220,
+      "failure_scenario": "An admin (or any writer the 'no principal writes Budgets' precondition fails to stop) leaves or creates budgets owned by one string in two runnable namespaces plus any child budget naming that string as a Parent; a run in either namespace then mints a senior, non-recallable Owned charge against the other namespace's envelope with Conflicts() empty, so the R26 auditor has nothing to consume. Reproduced by the investigator on commit 0b77fbe: OwnerOf(alice)=\"org:ai\" OwnerOf(bob)=\"org:ai\" conflicts=[] class=Owned at simulated hours 0, 5, 10, and 20, for a lease whose run lives in alice but whose PaidByBudgetNamespace is bob, never demoting, while removing the interior-making child produces two LeafOwnerSpansNamespaces conflicts and class=Unfunded. This is parked as DECISIONS-NEEDED P5 by owner ruling; the investigator confirms the defect is live on this HEAD rather than re-litigating the park.",
+      "taxonomyClass": "2 comment-as-enforcement / consequences in class 1 territory"
+     },
+     {
+      "title": "Map-order nondeterminism in Conflicts() ordering and surfaced conflicting owner",
+      "severity": "low",
+      "file": "pkg/funding/evaluate.go",
+      "line": 219,
+      "failure_scenario": "pkg/funding/evaluate.go:219 and :231 iterate Go maps (nsByOwner into collided[ns]=owner, and ownersByNS into ev.conflicts). A compiled probe ran Evaluate 300 times over a topology where namespace ns1 collides via two owners and observed 6 distinct Conflicts() orderings, with ns1's surfaced BindingConflict.Owner field itself flipping between own:x and own:y across runs. OwnerOf still returns \"\" for the namespace in every ordering, so no funding decision, charge, or GPU placement varies; the blast radius is confined to R26 audit attribution and any future test asserting on conflict order.",
+      "taxonomyClass": "3 last-writer-wins / map-order nondeterminism"
+     },
+     {
+      "title": "resolver.ownerOf nil-Evaluation fallback keys a conflicted namespace by its raw name instead of empty string",
+      "severity": "low",
+      "file": "pkg/resolver/resolver.go",
+      "line": 480,
+      "failure_scenario": "pkg/resolver/resolver.go:476-480's ownerOf returns in.Evaluation.OwnerOf(run.Namespace) when an Evaluation is present but falls back to return run.Namespace when it is nil, so a conflicted namespace that the real derivation would key as \"\" is instead keyed as its raw namespace string. Both current production resolver.Resolve call sites (run_controller.go:466 and :1285) pass c.hypotheticalEvaluation(...), which unconditionally constructs a real Evaluation, so the fallback is unreachable in production today; a future nil-Evaluation caller would mis-bucket reclaim/lottery fairness, a fairness error bounded to one resolution pass rather than an immortal charge.",
+      "taxonomyClass": "5 identity coarsening"
+     }
+    ],
+    "unsupported": []
+   }
+  },
+  {
+   "agentId": "a76ade9cc5dce94fa",
+   "report": {
+    "summary": "Test summary that is at least two hundred characters long to satisfy the minLength requirement for validation purposes only, this is a test call to diagnose a schema validation issue with the structured output tool that keeps failing for unclear reasons despite valid JSON.",
+    "answers": [
+     {
+      "question": "test question",
+      "conclusion": "test conclusion that is long enough to satisfy the minLength requirement of eighty characters for this field."
+     }
+    ],
+    "evidence": [
+     {
+      "file": "pkg/funding/evaluate.go",
+      "line": 220,
+      "quote": "if _, isInterior := interior[owner]; isInterior {"
+     }
+    ],
+    "findings": []
+   }
   }
  ],
  "attestations": [],
- "proseResults": [
-  {
-   "agentId": "a1269bac66aa98afb",
-   "chars": 20754,
-   "head": "{\n  \"lens\": \"LAST-WRITER-WINS (playbook class 3)\",\n  \"target\": \"r7pt2/tenancy-owner-from-namespace @ 0b77fbe7d4449beec1cd463474a7353b0e84ee7c (git diff main...HEAD), repo root /home/runner/work/jobtre"
-  },
-  {
-   "agentId": "a62113026c9303def",
-   "chars": 23826,
-   "head": "{\"summary\":\"Immortal-lease / cloned-obligation lens on r7pt2/tenancy-owner-from-namespace (HEAD 0b77fbe, 8 commits off e918ca6b), repo root /home/runner/work/jobtree/jobtree. I read the playbook in fu"
-  },
-  {
-   "agentId": "a7f45b96e65e7cee7",
-   "chars": 28995,
-   "head": "```json\n{\n  \"summary\": \"I reviewed the full 8-commit R7 pt2 stack (git diff main...HEAD @ 0b77fbe) through the SIGNAL != REALITY (class 4), IDENTITY COARSENING (class 5) and GUARD BEFORE PREDICATE (cl"
-  },
-  {
-   "agentId": "a48f0e475127fffdb",
-   "chars": 18945,
-   "head": "All confirmations are in. Composing the report.\n\n```json\n{\n  \"lens\": \"half-plane-and-reapers\",\n  \"commit\": \"0b77fbe7d4449beec1cd463474a7353b0e84ee7c\",\n  \"summary\": \"I read the playbook in full, read t"
-  },
-  {
-   "agentId": "a1d4494bc0a2b29fa",
-   "chars": 12550,
-   "head": "## Report \u2014 Cross-Vendor Seat (codex / gpt-5.6) on R7 pt2 (owner-from-namespace)\n\n**Command run:** `bash /tmp/codex/run-hunt.sh /tmp/codex/out-lens.json /tmp/codex/exec-lens.log`, invoked directly via"
-  },
-  {
-   "agentId": "a32158fe51bd1096a",
-   "chars": 31410,
-   "head": "```json\n{\n  \"summary\": \"I reviewed the R7 pt2 stack (main...HEAD, 8 commits, head 0b77fbe) exclusively through playbook class 8 \u2014 'the test asserts the bug' \u2014 and ran the playbook's five-step procedur"
-  },
-  {
-   "agentId": "a42795903af79db00",
-   "chars": 16034,
-   "head": "Cleanup denied (harmless \u2014 it is a temp dir outside the repo). Here is my report.\n\n{\n  \"summary\": \"I reviewed the full 8-commit stack `git diff main...HEAD` (head 0b77fbe), read the adversarial-review"
-  },
-  {
-   "agentId": "a86a5f9e2a0075c86",
-   "chars": 22794,
-   "head": "# Cross-Vendor Seat Report (gpt-5.6 via Codex) \u2014 R7 pt2 Tenancy-Owner-From-Namespace Review\n\n## Provenance\n\nI ran `bash /tmp/codex/run-hunt.sh /tmp/codex/out-lens.json /tmp/codex/exec-lens.log` as ins"
-  }
- ],
- "raisedCount": 26,
- "distinctSites": 17,
+ "raisedCount": 42,
+ "distinctSites": 25,
  "bySite": {
   "api/v1/lease_types.go:61": [
    {
     "severity": "high",
     "title": "Optional PaidByBudgetNamespace field permits uncharged GPU claims via unvalidated writers"
+   },
+   {
+    "severity": "high",
+    "title": "Optional payer namespace field permits uncharged GPU claims (validation gap)"
    }
   ],
   "cmd/scheduler/plugin/gang.go:731": [
@@ -773,6 +1117,18 @@
    {
     "severity": "low",
     "title": "promiseProvenanceValid no longer pins seg.Owner, letting a forged Promise pod set Lease.Spec.Owner to any string"
+   }
+  ],
+  "cmd/scheduler/plugin/gang_test.go:517": [
+   {
+    "severity": "critical",
+    "title": "Provenance test inverted: forged seg.Owner is now asserted acceptable, contradicting the audit-legibility rationale for Lease.Spec.Owner"
+   }
+  ],
+  "controllers/kube/crd_validation_envtest_test.go:202": [
+   {
+    "severity": "high",
+    "title": "CRD 'empty owner' schema probe deleted with no replacement regression test for the privilege escalation R7 exists to close"
    }
   ],
   "controllers/order_independence_test.go:27": [
@@ -791,6 +1147,22 @@
    {
     "severity": "medium",
     "title": "Binding conflicts (multi-owner namespaces) have no operational alarm or repair consumer"
+   },
+   {
+    "severity": "medium",
+    "title": "Binding conflicts have no operational alarm consumer (disclosed, already-triaged deferral)"
+   }
+  ],
+  "hack/e2e/runbook-smoke.sh:140": [
+   {
+    "severity": "medium",
+    "title": "Seven hack/e2e smoke scripts still apply Run manifests carrying a field the CRD removed"
+   }
+  ],
+  "pkg/forecast/forecast_test.go:400": [
+   {
+    "severity": "medium",
+    "title": "Test fixtures bind namespaces using envelope-less Budgets the API server rejects"
    }
   ],
   "pkg/funding/evaluate.go:173": [
@@ -805,6 +1177,12 @@
    {
     "severity": "medium",
     "title": "Evaluation.Conflicts() has zero production consumers, making fail-safe demotions silent"
+   }
+  ],
+  "pkg/funding/evaluate.go:219": [
+   {
+    "severity": "low",
+    "title": "Map-order nondeterminism in Conflicts() ordering and surfaced conflicting owner"
    }
   ],
   "pkg/funding/evaluate.go:220": [
@@ -823,6 +1201,18 @@
    {
     "severity": "high",
     "title": "Interior-tier exemption lets a dual leaf+interior owner mint a non-recallable Owned charge across a namespace boundary"
+   },
+   {
+    "severity": "critical",
+    "title": "Interior marker launders duplicate owner across namespaces"
+   },
+   {
+    "severity": "high",
+    "title": "Interior-tier exemption line has zero effective test coverage; mutant survives whole suite"
+   },
+   {
+    "severity": "high",
+    "title": "Interior-owner exemption lets a dual leaf-bound owner mint a permanent cross-tenant Owned charge"
    }
   ],
   "pkg/funding/evaluate.go:225": [
@@ -851,10 +1241,20 @@
     "title": "Binding fail-safe's documented 'coast' behavior is false; Unfunded leases become the first reclaim target, and an unrelated-namespace Budget can silently reap a healthy tenant's fleet"
    }
   ],
+  "pkg/funding/evaluate.go:260": [
+   {
+    "severity": "medium",
+    "title": "Evaluation.Conflicts() has no production consumer despite comment promising R26 alarms"
+   }
+  ],
   "pkg/funding/evaluate.go:661": [
    {
     "severity": "high",
     "title": "Current owner binding recomputation retroactively rewrites historical GPU-hour charges"
+   },
+   {
+    "severity": "high",
+    "title": "Current owner binding rewrites historical GPU-hour charges on topology replay"
    }
   ],
   "pkg/metrics/metrics.go:237": [
@@ -873,6 +1273,10 @@
    {
     "severity": "medium",
     "title": "Empty owner sentinel pools unrelated resolver tenants into one lottery bucket"
+   },
+   {
+    "severity": "medium",
+    "title": "Empty owner sentinel merges unrelated resolver tenants into one lottery bucket"
    }
   ],
   "pkg/resolver/resolver.go:476": [
@@ -893,6 +1297,22 @@
    {
     "severity": "low",
     "title": "resolver.ownerOf nil-Evaluation fallback is production-dead but latent"
+   },
+   {
+    "severity": "low",
+    "title": "resolver.ownerOf nil-Evaluation fallback keys a conflicted namespace by its raw name instead of empty string"
+   }
+  ],
+  "pkg/resolver/resolver_test.go:229": [
+   {
+    "severity": "high",
+    "title": "resolver.ownerOf has zero effective coverage on both branches; buildRun discards its namespace parameter"
+   }
+  ],
+  "test/e2e/smoke_test.go:68": [
+   {
+    "severity": "high",
+    "title": "e2e webhook test provokes rejection using a stimulus this change made legal"
    }
   ]
  }

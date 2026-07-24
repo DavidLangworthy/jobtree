@@ -301,3 +301,158 @@ Raw per-agent transcripts live in the session's workflow directory
    then fails on every call and it degenerates into web-searching for the repo — a seat that looks
    alive and does nothing. `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` fixes
    it, and the seat then runs genuinely `--sandbox read-only`, no approval bypass needed.
+## Addendum, 2026-07-24 21:1x — the reaper gap was closed by hand
+
+The section above records that the fixes made in response to this panel were **not reaper-checked
+by the fable consequence seat**, because the Judge phase never ran. That gap has since been closed
+manually, and the result is recorded here rather than left as a promise.
+
+Each behavioural fix was put to the consequence lens's own question — *assume the fix is applied;
+what LEGAL state does it destroy?* — and the two with real answers were driven through the engine
+rather than argued.
+
+**Reservation-activation refusal — clean, proven over 20 simulated hours.** Two plausible reaper
+paths were checked. (1) The fix sets `RunStateUnfunded`, which flips the run to `Pending` with
+`Admitted=false`; if any sweep culls non-admitted runs or releases their reservations, an admin's
+five-minute mistake would cost a run its queue position. (2) The forecast path **deletes and
+replaces** a run's reservation (`controllers/run_controller.go:2141`), so a refusal that drove the
+run back through forecasting every tick would reset the countdown forever. Driving the real
+reconcile loop — `Reconcile` plus `ActivateReservations`, twenty hourly ticks with the namespace
+conflicted, then repair:
+
+```
+after 20h conflicted: phase=Pending   held reservations=1 (Pending)   leases closed=0
+                      msg="namespace "default" has no funding principal… the reservation is held, not cancelled."
+after repair:         phase=Pending   msg="scheduling 4 GPUs (awaiting the jobtree scheduler)"
+```
+
+Both refuted: nothing is culled, the reservation survives, and the run **recovers without human
+intervention** once the binding is repaired.
+
+**`seg.Owner` pinning — not free, and the cost is now written down.** `emitCohortPods` only tops up
+to the declared pod count, so it does not rewrite the annotations of a Promise pod that already
+exists. If an admin renames `Budget.Spec.Owner` while a Promise pod is in flight, that pod carries
+the stale owner, the pin refuses it on every retry, and the run stalls until someone deletes the pod.
+
+The self-healing alternative — accept the mismatch and **overwrite** `seg.Owner` with the derived
+owner before the mint — is equally truthful and has no stall. It was **not taken**, deliberately:
+this is the sole-committer path, the overwrite widens what the committer *writes* rather than what
+it *refuses*, and the panel that would have vetted such a change never reached its Judge phase.
+Refusing is the conservative act — nothing is minted, closed, or billed, and the operator gets a
+message naming the mismatch. The reasoning is a comment above the check so the next person inherits
+the trade-off instead of rediscovering it.
+
+**Cleared without needing a reproduction:**
+
+- `resolver.ownerOf`'s new bucket key **never escapes the package** — traced every use of
+  `owners`/`tokensByOwner`; the lottery returns `actions` and a seed derived from
+  `computeSeed(in.SeedSource, in.Now)`, and every `Action.Reason` is a constant. The NUL prefix
+  cannot reach a metric label, a log line, or an object field.
+- `deriveOwners`' sorted walk changes only which colliding owner is *named* in a diagnostic. The
+  namespace derives `""` either way, and `Conflicts()` still has no production consumer.
+- `funding.OwnerOfNamespace` allocates a throwaway `Evaluation` and touches no shared state.
+- The plugin reads Budgets through a **ClusterRole**, not a namespaced one, so there is no
+  partial-view path where an incomplete Budget list manufactures a false conflict — and
+  `promiseProvenanceValid` already required that list to be complete before this change, so the new
+  checks add no dependence that was not already load-bearing.
+
+**CI on the fixed branch (`953c357`) is fully green:** `ci`, `kind e2e (real cluster)`, `docs`, and
+both node-failure jobs. The retargeted e2e webhook test passes against a real cluster in 2m56s,
+which is the confirmation the local `go vet` could not give.
+
+---
+
+## Addendum 2 — `std:test-integrity` landed on the fifth attempt, and it found defects in the fixes
+
+The lens that **mutates** rather than argues had never completed. Resuming once more got it, with 8
+findings. Two confirm repairs already made; two are against work done in response to this very
+panel; one is new and is the sharpest thing in the review.
+
+| Finding | Sev | Disposition |
+|---|---|---|
+| The interior-tier exemption line has **zero effective test coverage** — deleting `if _, isInterior := interior[owner]; isInterior { continue }` left `go test ./...` fully green, because `TestInteriorTierExemptFromInjectivity` binds its pool owner in exactly one namespace so `len(nss) >= 2` is never true and the exemption never decides anything | high | **already fixed, now mutation-verified.** Deleting the exemption makes `TestInteriorExemptionAdmitsALeafOwnerInTwoNamespaces` go red. |
+| **Provenance test inverted**: forged `seg.Owner` asserted acceptable. Spells out the attack — with the R5/R6 policy absent (the case the test exists to cover) an attacker creates a pod with `lease-reason=Promise` and any `payer-owner`, and PreBind mints a Lease whose `Spec.Owner` is a lie | **critical** | **already fixed** — the assertion was reversed and `seg.Owner` pinned, independently and before this finding was seen. Useful corroboration at a severity higher than the lens that first raised it. |
+| `resolver.ownerOf` has **zero effective coverage on both branches** — a mutant returning a constant from either survives the whole suite, because no `pkg/resolver` test sets `Input.Evaluation` while both production callers always do, so every existing test exercises a branch production never takes | high | **partially fixed by this review, now completed.** The earlier fix covered the supplied-`Evaluation` path only. `TestOwnerOfWithoutAnEvaluationStillKeysPerNamespace` now pins the fallback and asserts the two branches agree; a constant in either is caught. |
+| **Fixtures bind namespaces with envelope-less Budgets** the API server rejects (`forecast_test.go:399`, `evaluate_test.go:604/633`) | medium | **fixed** — and it applied to a fixture written *for this review*. See below. |
+| Seven `hack/e2e` smoke scripts still apply Run manifests carrying the deleted field | medium | **fixed** — see below; this is the best finding in the review. |
+| e2e webhook test provokes rejection with a stimulus the change made legal | high | **already fixed**; kind e2e green in 2m56s. |
+| `Conflicts()` has no production consumer despite the comment | medium | **fixed (comment)**; wiring is F7(4). |
+| CRD `empty owner` schema probe deleted with no replacement | high | **addressed, with a stated residual.** `controllers/kube/tenancy_owner_pruned_test.go` replaces it by proving the API server *prunes* a submitted `spec.owner`, so a restored field fails loudly. The lens's broader worry — a future run-writable owner arriving as an **annotation or label** — is not covered by that test and is not covered by anything. Booked here rather than papered over. |
+
+### The best finding in the review: green for the wrong reason
+
+`hack/e2e/runbook-smoke.sh:140`. Seven smoke scripts still emitted `spec.owner` on Run manifests.
+kubectl has defaulted to server-side **strict** field validation since v1.25, so an unknown field is
+a hard apply error — which would simply break six of the scripts. The seventh is worse:
+
+```sh
+patch_services gone-fishing
+if run_manifest blocked-by-a-dead-webhook | kubectl apply --dry-run=server -f - >/dev/null 2>&1; then
+  fail "a Run was accepted with failurePolicy=Fail and the webhook unreachable…"
+```
+
+That is a **negative** assertion: it passes when the apply *fails*, for any reason at all. With a
+stale `spec.owner` in the manifest it passes on strict decoding, proving nothing whatever about the
+webhook it claims to test. A lever that reports success while measuring nothing is exactly the class
+the playbook exists to catch, and no amount of running the suite would have surfaced it.
+
+Fixed in all seven, and `runbook-smoke.sh` now carries a comment above the assertion explaining that
+`run_manifest` must stay a manifest the apiserver would otherwise **accept**, or the lever silently
+stops being a test.
+
+### A fixture written for this review had the defect the review found
+
+`api/v1` rejects both an envelope-less Budget and an envelope with `concurrency <= 0`, so
+"this tier is bound to a namespace but owns no capacity" — the shape the family-sharing tests need —
+**cannot be expressed by an empty Budget at all**. Three existing fixtures did it anyway, and so did
+`conflictedNamespaceEvaluation`, added days earlier in response to this same panel.
+
+The legal encoding is an envelope of a **different flavor**: the tier owns something, but nothing the
+run under test can use, so it still borrows exactly as the scenario intends. All four are repaired,
+and `TestTenancyFixturesAreLegalBudgets` now runs the shapes through `ValidateCreate` — including a
+negative case asserting an envelope-less Budget really is rejected, so the guard cannot go vacuous.
+
+## Citation attestation, second pass — 83/85, and the two misses are worth reading
+
+Re-run over all 11 shaped reports (9 lens reports + 2 degenerate schema probes) against
+`git show 0b77fbe:<file>`:
+
+```
+TOTAL: 83/85 citations verified verbatim against 0b77fbe
+  - report 8  api/v1/lease_types.go:61      QUOTE NOT FOUND: 'PaidByBudgetNamespace string ... omitempty'
+  - report 9  test/e2e/smoke_test.go:68     QUOTE NOT FOUND: '// It used to submit a Run with no `spec.owner`…'
+```
+
+Neither is a fabrication, and neither is harmless.
+
+**Report 8** is the `codex-sol` relay abbreviating a quote with an ellipsis instead of copying it
+character-for-character. The line exists; the citation as written is unverifiable. Under the
+harness's own Attest rule that invalidates the lens, and it should: a citation you cannot mechanically
+check is not evidence. The finding itself stands — an earlier codex run cited the same line exactly.
+
+**Report 9 quotes a comment that does not exist at `0b77fbe`.** It is a comment written *in the fix
+for that very finding*, which by then existed on the branch at `953c357`. The lens was reviewing the
+reviewed commit but read text from the fixed branch. That is the exact contamination the tree was
+frozen to prevent, and it is why the attestation is run against `git show <sha>` rather than the
+working tree — an Attest agent reading the working tree would likely have passed it. The finding is
+correct and was already fixed; only its citation is out of period.
+
+## Why the Judge phase is structurally unreachable here, not just unlucky
+
+Recorded because it will otherwise be rediscovered.
+
+`resumeFromRunId` only caches **completed** agent calls. `std:test-integrity` and `codex-sol` are the
+two most expensive lenses — one mutates the tree and re-runs suites, the other drives a 10–25 minute
+`codex exec` — and neither fit inside a single segment. So every resume restarted them from zero and
+spent the whole segment back in Review. Four consecutive attempts never reached Attest. That is a
+**livelock**, not bad luck: with a 2-wide concurrency cap and lenses longer than a segment, the run
+cannot make forward progress no matter how many times it is resumed.
+
+It broke only because the fifth attempt happened to give `test-integrity` enough consecutive minutes.
+Judge — 42 raised findings × 3 heterogeneous skeptics × (investigator + shaper) ≈ 250 agents through
+a 2-wide queue — is out of reach on this hardware by a wide margin.
+
+**The fix is cores, not retries.** `min(16, cores−2)`: a 16-core runner is an 8× fan-out and turns a
+five-hour serial queue into something that finishes. Until then, this harness produces Review-quality
+output on this hardware, and the archive should say so rather than promising an adjudication that
+never arrives.

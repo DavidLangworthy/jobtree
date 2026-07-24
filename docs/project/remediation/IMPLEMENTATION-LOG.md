@@ -1739,3 +1739,53 @@ through the P5 hole, and changing exported metric labels is dashboard-visible; r
 
 Also removed `.autopilot-turn.log` from the branch (it had been committed by accident) and
 gitignored it.
+
+## 2026-07-24 (later) — the review's last lens landed and found defects in the review's own fixes
+
+`std:test-integrity` — the lens that mutates rather than argues — had failed to complete in four
+consecutive attempts. A fifth resume got it, with 8 findings, and it was worth the wait. Two
+confirm repairs already made (it rates the inverted `seg.Owner` provenance assertion **critical**,
+independently of the lens that first raised it, and spells out the attack). Two are against work
+done days earlier *in response to this same panel*:
+
+- **`resolver.ownerOf` still had an uncovered branch.** The earlier fix tested the supplied-
+  `Evaluation` path; the nil fallback was still replaceable by a constant with the suite green.
+  Now pinned, including an assertion that the two branches agree.
+- **A fixture written for this review built envelope-less Budgets**, the same defect the lens flags
+  in three older fixtures. `api/v1` rejects both an empty envelope list and `concurrency <= 0`, so
+  "bound to a namespace, owns no capacity" cannot be expressed by an empty Budget at all. The legal
+  encoding is an envelope of a different flavor. All four repaired, and
+  `TestTenancyFixturesAreLegalBudgets` now runs the shapes through `ValidateCreate` with a negative
+  case so the guard cannot go vacuous.
+
+**The best finding in the whole review is a shell script.** Seven `hack/e2e` smoke scripts still
+applied Run manifests carrying the deleted `spec.owner`. kubectl has defaulted to server-side strict
+field validation since v1.25, so six would simply break — but `runbook-smoke.sh` uses a **negative**
+assertion (it passes when the apply fails), so a stale field made it pass on strict decoding while
+proving nothing about the unreachable webhook it claims to test. Green for the wrong reason, and no
+amount of running the suite would surface it. Fixed in all seven, with a comment above the assertion
+saying the manifest must stay one the apiserver would otherwise accept.
+
+**Judgment call: the reaper gap was closed by hand rather than left as a caveat.** The earlier entry
+recorded that these fixes were never reaper-checked because Judge did not run. Each behavioural fix
+was put to the consequence lens's own question and the two with real answers were driven through the
+engine. The reservation-activation refusal is clean over 20 simulated hours — the run is not culled,
+the reservation is not superseded (the forecast path deletes and replaces reservations, which would
+have reset the countdown every tick), and the run recovers by itself once the binding is repaired.
+The `seg.Owner` pin is **not** free: `emitCohortPods` only tops up, so an owner rename mid-flight
+strands a Promise pod until someone deletes it. The self-healing alternative — overwrite `seg.Owner`
+at the mint — was rejected because it widens what the sole committer *writes* rather than what it
+refuses, and no panel vetted it. The trade-off is now a comment above the check.
+
+**Judgment call: stop resuming the panel, and record why it cannot finish.** `resumeFromRunId` caches
+only *completed* agent calls, and the two most expensive lenses are longer than a segment, so every
+resume restarted them and spent the segment back in Review. That is a livelock, not bad luck. Judge
+(≈250 agents through a 2-wide queue) is out of reach on a 4-core runner. The fix is cores, not
+retries — `min(16, cores−2)` makes a 16-core box an 8× fan-out. Recorded in the archive so the next
+run does not rediscover it.
+
+**Citation attestation, second pass: 83/85**, and both misses are informative rather than benign —
+one is the codex relay abbreviating a quote with an ellipsis (unverifiable, and the harness would be
+right to block it), the other is a lens quoting a comment that exists only in the *fix* on the
+branch, not at the reviewed commit. That second one is exactly the contamination the frozen tree was
+meant to prevent, and it is why attestation runs against `git show <sha>` and not the working tree.

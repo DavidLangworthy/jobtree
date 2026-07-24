@@ -397,7 +397,15 @@ func TestPlanDeficitRespectsClaimRanking(t *testing.T) {
 		// derive the peer tier rather than colliding with team in "default".
 		{
 			ObjectMeta: v1.ObjectMeta{Name: "peer-budget", Namespace: "org-ai-peer"},
-			Spec:       v1.BudgetSpec{Owner: "org:ai:peer", Parents: []string{"org:ai"}},
+			// A legal Budget must carry an envelope with positive concurrency, so a
+			// binding-only Budget owns one of a DIFFERENT flavor: the peer is bound to
+			// its namespace and still has nothing the H100 run can use. An empty
+			// Budget would be a state the API server rejects (R7 pt2 review).
+			Spec: v1.BudgetSpec{Owner: "org:ai:peer", Parents: []string{"org:ai"},
+				Envelopes: []v1.BudgetEnvelope{{
+					Name: "idle", Flavor: "A100-40GB",
+					Selector: map[string]string{"region": "us-west"}, Concurrency: 1,
+				}}},
 		},
 	}
 	// guest is the sibling: it lives in the peer's namespace and SHARES the
