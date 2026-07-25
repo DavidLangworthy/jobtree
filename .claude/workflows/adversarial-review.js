@@ -676,7 +676,9 @@ const CODEX_TRACE_SEAT = {
 codex (gpt-5.6). It is seated here because the Claude tiers share a training prior and fail together;
 this seat exists to break that correlation, and it only works if the verdict is genuinely codex's.
 
-Run it once, read-only (CODEX_API_KEY is already in the environment):
+Run it once, read-only. Auth is ALREADY DONE — the runner wrote a ChatGPT-subscription credential
+to ~/.codex/auth.json before this job started. Do NOT run 'codex login', do not look for
+CODEX_API_KEY (there is deliberately no API key any more), and do not try to repair auth yourself:
   codex exec --sandbox read-only --ephemeral -m gpt-5.6 -c model_reasoning_effort=high \\
     --ignore-user-config --ignore-rules "<the task below, plus this finding>" </dev/null
 
@@ -701,8 +703,14 @@ const codexProbe = await agent(
   `Report whether OpenAI's codex CLI is usable on this box as a read-only review seat.
 Run exactly this, nothing else, and install nothing:
   codex exec --sandbox read-only --ephemeral -m gpt-5.6 --ignore-user-config --ignore-rules "Reply with the single token PROBE_OK." </dev/null
-Set ok=true ONLY if it exits 0 AND the output contains PROBE_OK. Otherwise ok=false and put the real
-cause in detail (missing binary, auth, sandbox/bubblewrap, timeout).`,
+Set ok=true ONLY if it exits 0 AND the output contains PROBE_OK. Otherwise ok=false, and in 'detail'
+name the cause PRECISELY, because the remedies are opposite and a human reads this to pick one:
+  - AUTH ("unauthorized", "invalid token", a login prompt) => the ~/.codex/auth.json the runner wrote
+    is stale or malformed; the CODEX_AUTH_JSON secret needs re-pasting. Tokens rotate on the laptop
+    and that never syncs here, so this is the expected long-run failure.
+  - QUOTA ("quota exceeded", "check your plan and billing") => authentication SUCCEEDED and the
+    subscription's included usage is spent. Re-pasting fixes nothing; this one waits.
+  - or: missing binary, sandbox/bubblewrap, timeout.`,
   { label: 'preflight:codex-trace-seat', phase: 'Judge', model: 'sonnet', effort: 'low',
     schema: { type: 'object', additionalProperties: false, required: ['ok', 'detail'],
       properties: { ok: { type: 'boolean' }, detail: { type: 'string' } } } })
