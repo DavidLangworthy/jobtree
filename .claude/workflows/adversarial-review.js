@@ -81,6 +81,16 @@ export const meta = {
 //  12. A FINDING THAT WAS NEVER JUDGED IS NOT GREEN. `judgeOnly` narrows what Judge
 //      adjudicates; everything it drops comes back as `deferred`, is logged by name, and
 //      forces a non-green verdict. Bounding cost may never look like a clean review.
+//  13. A CITATION IS A CLAIM ABOUT A SNAPSHOT, SO ATTEST IT AGAINST THAT SNAPSHOT. Attest
+//      read the working TREE. On a review of PR #127 the lens reports were cached against
+//      0b77fbe, 18 fixes were then pushed into the tree, and Attest reported all five
+//      standard lenses for "fabricated citations" — every one had cited correctly, the
+//      added comments had merely shifted the lines past the ±15 tolerance. Every lens
+//      blocked, `raised` went empty, and the panel returned before Judge existed: eight
+//      minutes, zero verdicts, and a fail-closed rail firing on a phantom. A quote that
+//      MOVED is not a quote that was FABRICATED. Pin to A.commit, and never silently fall
+//      back to the tree. Note the shape of this bug: the failure was not a lens doing no
+//      work, it was the WATCHDOG being wrong — so verify the verifier too.
 // ---------------------------------------------------------------------------
 
 // The Workflow tool sometimes delivers `args` as a JSON-encoded string rather
@@ -543,24 +553,48 @@ phase('Attest')
 
 // Independently verify each surviving lens's citations against the real files.
 // An agent can claim it read the code; it cannot fake a quote that isn't there.
+//
+// ATTEST AGAINST THE PINNED SNAPSHOT, NOT THE WORKING TREE (lesson 13). A citation is a claim
+// about a snapshot, so it can only be checked against that snapshot. Reading the tree instead is
+// not a theoretical flaw: a review of PR #127 cached its lens reports against 0b77fbe, the
+// operator then pushed 18 fixes into the tree, and Attest — reading the tree — reported all five
+// standard lenses for "fabricated or unlocatable citations". Every one had cited correctly; the
+// added comments had merely shifted the lines past the ±15 tolerance, and one quoted line had been
+// edited by a fix. All five lenses blocked, `raised` went empty, and the panel returned before
+// Judge existed: eight minutes of confident nonsense, zero verdicts. Pinning also makes Attest
+// deterministic across a RESUME, which matters because Attest may run a day after the lens whose
+// work it is checking. The ±15 tolerance is NOT widened — that would mask real fabrication; the
+// snapshot is the bug, not the tolerance.
+const ATTEST_SOURCE = A.commit
+  ? `Read each file AS OF COMMIT ${A.commit}:  git show ${A.commit}:<path>
+That commit is the snapshot these citations were made against. The working tree may have moved since
+(fixes, a rebase, a later push), and a quote that MOVED is not a quote that was FABRICATED. Do not read
+the working tree. If 'git show' cannot resolve the commit or a path, say exactly that in 'detail' —
+never fall back to the tree, because a silent fallback is what turns a moved line into a false
+accusation of fabrication.`
+  : `Open each file in the working tree (this review pinned no commit).`
+
 const attested = await pipeline(
   lensResults.filter(r => r && !r.blocked),
   async (r) => {
     const ev = r.report.evidence
     const listing = ev.map((e, i) => `${i + 1}. ${e.file}:${e.line}\n   QUOTE: ${JSON.stringify(e.quote)}`).join('\n')
     const check = await agent(
-      `${RULES}\n\nTASK: verify citations. For each item below, open the file and check whether the quoted text
-appears in it, at or near the stated line (±15 lines is fine; whitespace differences are fine).
+      `${RULES}\n\nTASK: verify citations. ${ATTEST_SOURCE}
+
+For each item below, check whether the quoted text appears in that file at or near the stated line
+(±15 lines is fine; whitespace differences are fine).
 Do NOT judge whether the claim is correct — only whether the quote is really in the file.
 
 ${listing}
 
-Set allQuotesFound=false if ANY quote cannot be found, and list those in 'missing' as "file:line".`,
+Set allQuotesFound=false if ANY quote cannot be found AT THAT SNAPSHOT, and list those in 'missing'
+as "file:line".`,
       { label: `attest:${r.lens}`, phase: 'Attest', model: 'sonnet', effort: 'low', schema: ATTEST_SCHEMA })
 
     if (!check) return { ...r, blocked: true, reason: 'citation attestation agent died; cannot confirm the lens did the work' }
     if (!check.allQuotesFound) {
-      return { ...r, blocked: true, reason: `fabricated or unlocatable citations: ${(check.missing || []).join(', ')}` }
+      return { ...r, blocked: true, reason: `fabricated or unlocatable citations${A.commit ? ` at ${A.commit}` : ''}: ${(check.missing || []).join(', ')}` }
     }
     return { ...r, attested: true }
   }
