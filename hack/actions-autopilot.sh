@@ -71,6 +71,44 @@ if [ -z "$ISSUE" ]; then
 fi
 note $'▶️ **Segment '"$((CONT+1))"' started.** ['"[logs]($RUN_URL)"$'\n\n**Task:** '"$TASK"
 
+# --- never lose work: rescue anything unpushed, on every exit path -----------------------
+# Work is only safe once it is in git. On 2026-07-25 a run finished two mutation-verified fixes,
+# hit a stale sentinel, exited — and the ephemeral runner took the working tree with it. The
+# session artifact preserved the CONVERSATION, but a transcript is not a branch: nobody can
+# `git cherry-pick` a conversation. The runner had no mechanism that guaranteed work reached the
+# remote, so "the agent remembered to push" was load-bearing. It is not any more.
+#
+# On ANY exit — normal, error, early break, or the SIGTERM the job timeout sends — park whatever
+# the remote has never seen on a disposable branch and push it. On the common path (the agent
+# already pushed) this finds nothing and costs nothing.
+save_wip() {
+  local rc=$?
+  trap - EXIT INT TERM                                  # never re-enter while rescuing
+  git rev-parse --git-dir >/dev/null 2>&1 || return "$rc"
+
+  # Rescue if the tree is dirty, OR if HEAD sits on no remote branch (unpushed commits). The
+  # second test also correctly skips a detached HEAD parked on an already-published commit.
+  local rescue=0
+  [ -n "$(git status --porcelain 2>/dev/null)" ] && rescue=1
+  [ -z "$(git branch -r --contains HEAD 2>/dev/null)" ] && rescue=1
+  [ "$rescue" -eq 0 ] && return "$rc"
+
+  local br="wip/autopilot-${GITHUB_RUN_ID:-local}"
+  git checkout -B "$br" >/dev/null 2>&1 || return "$rc"
+  git add -A >/dev/null 2>&1
+  git -c user.name=jobtree-autopilot -c user.email=autopilot@users.noreply.github.com \
+      commit -q -m "wip(autopilot): work rescued on exit from run ${GITHUB_RUN_ID:-local}
+
+Pushed by the runner's exit trap because it never reached the remote. It may be incomplete or
+mid-edit — that is the point: an incomplete branch can be read, and a deleted runner cannot.
+Cherry-pick what is useful, then delete this branch." >/dev/null 2>&1
+  if git push -q origin "$br" 2>/dev/null; then
+    note "💾 **Rescued unpushed work → \`$br\`.** This job exited holding changes the remote had never seen. They may be incomplete or mid-edit; cherry-pick what is useful and delete the branch. (If you expected a finished PR instead, something ended this segment early — check the log.)"
+  fi
+  return "$rc"
+}
+trap save_wip EXIT INT TERM
+
 # Latest owner directive: ONLY comments that open with "@autopilot" count.
 #
 # This used to be a blocklist — "anything not starting with a status emoji is David talking" — which
@@ -104,6 +142,13 @@ ultrathink. You are running UNATTENDED in GitHub Actions. There is no human to a
    AND post a '🅿️ parked: <item> — <why>' comment to issue #$ISSUE.
 4. Per-PR gate = make verify green (+ envtest, + eviction fuzzer for engine/plugin/funding), and
    mutation-verify each fix. That is enough to push.
+   PUSH AS YOU GO — commit and push each fix the moment it is green, one commit per fix. Do NOT
+   batch several fixes in the working tree and push at the end. This runner is ephemeral: if the
+   job ends for any reason (time budget, quota, an early exit, a timeout), everything you have not
+   pushed dies with it. That has actually happened — two mutation-verified fixes were lost that
+   way. An unpushed fix is a fix that does not exist. If a push would be premature because the
+   work is mid-stream, push it to a branch anyway and say so; a branch can be abandoned, a
+   deleted runner cannot be recovered.
 5. Post status like a developer giving standup notes — specific, useful, and paced like a human
    who's actually working, NOT a machine heartbeat. A reader should skim the issue and know exactly
    what happened and why. Post when you start something, at each REAL milestone, and when you finish
