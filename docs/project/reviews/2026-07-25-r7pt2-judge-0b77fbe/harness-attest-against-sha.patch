@@ -1,0 +1,230 @@
+--- /tmp/harness-old.js	2026-07-25 15:07:00.803605458 +0000
++++ .claude/workflows/adversarial-review.js	2026-07-25 15:28:01.093463268 +0000
+@@ -1,7 +1,7 @@
+ export const meta = {
+   name: 'adversarial-review',
+   description: 'Fail-closed adversarial review: a lens that produces no real work BLOCKS, it never reads as green',
+-  whenToUse: 'Reviewing any change to the funding engine, the scheduler plugin, or another sole-committer path. Pass args: {context, commit, lenses:[{name,model,effort,prompt,questions}], minEvidence, skepticQuorum}. The four standard lenses always run; caller lenses are ADDITIONAL. There is no refuteThreshold: the skeptic panel is heterogeneous and its aggregation is asymmetric, not a vote count.',
++  whenToUse: 'Reviewing any change to the funding engine, the scheduler plugin, or another sole-committer path. Pass args: {context, commit, lenses:[{name,model,effort,prompt,questions}], minEvidence, skepticQuorum, judgeOnly}. The four standard lenses always run; caller lenses are ADDITIONAL. There is no refuteThreshold: the skeptic panel is heterogeneous and its aggregation is asymmetric, not a vote count. The trace seat relays to codex (cross-vendor, off-plan billing) when it is reachable and falls back to Opus loudly when it is not. judgeOnly:[match,…] bounds the expensive Judge phase to matching findings (by file, file:line or title); everything else returns as `deferred` and forces a non-green verdict — a finding that was never judged is not green.',
+   phases: [
+     { title: 'Scout', detail: 'mechanically scan the diff for the taxonomy tells' },
+     { title: 'Review', detail: 'standard + caller lenses investigate, cite evidence, and are validated' },
+@@ -59,6 +59,28 @@
+ //      reproduces, Opus traces, Fable weighs consequence. A reproduction CONFIRMS alone;
+ //      a refutation needs BOTH the trace and a reproduction that was tried and failed;
+ //      and the consequence lens may veto a FIX without touching the FINDING.
++//
++// FOURTH-GENERATION (after a 42-finding review whose Judge phase was unreachable — 252
++// agents at 2-wide concurrency on a 4-core runner, three segments, two quota walls):
++//
++//  10. DECORRELATION IS NOT THE SAME AS SPENDING MORE. The trace seat relays to another
++//      VENDOR (codex/gpt-5.6) instead of running Opus: a different training prior is
++//      stronger decorrelation than Opus-vs-Fable, which share one — and it bills to a
++//      different pool, so the panel's heaviest line item stops competing with the
++//      reviewer's own quota. Judging is expensive because 2 of the 3 seats only read and
++//      reason (the tests the reproduction seat runs are nearly free); the bill is the
++//      preamble paid once per agent, so the lever that matters is FEWER AGENTS, not a
++//      bigger box. Hence `judgeOnly`.
++//  11. A COUNTERFEIT VOTE IS WORSE THAN A MISSING ONE. If the relay cannot reach its
++//      vendor it must say so and return nothing. A Claude opinion wearing the
++//      cross-vendor badge fakes the very decorrelation the panel is built on AND
++//      corrupts the attribution table that is supposed to measure whether the seat
++//      earns its place. A missing vote fails closed (under quorum → UNRESOLVED, loud);
++//      a counterfeit one reads as adjudicated. So: probe the seat once up front and fall
++//      back to Opus ANNOUNCED, and treat a mid-run 'CODEX UNAVAILABLE' as a dead skeptic.
++//  12. A FINDING THAT WAS NEVER JUDGED IS NOT GREEN. `judgeOnly` narrows what Judge
++//      adjudicates; everything it drops comes back as `deferred`, is logged by name, and
++//      forces a non-green verdict. Bounding cost may never look like a clean review.
+ // ---------------------------------------------------------------------------
+ 
+ // The Workflow tool sometimes delivers `args` as a JSON-encoded string rather
+@@ -519,6 +541,28 @@
+ // ---------------------------------------------------------------------------
+ phase('Attest')
+ 
++// A CITATION IS ATTESTED AGAINST THE COMMIT IT WAS MADE AGAINST, not against whatever the
++// working tree happens to be.
++//
++// On 2026-07-25 a Judge-only resume ran with the tree on the FIXED branch while the cached lens
++// reports cited the REVIEWED commit. Attest dutifully reported "fabricated or unlocatable
++// citations" for all five standard lenses -- and every miss was a line number displaced by the
++// size of a comment added in the fix, plus one quote that no longer existed because the fix
++// changed that very line. Nothing was fabricated. All five lenses blocked, `raised` came back
++// empty, and the panel returned before the Judge phase existed: a correct-looking BLOCKED verdict
++// produced entirely by tree drift, with the most expensive phase never run.
++//
++// `attestAgainst: '<sha>'` pins the check to that commit via `git show <sha>:<file>` -- which is
++// exactly how that run's citations were verified by hand (83/85) after the fact. Omit it and the
++// behaviour is unchanged: read the working tree.
++const attestAgainst = typeof A.attestAgainst === 'string' && A.attestAgainst ? A.attestAgainst : null
++const ATTEST_SOURCE = attestAgainst
++  ? ' Read every file AS IT WAS AT COMMIT ' + attestAgainst + ', using `git show ' + attestAgainst +
++    ':<file>` -- NOT the working tree, which may carry later fixes that move line numbers and rewrite\n' +
++    'quoted lines. A citation is evidence about the commit it was made against.\n\n'
++  : ' '
++if (attestAgainst) log('attesting citations against ' + attestAgainst + ', not the working tree')
++
+ // Independently verify each surviving lens's citations against the real files.
+ // An agent can claim it read the code; it cannot fake a quote that isn't there.
+ const attested = await pipeline(
+@@ -527,8 +571,8 @@
+     const ev = r.report.evidence
+     const listing = ev.map((e, i) => `${i + 1}. ${e.file}:${e.line}\n   QUOTE: ${JSON.stringify(e.quote)}`).join('\n')
+     const check = await agent(
+-      `${RULES}\n\nTASK: verify citations. For each item below, open the file and check whether the quoted text
+-appears in it, at or near the stated line (±15 lines is fine; whitespace differences are fine).
++      `${RULES}\n\nTASK: verify citations.${ATTEST_SOURCE}For each item below, read the file as described
++above and check whether the quoted text appears in it, at or near the stated line (±15 lines is fine; whitespace differences are fine).
+ Do NOT judge whether the claim is correct — only whether the quote is really in the file.
+ 
+ ${listing}
+@@ -596,6 +640,66 @@
+ //                                        important outcome. It has caught three.
+ //
+ // Everything else is UNRESOLVED. Silence is not consent, in either direction.
++// ---------------------------------------------------------------------------
++// THE TRACE SEAT — cross-vendor by default (lesson 10/11).
++//
++// Both variants ask the IDENTICAL question, so the attribution table compares like with
++// like: only the answering model changes.
++const TRACE_TASK = `Does the claimed behaviour follow from the code AS WRITTEN, in the CURRENT tree?
++Trace every function on the path and quote each with file:line. If a later commit changed it, name the
++line and say whether that closes the finding or merely moves it. A fix that is dead code in production
++is not a fix. Rule refuted ONLY if the trace shows the code cannot produce the claimed state.`
++
++const OPUS_TRACE_SEAT = {
++  role: 'trace', model: 'opus', effort: 'high',
++  lens: `CODE TRACE. ${TRACE_TASK}
++Set refuted=true only if the trace shows the code cannot produce the claimed state.`,
++}
++
++// A relay, not an analyst: the verdict must genuinely be the other vendor's or the seat is
++// worthless (lesson 11). `</dev/null` matters — codex waits forever on an open stdin.
++const CODEX_TRACE_SEAT = {
++  role: 'trace', model: 'sonnet', effort: 'medium',
++  lens: `CODE TRACE — CROSS-VENDOR RELAY. You are a relay, not the analyst. The analyst is OpenAI's
++codex (gpt-5.6). It is seated here because the Claude tiers share a training prior and fail together;
++this seat exists to break that correlation, and it only works if the verdict is genuinely codex's.
++
++Run it once, read-only (CODEX_API_KEY is already in the environment):
++  codex exec --sandbox read-only --ephemeral -m gpt-5.6 -c model_reasoning_effort=high \\
++    --ignore-user-config --ignore-rules "<the task below, plus this finding>" </dev/null
++
++Give codex this task: ${TRACE_TASK}
++
++Then do the job that is actually yours:
++  1. SPOT-CHECK every citation it returns with 'sed -n' against the real file, and report any that do
++     not match. A fabricated quote must not reach the schema.
++  2. Relay its conclusion VERBATIM — including refuted/not-refuted. Do not improve it, soften it, or
++     substitute your own reading of the code for its reading.
++  3. Keep any observation of your own on lines prefixed 'RELAY NOTE:' so attribution survives.
++  4. Note that codex compiles NOTHING here (read-only sandbox: it cannot create /tmp/go-build*), so a
++     traced claim is traced, never reproduced. Say so rather than implying it ran anything.
++  5. If codex does not run at all — missing binary, auth failure, non-zero exit, empty output — write
++     the exact token CODEX UNAVAILABLE and STOP. Do NOT trace it yourself. A Claude opinion wearing
++     this seat's badge fakes the decorrelation the panel is built on and corrupts the attribution
++     table; a missing vote merely fails closed, which is the outcome we want.`,
++}
++
++// Probe ONCE, cheaply, before committing the phase to a vendor that may not be installed.
++const codexProbe = await agent(
++  `Report whether OpenAI's codex CLI is usable on this box as a read-only review seat.
++Run exactly this, nothing else, and install nothing:
++  codex exec --sandbox read-only --ephemeral -m gpt-5.6 --ignore-user-config --ignore-rules "Reply with the single token PROBE_OK." </dev/null
++Set ok=true ONLY if it exits 0 AND the output contains PROBE_OK. Otherwise ok=false and put the real
++cause in detail (missing binary, auth, sandbox/bubblewrap, timeout).`,
++  { label: 'preflight:codex-trace-seat', phase: 'Judge', model: 'sonnet', effort: 'low',
++    schema: { type: 'object', additionalProperties: false, required: ['ok', 'detail'],
++      properties: { ok: { type: 'boolean' }, detail: { type: 'string' } } } })
++
++const TRACE_SEAT = codexProbe && codexProbe.ok === true ? CODEX_TRACE_SEAT : OPUS_TRACE_SEAT
++log(TRACE_SEAT === CODEX_TRACE_SEAT
++  ? 'trace seat = codex gpt-5.6 (cross-vendor relay, off-plan billing)'
++  : `trace seat = opus FALLBACK — codex unreachable: ${codexProbe ? codexProbe.detail : 'probe agent died'}. The panel is now single-vendor: decorrelation is weaker, and this run costs the plan its heaviest line item.`)
++
+ const SKEPTIC_PANEL = [
+   {
+     role: 'reproduce', model: 'sonnet', effort: 'high',
+@@ -606,13 +710,7 @@
+ set ranCode=false and say so plainly: do NOT rule refuted on an argument you could have tested.
+ Set reproduced=true only if you saw the bad state in test output with your own eyes.`,
+   },
+-  {
+-    role: 'trace', model: 'opus', effort: 'high',
+-    lens: `CODE TRACE. Does the claimed behaviour follow from the code AS WRITTEN, in the CURRENT tree?
+-Trace every function on the path and quote each. If a later commit changed it, name the line and say
+-whether that closes the finding or merely moves it. A fix that is dead code in production is not a fix.
+-Set refuted=true only if the trace shows the code cannot produce the claimed state.`,
+-  },
++  TRACE_SEAT,
+   {
+     role: 'consequence', model: 'fable', effort: 'high',
+     lens: `CONSEQUENCE AND REAPER-CHECK. First: assume it is real. Name the budget charged, the GPUs held,
+@@ -659,8 +757,26 @@
+   return { finding: f, status: 'confirmed', why: 'not refuted by both the trace and a failed reproduction', reaperWarning, votes: valid }
+ }
+ 
++// ---------------------------------------------------------------------------
++// JUDGE SCOPE (lesson 10/12). Judging is the expensive phase — 3 seats × (investigator +
++// shaper) per finding — so a big review can raise more findings than one quota window can
++// adjudicate. `judgeOnly` bounds it. What is dropped is NOT quietly dropped: it comes back
++// as `deferred`, is logged by name, and forces a non-green verdict.
++const judgeOnly = Array.isArray(A.judgeOnly) && A.judgeOnly.length ? A.judgeOnly : null
++const inJudgeScope = f => !judgeOnly || judgeOnly.some(m => {
++  const needle = String(m).toLowerCase()
++  return `${f.file}:${f.line}`.toLowerCase().includes(needle) ||
++         String(f.title || '').toLowerCase().includes(needle)
++})
++const toJudge = judgeOnly ? raised.filter(inJudgeScope) : raised
++const deferred = judgeOnly ? raised.filter(f => !inJudgeScope(f)) : []
++if (judgeOnly) {
++  log(`judge scope: adjudicating ${toJudge.length}/${raised.length}; DEFERRING ${deferred.length} unjudged (NOT green):\n` +
++    deferred.map(f => `  deferred: ${f.file}:${f.line} — ${f.title}`).join('\n'))
++}
++
+ const judged = await pipeline(
+-  raised,
++  toJudge,
+   f => parallel(SKEPTIC_PANEL.map(sk => async () => {
+     const shaped = await think(
+       `${RULES}\n${PLAYBOOK}\n${A.context}
+@@ -697,6 +813,10 @@
+     const v = shaped.obj
+     if ((v.unsupported || []).length) return null              // nor is a fabricated one
+     if (degenerate(v.reasoning, 120)) return null
++    // A relay that could not reach its vendor is a DEAD skeptic, never a Claude opinion in
++    // the cross-vendor seat (lesson 11). The preflight probe catches this up front; this
++    // catches a vendor that dies mid-run.
++    if (/CODEX UNAVAILABLE/i.test(v.reasoning || '')) return null
+     return { ...v, role: sk.role }
+   })).then(votes => adjudicate(f, votes))
+ )
+@@ -705,12 +825,14 @@
+ const unresolved = judged.filter(Boolean).filter(j => j.status === 'unresolved')
+ const refuted = judged.filter(Boolean).filter(j => j.status === 'refuted')
+ 
+-log(`${confirmed.length} confirmed, ${unresolved.length} UNRESOLVED (under quorum), ${refuted.length} refuted, ${blocked.length} blocked lens(es)`)
++log(`${confirmed.length} confirmed, ${unresolved.length} UNRESOLVED (under quorum), ${refuted.length} refuted, ${deferred.length} DEFERRED (out of judge scope), ${blocked.length} blocked lens(es)`)
+ 
+ let verdict = 'GREEN'
+ if (blocked.length) verdict = 'BLOCKED — a lens produced no verifiable work; this is NOT a green review'
+ else if (confirmed.length) verdict = 'DEFECTS CONFIRMED'
+ else if (unresolved.length) verdict = 'UNRESOLVED — findings could not be adjudicated; do not treat as green'
++// Bounding cost may never look like a clean review (lesson 12).
++else if (deferred.length) verdict = `PARTIAL — ${deferred.length} finding(s) were deferred out of judge scope and never adjudicated; this is NOT a green review`
+ 
+ // ---------------------------------------------------------------------------
+ // ATTRIBUTION. Which lens (and which MODEL) actually earns its place?
+@@ -795,6 +917,12 @@
+     votes: j.votes.map(v => ({ role: v.role, refuted: v.refuted, ranCode: !!v.ranCode, reasoning: v.reasoning })),
+   })),
+   unresolved: unresolved.map(j => ({ ...j.finding, why: j.why, reaperWarning: j.reaperWarning || null })),
++  // Raised, attested, and deliberately NOT adjudicated because judgeOnly bounded the phase.
++  // Surfaced by name so bounding cost can never be mistaken for a clean review (lesson 12).
++  deferred: deferred.map(f => ({ ...f, why: 'out of judgeOnly scope — never adjudicated' })),
++  traceSeat: TRACE_SEAT === CODEX_TRACE_SEAT
++    ? { vendor: 'openai', model: 'gpt-5.6', mode: 'cross-vendor relay, read-only (compiles nothing)' }
++    : { vendor: 'anthropic', model: 'opus', mode: `fallback — codex unreachable: ${codexProbe ? codexProbe.detail : 'probe died'}` },
+   // Refuted-as-pre-existing is surfaced, never buried: a defect the change did not
+   // introduce is still a defect, and someone must decide to file it.
+   refuted: refuted.map(j => ({ title: j.finding.title, preExisting: !!j.preExisting, reaperWarning: j.reaperWarning || null })),

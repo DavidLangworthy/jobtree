@@ -1,0 +1,59 @@
+{
+ "summary": "Ran `git diff main...HEAD --stat` (82 files, +1119/-427) confirming a non-empty, substantial diff, and mechanically scanned it against the eight playbook tell classes. The load-bearing hunk is pkg/funding/evaluate.go (+129), which adds Evaluation.deriveOwners/OwnerOf/Conflicts and rewires every former reader of run.Spec.Owner (admission.go, run_controller.go, forecast.go, resolver.go, gang.go) to derive the funding principal from the Run's namespace instead. No production (non-test) call sites of CloseLease, Status.Phase, or Status.Closed appear in the diff, so class 1 (immortal lease) and class 7 (cloned obligation) surfaced no direct hits in non-test code \u2014 the risk in this change is not lease-closure discipline but the correctness of the new owner-derivation and its two fail-safes. The two highest-value mechanical hits are: (a) deriveOwners iterates Go maps (nsByOwner, ownersByNS, nss, owners) and appends to ev.conflicts and the collided map inside those iterations, so the order of BindingConflict entries in Evaluation.Conflicts() and any diagnostic that assumes deterministic order is iteration-order-dependent (class 3, LAST-WRITER-WINS pattern applied to a diagnostic list rather than a status field \u2014 matches the already-known-but-unadjudicated LOW item near evaluate.go:225); (b) several comments in the new/changed code use 'never'/'cannot'/'guaranteed'-style indicative-mood claims about namespace forgeability and lending safety (class 2), which are largely well-founded (namespace IS authenticated by the API server) but the 'never' claims about owner collisions coexist with the known-and-parked P5 interior-tier exemption defect (evaluate.go:220, `if _, isInterior := interior[owner]; isInterior { continue }`) which the repo's own DECISIONS-NEEDED.md/reviews archive says was reproduced as exploitable, so those comments should not be trusted as enforcement. I also flagged pkg/resolver/resolver.go's ownerOf() fallback (`return run.Namespace` when Evaluation is nil) as a distinct-identity-under-fallback concern, and a test-helper hygiene issue in pkg/resolver/resolver_test.go's buildRun() where the caller-supplied `namespace` parameter is silently discarded (`_ = namespace`) and replaced by an owner-derived namespace, which could mask any future test that intended to exercise a namespace\u2260owner-implied-namespace scenario (class 8 candidate). No hits were found for classes 4 (Signal\u2260Reality), 5 (Identity coarsening / nodeFromSlot), 6 guard-before-predicate ordering issues or strings.Contains(err.Error()) sentinel-swallowing, or class 9 half-plane action, within the changed lines \u2014 this diff does not touch Node/Pod signal reads, slot-identity helpers, or eviction code paths. Several _test.go files were rewritten wholesale to retopologize fixtures to one-owner-per-namespace (evaluate_test.go, tenancy_r7_test.go, node_failure_test.go's nfNS helper, quota_semantics_test.go, reservation_semantics_test.go, gang_test.go, forecast_test.go, resolver_test.go, cover_test.go); these look mechanically consistent with the \u00a79 retopology plan and I did not find an obvious 'test asserts the bug' pattern beyond the already-known gap that the new tenancy_r7_test.go's TestInteriorTierExemptFromInjectivity only tests the pure-interior case and never constructs the combined leaf+interior owner scenario that the parked P5 finding proved exploitable.",
+ "leads": [
+  {
+   "taxonomyClass": "class 3 last-writer-wins / map-order nondeterminism",
+   "file": "pkg/funding/evaluate.go",
+   "line": 219,
+   "why": "`for owner, nss := range nsByOwner` iterates a Go map and populates `collided[ns]=owner` inside the loop; the surfaced conflict `Owner` field consumed by R26's auditor could be nondeterministic across process runs if a namespace could collide via more than one path."
+  },
+  {
+   "taxonomyClass": "class 3 last-writer-wins / map-order nondeterminism",
+   "file": "pkg/funding/evaluate.go",
+   "line": 231,
+   "why": "`for ns, owners := range ownersByNS` iterates a map and appends `BindingConflict` entries to `ev.conflicts` in map order, so `Evaluation.Conflicts()` returns conflicts in a non-deterministic order across process runs, which any caller or test asserting on conflict order/index would flake on."
+  },
+  {
+   "taxonomyClass": "class 2 comment-as-enforcement",
+   "file": "pkg/funding/evaluate.go",
+   "line": 220,
+   "why": "The `isInterior` exemption (`if _, isInterior := interior[owner]; isInterior { continue }`) is documented above as safe because 'nothing ever classes Owned against a pool' and 'pools are admin-written at both ends', but the repo's own DECISIONS-NEEDED.md P5 entry and the archived 2026-07-24 review record that an owner which is simultaneously a leaf (directly bound in >=2 namespaces) and named as an interior parent evades ConflictLeafOwnerSpansNamespaces entirely, letting a Run in one tenant's namespace mint a non-recallable Owned charge against another tenant."
+  },
+  {
+   "taxonomyClass": "class 2 comment-as-enforcement",
+   "file": "pkg/funding/evaluate.go",
+   "line": 350,
+   "why": "The lendingAllows empty-borrower guard comment asserts 'An empty borrower is never lendable' -- true only because every caller currently derives borrower via ev.OwnerOf(run.Namespace); if a future caller passes a raw/unresolved owner string to lendingAllows the guarantee is enforced only by comment and calling convention, not the type system."
+  },
+  {
+   "taxonomyClass": "class 2 comment-as-enforcement",
+   "file": "cmd/scheduler/plugin/gang.go",
+   "line": 727,
+   "why": "The rewritten comment states namespace equality is 'forge-proof' and 'strictly stronger' than the old owner-string check, an indicative claim about all future callers of promiseProvenanceValid; it is true only because Namespace is authenticated by the API server for real Segments, but nothing in the type system prevents a future caller from constructing a cover.Segment with an attacker-influenced Namespace field from an untrusted source."
+  },
+  {
+   "taxonomyClass": "class 5 identity coarsening (fallback-owner substitution)",
+   "file": "pkg/resolver/resolver.go",
+   "line": 476,
+   "why": "ownerOf falls back to run.Namespace itself as the 'owner' key when in.Evaluation is nil, silently coarsening the funding-principal identity to the raw namespace string; if any caller path reaches reclaimUnfunded/runLottery without an Evaluation while the real evaluation would have derived the empty-owner fail-safe sentinel (conflicted/unbound namespace), the reclaim/lottery bucketing keys by the wrong identity."
+  },
+  {
+   "taxonomyClass": "class 8 test asserts the bug (helper masks parameter)",
+   "file": "pkg/resolver/resolver_test.go",
+   "line": 216,
+   "why": "buildRun(owner, namespace, name, flavor) silently discards the caller-supplied namespace argument (`_ = namespace`) and instead derives the run's namespace from nsForOwner(owner); every existing call site passes \"default\" for namespace which is now ignored, so no test in this file can construct a run whose namespace does not match its owner's canonical namespace -- exactly the shape needed to exercise the conflicted/unbound-owner fallback path."
+  },
+  {
+   "taxonomyClass": "class 8 test asserts the bug (missing combined scenario)",
+   "file": "pkg/funding/tenancy_r7_test.go",
+   "line": 93,
+   "why": "TestInteriorTierExemptFromInjectivity only constructs a pool owner that is purely interior (never itself leaf-bound), so it never exercises the dual leaf+interior owner scenario that the parked P5 finding shows defeats ConflictLeafOwnerSpansNamespaces; the new test suite cannot catch a regression or confirm a fix in that exact hazardous configuration."
+  },
+  {
+   "taxonomyClass": "class 1 immortal lease (new exit path / new door)",
+   "file": "pkg/funding/evaluate.go",
+   "line": 1040,
+   "why": "lendingAllows gained a new early `return false` for `borrower == \"\"` inserted before the existing len(policy.To)==0 return -- a new exit path in a multi-return function reached by a new door (empty-namespace derivation); worth confirming the Borrowed->Unfunded demotion this produces is actually observed everywhere a previously-Borrowed lease's classification is cached or relied upon, not just recomputed at Evaluate() time."
+  }
+ ]
+}

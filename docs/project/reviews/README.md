@@ -50,5 +50,7 @@ The verdict line is the least interesting part. Three things repay attention:
 
 | Date | Review | Commit | Verdict | Confirmed |
 |---|---|---|---|---|
+| 2026-07-25 | [R7 pt2 — JUDGE-ONLY run (cross-vendor trace seat)](2026-07-25-r7pt2-judge-0b77fbe/) | `0b77fbe` | `BLOCKED` + **21 deferred** — bounded Judge, not green | **4 adjudicated, 0 unresolved.** 1 HIGH CONFIRMED unanimously and still open (immortal reservations — `main` terminated, the branch does not). 1 **reaper veto on a shipped fix** (`seg.Owner` pin wedges a running gang via the top-up path). 2 refuted as blockers. Cross-vendor trace seat = **openai gpt-5.6**: `decisive=0` — it raises findings but changed no verdict; 3 of 4 votes lost to OpenAI quota and it compiles nothing. |
+| 2026-07-24 | [R7 pt2 — cross-vendor panel (5 Claude lenses + OpenAI `gpt-5.6`)](2026-07-24-r7-pt2-cross-vendor-panel-0b77fbe/) | `0b77fbe` | `BLOCKED` — Scout+Review only; Attest/Judge killed by the usage limit | 42 raised / 25 sites; all `UNRESOLVED` at the time. 18 fixed, 2 parked (P5, P6), 2 pre-existing → F7. 83/85 citations attested mechanically. First run with a **cross-vendor seat**: 2 `high` findings no Claude lens raised. Adjudicated the next day — see the 2026-07-25 row. |
 | 2026-07-10 | [R27 branch — oracle, sweep, quiescence driver](2026-07-10-r27-invariant-oracle-c74e0ef/) | `c74e0ef` | DEFECTS CONFIRMED | 5 critical (4 fixed, 1 refuted); panel hand-adjudicated |
 | 2026-07-09 | [R27 — the invariant oracle](2026-07-09-r27-invariant-oracle-98b602d/) | `98b602d` | DEFECTS CONFIRMED | see record |
