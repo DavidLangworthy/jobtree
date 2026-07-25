@@ -1596,3 +1596,57 @@ clusters, and notes that the `crd-writes` lever unblocks writes while the rollou
 The additive-upgrade check (verification item 3) is a real additive change, not a no-op
 upgrade: it adds an optional property to a live CRD's schema **while an object of that
 kind exists**, and asserts the object reads back unchanged.
+
+## 2026-07-25 — the Judge phase finally ran, and it overturned two of my own calls
+
+Judge-only resume of `wf_7b4dc0d8-aa0` against `0b77fbe`. Full record:
+`../reviews/2026-07-25-r7pt2-judge-0b77fbe/`. Four findings adjudicated, 21 deferred, verdict
+`BLOCKED`. No fixes written — this run was for verdicts only.
+
+**Judgment call: bound Judge with `judgeOnly` instead of attempting all 42 findings.** 42 × 3 seats
+× 2 agents ≈ 252 agents. Scope went to where a verdict changes something: the reaper-check on the
+fixes made *in response to this panel* (self-review is the correlated failure the panel exists to
+break) and findings nobody had reproduced. The scope was posted to the issue before any spend.
+
+**Judgment call: patch the harness so Attest verifies citations against the reviewed SHA.** The
+first attempt returned `BLOCKED` in 8 minutes with all five lenses reporting "fabricated or
+unlocatable citations" — every miss a line displaced by a comment added in one of my own fixes, plus
+one quote a fix had rewritten. Attest reads the working tree; the tree was on the fixed branch. The
+panel returned before Judge existed, and the failed attestations were cached and would have replayed
+forever. `attestAgainst: '<sha>'` makes Attest read `git show <sha>:<file>`; default unchanged. This
+is the lesson already written into the 2026-07-24 archive and not applied to the harness. Patch
+filed in the archive for `feat/cross-vendor-trace-seat`.
+
+**Overturned #1 — the reservation fix does not fix it.** `run_controller.go:1234`, CONFIRMED 3/3
+with two seats running probes on both branches: `main` terminates the reservation via
+`failReservationNoEnvelope`; the branch leaves it Pending for 20 ticks with the backlog gauge frozen.
+`preExisting=false`, `fixIsReaper=false`. I had argued terminating would be a reaper and made the
+refusal non-terminal; the amendment (`:126-127`, `:590`) specifies terminating, `main` did terminate,
+and a third probe showed recovery afterwards. **My fix silenced the error and left the reservation
+immortal.** Still open on #127. `failReservationNoEnvelope` has never had a test on either branch,
+which is why nothing went red.
+
+**Overturned #2 — reaper veto on the `seg.Owner` pin.** Both seats refuted it as actionable
+(`Evaluate` never reads `Lease.Spec.Owner`; a forged-owner lease classifies identically), and the
+consequence seat set `fixIsReaper=true` on the repair I shipped: the top-up path (`gangProvenance`,
+`run_controller.go:2774-2819`) means a legacy `Spec.Owner` or an admin owner reorg would wedge a
+healthy, funded, **running** gang forever via PreBind refusal. My comment weighed a stranded Promise
+pod and missed the running-gang case entirely. Probably revert.
+
+**Vindicated:** the `gang.go:731` refusal (confirmed regression, fix closes it) and the decision not
+to touch `metrics.go:237` (zero-line diff vs `main` in those files; pre-existing, un-worsened).
+
+**Attribution.** `traceSeat` = openai `gpt-5.6`, genuinely cross-vendor. `reproduce` votes 4 /
+ranCode 4 / **decisive 4**; `trace` votes 1 / ranCode 0 / **decisive 0** / reaperVetoes 1;
+`consequence` votes 4 / ranCode 4 / reaperVetoes 1. **The cross-vendor seat raises findings but
+changed no verdict** — 3 of its 4 votes were lost to OpenAI *Quota exceeded*, where it correctly
+emitted `CODEX UNAVAILABLE` and cast nothing rather than a counterfeit vote. Structurally it also
+cannot win: verdicts here are decided by execution, and the codex seat is read-only and compiles
+nothing. More quota buys votes; a writable scratch dir is what would buy decisiveness.
+
+**Which wall: neither cores nor the plan quota.** 24/24 then 49/49 agents, zero errors, no usage
+limit hit all day; sampled concurrency 1–5 with no sustained queue. The only wall was OpenAI's quota
+on one seat, plus external-subprocess latency. A bigger runner would have bought nothing.
+
+**Also carried the 2026-07-24 archive onto a main-based branch.** It existed only on the unmerged
+#127 branch and would have gone with it if that PR were ever closed.
