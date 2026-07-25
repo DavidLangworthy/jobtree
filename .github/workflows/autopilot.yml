@@ -135,7 +135,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${CODEX_AUTH_JSON:-}" ]; then
-            echo "No CODEX_AUTH_JSON secret — codex will use CODEX_API_KEY (metered API billing)."
+            echo "::warning::No CODEX_AUTH_JSON secret. Codex falls back to CODEX_API_KEY if one is set; with neither, the cross-vendor seat preflights, fails, and the panel falls back to Opus (announced)."
             exit 0
           fi
           mkdir -p "$HOME/.codex"
