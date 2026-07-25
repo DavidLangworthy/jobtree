@@ -756,37 +756,31 @@ func (m *gangManager) promiseProvenanceValid(ctx context.Context, ns, runName st
 	if derived == "" {
 		return false
 	}
-	// And pin seg.Owner to the derived owner. It is COSMETIC to the funding
-	// decision — Evaluate bills by EnvelopeKey and reads the owner off the real
-	// Budget — but it is copied onto Lease.Spec.Owner at mint, which is what an
-	// operator sees in `kubectl get gpuleases` and what the ledger reads back.
-	// Before R7 pt2 this field was pinned by the owner-string equality checks
-	// this function replaced; leaving it unpinned lets a forged Promise pod
-	// stamp an arbitrary principal onto a real lease. That is not a charge it
-	// cannot make, it is a LIE about who is holding the GPUs — and every audit
-	// of this ledger starts by reading exactly that field.
+	// seg.Owner IS DELIBERATELY NOT CHECKED, and this comment is the receipt.
 	//
-	// THE COST OF PINNING, stated so it is reversible rather than discovered.
-	// A refusal here is not free: `emitCohortPods` only TOPS UP to the declared
-	// pod count, so it does not rewrite the annotations of a Promise pod that
-	// already exists. If an admin renames `Budget.Spec.Owner` in this namespace
-	// while a Promise pod is in flight, that pod carries the old owner string,
-	// this check refuses it on every retry, and the run stalls until someone
-	// deletes the pod so the controller re-emits it.
+	// A pin (`seg.Owner != derived -> refuse`) shipped here on 2026-07-24 and was
+	// VETOED by the 2026-07-25 adversarial panel's consequence seat with
+	// fixIsReaper=true. Both voting seats ran code. The two halves of the ruling:
 	//
-	// That was weighed against the alternative — accept the mismatch and
-	// OVERWRITE seg.Owner with `derived` before the mint, which would be
-	// self-healing and equally truthful. It was not taken, deliberately: this is
-	// the sole-committer path, the overwrite would widen what the committer
-	// WRITES rather than what it refuses, and the adversarial panel that would
-	// have vetted it never reached its Judge phase. Refusing is the conservative
-	// act — nothing is minted, nothing is closed, nothing is billed, and the
-	// operator gets a message naming the provenance mismatch. If the stall ever
-	// bites in practice, the overwrite is the fix; it is a smaller change than
-	// this comment.
-	if seg.Owner != derived {
-		return false
-	}
+	//   IT BUYS NOTHING. pkg/funding.Evaluate never reads Lease.Spec.Owner -- the
+	//   panel confirmed that by exhaustive grep and then by execution: a
+	//   forged-owner lease and an honest one classified IDENTICALLY (Owned,
+	//   funded width 4, 4 GPUs, 8 GPU-hours). Evaluate bills by EnvelopeKey and
+	//   reads the owner off the real Budget. Owner strings are not secrets.
+	//
+	//   IT REAPS. Via the top-up path (gangProvenance, run_controller.go
+	//   ~2774-2819) a segment is reconstructed from an EXISTING lease's
+	//   Spec.Owner. A legacy value, or an admin reorganising Budget.Spec.Owner,
+	//   would then wedge a healthy, funded, RUNNING gang forever on PreBind
+	//   refusal. The shipped comment weighed only a stranded Promise pod and
+	//   missed this case entirely -- a live gang is a different order of harm.
+	//
+	// What actually protects the ledger is the namespace check above plus the
+	// derived-owner check: a promise can only ever charge a Budget in the run's
+	// own namespace, and only when that namespace HAS a principal. Owner-string
+	// forgery survives as a cosmetic lie in `kubectl get gpuleases`, is strictly
+	// narrower than what R7 pt2 removed (Run.Spec.Owner was load-bearing for
+	// funding; this is not), and is not worth wedging running work to prevent.
 	for i := range budgetList.Items {
 		b := &budgetList.Items[i]
 		if b.Namespace != run.Namespace || b.Name != seg.BudgetName {

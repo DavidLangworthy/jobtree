@@ -508,29 +508,35 @@ func TestPromiseProvenanceValid(t *testing.T) {
 	if m.promiseProvenanceValid(ctx, "default", "train", forgedNS) {
 		t.Errorf("a promise naming another namespace's budget under the run's namespace must be refused")
 	}
-	// ASSERTION REVERSED, deliberately. This case used to read "seg.Owner is now
-	// COSMETIC — the check no longer reads it", and accepted a segment carrying
-	// `Owner: "org:whatever"`. The R7 pt2 adversarial review asked precisely the
-	// question DECISIONS-NEEDED F7(3) posed — "confirm that seg.Owner being
-	// cosmetic introduces no laundering path" — and found one.
+	// ASSERTION RESTORED, and the round trip is the point.
 	//
-	// seg.Owner is cosmetic to the FUNDING DECISION (Evaluate bills by
-	// EnvelopeKey and reads the owner off the real Budget), but it is copied onto
-	// Lease.Spec.Owner at mint. So an unpinned owner string does not let a forged
-	// Promise pod charge anyone it could not already charge — it lets it write a
-	// FALSE PRINCIPAL onto a real, GPU-holding lease, which is the first field
-	// any audit of this ledger reads. "Cannot mis-charge" and "cannot mis-state
-	// who is holding the GPUs" are different guarantees, and only the first
-	// survived the change.
+	// This case originally read "seg.Owner is now COSMETIC" and accepted a forged
+	// owner. On 2026-07-24 it was REVERSED to demand a pin, reasoning that a forged
+	// owner writes a false principal onto a real GPU-holding lease and that
+	// "cannot mis-charge" and "cannot mis-state who holds the GPUs" are different
+	// guarantees. On 2026-07-25 the adversarial panel's consequence seat vetoed
+	// that repair outright, fixIsReaper=true, and both voting seats ran code to get
+	// there (docs/project/reviews/2026-07-25-r7pt2-judge-0b77fbe/):
 	//
-	// It costs nothing to pin: opportunisticCoverPlan builds every legitimate
-	// promise segment with `Owner: ev.OwnerOf(run.Namespace)`
-	// (controllers/run_controller.go), the same value this check derives, so no
-	// real promise is refused by it.
-	forgedOwner := cover.Segment{Namespace: "default", Owner: "org:whatever", BudgetName: "team", EnvelopeName: "west"}
-	if m.promiseProvenanceValid(ctx, "default", "train", forgedOwner) {
-		t.Errorf("a promise carrying an owner string that is not the namespace's derived owner must be refused: " +
-			"it would stamp a false principal onto a real lease")
+	//   - The pin BUYS NOTHING: Evaluate never reads Lease.Spec.Owner, and an
+	//     executed probe showed a forged-owner lease and an honest one classify
+	//     identically -- Owned, funded width 4, 4 GPUs, 8 GPU-hours.
+	//   - The pin REAPS: gangProvenance (run_controller.go ~2774-2819) rebuilds a
+	//     segment from an existing lease's Spec.Owner, so a legacy value or an
+	//     admin owner reorg would wedge a healthy, funded, RUNNING gang forever at
+	//     PreBind. The reversal weighed only a stranded Promise pod.
+	//
+	// So the original assertion was right, for a reason its author did not state
+	// and its reverser did not find. It is restored with the reason attached, so
+	// the next person to notice that a forged owner string "passes" reads why that
+	// is deliberate instead of tightening it a third time.
+	//
+	// What still refuses a forged promise is above: the payer Budget must live in
+	// the run's own namespace, and that namespace must HAVE a derived principal.
+	cosmeticOwner := cover.Segment{Namespace: "default", Owner: "org:whatever", BudgetName: "team", EnvelopeName: "west"}
+	if !m.promiseProvenanceValid(ctx, "default", "train", cosmeticOwner) {
+		t.Errorf("seg.Owner is cosmetic to the funding decision and pinning it reaps running gangs; " +
+			"a same-namespace own-budget charge must be accepted regardless of the owner string")
 	}
 	// A budget in the run's namespace but WITHOUT the named envelope: refused.
 	noEnvelope := cover.Segment{Namespace: "default", Owner: "org:ai:team", BudgetName: "team", EnvelopeName: "east"}
