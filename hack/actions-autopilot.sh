@@ -43,7 +43,15 @@ DEADLINE_MIN="${AUTOPILOT_DEADLINE_MIN:-330}"   # re-dispatch after 5h30m of wor
 MAX_CONT="${AUTOPILOT_MAX_CONT:-24}"            # cap the re-dispatch chain (safety backstop)
 LIMIT_SLEEP="${AUTOPILOT_LIMIT_SLEEP:-1200}"    # 20m nap on a usage-limit, then retry in-job
 SETTINGS="$(git rev-parse --show-toplevel)/hack/autopilot-settings.json"
-SENTINEL=".autopilot-done"; rm -f "$SENTINEL"
+# The completion sentinel lives OUTSIDE the repo, and this is load-bearing. It used to be
+# `.autopilot-done` at the repo root, where it was both committable and — worse — RESURRECTABLE:
+# `rm -f` at startup cannot outlive a `git checkout`. On 2026-07-25 a run checked out PR #127, whose
+# branch carried a stale `.autopilot-done` accidentally committed by an EARLIER run, git restored the
+# file mid-turn, and the loop read it as "this run is finished" — posting the previous run's summary
+# verbatim and exiting. It had just fixed two confirmed defects and mutation-verified both; that work
+# died unpushed with the runner. A sentinel any checkout can recreate is not a sentinel, so it now
+# lives in the job's temp dir where git cannot reach it.
+SENTINEL="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/autopilot-done"; rm -f "$SENTINEL"
 LOG=".autopilot-turn.log"
 
 [ -z "$TASK" ] && TASK="Work the OPEN remediation items per docs/project/autonomous-run-playbook.md, in priority order."
@@ -113,7 +121,9 @@ ultrathink. You are running UNATTENDED in GitHub Actions. There is no human to a
 TASK: $TASK
 
 When every unparked item is done or has an open PR, or you hit a stop condition, write a one-line
-summary to .autopilot-done at the repo root and stop.
+summary to $SENTINEL and stop. That path is OUTSIDE the repo on purpose — never create a
+.autopilot-done file inside the working tree, and never commit one: a committed sentinel makes the
+next run that checks out your branch exit immediately, discarding whatever it had just done.
 PROMPT
 
 read -r -d '' CONT_MSG <<PROMPT || true
@@ -123,7 +133,7 @@ If a Workflow adversarial-review run was in flight when the previous segment end
 resumeFromRunId (the runId is in your earlier Workflow tool result, and the persisted script +
 completed subagent journals are on disk under the session dir) rather than starting a new run — a
 fresh run re-bills every subagent you already paid for. If everything is done or you hit a stop
-condition, write .autopilot-done and stop.
+condition, write $SENTINEL (outside the repo — never a .autopilot-done inside the tree) and stop.
 PROMPT
 
 # --- one Claude turn; sets LIMIT=1 on a usage-limit signature ----------------------------
