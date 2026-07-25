@@ -1789,3 +1789,57 @@ one is the codex relay abbreviating a quote with an ellipsis (unverifiable, and 
 right to block it), the other is a lens quoting a comment that exists only in the *fix* on the
 branch, not at the reviewed commit. That second one is exactly the contamination the frozen tree was
 meant to prevent, and it is why attestation runs against `git show <sha>` and not the working tree.
+
+## 2026-07-25 (later) — the Judge phase overturned two of my own fixes, and I took both rulings
+
+The 2026-07-25 judge-only run adjudicated four findings and landed two of them on repairs I had
+made in response to the same panel. Both are now redone. Record:
+`../reviews/2026-07-25-r7pt2-judge-0b77fbe/`.
+
+**Overturned #1 — the reservation guard was a regression, not a safeguard (`8bfbca2`).** I had made
+the unbound/conflicted path non-terminal, arguing that terminating "would destroy a legitimate
+reservation over an admin typo somebody is about to correct" — the reaper shape. Three seats
+disagreed and two of them compiled probes on BOTH branches: `main` terminated at tick 1 via
+`failReservationNoEnvelope`; my branch left the reservation Pending at tick 20 with the backlog
+gauge frozen at 1020. `preExisting=false`, `fixIsReaper=false`, and a third probe demonstrated
+recovery after terminal failure. The amendment (`:126-127`, `:590`) had said terminally all along.
+
+**Judgment call: take the ruling rather than defend the reasoning.** My argument was not stupid, it
+was untested — and the seats tested it. What I had actually shipped was quieter error spam over an
+immortal reservation.
+
+The frozen gauge is the part worth remembering: `metrics.ClearReservationBacklog` is reached ONLY
+from terminal paths, so any "refuse this tick and return nil" shortcut leaves it stuck at its last
+value for the life of the process. The state was wrong and the metric lied about it in the same
+breath, which is why nothing looked broken. The transition is now factored into
+`failReservationTerminally` so a future terminal path cannot forget the gauge.
+
+**And `failReservationNoEnvelope` finally has tests.** It had none anywhere in the repo, on either
+branch — which is precisely why a guard could render it unreachable without anything going red. The
+panel named that. The new test reaches it honestly (namespace bound so the derived-owner guard does
+not fire; Budget legal but its only envelope is the wrong flavor). A third test pins the recovery
+claim I had disputed.
+
+**Overturned #2 — reaper veto on the `seg.Owner` pin (`ec5cb64`).** `fixIsReaper=true`, both halves
+executed rather than argued: `Evaluate` never reads `Lease.Spec.Owner` (a forged-owner lease and an
+honest one classified identically — Owned, width 4, 4 GPUs, 8 GPU-hours), and `gangProvenance`
+rebuilds segments from an existing lease's owner, so the pin would wedge a healthy, funded, RUNNING
+gang forever at PreBind. I had weighed a stranded Promise pod and missed the live gang entirely.
+
+**Judgment call: drop the pin and restore the assertion I had reversed**, with the veto's reasoning
+written into the test so nobody tightens it a third time. That line has now gone asserted-cosmetic →
+reversed → vetoed → restored, and it only ended in the right place because two seats ran code.
+`gang.go:731`'s refusal stays — the reproduce seat confirmed that one is a genuine regression.
+
+**Process note that cost real work.** Two mutation-verified fixes were built and then lost when the
+runner exited before they were pushed. They are re-derived here and pushed as separate commits the
+moment each went green. An unpushed fix is a fix that does not exist.
+
+**Codex seat, corrected diagnosis.** The seat is not broken and its auth is not stale: the
+subscription serves `gpt-5.6-sol` as its default and rejects every explicitly-named model
+(`gpt-5.6`, `gpt-5-codex`, `gpt-5` all 400 with "not supported when using Codex with a ChatGPT
+account"). The harness hardcodes `-m gpt-5.6` in both its preflight probe and its trace-seat prompt,
+which would silently drop a working seat to the announced Opus fallback. Patch filed in the archive
+for the harness's own PR, alongside the earlier attest-against-SHA one. Probed by forcing a
+filesystem read, never by exit code — the segment-1 trap where a seat looked alive while its shell
+was dead on every call.
