@@ -91,6 +91,15 @@ export const meta = {
 //      MOVED is not a quote that was FABRICATED. Pin to A.commit, and never silently fall
 //      back to the tree. Note the shape of this bug: the failure was not a lens doing no
 //      work, it was the WATCHDOG being wrong — so verify the verifier too.
+//  14. A BRANCH UNDER REVIEW IS FROZEN, AND "IT IS ONLY A COMMENT" IS NOT AN EXEMPTION.
+//      Lesson 13 pinned Attest to the commit; the LENSES still read the tree, so any commit
+//      landing mid-review re-opens the same wound from the other side. It happened the very
+//      next day, to a run that pinned Attest correctly and then committed twice while the
+//      lenses were reading — one of those commits being a fix to a comment ABOUT citation
+//      drift. That is not carelessness, it is how easy this is, which is why it now gets a
+//      rail instead of a resolution: the tree is compared to `commit` ONCE, before a single
+//      lens is paid for, and a mismatch THROWS. One cheap agent beats a wasted panel. A
+//      comment displaces line numbers exactly as much as code does.
 // ---------------------------------------------------------------------------
 
 // The Workflow tool sometimes delivers `args` as a JSON-encoded string rather
@@ -545,6 +554,49 @@ async function runLens(lens) {
 // thereby silently replace, one of them.
 const ALL_LENSES = [...STANDARD_LENSES, ...(Array.isArray(A.lenses) ? A.lenses : [])]
 log(`running ${STANDARD_LENSES.length} standard + ${ALL_LENSES.length - STANDARD_LENSES.length} caller lens(es)`)
+
+// TREE-vs-COMMIT CONSISTENCY (lesson 14). Attest reads the PINNED COMMIT; the lenses read the
+// WORKING TREE. When those differ, every citation is displaced by the drift and Attest reports
+// honest lenses for "fabricated citations" — a fail-closed rail firing on a phantom.
+//
+// This has now happened twice. Once when the tree sat on a fixed branch while cached reports cited
+// the reviewed commit: five lenses blocked, `raised` empty, the panel returned before Judge existed,
+// eight minutes and zero verdicts. Then again the next day when a run pinned Attest correctly and
+// then committed twice mid-review — one of those commits being a fix to a comment ABOUT citation
+// drift. It is not a careless mistake; it is an easy one, which is why it needs a rail and not a
+// resolution. A branch under review is frozen, and "it is only a comment" is not an exemption:
+// a comment displaces line numbers exactly as much as code does.
+//
+// Checked ONCE, before a single lens is paid for, and fatal rather than advisory — a mismatch makes
+// every downstream citation suspect, so failing here costs one cheap agent instead of a whole panel.
+if (A.commit) {
+  const tree = await agent(
+    `Report this repository's state. Run exactly these and nothing else; modify nothing:
+  git rev-parse HEAD
+  git status --porcelain --untracked-files=no
+Set head to the full HEAD sha. Set dirty=true if the status output was non-empty (tracked files
+modified), false if it printed nothing. Put the status output, or "clean", in detail.`,
+    { label: 'preflight:tree-matches-commit', phase: 'Scout', model: 'sonnet', effort: 'low',
+      schema: { type: 'object', additionalProperties: false, required: ['head', 'dirty', 'detail'],
+        properties: { head: { type: 'string' }, dirty: { type: 'boolean' }, detail: { type: 'string' } } } })
+
+  if (!tree || !tree.head) {
+    log('WARNING: could not verify the working tree matches the reviewed commit; citations may be displaced.')
+  } else if (!tree.head.startsWith(A.commit) && !A.commit.startsWith(tree.head)) {
+    throw new Error(
+      `adversarial-review: the working tree is NOT the commit under review.\n` +
+      `  reviewing (args.commit): ${A.commit}\n` +
+      `  working tree (HEAD):     ${tree.head}\n` +
+      `The lenses would cite the tree while Attest verifies the pinned commit, so every citation ` +
+      `would be displaced and honest lenses reported as fabricators. Check out ${A.commit} (or pass ` +
+      `the tree's own sha as args.commit) and re-run. Refusing before spending on lenses.`)
+  } else if (tree.dirty) {
+    log(`WARNING: tracked files are modified relative to ${A.commit}; citations may be displaced and ` +
+        `Attest may report honest lenses as fabricators. Uncommitted: ${tree.detail}`)
+  } else {
+    log(`tree matches the reviewed commit ${A.commit.slice(0, 8)} — citations and attestation will agree`)
+  }
+}
 
 const lensResults = await parallel(ALL_LENSES.map(l => () => runLens(l)))
 
