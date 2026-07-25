@@ -768,8 +768,10 @@ func (m *gangManager) promiseProvenanceValid(ctx context.Context, ns, runName st
 	//   funded width 4, 4 GPUs, 8 GPU-hours). Evaluate bills by EnvelopeKey and
 	//   reads the owner off the real Budget. Owner strings are not secrets.
 	//
-	//   IT REAPS. Via the top-up path (gangProvenance, run_controller.go
-	//   ~2774-2819) a segment is reconstructed from an EXISTING lease's
+	//   IT REAPS. Via the top-up path (controllers.RunController.gangProvenance,
+	//   run_controller.go:2833 at the time of writing -- grep the NAME, not the
+	//   line: this very comment already outlived one line range) a segment is
+	//   reconstructed from an EXISTING lease's
 	//   Spec.Owner. A legacy value, or an admin reorganising Budget.Spec.Owner,
 	//   would then wedge a healthy, funded, RUNNING gang forever on PreBind
 	//   refusal. The shipped comment weighed only a stranded Promise pod and

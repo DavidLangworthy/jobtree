@@ -521,7 +521,8 @@ func TestPromiseProvenanceValid(t *testing.T) {
 	//   - The pin BUYS NOTHING: Evaluate never reads Lease.Spec.Owner, and an
 	//     executed probe showed a forged-owner lease and an honest one classify
 	//     identically -- Owned, funded width 4, 4 GPUs, 8 GPU-hours.
-	//   - The pin REAPS: gangProvenance (run_controller.go ~2774-2819) rebuilds a
+	//   - The pin REAPS: gangProvenance (run_controller.go:2833; grep the name,
+	//     not the line) rebuilds a
 	//     segment from an existing lease's Spec.Owner, so a legacy value or an
 	//     admin owner reorg would wedge a healthy, funded, RUNNING gang forever at
 	//     PreBind. The reversal weighed only a stranded Promise pod.
