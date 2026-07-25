@@ -46,8 +46,11 @@ These are owner decisions, not implementation choices. If an item requires one, 
 make it.** Append a one-line entry to `docs/project/DECISIONS-NEEDED.md` (create it if
 absent) naming the decision and why it blocks, then move to the next item.
 
-- **R7 pt2** — deleting `Run.Spec.Owner` / tenancy authz. Deferred by owner ruling
-  (Codex-2 / #63). Do not implement owner validation.
+- ~~**R7 pt2** — deleting `Run.Spec.Owner` / tenancy authz.~~ **UNPARKED — David approved it
+  2026-07-24.** Implement per [`remediation/R7-tenancy-amendment.md`](remediation/R7-tenancy-amendment.md):
+  delete the field, derive the owner from the namespace, stamp `PaidByNamespace` at the three lease
+  sites, re-topologize the golden. It is a security fix on the sole-committer / funding path, so **open a
+  PR, do NOT merge, and flag it for the adversarial review** — the per-PR gate alone is not enough here.
 - **R4 pt1b reader-swap** — the acceptable informer-**staleness bound** is David's. The
   correctness core landed (#99); the cache reader-swap is a *perf* change gated on that
   bound — leave it.

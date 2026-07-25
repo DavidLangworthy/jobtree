@@ -12,3 +12,6 @@ specs/states/
 
 # Per-run autopilot scratch log; never belongs in a PR branch.
 .autopilot-turn.log
+# The completion sentinel now lives outside the repo (hack/actions-autopilot.sh). This entry is the
+# backstop: one committed by an older runner made the next run exit on checkout, throwing away work.
+.autopilot-done

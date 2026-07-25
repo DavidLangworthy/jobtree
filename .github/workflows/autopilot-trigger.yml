@@ -37,10 +37,11 @@ jobs:
           BODY: ${{ github.event.issue.body }}
         run: |
           set -euo pipefail
-          task="$(printf '%s' "$TITLE" | sed -E 's/^[Aa]utopilot:[[:space:]]*//')"
+          name="$(printf '%s' "$TITLE" | sed -E 's/^[Aa]utopilot:[[:space:]]*//')"   # short run label
+          task="$name"
           if [ -n "${BODY:-}" ]; then
             task="$(printf '%s\n\n%s' "$task" "$BODY")"
           fi
-          gh workflow run autopilot.yml --repo "$REPO" -f task="$task" -f issue="$ISSUE" -f cont=0
+          gh workflow run autopilot.yml --repo "$REPO" -f name="$name" -f task="$task" -f issue="$ISSUE" -f cont=0
           gh issue comment "$ISSUE" --repo "$REPO" --body \
             "🚀 **Launched.** Starting on this task; I'll post progress here — reply to steer me (e.g. \"stop after this item\"). One autopilot runs at a time, so if another is going this one queues behind it."

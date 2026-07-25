@@ -15,13 +15,17 @@
 #                             GITHUB_TOKEN neither triggers CI on pushed PRs nor lets the job
 #                             re-dispatch this workflow. The PAT does both.
 name: autopilot
-run-name: "autopilot: ${{ inputs.task || 'remediation backlog' }} (seg ${{ inputs.cont }})"
+run-name: "autopilot: ${{ inputs.name || inputs.task || 'remediation backlog' }}"
 
 on:
   workflow_dispatch:
     inputs:
       task:
         description: "What to work on (blank = the open remediation backlog per the playbook)"
+        required: false
+        default: ""
+      name:
+        description: "Short label for this run (the run title + issue name). Keep it a few words."
         required: false
         default: ""
       issue:
@@ -32,6 +36,14 @@ on:
         description: "internal: re-dispatch segment counter (leave 0)"
         required: false
         default: "0"
+      resume:
+        description: "Persist & resume the Claude session across segments, so an interrupted review resumes instead of re-running (and re-billing) all its subagents. ON by default — you never know when a segment gets terminated. Set false to force a clean slate (e.g. to shake off a wedged session)."
+        required: false
+        default: "true"
+      sid:
+        description: "internal: stable Claude session id for cross-segment resume (leave blank; generated on segment 0)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -72,12 +84,58 @@ jobs:
           git config user.name  "jobtree-autopilot"
           git config user.email "autopilot@users.noreply.github.com"
 
+      # Resume runs only: pull the previous segment's Claude session (conversation transcript +
+      # every subagent transcript + the Workflow harness journal) back onto this fresh runner, so
+      # the autopilot can --resume it and an in-flight review cache-hits instead of re-running.
+      - name: Restore prior session
+        if: ${{ inputs.resume == 'true' && inputs.sid != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.AUTOPILOT_PAT }}
+        run: |
+          set -euo pipefail
+          name="session-${{ inputs.sid }}"
+          id=$(gh api "repos/${{ github.repository }}/actions/artifacts?per_page=100&name=$name" \
+                 --jq '.artifacts | map(select(.expired | not)) | sort_by(.created_at) | last | .id' 2>/dev/null || true)
+          if [ -z "${id:-}" ] || [ "$id" = "null" ]; then
+            echo "No prior session artifact ($name) yet — starting a fresh session."; exit 0
+          fi
+          echo "Restoring session artifact $name (id $id)…"
+          # Best-effort: any failure here must NOT fail the job — just start a fresh session.
+          if ! gh api "repos/${{ github.repository }}/actions/artifacts/$id/zip" > /tmp/session.zip 2>/dev/null; then
+            echo "Artifact download failed — starting fresh."; exit 0
+          fi
+          mkdir -p "$HOME/.claude"
+          if ! unzip -oq /tmp/session.zip -d "$HOME/.claude"; then
+            echo "Unzip failed — clearing partial restore, starting fresh."
+            rm -rf "$HOME/.claude/projects" "$HOME/.claude/tasks" "$HOME/.claude/sessions"; exit 0
+          fi
+          echo "Restored session files:"; find "$HOME/.claude/projects" -maxdepth 2 -name '*.jsonl' 2>/dev/null | sed 's#.*/##' | head
+
       - name: Run the autopilot
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
           GH_TOKEN: ${{ secrets.AUTOPILOT_PAT }}      # gh CLI + git push + re-dispatch
           AUTOPILOT_TASK: ${{ inputs.task }}
+          AUTOPILOT_NAME: ${{ inputs.name }}
           AUTOPILOT_ISSUE: ${{ inputs.issue }}
           AUTOPILOT_CONT: ${{ inputs.cont }}
+          AUTOPILOT_RESUME: ${{ inputs.resume }}
+          AUTOPILOT_SID: ${{ inputs.sid }}
         run: bash hack/actions-autopilot.sh
+
+      # Always (even on timeout / crash / re-dispatch) save the session so the paid review work is
+      # never lost: worst case you download & inspect it; on a resume run the next segment restores
+      # it and picks up where this one stopped. The script exports AUTOPILOT_SID for the name.
+      - name: Save session (black-box + resume state)
+        if: ${{ always() && env.AUTOPILOT_SID != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: session-${{ env.AUTOPILOT_SID }}
+          path: |
+            ~/.claude/projects
+            ~/.claude/tasks
+            ~/.claude/sessions
+          retention-days: 7
+          if-no-files-found: ignore
+          overwrite: true
