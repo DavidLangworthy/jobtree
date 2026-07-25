@@ -1192,19 +1192,36 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 	// (placing a second Budget), which is the "making a dead path reachable is
 	// worsening it" case, not a pre-existing one.
 	//
-	// Refuse THIS TICK and say why. Deliberately NOT terminal — failReservationNoEnvelope
-	// exists for genuinely unfundable runs, and using it here would destroy a
-	// legitimate reservation over an admin typo somebody is about to correct.
-	// The countdown and the reservation survive; activation proceeds by itself
-	// once the binding is repaired.
+	// FAIL IT TERMINALLY. An earlier version of this guard refused the tick and
+	// returned nil, reasoning that terminating would "destroy a legitimate
+	// reservation over an admin typo somebody is about to correct" — the reaper
+	// shape. The 2026-07-25 adversarial panel disproved that unanimously, by
+	// running the code on both branches instead of arguing about it
+	// (docs/project/reviews/2026-07-25-r7pt2-judge-0b77fbe/):
+	//
+	//   - On `main` this path already terminated at tick 1 via
+	//     failReservationNoEnvelope. The non-terminal guard was a REGRESSION
+	//     against main, not a safeguard (preExisting=false).
+	//   - The consequence seat ruled fixIsReaper=false and demonstrated recovery
+	//     after terminal failure: the run re-forecasts and takes a fresh
+	//     reservation once the binding is repaired. Nothing legal is destroyed.
+	//   - R7-tenancy-amendment.md:126-127 and :590 both say this path fails
+	//     terminally here. It did not, so the code contradicted its own design.
+	//
+	// Holding was worse than it looked: the reservation sat Pending forever, and
+	// because metrics.ClearReservationBacklog is reached ONLY from the terminal
+	// paths, the backlog gauge froze at its last value for the life of the
+	// process. The state was wrong and the metric lied about it in the same
+	// breath, which is why nothing looked broken.
 	if ev.OwnerOf(run.Namespace) == "" {
 		setState(run, v1.RunStateUnfunded, fmt.Sprintf(
 			"namespace %q has no funding principal: it has no Budget, or its Budgets name more than one owner. "+
-				"An administrator must fix the namespace→owner binding; the reservation is held, not cancelled.",
+				"An administrator must fix the namespace→owner binding and resubmit.",
 			run.Namespace))
 		run.Status.Funding = summarizeRunFunding(run, ev)
-		c.refreshReservationBacklog(key, reservation, now)
-		return nil
+		return c.failReservationTerminally(reservation, fmt.Errorf(
+			"namespace %q has no funding principal (no Budget, or Budgets naming more than one owner), "+
+				"so reservation %s can never activate", run.Namespace, reservation.Name))
 	}
 
 	// opportunistic tracks whether funding fell back to the promised-but-
@@ -1488,10 +1505,24 @@ func (c *RunController) opportunisticCoverPlan(run *v1.Run, reservation *v1.Rese
 // admission needs a real payer to attribute unfunded hours to and to
 // re-fund from, so with none the promise cannot be kept.
 func (c *RunController) failReservationNoEnvelope(reservation *v1.Reservation, runKey string) error {
+	return c.failReservationTerminally(reservation,
+		fmt.Errorf("run %s has no envelope to fund reservation %s (budget removed)", runKey, reservation.Name))
+}
+
+// failReservationTerminally is the one transition every permanently-unfundable
+// reservation makes: Failed, countdown cleared, and — the part that is easy to
+// forget — the backlog gauge cleared. ClearReservationBacklog is reached ONLY
+// from terminal paths, so any "refuse this tick and return nil" shortcut leaves
+// the gauge frozen at its last value for the life of the process. That is how
+// the 2026-07-25 panel found an immortal reservation: the state was wrong and
+// the metric lied about it in the same breath.
+//
+// It takes the error rather than formatting one, because the caller knows why.
+func (c *RunController) failReservationTerminally(reservation *v1.Reservation, cause error) error {
 	reservation.Status.State = "Failed"
 	reservation.Status.CountdownSeconds = nil
 	metrics.ClearReservationBacklog(keys.NamespacedKey(reservation.Namespace, reservation.Name))
-	return fmt.Errorf("run %s has no envelope to fund reservation %s (budget removed)", runKey, reservation.Name)
+	return cause
 }
 
 // SAFETY-CRITICAL SEMANTICS.
