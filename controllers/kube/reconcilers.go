@@ -365,7 +365,20 @@ func (r *ReservationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		if !ok {
 			return nil
 		}
-		if res.Status.State != "Pending" && res.Status.State != "" {
+		// This gate MIRRORS RunController.ActivateReservations' state filter, and
+		// it is the only thing that drives that function on a real cluster — this
+		// reconciler is its sole caller outside tests. So a state the engine
+		// re-considers and this gate drops is a state the engine never actually
+		// sees again: correct under `go test`, inert in production, which is a
+		// finding in its own right (AGENTS.md:148-150).
+		//
+		// BlockedFunding is exactly that state. Nothing else would wake it: the
+		// reconciler watches Reservations only, so repairing the namespace→owner
+		// binding — a Budget write — produces no event that reaches here, and
+		// dropping out without a requeue below means no poll either. "Recovery is
+		// automatic ... Nothing to resubmit" (quota-semantics.md:38-39) would have
+		// been true in the engine and false on a cluster.
+		if res.Status.State != "Pending" && res.Status.State != "BlockedFunding" && res.Status.State != "" {
 			return nil
 		}
 		if res.Spec.EarliestStart.Time.After(now) {
@@ -376,10 +389,13 @@ func (r *ReservationReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		rc.Period = r.Bridge.Period
 		rc.Recorder = r.Bridge.recorderFor()
 		err := rc.ActivateReservations(now)
-		if res.Status.State == "Pending" || res.Status.State == "" {
+		if res.Status.State == "Pending" || res.Status.State == "BlockedFunding" || res.Status.State == "" {
 			// A due reservation can park at activation (an unfunded promise
 			// waiting for physical capacity reclaims nothing — R7). No watch
-			// event announces freed GPUs, so it polls.
+			// event announces freed GPUs, so it polls. A reservation blocked on
+			// funding polls for the same reason and with more force: the repair
+			// is a write to a *Budget*, an object this reconciler does not watch
+			// at all, so the poll is the ONLY way it ever learns.
 			requeueAfter = pendingRunResync
 		}
 		return err
