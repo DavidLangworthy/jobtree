@@ -1843,3 +1843,89 @@ which would silently drop a working seat to the announced Opus fallback. Patch f
 for the harness's own PR, alongside the earlier attest-against-SHA one. Probed by forcing a
 filesystem read, never by exit code — the segment-1 trap where a seat looked alive while its shell
 was dead on every call.
+
+## 2026-07-26 — the #127 pre-merge list: the toolchain half, and the two gates that mirror it
+
+David wrote the three `MERGE-127.md` substitutions as source on `r7pt2/blocked-funding` (`9afbe19`) on
+a machine with no Go toolchain, and said so in the commit. This is the other half: compile, generate,
+test, gate. `9afbe19` turned out to be a direct descendant of the tenancy branch's head, so it
+fast-forwarded — no cherry-pick, no conflict.
+
+**The build was broken, and `go build ./... | head` said it was not.** Exit status came from `head`.
+That is `AGENTS.md:174` verbatim, and it cost one wrong claim on the status issue before `go vet`
+caught it: `blockReservationOnFunding` used `metav1.Time` in a package that imported no `metav1`.
+Worth writing down because the pipeline trap is most dangerous when you are *checking* something.
+
+**`make generate` + `make manifests` produced exactly what the caveat predicted**: 4 lines of deepcopy
+and 7 in each of the two Reservation CRDs, all for `blockedSince`. Committed on its own. The golden
+did not need re-topologizing — it captures class widths and lenders, and a status field the engine
+does not read cannot move it.
+
+### Judgment call: the same state gate is written in three places, and only one was widened
+
+`9afbe19` widened `ActivateReservations`' state filter to re-consider `BlockedFunding`. Two sibling
+filters test the same three strings and were not:
+
+- **`releasePendingReservations`** (`run_controller.go`). David flagged this one to check. It is real,
+  and reproduced before fixing: block the reservation, fail the run, tick five times — the reservation
+  stays `BlockedFunding` with `releasedAt` nil and a stale "no funding principal" reason, next to a
+  Failed run, forever. Under the terminal path substitution 1 replaces it would have been `Failed`. So
+  making the reservation non-terminal *without* widening this filter trades one immortal reservation
+  for another. `assertInvariantNoPendingReservationForRunningRun` missed it for the identical reason
+  and is widened too — an invariant a new state can slip past is not an invariant.
+- **`ReservationReconciler.Reconcile`** (`kube/reconcilers.go`). This is the one only a toolchain
+  could find, and it is the more serious of the two: that reconciler is the **sole caller** of
+  `ActivateReservations` on a real cluster, and it early-returns on any state that is not
+  `Pending`/`""` — with the requeue gated the same way. So the widened engine gate was **correct under
+  `go test` and inert in production**: no watch event reaches a blocked reservation (this reconciler
+  watches Reservations, and the repair is a write to a *Budget*), and no requeue means no poll.
+  "Recovery is automatic ... Nothing to resubmit" would have been true in the engine and false on a
+  cluster — `AGENTS.md:148-150`, a change that fails to achieve its stated purpose.
+
+Neither is a redesign of a substitution; both are the same gate, and `9afbe19` could only see one of
+them. Recorded here rather than parked because parking is for owner *decisions*, and "the fix should
+reach the code path it names" is not one.
+
+### Judgment call: a durable cause must not outlive its cause
+
+Writing the recovery test exposed a third thing, and this one *is* a change to the substitution's
+behaviour, so it is flagged on the issue as well as here.
+
+After the admin repairs the binding the run recovers fine — four intent pods, scheduling — but the
+reservation sat `BlockedFunding` with the stale reason for five ticks and counting. Cause:
+`activateReservation` takes the `runHasActivePods` early return once the run has re-admitted itself
+through `Reconcile`, and that guard never touches the reservation; the half-applied adoption branch
+has the same shape. So the object advertised a conflict that no longer existed until the plugin's
+leases finally landed and adoption released it.
+
+"Durable cause" means the reason survives the *tick*, not that it survives the *repair*. A status
+field asserting something false is the invisibility defect pointing the other way, which is the exact
+thing this state was introduced to remove. Added `unblockReservationOnFunding`, called ahead of every
+early return. It **clears** the onset rather than keeping it: `blockReservationOnFunding` preserves
+the onset across consecutive re-blocks so blocked-age cannot read zero, but a new block after a real
+repair is a new episode, and carrying the old onset forward would report an age covering a stretch
+when nothing was blocked at all.
+
+### Nine mutations, all red
+
+Because the recovery test on this branch had already passed once with its own repair deleted
+(`37270af`), none of this was taken on faith:
+
+| mutation | what went red |
+| --- | --- |
+| `blockReservationOnFunding` → `failReservationTerminally` | blocks + onset tests, on the returned error |
+| drop `ClearReservationBacklog` from the blocked path | `still reporting map[default/res:{H100-80GB 1020}]` — the original defect by name |
+| restamp `BlockedSince` every tick | `onset was RESTAMPED to 01:00, want the original 00:00` |
+| drop `BlockedFunding` from the activation gate | release + recovery |
+| drop `BlockedFunding` from `releasePendingReservations` | both release cases |
+| restore `and resubmit` | both message surfaces — run status *and* reservation reason |
+| delete the unblock call | recovery |
+| drop `BlockedFunding` from the reconciler's entry gate | both reconciler subtests |
+| drop it from the reconciler's requeue gate only | `RequeueAfter=0s` |
+
+Plus two on the plugin: restoring the blanket `return false` fails the two completion cases, and
+dropping the `held < recorded` bound fails the two growth cases. The plugin fixture is a **conflicted**
+namespace rather than an empty one on purpose — with no Budgets the envelope walk at the end of
+`promiseProvenanceValid` refuses anyway, so a permit could never be observed and every assertion would
+have been vacuous for the wrong reason. That is the same shape as the two decorative assertions this
+file has already had to repair.

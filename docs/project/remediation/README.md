@@ -48,7 +48,7 @@ mechanical, no design needed (implement straight from the audit — Opus/Sonnet)
 |---|---|---|---|---|
 | [R5](R5-provenance-trust-anchor.md) | Forgeable funding provenance (swap mint) | ✅ | ✅ plugin+VAP | ◐ unit; VAP CEL needs kind |
 | [R6](R6-mandatory-scheduler.md) | Budget is opt-in for GPU pods | ✅ | ✅ VAP (off by default) | ◐ VAP CEL needs kind |
-| [R7](R7-tenancy-amendment.md) | Namespaces are not a tenancy boundary | ✅ | ✅ pt1 namespace envelope key (#87); **pt2 delete `Run.Spec.Owner`, owner derived from namespace** (APPROVED & UNPARKED by David 2026-07-24; PR open, flagged for the pre-merge sole-committer review — DECISIONS-NEEDED F7) | pt1 unit + golden; pt2 tenancy unit + fail-safe/injectivity/empty-borrower mutation-verified + retopologized golden |
+| [R7](R7-tenancy-amendment.md) | Namespaces are not a tenancy boundary | ✅ | ✅ pt1 namespace envelope key (#87); **pt2 delete `Run.Spec.Owner`, owner derived from namespace** (APPROVED & UNPARKED by David 2026-07-24; PR open, flagged for the pre-merge sole-committer review — DECISIONS-NEEDED F7) | pt1 unit + golden; pt2 tenancy unit + fail-safe/injectivity/empty-borrower mutation-verified + retopologized golden. **#127 pre-merge list (`decisions/p5-p8/MERGE-127.md`) COMPLETE 2026-07-26**: blocked-not-terminal reservation with durable cause/onset and the gauge cleared, PreBind completion-not-growth for a partial gang, "resubmit" out of the operator message — plus `ReservationStatus.BlockedSince` generated into deepcopy and both CRDs, 11 mutations, and three gate-mirror fixes (DECISIONS-NEEDED F8) |
 
 **P2 — workload lifecycle (blocks "usable for ML")**
 
