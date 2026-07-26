@@ -133,10 +133,28 @@ func TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired(t *testing.T) {
 	if run.Status.Phase == RunPhaseFailed {
 		t.Fatalf("REAPER: the run is Failed after the admin repaired the binding: %q", run.Status.Message)
 	}
-	if strings.Contains(run.Status.Message, "no funding principal") {
+
+	// THE LOAD-BEARING ASSERTION, and the reason this test was rewritten.
+	//
+	// It used to assert only that the phase was not Failed and that the message no
+	// longer mentioned the conflict. The 2026-07-25 fix-diff panel mutated the
+	// repair out and the test still PASSED: an unrepaired run also sits Pending,
+	// just with a different wrong message ("owner and flavor must be set"). So the
+	// test proved nothing about recovery — a decorative test, the exact class the
+	// playbook warns about, written to answer a panel.
+	//
+	// Recovery has an observable that permanent limbo does not: the run actually
+	// emits its intent pods again. Assert that.
+	if got := activeIntentPods(state, "default", "train"); got != 4 {
+		t.Fatalf("recovery means the run emits its gang again: activeIntentPods = %d, want 4 "+
+			"(an unrepaired run sits Pending forever and emits none)", got)
+	}
+	if strings.Contains(run.Status.Message, "no funding principal") ||
+		strings.Contains(run.Status.Message, "owner and flavor must be set") {
 		t.Fatalf("the run is stuck on the old conflict after repair: %q", run.Status.Message)
 	}
-	t.Logf("after repair: phase=%s msg=%q", run.Status.Phase, run.Status.Message)
+	t.Logf("after repair: phase=%s pods=%d msg=%q",
+		run.Status.Phase, activeIntentPods(state, "default", "train"), run.Status.Message)
 }
 
 // failReservationNoEnvelope had NO TEST anywhere in the repo, on either branch.
