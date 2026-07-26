@@ -47,9 +47,14 @@ func qsEnvelope(name string, concurrency int32) v1.BudgetEnvelope {
 	}
 }
 
+// qsBudget places the budget in the DEFAULT namespace by default (R7: the run's
+// funding owner is derived from its namespace, so a run in "default" needs its
+// owner's budget there too). Tests with a SECOND distinct owner (family parent,
+// sponsor) override ObjectMeta.Namespace to keep the two owners in separate
+// namespaces — the engine treats co-located distinct owners as a conflict.
 func qsBudget(name, owner string, envelopes ...v1.BudgetEnvelope) v1.Budget {
 	return v1.Budget{
-		ObjectMeta: v1.ObjectMeta{Name: name},
+		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: keys.DefaultNamespace},
 		Spec:       v1.BudgetSpec{Owner: owner, Envelopes: envelopes},
 	}
 }
@@ -62,6 +67,14 @@ func qsChildBudget(name, owner, parent string, envelopes ...v1.BudgetEnvelope) v
 	return b
 }
 
+// inNS relocates a budget to a namespace so a SECOND distinct owner (a family
+// parent, a sponsor) never shares the run's namespace — the funding engine
+// treats two owners in one namespace as a binding conflict (R7 §4).
+func inNS(b v1.Budget, ns string) v1.Budget {
+	b.Namespace = ns
+	return b
+}
+
 func qsRun(name, owner string, gpus int32, created time.Time) *v1.Run {
 	return &v1.Run{
 		ObjectMeta: v1.ObjectMeta{
@@ -70,7 +83,6 @@ func qsRun(name, owner string, gpus int32, created time.Time) *v1.Run {
 			CreationTimestamp: v1.NewTime(created),
 		},
 		Spec: v1.RunSpec{
-			Owner:     owner,
 			Resources: v1.RunResources{GPUType: qsFlavor, TotalGPUs: gpus},
 		},
 	}
@@ -96,6 +108,18 @@ func qsReconcile(t *testing.T, state *ClusterState, clock *qsClock, name string)
 		t.Fatalf("reconcile %s: %v", name, err)
 	}
 	return state.Runs[keys.NamespacedKey(keys.DefaultNamespace, name)]
+}
+
+// qsReconcileNS reconciles a run that lives OUTSIDE the default namespace (an
+// owner tier whose budget the family/lending fixtures place in its own
+// namespace so OwnerOf derives it).
+func qsReconcileNS(t *testing.T, state *ClusterState, clock *qsClock, ns, name string) *v1.Run {
+	t.Helper()
+	c := NewRunController(state, clock)
+	if err := c.Reconcile(ns, name); err != nil {
+		t.Fatalf("reconcile %s/%s: %v", ns, name, err)
+	}
+	return state.Runs[keys.NamespacedKey(ns, name)]
 }
 
 func qsInt64(v int64) *int64 { return &v }
@@ -233,7 +257,7 @@ func TestScenarioFamilySharesExcessWithoutLending(t *testing.T) {
 	state := qsState(
 		[]topology.SourceNode{qsNode("n1", 8)},
 		[]v1.Budget{
-			qsBudget("parent-budget", "org", qsEnvelope("parent-env", 8)),
+			inNS(qsBudget("parent-budget", "org", qsEnvelope("parent-env", 8)), "org"),
 			qsChildBudget("child-budget", "org/team", "org", qsEnvelope("child-env", 2)),
 		},
 		qsRun("hungry", "org/team", 6, qsBase),
@@ -272,7 +296,7 @@ func TestScenarioOwnerRecallReclaimsFamilyBorrower(t *testing.T) {
 	state := qsState(
 		[]topology.SourceNode{qsNode("n1", 8)},
 		[]v1.Budget{
-			qsBudget("parent-budget", "org", qsEnvelope("parent-env", 8)),
+			inNS(qsBudget("parent-budget", "org", qsEnvelope("parent-env", 8)), "org"),
 			qsChildBudget("child-budget", "org/team", "org", childEnv),
 		},
 		qsRun("squatter", "org/team", 6, qsBase),
@@ -290,8 +314,9 @@ func TestScenarioOwnerRecallReclaimsFamilyBorrower(t *testing.T) {
 	// The owner arrives needing its whole envelope back.
 	clock.now = qsBase.Add(time.Hour)
 	owner := qsRun("landlord", "org", 8, clock.now)
+	owner.Namespace = "org" // R7: the owner "org" derives from the parent budget's namespace
 	state.Runs[keys.NamespacedKey(owner.Namespace, owner.Name)] = owner
-	ownerRun := qsReconcile(t, state, clock, "landlord")
+	ownerRun := qsReconcileNS(t, state, clock, "org", "landlord")
 
 	// The controller still runs the recall (reclaimForAdmission) on the owner's
 	// fundable admission — the reclaim of the family borrower is what this
@@ -301,10 +326,10 @@ func TestScenarioOwnerRecallReclaimsFamilyBorrower(t *testing.T) {
 	if ownerRun.Status.Phase != RunPhasePending {
 		t.Fatalf("owner admission now emits intent and stays Pending, got %s: %s", ownerRun.Status.Phase, ownerRun.Status.Message)
 	}
-	if got := activeIntentPods(state, keys.DefaultNamespace, "landlord"); got != 8 {
+	if got := activeIntentPods(state, "org", "landlord"); got != 8 {
 		t.Fatalf("owner should request its full 8-GPU envelope as intent pods, got %d", got)
 	}
-	if n := openLeaseCountForRun(state.Leases, keys.NamespacedKey(keys.DefaultNamespace, "landlord")); n != 0 {
+	if n := openLeaseCountForRun(state.Leases, keys.NamespacedKey("org", "landlord")); n != 0 {
 		t.Fatalf("controller must mint nothing for the owner, got %d open leases", n)
 	}
 	squatter := state.Runs[keys.NamespacedKey(keys.DefaultNamespace, "squatter")]
@@ -324,7 +349,7 @@ func TestScenarioSharingNoneExcludesFamily(t *testing.T) {
 	state := qsState(
 		[]topology.SourceNode{qsNode("n1", 8)},
 		[]v1.Budget{
-			qsBudget("parent-budget", "org", sealed),
+			inNS(qsBudget("parent-budget", "org", sealed), "org"),
 			qsChildBudget("child-budget", "org/team", "org", qsEnvelope("child-env", 2)),
 		},
 		qsRun("rebuffed", "org/team", 6, qsBase),
@@ -348,7 +373,7 @@ func TestScenarioLendingCapsUnaffectedByFamilyUsage(t *testing.T) {
 	state := qsState(
 		[]topology.SourceNode{qsNode("n1", 16)},
 		[]v1.Budget{
-			qsBudget("lender-budget", "org", lender),
+			inNS(qsBudget("lender-budget", "org", lender), "org"),
 			qsChildBudget("child-budget", "org/team", "org", qsEnvelope("child-env", 1)),
 		},
 		qsRun("family-user", "org/team", 5, qsBase),
@@ -365,15 +390,23 @@ func TestScenarioLendingCapsUnaffectedByFamilyUsage(t *testing.T) {
 	// family's 4 shared GPUs must not have consumed the MaxConcurrency=2
 	// lending cap.
 	guest := qsRun("guest-run", "guest-lab", 2, qsBase.Add(time.Minute))
+	guest.Namespace = "guest-lab" // R7: the stranger's namespace derives its own owner
 	guest.Spec.Funding = &v1.RunFunding{AllowBorrow: true, Sponsors: []string{"org"}}
 	state.Runs[keys.NamespacedKey(guest.Namespace, guest.Name)] = guest
+	// A pure borrower still needs a bound namespace to derive an owner from (the
+	// empty-borrower guard, R7 §4). A nominal off-flavor envelope binds
+	// "guest-lab" to owner "guest-lab" without funding any of this H100 run, so
+	// every GPU it gets is borrowed from the sponsor.
+	guestBudget := inNS(qsBudget("guest-budget", "guest-lab", qsEnvelope("guest-nominal", 1)), "guest-lab")
+	guestBudget.Spec.Envelopes[0].Flavor = "A100-40GB"
+	state.Budgets = append(state.Budgets, guestBudget)
 
 	clock.now = qsBase.Add(2 * time.Minute)
 	// The stranger is likewise scheduled and funded by the plugin; seedRunning
 	// mints its borrow (2 GPUs, unblocked by family usage) so the reconcile can
 	// classify it. The borrowed-class number is the substance this test asserts.
-	seedRunning(t, state, keys.NamespacedKey(keys.DefaultNamespace, "guest-run"), clock.now)
-	guestRun := qsReconcile(t, state, clock, "guest-run")
+	seedRunning(t, state, keys.NamespacedKey("guest-lab", "guest-run"), clock.now)
+	guestRun := qsReconcileNS(t, state, clock, "guest-lab", "guest-run")
 
 	if guestRun.Status.Phase != RunPhaseRunning {
 		t.Fatalf("lending caps are for strangers and must still admit 2: %s: %s", guestRun.Status.Phase, guestRun.Status.Message)
@@ -389,7 +422,7 @@ func TestScenarioStatusSurfacesAgree(t *testing.T) {
 	state := qsState(
 		[]topology.SourceNode{qsNode("n1", 8)},
 		[]v1.Budget{
-			qsBudget("parent-budget", "org", qsEnvelope("parent-env", 8)),
+			inNS(qsBudget("parent-budget", "org", qsEnvelope("parent-env", 8)), "org"),
 			qsChildBudget("child-budget", "org/team", "org", qsEnvelope("child-env", 2)),
 		},
 		qsRun("hungry", "org/team", 6, qsBase),

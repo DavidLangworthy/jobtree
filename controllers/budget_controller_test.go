@@ -19,7 +19,7 @@ func TestReconcileBudgetComputesHeadroomAndMetrics(t *testing.T) {
 	now := time.Date(2025, 11, 1, 12, 0, 0, 0, time.UTC)
 	start := v1.NewTime(now.Add(-2 * time.Hour))
 	budgetObj := &v1.Budget{
-		ObjectMeta: v1.ObjectMeta{Name: "budget-a"},
+		ObjectMeta: v1.ObjectMeta{Name: "budget-a", Namespace: keys.DefaultNamespace},
 		Spec: v1.BudgetSpec{
 			Owner: "org:a",
 			Envelopes: []v1.BudgetEnvelope{{
@@ -48,21 +48,23 @@ func TestReconcileBudgetComputesHeadroomAndMetrics(t *testing.T) {
 	}
 	leases := []v1.GPULease{{
 		Spec: v1.GPULeaseSpec{
-			Owner:          "org:a",
-			RunRef:         v1.RunReference{Name: "run-active", Namespace: keys.DefaultNamespace},
-			PaidByBudget:   "budget-a",
-			PaidByEnvelope: "env-a",
-			Slice:          v1.GPULeaseSlice{Nodes: []string{"n1", "n2", "n3"}, Role: "Active"},
-			Interval:       v1.GPULeaseInterval{Start: start},
+			Owner:                 "org:a",
+			RunRef:                v1.RunReference{Name: "run-active", Namespace: keys.DefaultNamespace},
+			PaidByBudget:          "budget-a",
+			PaidByBudgetNamespace: keys.DefaultNamespace,
+			PaidByEnvelope:        "env-a",
+			Slice:                 v1.GPULeaseSlice{Nodes: []string{"n1", "n2", "n3"}, Role: "Active"},
+			Interval:              v1.GPULeaseInterval{Start: start},
 		},
 	}, {
 		Spec: v1.GPULeaseSpec{
-			Owner:          "org:a",
-			RunRef:         v1.RunReference{Name: "run-closed", Namespace: keys.DefaultNamespace},
-			PaidByBudget:   "budget-a",
-			PaidByEnvelope: "env-a",
-			Slice:          v1.GPULeaseSlice{Nodes: []string{"n4", "n5"}, Role: "Active"},
-			Interval:       v1.GPULeaseInterval{Start: start, End: &v1.Time{Time: now.Add(-time.Hour)}},
+			Owner:                 "org:a",
+			RunRef:                v1.RunReference{Name: "run-closed", Namespace: keys.DefaultNamespace},
+			PaidByBudget:          "budget-a",
+			PaidByBudgetNamespace: keys.DefaultNamespace,
+			PaidByEnvelope:        "env-a",
+			Slice:                 v1.GPULeaseSlice{Nodes: []string{"n4", "n5"}, Role: "Active"},
+			Interval:              v1.GPULeaseInterval{Start: start, End: &v1.Time{Time: now.Add(-time.Hour)}},
 		},
 		Status: v1.GPULeaseStatus{Closed: true, Ended: &v1.Time{Time: now.Add(-time.Hour)}},
 	}}
@@ -116,7 +118,7 @@ func TestReconcileBudgetComputesHeadroomAndMetrics(t *testing.T) {
 func ownerRun(name, owner string) *v1.Run {
 	return &v1.Run{
 		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: keys.DefaultNamespace},
-		Spec:       v1.RunSpec{Owner: owner, Resources: v1.RunResources{GPUType: "H100"}},
+		Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: "H100"}},
 	}
 }
 

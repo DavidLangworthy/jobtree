@@ -79,9 +79,28 @@ func qNodes() []topology.SourceNode {
 	return []topology.SourceNode{mk("node-a"), mk("node-b"), mk("node-c")}
 }
 
+// qNSForOwner maps an owner tier to its namespace (R7: the funding owner is
+// derived from the run's namespace, one principal per namespace). alpha keeps
+// the default namespace; beta lives in its own so the two owners never collide.
+func qNSForOwner(owner string) string {
+	if owner == qOwnerBeta {
+		return "org-ai-beta"
+	}
+	return "default"
+}
+
+// qOwnerForNS is the inverse: the owner a run's namespace derives to (the
+// Run.Spec.Owner field is gone; the namespace is the funding principal now).
+func qOwnerForNS(ns string) string {
+	if ns == "org-ai-beta" {
+		return qOwnerBeta
+	}
+	return qOwnerAlpha
+}
+
 func qBudget(name, owner string, concurrency int32) v1.Budget {
 	return v1.Budget{
-		ObjectMeta: v1.ObjectMeta{Name: name},
+		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: qNSForOwner(owner)},
 		Spec: v1.BudgetSpec{Owner: owner, Envelopes: []v1.BudgetEnvelope{{
 			Name: "west", Flavor: "H100-80GB", Concurrency: concurrency,
 			Selector: map[string]string{
@@ -135,9 +154,9 @@ func (w *qWorld) submitRun() {
 	}
 	gpus := []int32{1, 2, 4}[w.rng.Intn(3)]
 	run := &v1.Run{
-		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: qNamespace,
+		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: qNSForOwner(owner),
 			CreationTimestamp: v1.NewTime(w.now.Add(-time.Hour))},
-		Spec: v1.RunSpec{Owner: owner, Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: gpus}},
+		Spec: v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: gpus}},
 	}
 	// A malleable run may legally run below TotalGPUs, and it is the shape that
 	// makes the width invariant subtle: the resolver may cut its base group while
@@ -171,7 +190,7 @@ func (w *qWorld) submitRun() {
 		run.Spec.Locality = &v1.RunLocality{GroupGPUs: &group}
 		w.logf("  (groupGPUs 2 — two placement groups)")
 	}
-	w.state.Runs[keys.NamespacedKey(qNamespace, name)] = run
+	w.state.Runs[keys.NamespacedKey(qNSForOwner(owner), name)] = run
 }
 
 // mintPending is the scheduler plugin. It is the SOLE COMMITTER, and the only
@@ -220,11 +239,13 @@ func (w *qWorld) mintPending() {
 		}
 		seg := cover.Segment{
 			Owner:        pod.Annotations[binder.AnnotationPayerOwner],
+			Namespace:    pod.Annotations[binder.AnnotationPayerNamespace],
 			BudgetName:   pod.Annotations[binder.AnnotationPayerBudget],
 			EnvelopeName: pod.Annotations[binder.AnnotationPayerEnvelope],
 		}
 		if seg.Owner == "" {
-			seg = cover.Segment{Owner: run.Spec.Owner, BudgetName: qBudgetFor(run.Spec.Owner), EnvelopeName: "west"}
+			owner := qOwnerForNS(run.Namespace)
+			seg = cover.Segment{Owner: owner, Namespace: qNSForOwner(owner), BudgetName: qBudgetFor(owner), EnvelopeName: "west"}
 		}
 		// PreBind refuses to mint a lease for a pod carrying no placement group.
 		// The driver holds it to the same refusal: a pod the plugin would reject

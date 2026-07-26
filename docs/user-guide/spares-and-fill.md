@@ -13,7 +13,6 @@ metadata:
   name: train-64-with-spares
   namespace: demo
 spec:
-  owner: org:demo:research
   resources:
     gpuType: H100-80GB
     totalGPUs: 64

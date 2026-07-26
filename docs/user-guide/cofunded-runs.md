@@ -36,7 +36,6 @@ borrower guardrails provided on each run.
      name: train-128-cofunded
      namespace: example
    spec:
-     owner: org:example:sys
      resources:
        gpuType: H100-80GB
        totalGPUs: 128

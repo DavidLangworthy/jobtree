@@ -1597,6 +1597,338 @@ The additive-upgrade check (verification item 3) is a real additive change, not 
 upgrade: it adds an optional property to a live CRD's schema **while an object of that
 kind exists**, and asserts the object reads back unchanged.
 
+## R7 pt2 — the owner is the namespace (2026-07-24)
+
+**Owner decision:** David APPROVED and UNPARKED R7 pt2, overriding the park-list entry
+(Codex-2 / #63). Implemented per `remediation/R7-tenancy-amendment.md` §4 exactly. Judgment
+calls, recorded rather than interrupting:
+
+**1. `nsForOwner` — one namespace per owner, threaded through every fixture.** The amendment's
+model is one principal per namespace, owner derived from the namespace. The old test corpus put
+several distinct budget *owners* in one namespace (`default`) and let the run name its own owner;
+under derivation that namespace is now *conflicted* (two owners → fail-safe to unbound → every
+lease Unfunded). So every migrated test maps an owner tier to a namespace with a single convention
+— `owner` with `:`/`/` → `-` — applied in the package's `budgetOf`/`runOf` helpers so budgets,
+runs and leases for one owner co-reside and `OwnerOf(ns)` round-trips. Where a lease is *borrowed*
+(run in owner A's namespace, paid by sponsor B's envelope) the run/lease namespace is A's and only
+`PaidByBudgetNamespace` points at B (a `forRunOwner` lease option). The golden and the envtest
+package are the exception: their runs stay in `default` with the single owner's budget co-located
+there, and only a genuine sponsor's budget moves to its own namespace — envtest namespaces are real
+apiserver objects and are not worth creating for single-tenant scenarios.
+
+**2. Pure borrowers must be admin-bound.** The empty-borrower guard means a run whose namespace has
+no Budget derives owner `""` and can borrow from nothing — including `To:["*"]` sponsors. Two funding
+tests relied on a bare borrower declaring its own owner; they now bind the borrower's namespace with
+a nominal one-envelope Budget (amendment §5's pool-consumer pattern). This is the guard working as
+designed, not a test workaround.
+
+**3. `PaidByNamespace` field semantics left as pt1 shipped them.** The amendment §7 wants a *required*
+`PaidByNamespace` plus a *loud rail* (empty payer-namespace surfaced as a defect). pt1 already shipped
+the field as `PaidByBudgetNamespace`, *optional* with a silent legacy-empty fallback (Codex #1). This
+PR stamps it at all three mint sites (already done by pt1) and adds the *binding-conflict* surfacing on
+the `Evaluation` (`Conflicts()`), but does NOT flip the field to required or add the empty-namespace
+loud rail — that would reclassify legacy-empty leases, an owner-facing change to an already-ratified
+pt1 decision. Flagged as sub-question F7(4) in `DECISIONS-NEEDED.md` for the pre-merge review, not
+parked (it does not block pt2).
+
+**4. R26 alarms not wired in this PR.** The engine now exposes `Evaluation.Conflicts()` (multi-owner
+and leaf-owner-collision namespaces) and the amendment asks R26 to alarm on those plus interior-owner
+Runs and empty-payer leases. Wiring the auditor to consume this is a separate small change on R26's
+spec; surfacing the data on the Evaluation (which the fail-safe already needs) is in scope here, the
+auditor consumption is not. Flagged in F7.
+
+**5. `promiseProvenanceValid` → namespace equality.** With `Run.Spec.Owner` gone the plugin's promise
+provenance check drops the two owner-string agreements and gates on `b.Namespace == run.Namespace`
+(forge-proof: the API server authenticates `metadata.namespace`). `seg.Owner` is now cosmetic; the
+security test was rewritten to prove the cross-namespace charge is still refused and that the cosmetic
+owner introduces no laundering path.
+
+Gate: `make verify` + envtest + the eviction fuzzer; the three load-bearing engine fixes
+(empty-borrower guard, leaf-owner injectivity, multi-owner fail-safe) were mutation-verified.
+
+## 2026-07-24 — R7 pt2 milestone review PAUSED; interior-exemption finding parked (not fixed)
+
+The owner-launched fail-closed adversarial panel (runId `wf_cd9db73e-4d3`, `git diff main...HEAD`
+@ `f52d3cf`) was **interrupted by a usage limit at 13:30Z, mid-Review** — Attest and Judge never
+ran. The prior turn intended to resume it after the quota reset, but workflow `resumeFromRunId` is
+same-session-only and this turn is a new session, so cache-replay resume is unavailable; a fresh
+full panel is a day's-quota run reserved for David (AGENTS.md, playbook).
+
+**Judgment call: do NOT autonomously fix the one confirmed finding; park it.** The completed lenses
+(+ the cached codex-sol finding + my own compiled reproduction on `f52d3cf`) converge on a CRITICAL
+defect: the interior-tier exemption at `pkg/funding/evaluate.go:220` lets an owner that is both
+directly leaf-bound in ≥2 runnable namespaces AND interior evade `ConflictLeafOwnerSpansNamespaces`,
+minting a non-recallable cross-tenant Owned charge. I reproduced it: with an interior child,
+`OwnerOf(alice)==OwnerOf(bob)=="org:ai"` and `conflicts==[]`; without it, the fail-safe fires.
+
+Why parked rather than fixed: the exemption is **intentional** per `R7-tenancy-amendment.md`
+§4/§5/C-4 ("interior tiers may span admin namespaces"), with the residual hazard deliberately booked
+to the RBAC precondition + R26 alarm 3. Narrowing the exemption is a **tenancy design decision** that
+risks breaking the legitimately-allowed multi-namespace-pool case (a reaper), and the panel's
+reaper-veto lens never ran to vet any fix. Recorded as PARKED item **P5** in `DECISIONS-NEEDED.md`;
+review archived (PAUSED) under `reviews/2026-07-24-r7-pt2-owner-from-namespace-f52d3cf/`. Two LOW
+findings (diagnostic map nondeterminism at `evaluate.go:225`; `resolver.ownerOf` namespace fallback)
+noted UNRESOLVED for the same decision. Working tree left untouched per the owner directive
+("committed alongside the fixes once the panel lands" — it did not land). Not merged; no
+`.autopilot-done` (milestone review mid-flight).
+
+## 2026-07-24 — R7 pt2 cross-vendor adversarial panel: 13 fixes, 2 parked, verdict BLOCKED
+
+David authorised a pre-merge adversarial review of PR #127, overriding the playbook's
+no-per-PR-review rule, and asked for an OpenAI Codex seat on the panel as a cross-vendor finding
+lens. Full record: `../reviews/2026-07-24-r7-pt2-cross-vendor-panel-0b77fbe/`. Run
+`wf_7b4dc0d8-aa0`, reviewed commit `0b77fbe`.
+
+**Verdict is `BLOCKED`, not green.** Scout and Review completed; the session usage limit killed
+Attest, both retrying lenses, and Judge. Because no lens survived attestation the harness returned
+empty `confirmed`/`unresolved`/`attribution` arrays — fail-closed working as designed. Every
+finding is `UNRESOLVED` except four reproduced here with compiled tests.
+
+**Judgment call: stop before Judge rather than keep feeding a phase that has never completed.**
+The runner has 4 cores, so the harness caps concurrency at 2; Judge over 26 findings is ~150
+agents through a 2-wide queue. This review had already died mid-panel twice (segments 1 and 2) and
+delivered no adjudication either time. Banking verified fixes was worth more than a third attempt.
+Announced on issue #132 before doing it. **The cost, recorded rather than glossed: the fixes below
+were not reaper-checked by the fable consequence seat.**
+
+**Judgment call: replace the dead Attest phase with a deterministic check.** Every citation was
+re-read from `git show 0b77fbe:<file>` — the reviewed commit, not the working tree, which by then
+carried fixes — and matched verbatim within the same ±15-line tolerance the harness allows.
+**57/57 verified; no lens fabricated a citation**, including the cross-vendor relay.
+
+**Judgment call: no `commit` arg to the harness.** It turns `commit` into `git show <sha>`, which
+for an 8-commit stack is the last commit only — a docs-archive commit. Omitting it makes `DIFF`
+fall back to `git diff main...HEAD`; the head SHA went in `context` instead so the archive still
+pins what was reviewed.
+
+**Attribution (n=1, and the harness's own `confirmedFoundByExactlyOneLens` is unavailable because
+nothing was confirmed).** Computed by hand over raised findings: the cross-vendor seat raised two
+`high` findings **no Claude lens raised** — the retroactive GPU-hour rewrite (`evaluate.go:661`,
+now P6) and the unvalidated optional `PaidByBudgetNamespace` (`lease_types.go:61`, already F7(4)).
+The first came with a numeric prediction (4 / 0 / 12 charged GPU-hours across a conflict window)
+that reproduced to the digit. Four sole-lens findings came from **Opus** seats and none from the
+**fable** seat; the fable seat's distinctive contribution was instead to attack a *parking
+decision* — ruling `high` that P5's reaper rationale is unsupported, a verdict shape the harness
+has no name for.
+
+**Fixed (13), each mutation-verified, gate green (`make verify` incl. envtest + the 800-seed
+quiescence/eviction fuzzer under `-race`):** the reservation-activation hard error; the empty-owner
+reclaim/lottery bucket collapse; `deriveOwners` map-order nondeterminism (plus repetition *and*
+permutation rails); the promise path minting for an unbound namespace (via a new
+`funding.OwnerOfNamespace` that shares the engine's own `deriveOwners`, so plugin and engine cannot
+drift); `seg.Owner` pinning; two comments that asserted things nothing runs (R26 consuming
+`Conflicts()`; "coast" implying safety when Unfunded is the resolver's *first* reclaim target);
+the stale `spec.owner` in `internal/manifestcorpus` plus a new envtest proving the API server
+prunes a submitted `spec.owner`; the failing kind e2e; and four user-facing docs still teaching
+`spec.owner` — two of which also lacked a `namespace:`, which under this model shows an unfundable
+Run.
+
+**An existing assertion was reversed**, which class 8 says to record: `TestPromiseProvenanceValid`
+asserted *"seg.Owner is now COSMETIC"*. It is cosmetic to the funding decision but is copied onto
+`Lease.Spec.Owner` at mint, so leaving it unpinned lets a forged Promise pod state a false
+principal on a real GPU-holding lease. "Cannot mis-charge" and "cannot mis-state who holds the
+GPUs" are different guarantees; only the first survived the change. Pinning refuses nothing
+legitimate — `opportunisticCoverPlan` builds every real segment with exactly that owner.
+
+**Parked, not guessed:** **P5** (interior-tier exemption — ratified tenancy text; its reaper leg is
+now contested by the lens that owns it, recorded in the entry) and **P6** (should the fail-safe
+reach backwards through the replay). Both behaviours are now pinned by tests whose failure messages
+say "if this is the decision landing, assert the new semantics here", so neither can change by
+accident. **Not fixed and said so:** `metrics.BudgetKey` lacking a namespace — only reachable
+through the P5 hole, and changing exported metric labels is dashboard-visible; revisit with P5.
+
+Also removed `.autopilot-turn.log` from the branch (it had been committed by accident) and
+gitignored it.
+
+## 2026-07-24 (later) — the review's last lens landed and found defects in the review's own fixes
+
+`std:test-integrity` — the lens that mutates rather than argues — had failed to complete in four
+consecutive attempts. A fifth resume got it, with 8 findings, and it was worth the wait. Two
+confirm repairs already made (it rates the inverted `seg.Owner` provenance assertion **critical**,
+independently of the lens that first raised it, and spells out the attack). Two are against work
+done days earlier *in response to this same panel*:
+
+- **`resolver.ownerOf` still had an uncovered branch.** The earlier fix tested the supplied-
+  `Evaluation` path; the nil fallback was still replaceable by a constant with the suite green.
+  Now pinned, including an assertion that the two branches agree.
+- **A fixture written for this review built envelope-less Budgets**, the same defect the lens flags
+  in three older fixtures. `api/v1` rejects both an empty envelope list and `concurrency <= 0`, so
+  "bound to a namespace, owns no capacity" cannot be expressed by an empty Budget at all. The legal
+  encoding is an envelope of a different flavor. All four repaired, and
+  `TestTenancyFixturesAreLegalBudgets` now runs the shapes through `ValidateCreate` with a negative
+  case so the guard cannot go vacuous.
+
+**The best finding in the whole review is a shell script.** Seven `hack/e2e` smoke scripts still
+applied Run manifests carrying the deleted `spec.owner`. kubectl has defaulted to server-side strict
+field validation since v1.25, so six would simply break — but `runbook-smoke.sh` uses a **negative**
+assertion (it passes when the apply fails), so a stale field made it pass on strict decoding while
+proving nothing about the unreachable webhook it claims to test. Green for the wrong reason, and no
+amount of running the suite would surface it. Fixed in all seven, with a comment above the assertion
+saying the manifest must stay one the apiserver would otherwise accept.
+
+**Judgment call: the reaper gap was closed by hand rather than left as a caveat.** The earlier entry
+recorded that these fixes were never reaper-checked because Judge did not run. Each behavioural fix
+was put to the consequence lens's own question and the two with real answers were driven through the
+engine. The reservation-activation refusal is clean over 20 simulated hours — the run is not culled,
+the reservation is not superseded (the forecast path deletes and replaces reservations, which would
+have reset the countdown every tick), and the run recovers by itself once the binding is repaired.
+The `seg.Owner` pin is **not** free: `emitCohortPods` only tops up, so an owner rename mid-flight
+strands a Promise pod until someone deletes it. The self-healing alternative — overwrite `seg.Owner`
+at the mint — was rejected because it widens what the sole committer *writes* rather than what it
+refuses, and no panel vetted it. The trade-off is now a comment above the check.
+
+**Judgment call: stop resuming the panel, and record why it cannot finish.** `resumeFromRunId` caches
+only *completed* agent calls, and the two most expensive lenses are longer than a segment, so every
+resume restarted them and spent the segment back in Review. That is a livelock, not bad luck. Judge
+(≈250 agents through a 2-wide queue) is out of reach on a 4-core runner. The fix is cores, not
+retries — `min(16, cores−2)` makes a 16-core box an 8× fan-out. Recorded in the archive so the next
+run does not rediscover it.
+
+**Citation attestation, second pass: 83/85**, and both misses are informative rather than benign —
+one is the codex relay abbreviating a quote with an ellipsis (unverifiable, and the harness would be
+right to block it), the other is a lens quoting a comment that exists only in the *fix* on the
+branch, not at the reviewed commit. That second one is exactly the contamination the frozen tree was
+meant to prevent, and it is why attestation runs against `git show <sha>` and not the working tree.
+
+## 2026-07-25 (later) — the Judge phase overturned two of my own fixes, and I took both rulings
+
+The 2026-07-25 judge-only run adjudicated four findings and landed two of them on repairs I had
+made in response to the same panel. Both are now redone. Record:
+`../reviews/2026-07-25-r7pt2-judge-0b77fbe/`.
+
+**Overturned #1 — the reservation guard was a regression, not a safeguard (`8bfbca2`).** I had made
+the unbound/conflicted path non-terminal, arguing that terminating "would destroy a legitimate
+reservation over an admin typo somebody is about to correct" — the reaper shape. Three seats
+disagreed and two of them compiled probes on BOTH branches: `main` terminated at tick 1 via
+`failReservationNoEnvelope`; my branch left the reservation Pending at tick 20 with the backlog
+gauge frozen at 1020. `preExisting=false`, `fixIsReaper=false`, and a third probe demonstrated
+recovery after terminal failure. The amendment (`:126-127`, `:590`) had said terminally all along.
+
+**Judgment call: take the ruling rather than defend the reasoning.** My argument was not stupid, it
+was untested — and the seats tested it. What I had actually shipped was quieter error spam over an
+immortal reservation.
+
+The frozen gauge is the part worth remembering: `metrics.ClearReservationBacklog` is reached ONLY
+from terminal paths, so any "refuse this tick and return nil" shortcut leaves it stuck at its last
+value for the life of the process. The state was wrong and the metric lied about it in the same
+breath, which is why nothing looked broken. The transition is now factored into
+`failReservationTerminally` so a future terminal path cannot forget the gauge.
+
+**And `failReservationNoEnvelope` finally has tests.** It had none anywhere in the repo, on either
+branch — which is precisely why a guard could render it unreachable without anything going red. The
+panel named that. The new test reaches it honestly (namespace bound so the derived-owner guard does
+not fire; Budget legal but its only envelope is the wrong flavor). A third test pins the recovery
+claim I had disputed.
+
+**Overturned #2 — reaper veto on the `seg.Owner` pin (`ec5cb64`).** `fixIsReaper=true`, both halves
+executed rather than argued: `Evaluate` never reads `Lease.Spec.Owner` (a forged-owner lease and an
+honest one classified identically — Owned, width 4, 4 GPUs, 8 GPU-hours), and `gangProvenance`
+rebuilds segments from an existing lease's owner, so the pin would wedge a healthy, funded, RUNNING
+gang forever at PreBind. I had weighed a stranded Promise pod and missed the live gang entirely.
+
+**Judgment call: drop the pin and restore the assertion I had reversed**, with the veto's reasoning
+written into the test so nobody tightens it a third time. That line has now gone asserted-cosmetic →
+reversed → vetoed → restored, and it only ended in the right place because two seats ran code.
+`gang.go:731`'s refusal stays — the reproduce seat confirmed that one is a genuine regression.
+
+**Process note that cost real work.** Two mutation-verified fixes were built and then lost when the
+runner exited before they were pushed. They are re-derived here and pushed as separate commits the
+moment each went green. An unpushed fix is a fix that does not exist.
+
+**Codex seat, corrected diagnosis.** The seat is not broken and its auth is not stale: the
+subscription serves `gpt-5.6-sol` as its default and rejects every explicitly-named model
+(`gpt-5.6`, `gpt-5-codex`, `gpt-5` all 400 with "not supported when using Codex with a ChatGPT
+account"). The harness hardcodes `-m gpt-5.6` in both its preflight probe and its trace-seat prompt,
+which would silently drop a working seat to the announced Opus fallback. Patch filed in the archive
+for the harness's own PR, alongside the earlier attest-against-SHA one. Probed by forcing a
+filesystem read, never by exit code — the segment-1 trap where a seat looked alive while its shell
+was dead on every call.
+
+## 2026-07-26 — the #127 pre-merge list: the toolchain half, and the two gates that mirror it
+
+David wrote the three `MERGE-127.md` substitutions as source on `r7pt2/blocked-funding` (`9afbe19`) on
+a machine with no Go toolchain, and said so in the commit. This is the other half: compile, generate,
+test, gate. `9afbe19` turned out to be a direct descendant of the tenancy branch's head, so it
+fast-forwarded — no cherry-pick, no conflict.
+
+**The build was broken, and `go build ./... | head` said it was not.** Exit status came from `head`.
+That is `AGENTS.md:174` verbatim, and it cost one wrong claim on the status issue before `go vet`
+caught it: `blockReservationOnFunding` used `metav1.Time` in a package that imported no `metav1`.
+Worth writing down because the pipeline trap is most dangerous when you are *checking* something.
+
+**`make generate` + `make manifests` produced exactly what the caveat predicted**: 4 lines of deepcopy
+and 7 in each of the two Reservation CRDs, all for `blockedSince`. Committed on its own. The golden
+did not need re-topologizing — it captures class widths and lenders, and a status field the engine
+does not read cannot move it.
+
+### Judgment call: the same state gate is written in three places, and only one was widened
+
+`9afbe19` widened `ActivateReservations`' state filter to re-consider `BlockedFunding`. Two sibling
+filters test the same three strings and were not:
+
+- **`releasePendingReservations`** (`run_controller.go`). David flagged this one to check. It is real,
+  and reproduced before fixing: block the reservation, fail the run, tick five times — the reservation
+  stays `BlockedFunding` with `releasedAt` nil and a stale "no funding principal" reason, next to a
+  Failed run, forever. Under the terminal path substitution 1 replaces it would have been `Failed`. So
+  making the reservation non-terminal *without* widening this filter trades one immortal reservation
+  for another. `assertInvariantNoPendingReservationForRunningRun` missed it for the identical reason
+  and is widened too — an invariant a new state can slip past is not an invariant.
+- **`ReservationReconciler.Reconcile`** (`kube/reconcilers.go`). This is the one only a toolchain
+  could find, and it is the more serious of the two: that reconciler is the **sole caller** of
+  `ActivateReservations` on a real cluster, and it early-returns on any state that is not
+  `Pending`/`""` — with the requeue gated the same way. So the widened engine gate was **correct under
+  `go test` and inert in production**: no watch event reaches a blocked reservation (this reconciler
+  watches Reservations, and the repair is a write to a *Budget*), and no requeue means no poll.
+  "Recovery is automatic ... Nothing to resubmit" would have been true in the engine and false on a
+  cluster — `AGENTS.md:148-150`, a change that fails to achieve its stated purpose.
+
+Neither is a redesign of a substitution; both are the same gate, and `9afbe19` could only see one of
+them. Recorded here rather than parked because parking is for owner *decisions*, and "the fix should
+reach the code path it names" is not one.
+
+### Judgment call: a durable cause must not outlive its cause
+
+Writing the recovery test exposed a third thing, and this one *is* a change to the substitution's
+behaviour, so it is flagged on the issue as well as here.
+
+After the admin repairs the binding the run recovers fine — four intent pods, scheduling — but the
+reservation sat `BlockedFunding` with the stale reason for five ticks and counting. Cause:
+`activateReservation` takes the `runHasActivePods` early return once the run has re-admitted itself
+through `Reconcile`, and that guard never touches the reservation; the half-applied adoption branch
+has the same shape. So the object advertised a conflict that no longer existed until the plugin's
+leases finally landed and adoption released it.
+
+"Durable cause" means the reason survives the *tick*, not that it survives the *repair*. A status
+field asserting something false is the invisibility defect pointing the other way, which is the exact
+thing this state was introduced to remove. Added `unblockReservationOnFunding`, called ahead of every
+early return. It **clears** the onset rather than keeping it: `blockReservationOnFunding` preserves
+the onset across consecutive re-blocks so blocked-age cannot read zero, but a new block after a real
+repair is a new episode, and carrying the old onset forward would report an age covering a stretch
+when nothing was blocked at all.
+
+### Nine mutations, all red
+
+Because the recovery test on this branch had already passed once with its own repair deleted
+(`37270af`), none of this was taken on faith:
+
+| mutation | what went red |
+| --- | --- |
+| `blockReservationOnFunding` → `failReservationTerminally` | blocks + onset tests, on the returned error |
+| drop `ClearReservationBacklog` from the blocked path | `still reporting map[default/res:{H100-80GB 1020}]` — the original defect by name |
+| restamp `BlockedSince` every tick | `onset was RESTAMPED to 01:00, want the original 00:00` |
+| drop `BlockedFunding` from the activation gate | release + recovery |
+| drop `BlockedFunding` from `releasePendingReservations` | both release cases |
+| restore `and resubmit` | both message surfaces — run status *and* reservation reason |
+| delete the unblock call | recovery |
+| drop `BlockedFunding` from the reconciler's entry gate | both reconciler subtests |
+| drop it from the reconciler's requeue gate only | `RequeueAfter=0s` |
+
+Plus two on the plugin: restoring the blanket `return false` fails the two completion cases, and
+dropping the `held < recorded` bound fails the two growth cases. The plugin fixture is a **conflicted**
+namespace rather than an empty one on purpose — with no Budgets the envelope walk at the end of
+`promiseProvenanceValid` refuses anyway, so a permit could never be observed and every assertion would
+have been vacuous for the wrong reason. That is the same shape as the two decorative assertions this
+file has already had to repair.
 ## 2026-07-25 — the Judge phase finally ran, and it overturned two of my own calls
 
 Judge-only resume of `wf_7b4dc0d8-aa0` against `0b77fbe`. Full record:

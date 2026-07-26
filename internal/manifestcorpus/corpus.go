@@ -17,7 +17,7 @@ var Runs = []Case{
 		Name: "minimal valid run",
 		Manifest: `{
 			"metadata": {"name": "train", "namespace": "default"},
-			"spec": {"owner": "org:ai", "resources": {"gpuType": "H100-80GB", "totalGPUs": 8}}
+			"spec": {"resources": {"gpuType": "H100-80GB", "totalGPUs": 8}}
 		}`,
 	},
 	{
@@ -25,7 +25,6 @@ var Runs = []Case{
 		Manifest: `{
 			"metadata": {"name": "train", "namespace": "default"},
 			"spec": {
-				"owner": "org:ai",
 				"resources": {"gpuType": "H100-80GB", "totalGPUs": 16},
 				"locality": {"groupGPUs": 8},
 				"malleable": {"minTotalGPUs": 8, "maxTotalGPUs": 32, "stepGPUs": 8},
@@ -35,71 +34,66 @@ var Runs = []Case{
 		}`,
 	},
 	{
-		Name:     "missing owner",
-		Manifest: `{"spec": {"resources": {"gpuType": "H100-80GB", "totalGPUs": 8}}}`,
-		WantErr:  "spec.owner is required",
-	},
-	{
 		Name:     "missing gpuType",
-		Manifest: `{"spec": {"owner": "org:ai", "resources": {"totalGPUs": 8}}}`,
+		Manifest: `{"spec": {"resources": {"totalGPUs": 8}}}`,
 		WantErr:  "spec.resources.gpuType is required",
 	},
 	{
 		Name:     "zero GPUs",
-		Manifest: `{"spec": {"owner": "org:ai", "resources": {"gpuType": "H100-80GB", "totalGPUs": 0}}}`,
+		Manifest: `{"spec": {"resources": {"gpuType": "H100-80GB", "totalGPUs": 0}}}`,
 		WantErr:  "totalGPUs must be positive",
 	},
 	{
 		Name: "non-positive groupGPUs",
-		Manifest: `{"spec": {"owner": "org:ai", "resources": {"gpuType": "H100-80GB", "totalGPUs": 8},
+		Manifest: `{"spec": {"resources": {"gpuType": "H100-80GB", "totalGPUs": 8},
 			"locality": {"groupGPUs": 0}}}`,
 		WantErr: "groupGPUs must be positive",
 	},
 	{
 		Name: "malleable min above max",
-		Manifest: `{"spec": {"owner": "org:ai", "resources": {"gpuType": "H100-80GB", "totalGPUs": 16},
+		Manifest: `{"spec": {"resources": {"gpuType": "H100-80GB", "totalGPUs": 16},
 			"malleable": {"minTotalGPUs": 32, "maxTotalGPUs": 16, "stepGPUs": 8}}}`,
 		WantErr: "minTotalGPUs must be <= maxTotalGPUs",
 	},
 	{
 		Name: "malleable non-positive step",
-		Manifest: `{"spec": {"owner": "org:ai", "resources": {"gpuType": "H100-80GB", "totalGPUs": 16},
+		Manifest: `{"spec": {"resources": {"gpuType": "H100-80GB", "totalGPUs": 16},
 			"malleable": {"minTotalGPUs": 8, "maxTotalGPUs": 32, "stepGPUs": 0}}}`,
 		WantErr: "stepGPUs must be positive",
 	},
 	{
 		Name: "total above malleable max",
-		Manifest: `{"spec": {"owner": "org:ai", "resources": {"gpuType": "H100-80GB", "totalGPUs": 64},
+		Manifest: `{"spec": {"resources": {"gpuType": "H100-80GB", "totalGPUs": 64},
 			"malleable": {"minTotalGPUs": 8, "maxTotalGPUs": 32, "stepGPUs": 8}}}`,
 		WantErr: "must fall within malleable min/max",
 	},
 	{
 		Name: "total below malleable min",
-		Manifest: `{"spec": {"owner": "org:ai", "resources": {"gpuType": "H100-80GB", "totalGPUs": 4},
+		Manifest: `{"spec": {"resources": {"gpuType": "H100-80GB", "totalGPUs": 4},
 			"malleable": {"minTotalGPUs": 8, "maxTotalGPUs": 32, "stepGPUs": 8}}}`,
 		WantErr: "must fall within malleable min/max",
 	},
 	{
 		Name: "total misaligned with step",
-		Manifest: `{"spec": {"owner": "org:ai", "resources": {"gpuType": "H100-80GB", "totalGPUs": 12},
+		Manifest: `{"spec": {"resources": {"gpuType": "H100-80GB", "totalGPUs": 12},
 			"malleable": {"minTotalGPUs": 8, "maxTotalGPUs": 32, "stepGPUs": 8}}}`,
 		WantErr: "must align with malleable.stepGPUs",
 	},
 	{
 		Name: "desired outside malleable bounds",
-		Manifest: `{"spec": {"owner": "org:ai", "resources": {"gpuType": "H100-80GB", "totalGPUs": 16},
+		Manifest: `{"spec": {"resources": {"gpuType": "H100-80GB", "totalGPUs": 16},
 			"malleable": {"minTotalGPUs": 8, "maxTotalGPUs": 32, "stepGPUs": 8, "desiredTotalGPUs": 64}}}`,
 		WantErr: "desiredTotalGPUs must fall within min/max",
 	},
 	{
 		Name: "non-positive maxBorrowGPUs",
-		Manifest: `{"spec": {"owner": "org:ai", "resources": {"gpuType": "H100-80GB", "totalGPUs": 8},
+		Manifest: `{"spec": {"resources": {"gpuType": "H100-80GB", "totalGPUs": 8},
 			"funding": {"allowBorrow": true, "maxBorrowGPUs": 0}}}`,
 		WantErr: "maxBorrowGPUs must be positive",
 	},
 	{
 		Name: "negative sparesPerGroup",
-		Manifest: `{"spec": {"owner": "org:ai", "resources": {"gpuType": "H100-80GB", "totalGPUs": 8},
+		Manifest: `{"spec": {"resources": {"gpuType": "H100-80GB", "totalGPUs": 8},
 			"sparesPerGroup": -1}}`,
 		WantErr: "sparesPerGroup must be >= 0",
 	},

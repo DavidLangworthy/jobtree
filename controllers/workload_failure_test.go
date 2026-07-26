@@ -17,7 +17,6 @@ func roledFailureWorld(policy string, retries int32, phases []string) (*ClusterS
 	run := &v1.Run{
 		ObjectMeta: v1.ObjectMeta{Name: "job", Namespace: keys.DefaultNamespace},
 		Spec: v1.RunSpec{
-			Owner:     "team",
 			Resources: v1.RunResources{GPUType: "H100", TotalGPUs: int32(len(phases))},
 			Roles:     []v1.RunRole{{Name: "w", Width: int32(len(phases)), GPUsPerPod: 1, FailurePolicy: policy}},
 		},

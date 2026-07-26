@@ -6,7 +6,6 @@
     "namespace": "demo"
   },
   "spec": {
-    "owner": "org:demo:research",
     "resources": {
       "gpuType": "H100-80GB",
       "totalGPUs": 64

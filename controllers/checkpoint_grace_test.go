@@ -14,7 +14,6 @@ func checkpointFixtureState(checkpoint time.Duration) (*ClusterState, *v1.Run) {
 	run := &v1.Run{
 		ObjectMeta: v1.ObjectMeta{Name: "run", Namespace: "default"},
 		Spec: v1.RunSpec{
-			Owner:     "org:ai:team",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
 		},
 	}
@@ -23,7 +22,7 @@ func checkpointFixtureState(checkpoint time.Duration) (*ClusterState, *v1.Run) {
 	}
 	state := &ClusterState{
 		Budgets: []v1.Budget{{
-			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
 			Spec: v1.BudgetSpec{
 				Owner: "org:ai:team",
 				Envelopes: []v1.BudgetEnvelope{{

@@ -30,7 +30,6 @@ func TestRunEmitsRealSchedulingEvent(t *testing.T) {
 	run := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "events-run", Namespace: "default"},
 		Spec: v1.RunSpec{
-			Owner:     "org:team",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
 		},
 	}

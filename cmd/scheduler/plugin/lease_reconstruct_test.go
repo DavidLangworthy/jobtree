@@ -23,11 +23,12 @@ func mintedLease(name, podName, node string) v1.GPULease {
 			Labels: map[string]string{binder.LabelRunName: "train", binder.LabelRunRole: binder.RoleActive, binder.LabelGroupIndex: "0"},
 		},
 		Spec: v1.GPULeaseSpec{
-			Owner:          "org:ai:team",
-			RunRef:         v1.RunReference{Name: "train", Namespace: "default"},
-			Slice:          v1.GPULeaseSlice{Nodes: []string{node}, Role: binder.RoleActive},
-			PaidByBudget:   "team",
-			PaidByEnvelope: "west",
+			Owner:                 "org:ai:team",
+			RunRef:                v1.RunReference{Name: "train", Namespace: "default"},
+			Slice:                 v1.GPULeaseSlice{Nodes: []string{node}, Role: binder.RoleActive},
+			PaidByBudgetNamespace: "default",
+			PaidByBudget:          "team",
+			PaidByEnvelope:        "west",
 		},
 	}
 	admission.StampGangIdentity(&l, "0", podName)

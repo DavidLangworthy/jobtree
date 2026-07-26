@@ -17,6 +17,7 @@ import (
 	"github.com/davidlangworthy/jobtree/pkg/admission"
 	"github.com/davidlangworthy/jobtree/pkg/binder"
 	"github.com/davidlangworthy/jobtree/pkg/cover"
+	"github.com/davidlangworthy/jobtree/pkg/funding"
 	"github.com/davidlangworthy/jobtree/pkg/keys"
 	"github.com/davidlangworthy/jobtree/pkg/metrics"
 	"github.com/davidlangworthy/jobtree/pkg/pack"
@@ -688,6 +689,46 @@ func (m *gangManager) spareLeaseProvenanceValid(ctx context.Context, ns, runName
 	return false
 }
 
+// runMayCompleteWhileUnbound reports whether a run whose namespace currently has
+// no funding principal may still mint — i.e. whether this would be COMPLETION of
+// a commitment the cluster already authorized, rather than fresh acquisition.
+//
+// Two conditions, both necessary:
+//
+//   - the run already holds at least one OPEN lease. That lease could only have
+//     been minted while the namespace had a principal, so the commitment is
+//     already authorized. With zero open leases nothing was authorized and the
+//     R7 §4 fail-safe stands unchanged.
+//   - the currently held ACTIVE width is below the run's recorded width. This is
+//     the bound that makes the exception safe: it permits finishing and never
+//     growing. Without it a single lease would license unlimited minting in a
+//     namespace with no payer, which is worse than the stranding it fixes.
+//
+// Spares are excluded from the width count for the same reason Permit gates on
+// active width: a spare is not gang-active membership.
+func (m *gangManager) runMayCompleteWhileUnbound(ctx context.Context, run *v1.Run) bool {
+	recorded := int(run.Spec.Resources.TotalGPUs)
+	if recorded <= 0 {
+		return false
+	}
+	var leaseList v1.GPULeaseList
+	if err := m.reader.List(ctx, &leaseList); err != nil {
+		return false
+	}
+	held := 0
+	for i := range leaseList.Items {
+		l := &leaseList.Items[i]
+		if l.Status.Closed || l.Spec.Slice.Role == binder.RoleSpare {
+			continue
+		}
+		if l.Spec.RunRef.Namespace != run.Namespace || l.Spec.RunRef.Name != run.Name {
+			continue
+		}
+		held += len(l.Spec.Slice.Nodes)
+	}
+	return held > 0 && held < recorded
+}
+
 // promiseProvenanceValid reports whether a Promise pod's carried provenance may
 // charge the envelope it names, for its own Run. PreBind uses it as
 // defense-in-depth before minting a promised activation from pod-carried
@@ -723,25 +764,88 @@ func (m *gangManager) promiseProvenanceValid(ctx context.Context, ns, runName st
 	if run == nil {
 		return false
 	}
-	// seg.Owner is not what Evaluate charges, but a legitimate segment always has
-	// it equal to the run owner; keep it consistent so the minted lease's
-	// Spec.Owner is not misleading.
-	if seg.Owner != run.Spec.Owner {
+	// R7: the promise path only ever charges the run's OWN envelopes, so the
+	// charged Budget must live in the run's own namespace — which the API server
+	// authenticates (metadata.namespace cannot be forged). Namespace equality is
+	// forge-proof where the old owner-string equality was two writable fields
+	// agreeing with each other; with Run.Spec.Owner deleted it is also the only
+	// check available, and it is strictly stronger.
+	if seg.Namespace != run.Namespace {
 		return false
 	}
-	// The charge itself: the named budget must be owned by the run's owner and
+	// The charge itself: the named budget must live in the run's namespace and
 	// must actually carry the named envelope.
 	var budgetList v1.BudgetList
 	if err := m.reader.List(ctx, &budgetList); err != nil {
 		return false
 	}
+	// R7 §4: an UNBOUND or CONFLICTED namespace has no funding principal, and the
+	// amendment's fail-safe is that a fresh Run there is refused outright — cover
+	// finds no payer. The promise path deliberately SKIPS the funding gate and
+	// mints on carried provenance (that is why this function exists), so without
+	// this check the refusal holds on every path except the one that actually
+	// mints: an admin adds a second-owner Budget, the namespace goes conflicted,
+	// and a Promise pod issued a moment earlier still commits a lease at PreBind.
+	// Namespace equality alone cannot see it — both Budgets are in the run's own
+	// namespace, which is precisely what makes the namespace ambiguous.
+	//
+	// The lease that results is not a cross-tenant charge (it classes Unfunded, so
+	// it bills nobody), but it holds GPUs the fail-safe said this namespace could
+	// not acquire, and the sole committer is the wrong place to discover that.
+	derived := funding.OwnerOfNamespace(budgetList.Items, run.Namespace)
+	if derived == "" {
+		// FRESH ADMISSION is refused; COMPLETION of an already-authorized gang is
+		// not. The blanket refusal here stranded partial gangs, and the panel
+		// reproduced it: a 4-GPU Promise gang with 2 ranks minted, an admin adds a
+		// second-owner Budget, and 20 hours later the leases are still open,
+		// Unfunded hours are still climbing, pods are re-emitted forever, and a
+		// rank lost to node failure can never be replaced. The gang holds real
+		// GPUs while doing no runnable work — the worst of both endpoints.
+		//
+		// The discriminator is whether this run already holds an open lease. If it
+		// does, the cluster already authorized this commitment while the namespace
+		// HAD a principal, and finishing it is continuation, not acquisition. If it
+		// does not, nothing was authorized and the fail-safe stands.
+		//
+		// Bounded by the run's recorded width, so this permits completion and never
+		// growth: an unbound namespace can finish what it started and acquire
+		// nothing new. That bound is what keeps this from being a hole — without it,
+		// one lease would license unlimited minting in a namespace with no payer.
+		if !m.runMayCompleteWhileUnbound(ctx, run) {
+			return false
+		}
+	}
+	// seg.Owner IS DELIBERATELY NOT CHECKED, and this comment is the receipt.
+	//
+	// A pin (`seg.Owner != derived -> refuse`) shipped here on 2026-07-24 and was
+	// VETOED by the 2026-07-25 adversarial panel's consequence seat with
+	// fixIsReaper=true. Both voting seats ran code. The two halves of the ruling:
+	//
+	//   IT BUYS NOTHING. pkg/funding.Evaluate never reads Lease.Spec.Owner -- the
+	//   panel confirmed that by exhaustive grep and then by execution: a
+	//   forged-owner lease and an honest one classified IDENTICALLY (Owned,
+	//   funded width 4, 4 GPUs, 8 GPU-hours). Evaluate bills by EnvelopeKey and
+	//   reads the owner off the real Budget. Owner strings are not secrets.
+	//
+	//   IT REAPS. Via the top-up path (controllers.RunController.gangProvenance,
+	//   run_controller.go:2833 at the time of writing -- grep the NAME, not the
+	//   line: this very comment already outlived one line range) a segment is
+	//   reconstructed from an EXISTING lease's
+	//   Spec.Owner. A legacy value, or an admin reorganising Budget.Spec.Owner,
+	//   would then wedge a healthy, funded, RUNNING gang forever on PreBind
+	//   refusal. The shipped comment weighed only a stranded Promise pod and
+	//   missed this case entirely -- a live gang is a different order of harm.
+	//
+	// What actually protects the ledger is the namespace check above plus the
+	// derived-owner check: a promise can only ever charge a Budget in the run's
+	// own namespace, and only when that namespace HAS a principal. Owner-string
+	// forgery survives as a cosmetic lie in `kubectl get gpuleases`, is strictly
+	// narrower than what R7 pt2 removed (Run.Spec.Owner was load-bearing for
+	// funding; this is not), and is not worth wedging running work to prevent.
 	for i := range budgetList.Items {
 		b := &budgetList.Items[i]
-		if b.Name != seg.BudgetName {
+		if b.Namespace != run.Namespace || b.Name != seg.BudgetName {
 			continue
-		}
-		if b.Spec.Owner != run.Spec.Owner {
-			return false
 		}
 		for _, env := range b.Spec.Envelopes {
 			if env.Name == seg.EnvelopeName {

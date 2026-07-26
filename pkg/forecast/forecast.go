@@ -233,10 +233,11 @@ func computeHeadroom(in Input) int {
 	if admitted.IsZero() {
 		admitted = in.Now
 	}
-	admission := in.Evaluation.NewAdmission(in.Run.Spec.Owner, admitted, in.CoverRequest.RunKey)
+	owner := in.Evaluation.OwnerOf(in.Run.Namespace)
+	admission := in.Evaluation.NewAdmission(owner, admitted, in.CoverRequest.RunKey)
 	remaining := 0
 	for _, acct := range in.Evaluation.Envelopes() {
-		if acct.Owner != in.Run.Spec.Owner {
+		if acct.Owner != owner {
 			continue
 		}
 		if acct.Spec.Flavor != in.Run.Spec.Resources.GPUType {
@@ -268,8 +269,9 @@ func windowAllowsAdmission(env v1.BudgetEnvelope, now time.Time) bool {
 func selectEnvelope(in Input, scope map[string]string) (*funding.EnvelopeAccount, error) {
 	candidates := []*funding.EnvelopeAccount{}
 	if in.Evaluation != nil {
+		owner := in.Evaluation.OwnerOf(in.Run.Namespace)
 		for _, acct := range in.Evaluation.Envelopes() {
-			if acct.Owner != in.Run.Spec.Owner {
+			if acct.Owner != owner {
 				continue
 			}
 			if acct.Spec.Flavor != in.Run.Spec.Resources.GPUType {

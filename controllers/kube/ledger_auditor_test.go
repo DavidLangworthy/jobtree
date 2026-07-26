@@ -249,7 +249,6 @@ func TestAuditorReadsAnOrphanFromTheRealAPIServer(t *testing.T) {
 	run := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "auditor-run"},
 		Spec: v1.RunSpec{
-			Owner:     "org:team",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
 		},
 	}

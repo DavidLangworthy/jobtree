@@ -47,7 +47,7 @@ func TestPlanSimpleFit(t *testing.T) {
 	in := Input{
 		Now: now,
 		Budgets: []v1.Budget{{
-			ObjectMeta: v1.ObjectMeta{Name: "rai"},
+			ObjectMeta: v1.ObjectMeta{Name: "rai", Namespace: "default"},
 			Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
 				Name: "west-h100", Flavor: "H100-80GB", Selector: sel(), Concurrency: 8,
 			}}},
@@ -55,7 +55,7 @@ func TestPlanSimpleFit(t *testing.T) {
 		Nodes: []topology.SourceNode{node("node-a", 4)},
 		Run: &v1.Run{
 			ObjectMeta: v1.ObjectMeta{Name: "train-8", Namespace: "default"},
-			Spec:       v1.RunSpec{Owner: "org:ai:rai", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4}},
+			Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4}},
 		},
 	}
 	in.Runs = map[string]*v1.Run{"default/train-8": in.Run}
@@ -92,10 +92,10 @@ func TestPlanBorrowSponsorRuns(t *testing.T) {
 	in := Input{
 		Now: now,
 		Budgets: []v1.Budget{
-			{ObjectMeta: v1.ObjectMeta{Name: "rai"}, Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
+			{ObjectMeta: v1.ObjectMeta{Name: "rai", Namespace: "default"}, Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
 				Name: "west-h100", Flavor: "H100-80GB", Selector: sel(), Concurrency: 96,
 			}}}},
-			{ObjectMeta: v1.ObjectMeta{Name: "vision"}, Spec: v1.BudgetSpec{Owner: "org:ai:mm:vision", Envelopes: []v1.BudgetEnvelope{{
+			{ObjectMeta: v1.ObjectMeta{Name: "vision", Namespace: "vision"}, Spec: v1.BudgetSpec{Owner: "org:ai:mm:vision", Envelopes: []v1.BudgetEnvelope{{
 				Name: "west-h100", Flavor: "H100-80GB", Selector: sel(), Concurrency: 64,
 				Lending: &v1.LendingPolicy{Allow: true, To: []string{"org:ai:rai", "org:ai:rai:*"}, MaxConcurrency: i32(32)},
 			}}}},
@@ -106,7 +106,7 @@ func TestPlanBorrowSponsorRuns(t *testing.T) {
 	}
 	in.Run = &v1.Run{
 		ObjectMeta: v1.ObjectMeta{Name: "train-128", Namespace: "default"},
-		Spec: v1.RunSpec{Owner: "org:ai:rai", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 128},
+		Spec: v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 128},
 			Locality: &v1.RunLocality{GroupGPUs: i32(32)},
 			Funding:  &v1.RunFunding{AllowBorrow: true, MaxBorrowGPUs: i32(64), Sponsors: []string{"org:ai:mm:vision"}}},
 	}
@@ -141,10 +141,10 @@ func TestPerPodPayerAttributesOwnedBeforeBorrowed(t *testing.T) {
 	in := Input{
 		Now: now,
 		Budgets: []v1.Budget{
-			{ObjectMeta: v1.ObjectMeta{Name: "rai"}, Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
+			{ObjectMeta: v1.ObjectMeta{Name: "rai", Namespace: "default"}, Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
 				Name: "west-h100", Flavor: "H100-80GB", Selector: sel(), Concurrency: 96,
 			}}}},
-			{ObjectMeta: v1.ObjectMeta{Name: "vision"}, Spec: v1.BudgetSpec{Owner: "org:ai:mm:vision", Envelopes: []v1.BudgetEnvelope{{
+			{ObjectMeta: v1.ObjectMeta{Name: "vision", Namespace: "vision"}, Spec: v1.BudgetSpec{Owner: "org:ai:mm:vision", Envelopes: []v1.BudgetEnvelope{{
 				Name: "west-h100", Flavor: "H100-80GB", Selector: sel(), Concurrency: 64,
 				Lending: &v1.LendingPolicy{Allow: true, To: []string{"org:ai:rai", "org:ai:rai:*"}, MaxConcurrency: i32(32)},
 			}}}},
@@ -155,7 +155,7 @@ func TestPerPodPayerAttributesOwnedBeforeBorrowed(t *testing.T) {
 	}
 	in.Run = &v1.Run{
 		ObjectMeta: v1.ObjectMeta{Name: "train-128", Namespace: "default"},
-		Spec: v1.RunSpec{Owner: "org:ai:rai", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 128},
+		Spec: v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 128},
 			Locality: &v1.RunLocality{GroupGPUs: i32(32)},
 			Funding:  &v1.RunFunding{AllowBorrow: true, MaxBorrowGPUs: i32(64), Sponsors: []string{"org:ai:mm:vision"}}},
 	}
@@ -211,14 +211,14 @@ func TestFeasibleQuantityFundsDeltaOnly(t *testing.T) {
 		in := Input{
 			Now: now,
 			Budgets: []v1.Budget{{
-				ObjectMeta: v1.ObjectMeta{Name: "team"},
+				ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
 				Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
 					Name: "west", Flavor: "H100-80GB", Selector: sel(), Concurrency: 128,
 				}}},
 			}},
 			Run: &v1.Run{
 				ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"},
-				Spec: v1.RunSpec{Owner: "org:ai:rai", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 96},
+				Spec: v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 96},
 					Locality: &v1.RunLocality{GroupGPUs: i32(32)}},
 			},
 		}
@@ -265,14 +265,14 @@ func TestFeasibleQuantityDeltaRespectsBudget(t *testing.T) {
 	in := Input{
 		Now: now,
 		Budgets: []v1.Budget{{
-			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
 			Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
 				Name: "west", Flavor: "H100-80GB", Selector: sel(), Concurrency: 96, // exactly the base
 			}}},
 		}},
 		Run: &v1.Run{
 			ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"},
-			Spec: v1.RunSpec{Owner: "org:ai:rai", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 96},
+			Spec: v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 96},
 				Locality: &v1.RunLocality{GroupGPUs: i32(32)}},
 		},
 	}
@@ -298,7 +298,7 @@ func TestPlanCapacityMissingErrors(t *testing.T) {
 	in := Input{
 		Now: now,
 		Budgets: []v1.Budget{{
-			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
 			Spec: v1.BudgetSpec{Owner: "org:ai:team", Envelopes: []v1.BudgetEnvelope{{
 				Name: "west", Flavor: "H100-80GB", Selector: sel(), Concurrency: 16,
 			}}},
@@ -306,7 +306,7 @@ func TestPlanCapacityMissingErrors(t *testing.T) {
 		Nodes: []topology.SourceNode{node("node-a", 4)},
 		Run: &v1.Run{
 			ObjectMeta: v1.ObjectMeta{Name: "train-8", Namespace: "default"},
-			Spec:       v1.RunSpec{Owner: "org:ai:team", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 8}},
+			Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 8}},
 		},
 	}
 	in.Runs = map[string]*v1.Run{"default/train-8": in.Run}
@@ -323,10 +323,10 @@ func TestPlanBorrowLimitedErrors(t *testing.T) {
 	in := Input{
 		Now: now,
 		Budgets: []v1.Budget{
-			{ObjectMeta: v1.ObjectMeta{Name: "rai"}, Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
+			{ObjectMeta: v1.ObjectMeta{Name: "rai", Namespace: "default"}, Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
 				Name: "west-h100", Flavor: "H100-80GB", Selector: sel(), Concurrency: 64,
 			}}}},
-			{ObjectMeta: v1.ObjectMeta{Name: "vision"}, Spec: v1.BudgetSpec{Owner: "org:ai:mm:vision", Envelopes: []v1.BudgetEnvelope{{
+			{ObjectMeta: v1.ObjectMeta{Name: "vision", Namespace: "vision"}, Spec: v1.BudgetSpec{Owner: "org:ai:mm:vision", Envelopes: []v1.BudgetEnvelope{{
 				Name: "west-h100", Flavor: "H100-80GB", Selector: sel(), Concurrency: 64,
 				Lending: &v1.LendingPolicy{Allow: true, To: []string{"org:ai:rai", "org:ai:rai:*"}},
 			}}}},
@@ -337,7 +337,7 @@ func TestPlanBorrowLimitedErrors(t *testing.T) {
 	}
 	in.Run = &v1.Run{
 		ObjectMeta: v1.ObjectMeta{Name: "train-128", Namespace: "default"},
-		Spec: v1.RunSpec{Owner: "org:ai:rai", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 128},
+		Spec: v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 128},
 			Locality: &v1.RunLocality{GroupGPUs: i32(32)},
 			Funding:  &v1.RunFunding{AllowBorrow: true, MaxBorrowGPUs: i32(8), Sponsors: []string{"org:ai:mm:vision"}}},
 	}

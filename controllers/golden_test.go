@@ -61,7 +61,7 @@ func scnSimpleFit() (*ClusterState, time.Time) {
 	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	state := &ClusterState{
 		Budgets: []v1.Budget{{
-			ObjectMeta: v1.ObjectMeta{Name: "rai"},
+			ObjectMeta: v1.ObjectMeta{Name: "rai", Namespace: "default"},
 			Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
 				Name: "west-h100", Flavor: "H100-80GB", Selector: goldenSel(), Concurrency: 8,
 			}}},
@@ -69,7 +69,7 @@ func scnSimpleFit() (*ClusterState, time.Time) {
 		Nodes: []topology.SourceNode{goldenNode("node-a", 4)},
 		Runs: map[string]*v1.Run{"default/train-8": {
 			ObjectMeta: v1.ObjectMeta{Name: "train-8", Namespace: "default"},
-			Spec:       v1.RunSpec{Owner: "org:ai:rai", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4}},
+			Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4}},
 		}},
 	}
 	NewRunController(state, runClock{now: now}).Reconcile("default", "train-8")
@@ -84,10 +84,10 @@ func scnBorrowSponsorRuns() (*ClusterState, time.Time) {
 	limit := int32(32)
 	state := &ClusterState{
 		Budgets: []v1.Budget{
-			{ObjectMeta: v1.ObjectMeta{Name: "rai"}, Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
+			{ObjectMeta: v1.ObjectMeta{Name: "rai", Namespace: "default"}, Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
 				Name: "west-h100", Flavor: "H100-80GB", Selector: goldenSel(), Concurrency: 96,
 			}}}},
-			{ObjectMeta: v1.ObjectMeta{Name: "vision"}, Spec: v1.BudgetSpec{Owner: "org:ai:mm:vision", Envelopes: []v1.BudgetEnvelope{{
+			{ObjectMeta: v1.ObjectMeta{Name: "vision", Namespace: "vision"}, Spec: v1.BudgetSpec{Owner: "org:ai:mm:vision", Envelopes: []v1.BudgetEnvelope{{
 				Name: "west-h100", Flavor: "H100-80GB", Selector: goldenSel(), Concurrency: 64,
 				Lending: &v1.LendingPolicy{Allow: true, To: []string{"org:ai:rai", "org:ai:rai:*"}, MaxConcurrency: &limit},
 			}}}},
@@ -99,7 +99,7 @@ func scnBorrowSponsorRuns() (*ClusterState, time.Time) {
 	maxBorrow, group := int32(64), int32(32)
 	state.Runs = map[string]*v1.Run{"default/train-128": {
 		ObjectMeta: v1.ObjectMeta{Name: "train-128", Namespace: "default"},
-		Spec: v1.RunSpec{Owner: "org:ai:rai", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 128},
+		Spec: v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 128},
 			Locality: &v1.RunLocality{GroupGPUs: &group},
 			Funding:  &v1.RunFunding{AllowBorrow: true, MaxBorrowGPUs: &maxBorrow, Sponsors: []string{"org:ai:mm:vision"}}},
 	}}
@@ -114,10 +114,10 @@ func scnBorrowLimitedReservation() (*ClusterState, time.Time) {
 	now := time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC)
 	state := &ClusterState{
 		Budgets: []v1.Budget{
-			{ObjectMeta: v1.ObjectMeta{Name: "rai"}, Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
+			{ObjectMeta: v1.ObjectMeta{Name: "rai", Namespace: "default"}, Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
 				Name: "west-h100", Flavor: "H100-80GB", Selector: goldenSel(), Concurrency: 64,
 			}}}},
-			{ObjectMeta: v1.ObjectMeta{Name: "vision"}, Spec: v1.BudgetSpec{Owner: "org:ai:mm:vision", Envelopes: []v1.BudgetEnvelope{{
+			{ObjectMeta: v1.ObjectMeta{Name: "vision", Namespace: "vision"}, Spec: v1.BudgetSpec{Owner: "org:ai:mm:vision", Envelopes: []v1.BudgetEnvelope{{
 				Name: "west-h100", Flavor: "H100-80GB", Selector: goldenSel(), Concurrency: 64,
 				Lending: &v1.LendingPolicy{Allow: true, To: []string{"org:ai:rai", "org:ai:rai:*"}},
 			}}}},
@@ -129,7 +129,7 @@ func scnBorrowLimitedReservation() (*ClusterState, time.Time) {
 	maxBorrow, group := int32(8), int32(32)
 	state.Runs = map[string]*v1.Run{"default/train-128": {
 		ObjectMeta: v1.ObjectMeta{Name: "train-128", Namespace: "default"},
-		Spec: v1.RunSpec{Owner: "org:ai:rai", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 128},
+		Spec: v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 128},
 			Locality: &v1.RunLocality{GroupGPUs: &group},
 			Funding:  &v1.RunFunding{AllowBorrow: true, MaxBorrowGPUs: &maxBorrow, Sponsors: []string{"org:ai:mm:vision"}}},
 	}}
@@ -144,7 +144,7 @@ func scnCapacityMissingReservation() (*ClusterState, time.Time) {
 	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	state := &ClusterState{
 		Budgets: []v1.Budget{{
-			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
 			Spec: v1.BudgetSpec{Owner: "org:ai:team", Envelopes: []v1.BudgetEnvelope{{
 				Name: "west", Flavor: "H100-80GB", Selector: goldenSel(), Concurrency: 16,
 			}}},
@@ -152,7 +152,7 @@ func scnCapacityMissingReservation() (*ClusterState, time.Time) {
 		Nodes: []topology.SourceNode{goldenNode("node-a", 4)},
 		Runs: map[string]*v1.Run{"default/train-8": {
 			ObjectMeta: v1.ObjectMeta{Name: "train-8", Namespace: "default"},
-			Spec:       v1.RunSpec{Owner: "org:ai:team", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 8}},
+			Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 8}},
 		}},
 	}
 	NewRunController(state, runClock{now: now}).Reconcile("default", "train-8")
@@ -165,7 +165,7 @@ func scnElasticGrow() (*ClusterState, time.Time) {
 	now := time.Date(2024, 2, 2, 10, 0, 0, 0, time.UTC)
 	state := &ClusterState{
 		Budgets: []v1.Budget{{
-			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
 			Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
 				Name: "west", Flavor: "H100-80GB", Selector: goldenSel(), Concurrency: 256,
 			}}},
@@ -177,7 +177,7 @@ func scnElasticGrow() (*ClusterState, time.Time) {
 	desired, group := int32(160), int32(32)
 	state.Runs = map[string]*v1.Run{"default/train": {
 		ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"},
-		Spec: v1.RunSpec{Owner: "org:ai:rai", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 96},
+		Spec: v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 96},
 			Locality:  &v1.RunLocality{GroupGPUs: &group},
 			Malleable: &v1.RunMalleability{MinTotalGPUs: 96, MaxTotalGPUs: 160, StepGPUs: 32, DesiredTotalGPUs: &desired}},
 	}}
@@ -194,7 +194,7 @@ func scnNodeFailureSwap() (*ClusterState, time.Time) {
 	now := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
 	state := &ClusterState{
 		Budgets: []v1.Budget{{
-			ObjectMeta: v1.ObjectMeta{Name: "team"},
+			ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
 			Spec: v1.BudgetSpec{Owner: "org:ai:team", Envelopes: []v1.BudgetEnvelope{{
 				Name: "west", Flavor: "H100-80GB", Selector: goldenSel(), Concurrency: 8,
 			}}},
@@ -202,7 +202,7 @@ func scnNodeFailureSwap() (*ClusterState, time.Time) {
 		Nodes: []topology.SourceNode{goldenNode("node-a", 4), goldenNode("node-b", 4)},
 		Runs: map[string]*v1.Run{"default/run": {
 			ObjectMeta: v1.ObjectMeta{Name: "run", Namespace: "default"},
-			Spec: v1.RunSpec{Owner: "org:ai:team", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
+			Spec: v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
 				Locality: &v1.RunLocality{GroupGPUs: int32Ptr(4)}, Spares: int32Ptr(2)},
 		}},
 	}

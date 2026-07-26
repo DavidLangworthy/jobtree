@@ -33,7 +33,7 @@ func TestFoldReservesCommittedCapacityWhenTheRealLeaseIsNotYetInTheSnapshot(t *t
 
 	// Gang A: decided + fundable, its single 4-GPU member claimed and MINTED in memory,
 	// but with no real lease in the client.
-	segA := cover.Segment{Owner: "org:ai:team", BudgetName: "team", EnvelopeName: "west"}
+	segA := cover.Segment{Namespace: "default", Owner: "org:ai:team", BudgetName: "team", EnvelopeName: "west"}
 	aKey := keys.NamespacedKey("default", "train")
 	m.gangs[aKey] = &gangCommit{
 		decided:     true,
@@ -73,7 +73,7 @@ func TestFoldSkipsThePhantomWhenTheRealLeaseIsInTheSnapshot(t *testing.T) {
 	aLease.Spec.Slice.Nodes = []string{"node-a#0", "node-a#1", "node-a#2", "node-a#3"} // 4 GPUs
 	m := newManager(t, trainRun(), train2Run(), teamBudget(8), gpuNode("node-a", 16), &aLease)
 
-	segA := cover.Segment{Owner: "org:ai:team", BudgetName: "team", EnvelopeName: "west"}
+	segA := cover.Segment{Namespace: "default", Owner: "org:ai:team", BudgetName: "team", EnvelopeName: "west"}
 	aKey := keys.NamespacedKey("default", "train")
 	m.gangs[aKey] = &gangCommit{
 		decided: true, fundable: true, gpusPerPod: 4,

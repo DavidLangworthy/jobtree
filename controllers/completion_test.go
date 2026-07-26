@@ -14,7 +14,7 @@ import (
 func completionWorld(activePhases []string, sparePhase string) (*ClusterState, string) {
 	run := &v1.Run{
 		ObjectMeta: v1.ObjectMeta{Name: "job", Namespace: keys.DefaultNamespace},
-		Spec:       v1.RunSpec{Owner: "team", Resources: v1.RunResources{GPUType: "H100", TotalGPUs: int32(len(activePhases))}},
+		Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: "H100", TotalGPUs: int32(len(activePhases))}},
 		Status:     v1.RunStatus{Phase: RunPhaseRunning},
 	}
 	key := keys.NamespacedKey(run.Namespace, run.Name)

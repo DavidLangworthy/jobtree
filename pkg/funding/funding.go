@@ -149,7 +149,9 @@ func (g *FamilyGraph) Tier(envelopeOwner, runOwner string) int {
 	return tierNone
 }
 
-func sortedKeys(m map[string]struct{}) []string {
+// sortedKeys returns a map's keys in ascending order, so a walk over them is a
+// specification rather than a coincidence of Go's randomized map iteration.
+func sortedKeys[V any](m map[string]V) []string {
 	if len(m) == 0 {
 		return nil
 	}

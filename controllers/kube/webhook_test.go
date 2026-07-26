@@ -182,7 +182,6 @@ func TestTheWebhookStillCarriesWhatOnlyItCan(t *testing.T) {
 		run := &v1.Run{
 			ObjectMeta: metav1.ObjectMeta{Name: "ouroboros", Namespace: "default"},
 			Spec: v1.RunSpec{
-				Owner:     "org:team",
 				Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 8},
 				Follow:    &v1.RunFollow{After: []string{"ouroboros"}},
 			},
@@ -201,7 +200,6 @@ func TestWebhookAppliesRunDefaults(t *testing.T) {
 	run := &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "defaulted", Namespace: "default"},
 		Spec: v1.RunSpec{
-			Owner:     "org:team",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 16},
 			Malleable: &v1.RunMalleability{MinTotalGPUs: 8, MaxTotalGPUs: 32, StepGPUs: 8},
 		},

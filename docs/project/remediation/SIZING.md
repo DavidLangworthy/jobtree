@@ -67,7 +67,7 @@ Three multipliers, learned the hard way:
 | ✅ | **R21 / R22 / R25** node-failure bundle | fencing + slot-exact reclaim + spare-leak (#72) |
 | ✅ | **R10 / R16 / R17 / R19 / R24** | mechanical + hygiene, all landed |
 | ◐ | **R4** plugin hot path | pt1 metrics, pt2a compaction, **pt1b safe-fold core (#99)** done; pt1b reader-swap (perf) + pt2b settlement store (feature) open |
-| ◐ | **R7** namespace tenancy | pt1 envelope key (#87) done; **pt2 delete `Run.Spec.Owner`** open (authz decision, deferred by ruling) |
+| ◐ | **R7** namespace tenancy | pt1 envelope key (#87) done; **pt2 delete `Run.Spec.Owner`, owner derived from namespace** — APPROVED & UNPARKED by David (2026-07-24), PR open (flagged for pre-merge sole-committer review) |
 | ✅ | **R11 – R14** k8s conventions | all four done (2026-07-23): conditions, ownerRefs/finalizers, the `Lease`→`GPULease` clean break, and CRD/CEL validation |
 | ✅ | **R15 / R18** admin | R15 install/release images and R18 the day-2 runbook, both done (2026-07-23) |
 | ✅ | **R20 / R23** observability | **R20 done (2026-07-23):** plugin EventRecorder + vocabulary, mirrored to Run, `explain` aggregates. **R23 done (2026-07-23):** `runs pods`/`logs`/`artifacts` CLI + `/artifacts` convention |

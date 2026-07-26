@@ -103,13 +103,14 @@ func seedSwapLease(t *testing.T, state *ClusterState, runName string, now time.T
 			},
 		},
 		Spec: v1.GPULeaseSpec{
-			Owner:          pod.Annotations[binder.AnnotationPayerOwner],
-			RunRef:         v1.RunReference{Name: pod.Labels[binder.LabelRunName], Namespace: pod.Namespace},
-			Slice:          v1.GPULeaseSlice{Nodes: slots, Role: binder.RoleActive},
-			Interval:       v1.GPULeaseInterval{Start: v1.NewTime(now)},
-			PaidByBudget:   pod.Annotations[binder.AnnotationPayerBudget],
-			PaidByEnvelope: pod.Annotations[binder.AnnotationPayerEnvelope],
-			Reason:         "Swap",
+			Owner:                 pod.Annotations[binder.AnnotationPayerOwner],
+			RunRef:                v1.RunReference{Name: pod.Labels[binder.LabelRunName], Namespace: pod.Namespace},
+			Slice:                 v1.GPULeaseSlice{Nodes: slots, Role: binder.RoleActive},
+			Interval:              v1.GPULeaseInterval{Start: v1.NewTime(now)},
+			PaidByBudget:          pod.Annotations[binder.AnnotationPayerBudget],
+			PaidByBudgetNamespace: pod.Annotations[binder.AnnotationPayerNamespace],
+			PaidByEnvelope:        pod.Annotations[binder.AnnotationPayerEnvelope],
+			Reason:                "Swap",
 		},
 	}
 	state.Leases = append(state.Leases, lease)
@@ -150,13 +151,14 @@ func seedPromiseLeases(t *testing.T, state *ClusterState, runName string, now ti
 				Labels:    map[string]string{binder.LabelRunName: runName, binder.LabelGroupIndex: "0", binder.LabelRunRole: role},
 			},
 			Spec: v1.GPULeaseSpec{
-				Owner:          p.Annotations[binder.AnnotationPayerOwner],
-				RunRef:         v1.RunReference{Name: runName, Namespace: p.Namespace},
-				Slice:          v1.GPULeaseSlice{Nodes: slots, Role: role},
-				Interval:       v1.GPULeaseInterval{Start: v1.NewTime(now)},
-				PaidByBudget:   p.Annotations[binder.AnnotationPayerBudget],
-				PaidByEnvelope: p.Annotations[binder.AnnotationPayerEnvelope],
-				Reason:         binder.LeaseReasonPromise,
+				Owner:                 p.Annotations[binder.AnnotationPayerOwner],
+				RunRef:                v1.RunReference{Name: runName, Namespace: p.Namespace},
+				Slice:                 v1.GPULeaseSlice{Nodes: slots, Role: role},
+				Interval:              v1.GPULeaseInterval{Start: v1.NewTime(now)},
+				PaidByBudget:          p.Annotations[binder.AnnotationPayerBudget],
+				PaidByBudgetNamespace: p.Annotations[binder.AnnotationPayerNamespace],
+				PaidByEnvelope:        p.Annotations[binder.AnnotationPayerEnvelope],
+				Reason:                binder.LeaseReasonPromise,
 			},
 		})
 		minted++

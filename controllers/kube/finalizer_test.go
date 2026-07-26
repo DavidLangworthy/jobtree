@@ -29,7 +29,7 @@ func req(name string) ctrl.Request {
 func liveRun(name string, finalizers ...string) *v1.Run {
 	return &v1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default", Finalizers: finalizers},
-		Spec:       v1.RunSpec{Owner: "org:team", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 1}},
+		Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 1}},
 		Status:     v1.RunStatus{Phase: controllers.RunPhaseRunning},
 	}
 }

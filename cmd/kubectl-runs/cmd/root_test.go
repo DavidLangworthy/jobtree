@@ -22,7 +22,7 @@ func TestSubmitPlanAndBudgets(t *testing.T) {
 		Reservations: map[string]*v1.Reservation{},
 		Budgets: []v1.Budget{
 			{
-				ObjectMeta: v1.ObjectMeta{Name: "team-a"},
+				ObjectMeta: v1.ObjectMeta{Name: "team-a", Namespace: "default"},
 				Spec: v1.BudgetSpec{
 					Owner: "org:team-a",
 					Envelopes: []v1.BudgetEnvelope{
@@ -113,7 +113,6 @@ func TestSponsorsAndShrink(t *testing.T) {
 	run := &v1.Run{
 		ObjectMeta: v1.ObjectMeta{Name: "elastic", Namespace: "default"},
 		Spec: v1.RunSpec{
-			Owner:     "org:team-a",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 8},
 			Malleable: &v1.RunMalleability{MinTotalGPUs: 4, MaxTotalGPUs: 8, StepGPUs: 4, DesiredTotalGPUs: ptrInt32(8)},
 		},

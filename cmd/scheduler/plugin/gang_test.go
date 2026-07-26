@@ -50,7 +50,7 @@ func gpuNode(name string, gpus int64) *corev1.Node {
 
 func teamBudget(concurrency int32) *v1.Budget {
 	return &v1.Budget{
-		ObjectMeta: v1.ObjectMeta{Name: "team"},
+		ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
 		Spec: v1.BudgetSpec{Owner: "org:ai:team", Envelopes: []v1.BudgetEnvelope{{
 			Name: "west", Flavor: "H100-80GB", Concurrency: concurrency,
 			Selector: map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
@@ -61,7 +61,7 @@ func teamBudget(concurrency int32) *v1.Budget {
 func trainRun() *v1.Run {
 	return &v1.Run{
 		ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"},
-		Spec:       v1.RunSpec{Owner: "org:ai:team", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4}},
+		Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4}},
 	}
 }
 
@@ -245,7 +245,6 @@ func TestGangSpareFundedByBaseCover(t *testing.T) {
 	run := &v1.Run{
 		ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"},
 		Spec: v1.RunSpec{
-			Owner:     "org:ai:team",
 			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 2},
 			Spares:    &spares,
 		},
@@ -313,7 +312,7 @@ func TestGangForget(t *testing.T) {
 func train2Run() *v1.Run {
 	return &v1.Run{
 		ObjectMeta: v1.ObjectMeta{Name: "train2", Namespace: "default"},
-		Spec:       v1.RunSpec{Owner: "org:ai:team", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4}},
+		Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4}},
 	}
 }
 
@@ -473,50 +472,80 @@ func TestSpareLeaseProvenanceValid(t *testing.T) {
 }
 
 // R3/R5 defense-in-depth (with the mandatory-scheduler VAP off): a promised
-// opportunistic activation may only charge an envelope its own run's owner owns.
-// The load-bearing fields are the CHARGED ones (payer-budget/payer-envelope),
-// because funding.Evaluate resolves the charge by them and takes the owner from
-// the real Budget — never from the lease's cosmetic Spec.Owner. So a forged
-// promise pod that owns its own run but points payer-budget/envelope at a
-// victim's budget must be refused, or it launders a gate-free charge onto the
-// victim.
+// opportunistic activation may only charge an envelope in its OWN namespace.
+// R7 deleted Run.Spec.Owner and derives the owner from the namespace, so the
+// promise path's provenance check is now NAMESPACE equality — forge-proof
+// where the old owner-string equality was two writable fields agreeing with
+// each other, and strictly stronger (the promise only ever charges the run's
+// own envelopes). A forged promise pointing payer-budget/namespace at another
+// tenant's budget must be refused, or it launders a gate-free cross-tenant
+// charge.
 func TestPromiseProvenanceValid(t *testing.T) {
 	ctx := context.Background()
+	// The victim is a distinct principal in a distinct namespace (R7).
 	victim := &v1.Budget{
-		ObjectMeta: v1.ObjectMeta{Name: "victim"},
+		ObjectMeta: v1.ObjectMeta{Name: "victim", Namespace: "victim"},
 		Spec: v1.BudgetSpec{Owner: "org:ai:victim", Envelopes: []v1.BudgetEnvelope{{
 			Name: "victim-west", Flavor: "H100-80GB", Concurrency: 8,
 		}}},
 	}
 	m := newManager(t, trainRun(), teamBudget(8), victim)
 
-	// The run's own envelope: accepted (opportunisticCoverPlan only ever
-	// attributes a promise to an envelope the run's owner owns).
-	good := cover.Segment{Owner: "org:ai:team", BudgetName: "team", EnvelopeName: "west"}
+	// The run's own envelope in the run's own namespace: accepted.
+	good := cover.Segment{Namespace: "default", Owner: "org:ai:team", BudgetName: "team", EnvelopeName: "west"}
 	if !m.promiseProvenanceValid(ctx, "default", "train", good) {
-		t.Errorf("provenance charging the run owner's own real envelope should be accepted")
+		t.Errorf("provenance charging the run's own real envelope in its own namespace should be accepted")
 	}
-	// THE exploit: seg.Owner is set to the run's own owner (so a naive owner-only
-	// check would pass), but payer-budget/envelope point at a DIFFERENT owner's
-	// budget — the field that actually gets charged. Must be refused.
-	stealCharge := cover.Segment{Owner: "org:ai:team", BudgetName: "victim", EnvelopeName: "victim-west"}
+	// THE exploit, honest form: the segment names the victim's budget in the
+	// victim's namespace. seg.Namespace != run.Namespace → refused.
+	stealCharge := cover.Segment{Namespace: "victim", Owner: "org:ai:team", BudgetName: "victim", EnvelopeName: "victim-west"}
 	if m.promiseProvenanceValid(ctx, "default", "train", stealCharge) {
-		t.Errorf("a promise charging another owner's budget must be refused even when seg.Owner matches the run (gate-free cross-tenant charge)")
+		t.Errorf("a promise charging a budget in another namespace must be refused (cross-tenant charge)")
 	}
-	// seg.Owner inconsistent with the run: refused (keeps the minted lease's
-	// Spec.Owner honest).
-	wrongOwner := cover.Segment{Owner: "org:victim", BudgetName: "team", EnvelopeName: "west"}
-	if m.promiseProvenanceValid(ctx, "default", "train", wrongOwner) {
-		t.Errorf("provenance whose owner is not the run's owner must be refused")
+	// THE exploit, forged-namespace form: the attacker lies that the victim's
+	// budget lives in its own namespace. No such budget in "default" → refused.
+	forgedNS := cover.Segment{Namespace: "default", Owner: "org:ai:team", BudgetName: "victim", EnvelopeName: "victim-west"}
+	if m.promiseProvenanceValid(ctx, "default", "train", forgedNS) {
+		t.Errorf("a promise naming another namespace's budget under the run's namespace must be refused")
 	}
-	// A budget owned by the run but WITHOUT the named envelope: refused (the
-	// charge would land on a non-existent envelope).
-	noEnvelope := cover.Segment{Owner: "org:ai:team", BudgetName: "team", EnvelopeName: "east"}
+	// ASSERTION RESTORED, and the round trip is the point.
+	//
+	// This case originally read "seg.Owner is now COSMETIC" and accepted a forged
+	// owner. On 2026-07-24 it was REVERSED to demand a pin, reasoning that a forged
+	// owner writes a false principal onto a real GPU-holding lease and that
+	// "cannot mis-charge" and "cannot mis-state who holds the GPUs" are different
+	// guarantees. On 2026-07-25 the adversarial panel's consequence seat vetoed
+	// that repair outright, fixIsReaper=true, and both voting seats ran code to get
+	// there (docs/project/reviews/2026-07-25-r7pt2-judge-0b77fbe/):
+	//
+	//   - The pin BUYS NOTHING: Evaluate never reads Lease.Spec.Owner, and an
+	//     executed probe showed a forged-owner lease and an honest one classify
+	//     identically -- Owned, funded width 4, 4 GPUs, 8 GPU-hours.
+	//   - The pin REAPS: gangProvenance (run_controller.go:2833; grep the name,
+	//     not the line) rebuilds a
+	//     segment from an existing lease's Spec.Owner, so a legacy value or an
+	//     admin owner reorg would wedge a healthy, funded, RUNNING gang forever at
+	//     PreBind. The reversal weighed only a stranded Promise pod.
+	//
+	// So the original assertion was right, for a reason its author did not state
+	// and its reverser did not find. It is restored with the reason attached, so
+	// the next person to notice that a forged owner string "passes" reads why that
+	// is deliberate instead of tightening it a third time.
+	//
+	// What still refuses a forged promise is above: the payer Budget must live in
+	// the run's own namespace, and that namespace must HAVE a derived principal.
+	cosmeticOwner := cover.Segment{Namespace: "default", Owner: "org:whatever", BudgetName: "team", EnvelopeName: "west"}
+	if !m.promiseProvenanceValid(ctx, "default", "train", cosmeticOwner) {
+		t.Errorf("seg.Owner is cosmetic to the funding decision and pinning it reaps running gangs; " +
+			"a same-namespace own-budget charge must be accepted regardless of the owner string")
+	}
+	// A budget in the run's namespace but WITHOUT the named envelope: refused.
+	noEnvelope := cover.Segment{Namespace: "default", Owner: "org:ai:team", BudgetName: "team", EnvelopeName: "east"}
 	if m.promiseProvenanceValid(ctx, "default", "train", noEnvelope) {
 		t.Errorf("provenance naming an envelope the budget does not carry must be refused")
 	}
 	// A budget that does not exist: refused.
-	noBudget := cover.Segment{Owner: "org:ai:team", BudgetName: "ghost", EnvelopeName: "west"}
+	noBudget := cover.Segment{Namespace: "default", Owner: "org:ai:team", BudgetName: "ghost", EnvelopeName: "west"}
 	if m.promiseProvenanceValid(ctx, "default", "train", noBudget) {
 		t.Errorf("provenance naming a nonexistent budget must be refused")
 	}
@@ -531,7 +560,7 @@ func TestPromiseProvenanceValid(t *testing.T) {
 func trainRun2Wide() *v1.Run {
 	return &v1.Run{
 		ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "default"},
-		Spec:       v1.RunSpec{Owner: "org:ai:team", Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 2}},
+		Spec:       v1.RunSpec{Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 2}},
 	}
 }
 

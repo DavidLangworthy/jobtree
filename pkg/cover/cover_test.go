@@ -1,11 +1,13 @@
 package cover
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	"github.com/davidlangworthy/jobtree/pkg/funding"
+	"github.com/davidlangworthy/jobtree/pkg/keys"
 )
 
 func TestPlanPrefersFamilySameLocation(t *testing.T) {
@@ -254,13 +256,24 @@ func budgetOf(name, owner string, parents []string, envelopes ...envSpec) v1.Bud
 		specEnvelopes[i] = spec
 	}
 	return v1.Budget{
-		ObjectMeta: v1.ObjectMeta{Name: name},
+		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: nsForOwner(owner)},
 		Spec: v1.BudgetSpec{
 			Owner:     owner,
 			Parents:   parents,
 			Envelopes: specEnvelopes,
 		},
 	}
+}
+
+// nsForOwner maps an owner tier to its namespace (R7: one principal per
+// namespace; the funding owner is derived from the namespace). Keeping every
+// owner's budget/run/lease in its own namespace makes funding.OwnerOf(ns)
+// round-trip to that owner and avoids the multi-owner-namespace fail-safe.
+func nsForOwner(owner string) string {
+	if owner == "" {
+		return keys.DefaultNamespace
+	}
+	return strings.NewReplacer(":", "-", "/", "-").Replace(owner)
 }
 
 // evalOf derives the funding evaluation the Inventory plans against. No

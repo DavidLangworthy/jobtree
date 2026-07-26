@@ -102,7 +102,6 @@ apiVersion: rq.davidlangworthy.io/v1
 kind: Run
 metadata: { name: ddp, namespace: default }
 spec:
-  owner: org:ai:team
   resources: { gpuType: H100-80GB, totalGPUs: 2 }
   roles:
     - name: worker
