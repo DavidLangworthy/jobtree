@@ -9,6 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
@@ -129,4 +130,58 @@ func TestBlockedReservationIsStillDrivenByItsReconciler(t *testing.T) {
 				"engine's widened gate is unreachable in production (reason %q)", read().Status.Reason)
 		}
 	})
+}
+
+// The generated CRD must actually carry `status.blockedSince`, and only a real
+// apiserver can say so. `9afbe19` added the Go field without running
+// `make generate`, and a structural schema PRUNES what it does not declare — so
+// with the manifests stale the field would round-trip fine in every in-process
+// test, compile everywhere, and silently vanish the moment it was written to a
+// cluster. The reservation would then read BlockedFunding with no onset at all,
+// which is the durable-onset half of MERGE-127.md item 1 quietly not shipping.
+//
+// This is the same class as TestRunSpecOwnerIsPrunedByTheAPIServer, pointed the
+// other way: there, pruning is the security property being asserted; here, it is
+// the failure mode being ruled out.
+func TestBlockedSinceSurvivesTheAPIServer(t *testing.T) {
+	requireEnv(t)
+
+	c := directClient(t)
+	onset := metav1.NewTime(time.Now().Truncate(time.Second).UTC())
+	res := &v1.Reservation{
+		ObjectMeta: metav1.ObjectMeta{Name: "blocked-since-roundtrip", Namespace: "default"},
+		Spec: v1.ReservationSpec{
+			RunRef:         v1.RunReference{Name: "train", Namespace: "default"},
+			EarliestStart:  metav1.NewTime(time.Now()),
+			PayingEnvelope: "west",
+			IntendedSlice:  v1.IntendedSlice{Domain: map[string]string{topology.LabelFabricDomain: "island-a"}},
+		},
+	}
+	if err := c.Create(suiteCtx, res); err != nil {
+		t.Fatalf("create reservation: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Delete(suiteCtx, res) })
+
+	res.Status.State = "BlockedFunding"
+	res.Status.Reason = `namespace "default" has no funding principal`
+	res.Status.BlockedSince = &onset
+	if err := c.Status().Update(suiteCtx, res); err != nil {
+		t.Fatalf("write the blocked status: %v", err)
+	}
+
+	var stored v1.Reservation
+	if err := c.Get(suiteCtx, client.ObjectKeyFromObject(res), &stored); err != nil {
+		t.Fatalf("read back the reservation: %v", err)
+	}
+	if stored.Status.State != "BlockedFunding" {
+		t.Errorf("state did not persist: %q", stored.Status.State)
+	}
+	if stored.Status.BlockedSince == nil {
+		t.Fatalf("status.blockedSince was PRUNED by the apiserver: the CRD manifests do not declare "+
+			"it, so a blocked reservation would carry no onset on a real cluster (state=%q reason=%q)",
+			stored.Status.State, stored.Status.Reason)
+	}
+	if !stored.Status.BlockedSince.Time.Equal(onset.Time) {
+		t.Errorf("blockedSince = %v, want %v", stored.Status.BlockedSince.Time, onset.Time)
+	}
 }
