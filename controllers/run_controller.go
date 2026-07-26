@@ -1023,7 +1023,24 @@ func (c *RunController) releasePendingReservations(run *v1.Run, now time.Time) {
 		if keys.NamespacedKey(res.Spec.RunRef.Namespace, res.Spec.RunRef.Name) != runKey {
 			continue
 		}
-		if res.Status.State != "Pending" && res.Status.State != "" {
+		// BlockedFunding releases too, and leaving it out was a real leak.
+		// Every caller of this function has just established that the run no
+		// longer needs its reservation — it adopted a full-width gang, or it
+		// reached a terminal phase. A reservation blocked on funding is
+		// superseded in exactly that sense, and it is the ONE state that can
+		// still be sitting here: the activation gate re-considers BlockedFunding
+		// every pass, so activateReservation reaches the Running/Complete/Failed
+		// branch below with a blocked reservation in hand.
+		//
+		// Reproduced before fixing: block the reservation, fail the run, tick
+		// five times — the reservation stayed BlockedFunding with releasedAt nil
+		// and a stale "no funding principal" reason, next to a Failed run,
+		// forever. Under the terminal path substitution 1 replaces it would have
+		// been Failed. So making the reservation non-terminal without widening
+		// this filter converts one immortal-reservation defect into another, and
+		// the invariant-8 helper misses it because it filters on the same two
+		// strings.
+		if res.Status.State != "Pending" && res.Status.State != "BlockedFunding" && res.Status.State != "" {
 			continue
 		}
 		released := v1.NewTime(now)
@@ -1131,6 +1148,29 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 		// 2026-07-02).
 		c.releasePendingReservations(run, now)
 		return nil
+	}
+
+	// The funding block is LIFTED the moment its cause is gone, ahead of every
+	// early return below.
+	//
+	// "Durable cause" means the reason survives the tick, not that it survives
+	// the repair. A reservation still reading BlockedFunding / "no funding
+	// principal" after its namespace has a principal again is a false statement
+	// in a status field — the same invisibility defect this state was introduced
+	// to remove, pointing the other way.
+	//
+	// It has to be here rather than at the activation site because two guards
+	// below return without touching the reservation: the half-applied adoption
+	// branch, and the already-activated guard. The second is the one that bites.
+	// The admin repairs the binding, the run re-admits itself through Reconcile
+	// and emits its intent pods, and then activateReservation takes the
+	// runHasActivePods early return on every subsequent tick — so the
+	// reservation would sit advertising a conflict that no longer exists until
+	// the plugin's leases finally landed and adoption released it. Reproduced by
+	// execution: five ticks after repair, run scheduling 4 GPUs with 4 intent
+	// pods out, reservation still BlockedFunding with the stale reason.
+	if reservation.Status.State == "BlockedFunding" && c.evaluate(now).OwnerOf(run.Namespace) != "" {
+		unblockReservationOnFunding(reservation)
 	}
 
 	if allocated := baseGangGPUsForRun(runKey, c.State.Leases); allocated > 0 {
@@ -1589,6 +1629,22 @@ func (c *RunController) blockReservationOnFunding(reservation *v1.Reservation, r
 	reservation.Status.CountdownSeconds = nil
 	metrics.ClearReservationBacklog(keys.NamespacedKey(reservation.Namespace, reservation.Name))
 	return nil
+}
+
+// unblockReservationOnFunding returns a blocked reservation to the ordinary
+// waiting state once its namespace has a funding principal again. It is the
+// inverse of blockReservationOnFunding and exists so the block cannot outlive
+// its cause; see the call site for the path that would otherwise strand it.
+//
+// The onset is CLEARED, not kept. blockReservationOnFunding preserves the onset
+// across consecutive re-blocks so blocked-age cannot read zero, but a genuinely
+// new block after a genuinely repaired binding is a new episode and deserves its
+// own onset — carrying the old one forward would report an age that includes a
+// stretch when the reservation was not blocked at all.
+func unblockReservationOnFunding(reservation *v1.Reservation) {
+	reservation.Status.State = "Pending"
+	reservation.Status.Reason = ""
+	reservation.Status.BlockedSince = nil
 }
 
 // SAFETY-CRITICAL SEMANTICS.

@@ -48,23 +48,27 @@ func conflictedNamespaceState(now time.Time) *ClusterState {
 	return state
 }
 
-// R7 §4: a namespace with no derived funding principal can never fund this
-// reservation, so activation FAILS IT TERMINALLY — matching what `main` already
-// did and what R7-tenancy-amendment.md:126-127 and :590 say this path does.
+// MERGE-127.md pre-merge item 1: a namespace with no derived funding principal
+// leaves its due reservation BLOCKED AND VISIBLE, not terminally failed.
 //
-// This test exists because the first attempt got it backwards. A guard shipped on
-// 2026-07-24 refused the tick and returned nil, arguing that terminating "would
-// destroy a legitimate reservation over an admin typo" — the reaper shape. The
-// 2026-07-25 adversarial panel disproved it unanimously by running the code on
-// both branches: `main` terminated at tick 1; the branch left the reservation
-// Pending at tick 20 with the backlog gauge frozen at 1020, because
-// metrics.ClearReservationBacklog is reached only from terminal paths. The
-// consequence seat ruled fixIsReaper=false and demonstrated recovery.
+// The history matters, because this test has now been wrong in both directions.
+// A guard shipped 2026-07-24 refused the tick and returned nil; the 2026-07-25
+// panel ran the code and found the reservation sitting Pending at tick 20 with
+// the backlog gauge FROZEN at 1020, because metrics.ClearReservationBacklog was
+// reached only from terminal paths — so terminating replaced it. MERGE-127.md
+// then established that terminating was itself the wrong answer: the transition
+// is FOREIGN-INDUCIBLE (a Budget in any namespace naming this namespace's owner
+// flips OwnerOf to "" and destroys reservations in a namespace whose own contents
+// never changed), and it contradicts quota-semantics.md:27 and :128, which
+// outrank R7-tenancy-amendment.md:126-127 under AGENTS.md:176.
 //
-// So: terminal, gauge cleared, and an error naming the real cause — not
-// cover.Plan's "owner and flavor must be set", which is about fields an R7 Run
-// does not even have.
-func TestActivateReservationFailsTerminallyWhenNamespaceHasNoOwner(t *testing.T) {
+// What the panel actually caught was INVISIBILITY, not waiting. So the state that
+// is correct here is honest rather than terminal, and this test asserts all four
+// halves of "honest": the state, a durable cause, a durable onset, and — the one
+// that mattered — the gauge ABSENT rather than frozen.
+func TestActivateReservationBlocksWhenNamespaceHasNoOwner(t *testing.T) {
+	metrics.Reset()
+	t.Cleanup(metrics.Reset)
 	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	state := conflictedNamespaceState(now)
 
@@ -72,33 +76,47 @@ func TestActivateReservationFailsTerminallyWhenNamespaceHasNoOwner(t *testing.T)
 	// below is vacuous — see its comment.
 	metrics.SetReservationBacklog("default/res", "H100-80GB", 1020)
 
-	err := NewRunController(state, runClock{now: now}).ActivateReservations(now)
-	if err == nil {
-		t.Fatalf("a namespace with no funding principal can never activate; the failure must be reported")
-	}
-	if !strings.Contains(err.Error(), "no funding principal") {
-		t.Errorf("the error must name the real cause (the namespace binding), got: %v", err)
-	}
-	if strings.Contains(err.Error(), "owner and flavor must be set") {
-		t.Errorf("the operator must not be told about fields the Run does not have, got: %v", err)
+	// Blocking is a steady state, not a per-tick failure. Returning an error here
+	// would put "namespace has no funding principal" into the controller's error
+	// log on every single pass for as long as the binding stays broken.
+	if err := NewRunController(state, runClock{now: now}).ActivateReservations(now); err != nil {
+		t.Fatalf("blocking is an expected steady state, not an error to report every tick: %v", err)
 	}
 
 	res := state.Reservations["default/res"]
-	if res.Status.State != "Failed" {
-		t.Fatalf("reservation must fail TERMINALLY, got state %q — a Pending reservation that nothing "+
-			"can ever activate is immortal", res.Status.State)
+	if res.Status.State != "BlockedFunding" {
+		t.Fatalf("reservation must be held in BlockedFunding, got state %q", res.Status.State)
+	}
+	// DURABLE CAUSE. Pending-with-no-reason was the invisibility; a state whose
+	// reason does not name the binding is the same defect one rename later.
+	if !strings.Contains(res.Status.Reason, "no funding principal") {
+		t.Errorf("the blocked reservation must carry the real cause, got %q", res.Status.Reason)
+	}
+	if strings.Contains(res.Status.Reason, "owner and flavor must be set") {
+		t.Errorf("the operator must not be told about fields the Run does not have, got: %q", res.Status.Reason)
+	}
+	// DURABLE ONSET. Without it, "how long has this been blocked" is unanswerable
+	// and the state is as opaque as the Pending it replaced.
+	if res.Status.BlockedSince == nil {
+		t.Fatalf("a blocked reservation with no onset cannot be aged; BlockedSince must be stamped")
+	}
+	if !res.Status.BlockedSince.Time.Equal(now) {
+		t.Errorf("BlockedSince = %v, want the tick that blocked it (%v)", res.Status.BlockedSince.Time, now)
 	}
 	if res.Status.CountdownSeconds != nil {
-		t.Errorf("a failed reservation must not keep counting down, got %v", *res.Status.CountdownSeconds)
+		t.Errorf("no activation is forecast while the namespace has no principal, so a countdown "+
+			"would be the old lie in a new state; got %v", *res.Status.CountdownSeconds)
 	}
-	// The gauge is the half of this defect that hides the other half — and this
-	// assertion was VACUOUS until the fix-diff panel mutated it: the fixture's
-	// EarliestStart is in the past, so refreshReservationBacklog never runs and the
-	// gauge was map[] both before and after. Deleting ClearReservationBacklog
-	// entirely left ./controllers green. It is seeded above now, so "cleared" is a
-	// real transition instead of a coincidence.
+	// THE GAUGE, ABSENT. This is the half of the 2026-07-24 defect that hid the
+	// other half — the frozen {H100-80GB 1020} series — and the assertion was
+	// VACUOUS until the fix-diff panel mutated it: the fixture's EarliestStart is
+	// in the past, so refreshReservationBacklog never runs and the gauge was map[]
+	// both before and after. Deleting ClearReservationBacklog entirely left
+	// ./controllers green. It is seeded above now, so "cleared" is a real
+	// transition instead of a coincidence.
 	if backlog := metrics.Snapshot().ReservationBacklog; len(backlog) != 0 {
-		t.Errorf("the backlog gauge must be cleared on the terminal path, still reporting %v", backlog)
+		t.Errorf("no activation forecast exists while the namespace has no principal, so the backlog "+
+			"gauge must be CLEARED, not frozen; still reporting %v", backlog)
 	}
 
 	run := state.Runs["default/train"]
@@ -110,19 +128,177 @@ func TestActivateReservationFailsTerminallyWhenNamespaceHasNoOwner(t *testing.T)
 	}
 }
 
-// The other half of the panel's ruling: terminating is NOT a reaper, because the
-// run recovers on its own once an admin repairs the binding. If that were false,
-// failing the reservation really would destroy legal work and the 2026-07-24
-// reasoning would have been right.
-func TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired(t *testing.T) {
+// The onset must survive re-blocking. The activation gate re-considers
+// BlockedFunding every pass — that is what makes recovery automatic — so
+// blockReservationOnFunding runs again on every tick the binding stays broken. If
+// it restamped, blocked-age would read zero forever and the durable onset would
+// be the frozen gauge wearing a timestamp: a field that always says "just now"
+// tells an operator exactly as much as a field that says nothing.
+func TestBlockedReservationOnsetSurvivesReBlocking(t *testing.T) {
+	metrics.Reset()
+	t.Cleanup(metrics.Reset)
 	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	state := conflictedNamespaceState(now)
 
-	if err := NewRunController(state, runClock{now: now}).ActivateReservations(now); err == nil {
-		t.Fatalf("fixture is wrong: expected the conflicted namespace to fail its reservation")
+	if err := NewRunController(state, runClock{now: now}).ActivateReservations(now); err != nil {
+		t.Fatalf("unexpected error on the first block: %v", err)
 	}
-	if state.Reservations["default/res"].Status.State != "Failed" {
-		t.Fatalf("fixture is wrong: expected a terminally failed reservation")
+	first := state.Reservations["default/res"].Status.BlockedSince
+	if first == nil {
+		t.Fatalf("fixture is wrong: expected the first pass to stamp an onset")
+	}
+	onset := first.Time
+
+	// Twelve more passes, the binding still broken. Each one re-enters
+	// activateReservation and calls blockReservationOnFunding again.
+	for h := 1; h <= 12; h++ {
+		at := now.Add(time.Duration(h) * time.Hour)
+		if err := NewRunController(state, runClock{now: at}).ActivateReservations(at); err != nil {
+			t.Fatalf("tick %d: unexpected error while re-blocking: %v", h, err)
+		}
+		res := state.Reservations["default/res"]
+		if res.Status.State != "BlockedFunding" {
+			t.Fatalf("tick %d: reservation left BlockedFunding without the binding being repaired: %q",
+				h, res.Status.State)
+		}
+		if res.Status.BlockedSince == nil || !res.Status.BlockedSince.Time.Equal(onset) {
+			t.Fatalf("tick %d: onset was RESTAMPED to %v, want the original %v — blocked-age would "+
+				"read zero forever", h, res.Status.BlockedSince, onset)
+		}
+	}
+
+	// Twelve hours of blockage is now readable off the object. That is the whole
+	// point of the field.
+	age := now.Add(12 * time.Hour).Sub(state.Reservations["default/res"].Status.BlockedSince.Time)
+	if age != 12*time.Hour {
+		t.Errorf("blocked age = %v, want 12h", age)
+	}
+}
+
+// A blocked reservation must not outlive the run's need for it. Every caller of
+// releasePendingReservations has just established the run no longer needs its
+// reservation — it adopted a full-width gang, or it reached a terminal phase —
+// and BlockedFunding is now the one state that can still be sitting there, since
+// the activation gate re-considers it every pass.
+//
+// Reproduced before the filter was widened: block, fail the run, tick five times,
+// and the reservation stayed BlockedFunding with releasedAt nil and a stale "no
+// funding principal" reason next to a Failed run, forever. Under the terminal
+// path substitution 1 replaces it would have been Failed — so making the
+// reservation non-terminal without widening this filter trades one immortal
+// reservation for another, which is the exact defect class the substitution
+// exists to remove.
+func TestBlockedReservationIsReleasedWhenItsRunNoLongerNeedsIt(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		advance func(t *testing.T, state *ClusterState, now time.Time)
+	}{{
+		name: "terminal run",
+		advance: func(t *testing.T, state *ClusterState, now time.Time) {
+			run := state.Runs["default/train"]
+			NewRunController(state, runClock{now: now}).failRun(run, v1.RunStateEndedByResolver, "killed by the resolver")
+		},
+	}, {
+		name: "run bound its gang independently",
+		advance: func(t *testing.T, state *ClusterState, now time.Time) {
+			// The admin repairs the binding and the plugin binds the gang before
+			// the next activation pass — a normal race, not an exotic one.
+			state.Budgets = []v1.Budget{h100Budget("team", "org:team", 16)}
+			seedRunning(t, state, "default/train", now)
+		},
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			metrics.Reset()
+			t.Cleanup(metrics.Reset)
+			now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+			state := conflictedNamespaceState(now)
+
+			if err := NewRunController(state, runClock{now: now}).ActivateReservations(now); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got := state.Reservations["default/res"].Status.State; got != "BlockedFunding" {
+				t.Fatalf("fixture is wrong: expected a blocked reservation, got %q", got)
+			}
+
+			tc.advance(t, state, now)
+
+			for h := 1; h <= 5; h++ {
+				at := now.Add(time.Duration(h) * time.Hour)
+				if err := NewRunController(state, runClock{now: at}).ActivateReservations(at); err != nil {
+					t.Fatalf("tick %d: unexpected error: %v", h, err)
+				}
+			}
+
+			res := state.Reservations["default/res"]
+			if res.Status.State != "Released" {
+				t.Fatalf("a blocked reservation whose run no longer needs it must be released, got %q "+
+					"— it is immortal otherwise, which is what the blocked state was introduced to fix",
+					res.Status.State)
+			}
+			if res.Status.ReleasedAt == nil {
+				t.Errorf("a released reservation must carry the instant it was released")
+			}
+			if res.Status.CountdownSeconds != nil {
+				t.Errorf("a released reservation must not keep counting down, got %v", *res.Status.CountdownSeconds)
+			}
+			assertInvariantNoPendingReservationForRunningRun(t, state)
+		})
+	}
+}
+
+// MERGE-127.md pre-merge item 3. The message on the no-funding-principal path
+// used to end "...and resubmit", instructing a human to do the one thing
+// quota-semantics.md:38-39 promises they never have to ("Recovery is automatic
+// ... Nothing to resubmit, nothing to approve") — in a TENANT-FACING string,
+// while the comment thirty lines above the function claimed recovery was
+// autonomous. It is a ratified-text violation, not a wording preference.
+//
+// It is checked on both surfaces a human actually reads: the Run's status message
+// and the Reservation's reason, which now carry the same text.
+func TestNoFundingPrincipalMessageNeverTellsAnyoneToResubmit(t *testing.T) {
+	metrics.Reset()
+	t.Cleanup(metrics.Reset)
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	state := conflictedNamespaceState(now)
+
+	if err := NewRunController(state, runClock{now: now}).ActivateReservations(now); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, surface := range []struct{ what, msg string }{
+		{"the run's status message", state.Runs["default/train"].Status.Message},
+		{"the reservation's reason", state.Reservations["default/res"].Status.Reason},
+	} {
+		if surface.msg == "" {
+			t.Fatalf("fixture is wrong: %s is empty, so the assertion below proves nothing", surface.what)
+		}
+		// Sanity: the string really is the no-funding-principal one, so a green
+		// result cannot come from having reached some other path entirely.
+		if !strings.Contains(surface.msg, "no funding principal") {
+			t.Fatalf("%s is not the no-funding-principal message: %q", surface.what, surface.msg)
+		}
+		if strings.Contains(strings.ToLower(surface.msg), "resubmit") {
+			t.Errorf("%s tells a human to resubmit, which quota-semantics.md:38-39 promises they never "+
+				"have to: %q", surface.what, surface.msg)
+		}
+	}
+}
+
+// Recovery is automatic (quota-semantics.md:38-39) — the claim that makes holding
+// the reservation legitimate instead of merely inert. If it were false, blocking
+// would be a slower way of destroying the work and the terminal path would have
+// been the honest one.
+func TestRunRecoversFromBlockedFundingWhenBindingIsRepaired(t *testing.T) {
+	metrics.Reset()
+	t.Cleanup(metrics.Reset)
+	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	state := conflictedNamespaceState(now)
+
+	if err := NewRunController(state, runClock{now: now}).ActivateReservations(now); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := state.Reservations["default/res"].Status.State; got != "BlockedFunding" {
+		t.Fatalf("fixture is wrong: expected a blocked reservation, got %q", got)
 	}
 
 	// The admin removes the second Budget. The namespace binds again.
@@ -162,8 +338,25 @@ func TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired(t *testing.T) {
 		strings.Contains(run.Status.Message, "owner and flavor must be set") {
 		t.Fatalf("the run is stuck on the old conflict after repair: %q", run.Status.Message)
 	}
-	t.Logf("after repair: phase=%s pods=%d msg=%q",
-		run.Status.Phase, activeIntentPods(state, "default", "train"), run.Status.Message)
+
+	// AND THE RESERVATION DOES NOT SIT BLOCKED FOREVER. This is the assertion the
+	// blocked state creates the need for: unlike the terminal path it replaces,
+	// BlockedFunding is a state a reservation could plausibly never leave, and a
+	// run that recovers while its reservation stays blocked is a half-recovery
+	// nothing would have noticed. The gauge must be gone with it — a stale backlog
+	// series for a reservation that is no longer blocked is the frozen-{H100-80GB
+	// 1020} defect all over again, pointing the other way.
+	res := state.Reservations["default/res"]
+	if res.Status.State == "BlockedFunding" {
+		t.Fatalf("the run recovered but its reservation is still BlockedFunding since %v: "+
+			"recovery has to reach the reservation too, or the block is permanent for it",
+			res.Status.BlockedSince)
+	}
+	if backlog := metrics.Snapshot().ReservationBacklog; len(backlog) != 0 {
+		t.Errorf("a recovered reservation must leave no backlog series behind, still reporting %v", backlog)
+	}
+	t.Logf("after repair: phase=%s pods=%d reservation=%s msg=%q",
+		run.Status.Phase, activeIntentPods(state, "default", "train"), res.Status.State, run.Status.Message)
 }
 
 // failReservationNoEnvelope had NO TEST anywhere in the repo, on either branch.

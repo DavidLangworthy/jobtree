@@ -61,11 +61,17 @@ func h100Run(name, owner string, gpus int32) *v1.Run {
 }
 
 // assertInvariantNoPendingReservationForRunningRun checks invariant 8 of the
-// testing plan: no Pending reservation may exist for a Running run.
+// testing plan: no un-finished reservation may exist for a Running run.
+//
+// BlockedFunding counts. The helper used to filter on Pending/"" alone, which
+// meant the state introduced for the no-funding-principal path evaded invariant 8
+// silently: a blocked reservation sitting beside a Running run is exactly the
+// leak this invariant exists to catch, and the check would have shrugged at it.
+// An invariant that a new state can slip past is not an invariant.
 func assertInvariantNoPendingReservationForRunningRun(t *testing.T, state *ClusterState) {
 	t.Helper()
 	for key, res := range state.Reservations {
-		if res.Status.State != "Pending" && res.Status.State != "" {
+		if res.Status.State != "Pending" && res.Status.State != "BlockedFunding" && res.Status.State != "" {
 			continue
 		}
 		runKey := keys.NamespacedKey(res.Spec.RunRef.Namespace, res.Spec.RunRef.Name)
