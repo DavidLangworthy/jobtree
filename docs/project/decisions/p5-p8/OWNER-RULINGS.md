@@ -121,3 +121,41 @@ Two consequences worth stating:
   or the published odds must be cumulative rather than per-tick and say so. This is the same
   durability class of error as the grace window: the endpoints look fine and the repetition is what
   bites. Whichever is chosen, the published odds must match it.
+
+## Ruling 4 — descheduling is DEMAND-driven, never deficit-driven (2026-07-26)
+
+> "Running work should only be descheduled if there is new fully funded work that needs to be
+> scheduled. We don't deschedule just to deschedule."
+
+**This resolves the repeated-draw trap recorded under ruling 3, and the code already implements it.**
+`Resolve` takes a `Deficit` and returns immediately when it is not positive
+(`pkg/resolver/resolver.go:39,74-75 @ 37270af`); it is invoked from the run controller's admission
+and activation paths (`controllers/run_controller.go:458`, `:1332`), i.e. when a claim actually needs
+capacity. There is no timer that reclaims. The escalation inside it is also already ordered the way
+this ruling implies: reclaim fully-Unfunded groups first (`:94`), then shrink malleable runs
+(`:131`), and only then the lottery.
+
+So the trap I flagged — per-tick re-draws compounding into near-certain eventual descheduling — does
+not exist in the shape I feared. Nothing is drawn on a clock. Two consequences:
+
+- **Over-allocation alone causes no descheduling at all.** A manager may sit over-allocated
+  indefinitely and nothing stops if no one else needs the capacity. The excess is simply Unfunded and
+  coasting, first in line only when funded demand arrives. This is the existing demote-and-coast
+  behaviour, now with an owner ruling behind it rather than an inference.
+- **Descheduling is always attributable to a specific arriving claim.** That is a much better
+  operator story than "the system decided to shrink you": there is a funded Run that needed the GPUs,
+  and it can be named.
+
+### What remains open, narrowed
+
+The exposure rate is bounded by **demand arrival**, not by the tick — which is principled, but on a
+busy cluster a job can still be entered into successive draws. So the residue is not "does it
+compound on a clock" (answered: no) but:
+
+- **What are the published per-job odds conditioned on?** Odds *per contention event* are computable
+  and honest; "odds of ever being descheduled" is not well defined without a demand model. The status
+  must say which it is, or it will be read as the latter.
+- **Within one burst of arriving demand, is a survivor re-exposed?** If three funded claims arrive in
+  quick succession, is that three independent draws or one? One-shot-per-burst is kinder and needs a
+  burst boundary; independent draws are simpler and concentrate risk on nobody in particular but
+  expose everyone repeatedly. Either is defensible; the published odds must match whichever is built.
