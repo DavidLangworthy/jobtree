@@ -1616,7 +1616,10 @@ func (c *RunController) failReservationTerminally(reservation *v1.Reservation, c
 // Returns nil, not an error: this is an expected steady state, not a failure to
 // report every tick. Recovery is automatic (quota-semantics.md:38-39) because the
 // activation pass re-considers BlockedFunding reservations — see the state gate
-// in activateDueReservations. Re-blocking is idempotent; binding repair activates.
+// in ActivateReservations — and, because that is the sole caller only inside the
+// engine, the MIRRORED gate in kube.ReservationReconciler.Reconcile, which is
+// what drives it on a real cluster. Re-blocking is idempotent; binding repair
+// activates. unblockReservationOnFunding lifts the block once the cause is gone.
 func (c *RunController) blockReservationOnFunding(reservation *v1.Reservation, reason string, now time.Time) error {
 	if reservation.Status.State != "BlockedFunding" {
 		reservation.Status.State = "BlockedFunding"
