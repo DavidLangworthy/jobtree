@@ -159,3 +159,55 @@ compound on a clock" (answered: no) but:
   quick succession, is that three independent draws or one? One-shot-per-burst is kinder and needs a
   burst boundary; independent draws are simpler and concentrate risk on nobody in particular but
   expose everyone repeatedly. Either is defensible; the published odds must match whichever is built.
+
+## Ruling 5 — quota is time-bounded, so a reduction has TWO axes (2026-07-26)
+
+> "Since quota is time bounded there are two different way a director might reduce quota. First she
+> might just dial down the GPU Count. Second she might delay the start or accelerate the completion
+> time."
+
+Both levers are literally fields on `BudgetEnvelope` (`api/v1/budget_types.go @ 37270af`):
+`Concurrency int32` is the count axis; `Start`/`End *metav1.Time` are the window axis; `MaxGPUHours`
+is a third reduction of the same class as the window (it shrinks the integral).
+
+This confirms that Sol's per-dimension formulation of consumption conservation was necessary rather
+than pedantic — it insisted the predicate hold "separately to instantaneous concurrency and windowed
+GPU-hours" (`E-sol-responds-to-fable.md` §3). The two owner levers are exactly those two dimensions.
+A conservation rule written over one number would have been wrong for half of the reductions a
+director can perform.
+
+Mapping each lever to what is already decided:
+
+| Lever | Dimension | Status |
+|---|---|---|
+| Dial down `Concurrency` | instantaneous concurrency | **Already ratified.** Decision 1 covers it explicitly — exhaustion demotes "(or concurrency, via a higher-ranked claim)" (`quota-semantics.md:27`). Excess demotes to opportunistic, reclaimed only on demand and unluckily (`:31`). |
+| Accelerate `End` / reduce `MaxGPUHours` | windowed GPU-hours | **Already ratified.** "budget-window expiry no longer implies death. A run whose envelope window closes coasts as opportunistic and is re-funded when a new window opens — or reclaimed if the GPUs are needed" (`:41-43`). |
+| **Delay `Start`** | windowed GPU-hours, backwards | **NOT settled — and it is a sharper form of P6.** |
+
+### Why delaying `Start` is the interesting one
+
+Moving `Start` *later* can push hours that have **already been accrued and already been funded**
+outside the envelope's window. Under the ratified rule that history is evaluated against the current
+spec — *"moving the window forward (renewal) releases hours spent in the old window, which is exactly
+how 'a reopened budget window re-funds' falls out of the arithmetic"* (`EnvelopeAccount.ConsumedGPUHours`
+doc comment) — those hours are re-evaluated and can become unfunded retroactively.
+
+That is the **same visible symptom as the P6 defect** the cross-vendor panel reproduced: an envelope's
+consumed total drops and headroom it already spent reappears. The difference is decisive for how it
+should be treated: P6's version was induced by a **foreign squatter Budget**, whereas this one is a
+**legal action by an authorised director**. So it cannot simply be forbidden.
+
+Fable's P6 proposal already drew the line this needs, and drew it correctly: forward-only anchoring
+applies to the **identity** axis (who paid for hour h is a fact of hour h), while envelope **spec** —
+windows and caps — stays deliberately current-spec, because that is admin policy. Under that split,
+delaying `Start` retroactively un-funds *by design*. The question is whether that is intended at the
+magnitude a director can produce.
+
+**Open for the owner, and it is narrow:** when a director delays an envelope's `Start` past hours that
+were already accrued and funded, do those hours (a) stay funded — history is anchored on both axes,
+requiring the window used for an hour to be the window in effect during it; or (b) re-evaluate and
+become unfunded — current-spec on the policy axis, matching "release-on-renewal", accepting that a
+legal admin action can make already-spent headroom reappear? (b) is the status quo and the ratified
+reading; (a) is safer for auditability and costs the release-on-renewal arithmetic that Decision 1
+relies on. Note this is exactly the P6 question asked on the *window* axis instead of the *owner*
+axis, so answering P6 without answering this leaves half the surface undecided.
