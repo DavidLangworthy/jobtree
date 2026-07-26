@@ -99,6 +99,13 @@ spec:
               activatedAt:
                 format: date-time
                 type: string
+              blockedSince:
+                description: |-
+                  Onset of BlockedFunding. See RunController.blockReservationOnFunding for
+                  why it is durable: a blocked reservation waits indefinitely and that is
+                  correct, but waiting invisibly is the defect this replaced.
+                format: date-time
+                type: string
               canceledAt:
                 format: date-time
                 type: string

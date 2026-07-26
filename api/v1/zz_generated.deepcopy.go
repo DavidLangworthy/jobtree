@@ -673,6 +673,10 @@ func (in *ReservationStatus) DeepCopyInto(out *ReservationStatus) {
 		in, out := &in.CanceledAt, &out.CanceledAt
 		*out = (*in).DeepCopy()
 	}
+	if in.BlockedSince != nil {
+		in, out := &in.BlockedSince, &out.BlockedSince
+		*out = (*in).DeepCopy()
+	}
 	if in.CountdownSeconds != nil {
 		in, out := &in.CountdownSeconds, &out.CountdownSeconds
 		*out = new(int64)
