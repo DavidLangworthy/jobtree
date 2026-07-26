@@ -91,6 +91,15 @@ export const meta = {
 //      MOVED is not a quote that was FABRICATED. Pin to A.commit, and never silently fall
 //      back to the tree. Note the shape of this bug: the failure was not a lens doing no
 //      work, it was the WATCHDOG being wrong — so verify the verifier too.
+//  14. A BRANCH UNDER REVIEW IS FROZEN, AND "IT IS ONLY A COMMENT" IS NOT AN EXEMPTION.
+//      Lesson 13 pinned Attest to the commit; the LENSES still read the tree, so any commit
+//      landing mid-review re-opens the same wound from the other side. It happened the very
+//      next day, to a run that pinned Attest correctly and then committed twice while the
+//      lenses were reading — one of those commits being a fix to a comment ABOUT citation
+//      drift. That is not carelessness, it is how easy this is, which is why it now gets a
+//      rail instead of a resolution: the tree is compared to `commit` ONCE, before a single
+//      lens is paid for, and a mismatch THROWS. One cheap agent beats a wasted panel. A
+//      comment displaces line numbers exactly as much as code does.
 // ---------------------------------------------------------------------------
 
 // The Workflow tool sometimes delivers `args` as a JSON-encoded string rather
@@ -546,6 +555,49 @@ async function runLens(lens) {
 const ALL_LENSES = [...STANDARD_LENSES, ...(Array.isArray(A.lenses) ? A.lenses : [])]
 log(`running ${STANDARD_LENSES.length} standard + ${ALL_LENSES.length - STANDARD_LENSES.length} caller lens(es)`)
 
+// TREE-vs-COMMIT CONSISTENCY (lesson 14). Attest reads the PINNED COMMIT; the lenses read the
+// WORKING TREE. When those differ, every citation is displaced by the drift and Attest reports
+// honest lenses for "fabricated citations" — a fail-closed rail firing on a phantom.
+//
+// This has now happened twice. Once when the tree sat on a fixed branch while cached reports cited
+// the reviewed commit: five lenses blocked, `raised` empty, the panel returned before Judge existed,
+// eight minutes and zero verdicts. Then again the next day when a run pinned Attest correctly and
+// then committed twice mid-review — one of those commits being a fix to a comment ABOUT citation
+// drift. It is not a careless mistake; it is an easy one, which is why it needs a rail and not a
+// resolution. A branch under review is frozen, and "it is only a comment" is not an exemption:
+// a comment displaces line numbers exactly as much as code does.
+//
+// Checked ONCE, before a single lens is paid for, and fatal rather than advisory — a mismatch makes
+// every downstream citation suspect, so failing here costs one cheap agent instead of a whole panel.
+if (A.commit) {
+  const tree = await agent(
+    `Report this repository's state. Run exactly these and nothing else; modify nothing:
+  git rev-parse HEAD
+  git status --porcelain --untracked-files=no
+Set head to the full HEAD sha. Set dirty=true if the status output was non-empty (tracked files
+modified), false if it printed nothing. Put the status output, or "clean", in detail.`,
+    { label: 'preflight:tree-matches-commit', phase: 'Scout', model: 'sonnet', effort: 'low',
+      schema: { type: 'object', additionalProperties: false, required: ['head', 'dirty', 'detail'],
+        properties: { head: { type: 'string' }, dirty: { type: 'boolean' }, detail: { type: 'string' } } } })
+
+  if (!tree || !tree.head) {
+    log('WARNING: could not verify the working tree matches the reviewed commit; citations may be displaced.')
+  } else if (!tree.head.startsWith(A.commit) && !A.commit.startsWith(tree.head)) {
+    throw new Error(
+      `adversarial-review: the working tree is NOT the commit under review.\n` +
+      `  reviewing (args.commit): ${A.commit}\n` +
+      `  working tree (HEAD):     ${tree.head}\n` +
+      `The lenses would cite the tree while Attest verifies the pinned commit, so every citation ` +
+      `would be displaced and honest lenses reported as fabricators. Check out ${A.commit} (or pass ` +
+      `the tree's own sha as args.commit) and re-run. Refusing before spending on lenses.`)
+  } else if (tree.dirty) {
+    log(`WARNING: tracked files are modified relative to ${A.commit}; citations may be displaced and ` +
+        `Attest may report honest lenses as fabricators. Uncommitted: ${tree.detail}`)
+  } else {
+    log(`tree matches the reviewed commit ${A.commit.slice(0, 8)} — citations and attestation will agree`)
+  }
+}
+
 const lensResults = await parallel(ALL_LENSES.map(l => () => runLens(l)))
 
 // ---------------------------------------------------------------------------
@@ -662,6 +714,20 @@ Trace every function on the path and quote each with file:line. If a later commi
 line and say whether that closes the finding or merely moves it. A fix that is dead code in production
 is not a fix. Rule refuted ONLY if the trace shows the code cannot produce the claimed state.`
 
+// WHICH MODEL CODEX RUNS — default: none, let the account choose. This flag is not cosmetic.
+//
+// Under ChatGPT-subscription auth (the billing mode this seat now uses) codex REJECTS every
+// explicitly-named model:
+//    -m gpt-5.6 / -m gpt-5-codex / -m gpt-5  ->  400 "The '<name>' model is not supported when
+//                                                using Codex with a ChatGPT account"
+//    (no -m flag)                            ->  works; the account serves its own default
+// So hardcoding `-m gpt-5.6` 400s on precisely the accounts this seat is meant to run on — and
+// because the preflight fails closed, the panel would quietly fall back to Opus for a cross-vendor
+// seat that is alive and answering. That is the worst shape of failure here: not a seat that is
+// down, but a working seat reported as unreachable. Pin a model only when the account is known to
+// accept one (an API-key Platform account does); otherwise let the account decide.
+const CODEX_M = (typeof A.codexModel === 'string' && A.codexModel) ? `-m ${A.codexModel} ` : ''
+
 const OPUS_TRACE_SEAT = {
   role: 'trace', model: 'opus', effort: 'high',
   lens: `CODE TRACE. ${TRACE_TASK}
@@ -673,12 +739,16 @@ Set refuted=true only if the trace shows the code cannot produce the claimed sta
 const CODEX_TRACE_SEAT = {
   role: 'trace', model: 'sonnet', effort: 'medium',
   lens: `CODE TRACE — CROSS-VENDOR RELAY. You are a relay, not the analyst. The analyst is OpenAI's
-codex (gpt-5.6). It is seated here because the Claude tiers share a training prior and fail together;
-this seat exists to break that correlation, and it only works if the verdict is genuinely codex's.
+codex. It is seated here because the Claude tiers share a training prior and fail together; this
+seat exists to break that correlation, and it only works if the verdict is genuinely codex's.
 
-Run it once, read-only (CODEX_API_KEY is already in the environment):
-  codex exec --sandbox read-only --ephemeral -m gpt-5.6 -c model_reasoning_effort=high \\
+Run it once, read-only. Auth is ALREADY DONE — the runner wrote a ChatGPT-subscription credential
+to ~/.codex/auth.json before this job started. Do NOT run 'codex login', do not look for
+CODEX_API_KEY (there is deliberately no API key any more), and do not try to repair auth yourself:
+  codex exec --sandbox read-only --ephemeral ${CODEX_M}-c model_reasoning_effort=high \\
     --ignore-user-config --ignore-rules "<the task below, plus this finding>" </dev/null
+Do NOT add a -m/--model flag of your own. A ChatGPT-account subscription rejects every explicitly
+named model with a 400, so "helpfully" pinning one turns a working seat into a dead one.
 
 Give codex this task: ${TRACE_TASK}
 
@@ -700,16 +770,27 @@ Then do the job that is actually yours:
 const codexProbe = await agent(
   `Report whether OpenAI's codex CLI is usable on this box as a read-only review seat.
 Run exactly this, nothing else, and install nothing:
-  codex exec --sandbox read-only --ephemeral -m gpt-5.6 --ignore-user-config --ignore-rules "Reply with the single token PROBE_OK." </dev/null
-Set ok=true ONLY if it exits 0 AND the output contains PROBE_OK. Otherwise ok=false and put the real
-cause in detail (missing binary, auth, sandbox/bubblewrap, timeout).`,
+  codex exec --sandbox read-only --ephemeral ${CODEX_M}--ignore-user-config --ignore-rules "Reply with the single token PROBE_OK." </dev/null
+Report in 'model' which model actually answered (codex prints it; "unknown" if you cannot tell).
+Set ok=true ONLY if it exits 0 AND the output contains PROBE_OK. Otherwise ok=false, and in 'detail'
+name the cause PRECISELY, because the remedies are opposite and a human reads this to pick one:
+  - AUTH ("unauthorized", "invalid token", a login prompt) => the ~/.codex/auth.json the runner wrote
+    is stale or malformed; the CODEX_AUTH_JSON secret needs re-pasting. Tokens rotate on the laptop
+    and that never syncs here, so this is the expected long-run failure.
+  - QUOTA ("quota exceeded", "check your plan and billing") => authentication SUCCEEDED and the
+    subscription's included usage is spent. Re-pasting fixes nothing; this one waits.
+  - MODEL REJECTED ("not supported when using Codex with a ChatGPT account") => a pinned model name
+    the account will not serve. Not auth, not quota: re-run without codexModel and let the account
+    pick. Report it as this, never as "auth".
+  - or: missing binary, sandbox/bubblewrap, timeout.`,
   { label: 'preflight:codex-trace-seat', phase: 'Judge', model: 'sonnet', effort: 'low',
-    schema: { type: 'object', additionalProperties: false, required: ['ok', 'detail'],
-      properties: { ok: { type: 'boolean' }, detail: { type: 'string' } } } })
+    schema: { type: 'object', additionalProperties: false, required: ['ok', 'detail', 'model'],
+      properties: { ok: { type: 'boolean' }, detail: { type: 'string' }, model: { type: 'string' } } } })
 
+const CODEX_SERVED = (codexProbe && codexProbe.model) || 'unknown'
 const TRACE_SEAT = codexProbe && codexProbe.ok === true ? CODEX_TRACE_SEAT : OPUS_TRACE_SEAT
 log(TRACE_SEAT === CODEX_TRACE_SEAT
-  ? 'trace seat = codex gpt-5.6 (cross-vendor relay, off-plan billing)'
+  ? `trace seat = codex, model ${CODEX_SERVED} (cross-vendor relay, off-plan billing)`
   : `trace seat = opus FALLBACK — codex unreachable: ${codexProbe ? codexProbe.detail : 'probe agent died'}. The panel is now single-vendor: decorrelation is weaker, and this run costs the plan its heaviest line item.`)
 
 const SKEPTIC_PANEL = [
@@ -933,7 +1014,9 @@ return {
   // Surfaced by name so bounding cost can never be mistaken for a clean review (lesson 12).
   deferred: deferred.map(f => ({ ...f, why: 'out of judgeOnly scope — never adjudicated' })),
   traceSeat: TRACE_SEAT === CODEX_TRACE_SEAT
-    ? { vendor: 'openai', model: 'gpt-5.6', mode: 'cross-vendor relay, read-only (compiles nothing)' }
+    // Report the model that actually ANSWERED, not one we hoped for: the attribution table is
+    // evidence about which seat earns its place, and a hardcoded name would quietly falsify it.
+    ? { vendor: 'openai', model: CODEX_SERVED, mode: 'cross-vendor relay, read-only (compiles nothing)' }
     : { vendor: 'anthropic', model: 'opus', mode: `fallback — codex unreachable: ${codexProbe ? codexProbe.detail : 'probe died'}` },
   // Refuted-as-pre-existing is surfaced, never buried: a defect the change did not
   // introduce is still a defect, and someone must decide to file it.

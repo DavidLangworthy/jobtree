@@ -1,0 +1,15 @@
+--- /dev/fd/63	2026-07-26 03:36:30.124509353 +0000
++++ /home/runner/work/_temp/autopilot/harness-run.js	2026-07-26 03:30:14.516769850 +0000
+@@ -718,10 +718,10 @@
+ //
+ // Under ChatGPT-subscription auth (the billing mode this seat now uses) codex REJECTS every
+ // explicitly-named model:
+-//    -m gpt-5.6 / -m gpt-5-codex / -m gpt-5  ->  400 "The '<name>' model is not supported when
++//    / -m gpt-5-codex / -m gpt-5  ->  400 "The '<name>' model is not supported when
+ //                                                using Codex with a ChatGPT account"
+ //    (no -m flag)                            ->  works; the account serves its own default
+-// So hardcoding `-m gpt-5.6` 400s on precisely the accounts this seat is meant to run on — and
++// So hardcoding `` 400s on precisely the accounts this seat is meant to run on — and
+ // because the preflight fails closed, the panel would quietly fall back to Opus for a cross-vendor
+ // seat that is alive and answering. That is the worst shape of failure here: not a seat that is
+ // down, but a working seat reported as unreachable. Pin a model only when the account is known to

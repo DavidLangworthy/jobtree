@@ -1,0 +1,512 @@
+{
+ "verdict": "BLOCKED \u2014 a lens produced no verifiable work; this is NOT a green review",
+ "attribution": {
+  "byLens": {
+   "std:ledger-lifecycle": {
+    "raised": 4,
+    "confirmed": 2,
+    "unresolved": 0,
+    "refuted": 0
+   },
+   "std:order-dependence": {
+    "raised": 4,
+    "confirmed": 0,
+    "unresolved": 0,
+    "refuted": 0
+   },
+   "std:signal-and-identity": {
+    "raised": 6,
+    "confirmed": 2,
+    "unresolved": 0,
+    "refuted": 0
+   },
+   "std:consequence-and-reapers": {
+    "raised": 3,
+    "confirmed": 0,
+    "unresolved": 0,
+    "refuted": 0
+   },
+   "std:test-integrity": {
+    "raised": 8,
+    "confirmed": 0,
+    "unresolved": 0,
+    "refuted": 0
+   }
+  },
+  "byModel": {
+   "opus": {
+    "raised": 22,
+    "confirmed": 4,
+    "unresolved": 0,
+    "refuted": 0
+   },
+   "fable": {
+    "raised": 3,
+    "confirmed": 0,
+    "unresolved": 0,
+    "refuted": 0
+   }
+  },
+  "skepticRoles": {
+   "reproduce": {
+    "votes": 4,
+    "ranCode": 4,
+    "decisive": 4,
+    "reaperVetoes": 0
+   },
+   "trace": {
+    "votes": 1,
+    "ranCode": 0,
+    "decisive": 0,
+    "reaperVetoes": 1
+   },
+   "consequence": {
+    "votes": 4,
+    "ranCode": 4,
+    "decisive": 0,
+    "reaperVetoes": 1
+   }
+  },
+  "confirmedFoundByExactlyOneLens": {
+   "std:ledger-lifecycle": 2,
+   "std:signal-and-identity": 2
+  }
+ },
+ "blockedLenses": [
+  {
+   "lens": "codex-sol",
+   "reason": "the shaper could not support these required fields from the agent's own prose: summary (no substantive analysis provided in prose), answers (no questions answered in prose), evidence (no file/line/quote evidence provided in prose), findings (no findings identified in prose). It is forbidden to invent them."
+  }
+ ],
+ "scoutLeads": [
+  {
+   "taxonomyClass": "class 3 last-writer-wins / map-order nondeterminism",
+   "file": "pkg/funding/evaluate.go",
+   "line": 219,
+   "why": "`for owner, nss := range nsByOwner` iterates a Go map and populates `collided[ns]=owner` inside the loop; the surfaced conflict `Owner` field consumed by R26's auditor could be nondeterministic across process runs if a namespace could collide via more than one path."
+  },
+  {
+   "taxonomyClass": "class 3 last-writer-wins / map-order nondeterminism",
+   "file": "pkg/funding/evaluate.go",
+   "line": 231,
+   "why": "`for ns, owners := range ownersByNS` iterates a map and appends `BindingConflict` entries to `ev.conflicts` in map order, so `Evaluation.Conflicts()` returns conflicts in a non-deterministic order across process runs, which any caller or test asserting on conflict order/index would flake on."
+  },
+  {
+   "taxonomyClass": "class 2 comment-as-enforcement",
+   "file": "pkg/funding/evaluate.go",
+   "line": 220,
+   "why": "The `isInterior` exemption (`if _, isInterior := interior[owner]; isInterior { continue }`) is documented above as safe because 'nothing ever classes Owned against a pool' and 'pools are admin-written at both ends', but the repo's own DECISIONS-NEEDED.md P5 entry and the archived 2026-07-24 review record that an owner which is simultaneously a leaf (directly bound in >=2 namespaces) and named as an interior parent evades ConflictLeafOwnerSpansNamespaces entirely, letting a Run in one tenant's namespace mint a non-recallable Owned charge against another tenant."
+  },
+  {
+   "taxonomyClass": "class 2 comment-as-enforcement",
+   "file": "pkg/funding/evaluate.go",
+   "line": 350,
+   "why": "The lendingAllows empty-borrower guard comment asserts 'An empty borrower is never lendable' -- true only because every caller currently derives borrower via ev.OwnerOf(run.Namespace); if a future caller passes a raw/unresolved owner string to lendingAllows the guarantee is enforced only by comment and calling convention, not the type system."
+  },
+  {
+   "taxonomyClass": "class 2 comment-as-enforcement",
+   "file": "cmd/scheduler/plugin/gang.go",
+   "line": 727,
+   "why": "The rewritten comment states namespace equality is 'forge-proof' and 'strictly stronger' than the old owner-string check, an indicative claim about all future callers of promiseProvenanceValid; it is true only because Namespace is authenticated by the API server for real Segments, but nothing in the type system prevents a future caller from constructing a cover.Segment with an attacker-influenced Namespace field from an untrusted source."
+  },
+  {
+   "taxonomyClass": "class 5 identity coarsening (fallback-owner substitution)",
+   "file": "pkg/resolver/resolver.go",
+   "line": 476,
+   "why": "ownerOf falls back to run.Namespace itself as the 'owner' key when in.Evaluation is nil, silently coarsening the funding-principal identity to the raw namespace string; if any caller path reaches reclaimUnfunded/runLottery without an Evaluation while the real evaluation would have derived the empty-owner fail-safe sentinel (conflicted/unbound namespace), the reclaim/lottery bucketing keys by the wrong identity."
+  },
+  {
+   "taxonomyClass": "class 8 test asserts the bug (helper masks parameter)",
+   "file": "pkg/resolver/resolver_test.go",
+   "line": 216,
+   "why": "buildRun(owner, namespace, name, flavor) silently discards the caller-supplied namespace argument (`_ = namespace`) and instead derives the run's namespace from nsForOwner(owner); every existing call site passes \"default\" for namespace which is now ignored, so no test in this file can construct a run whose namespace does not match its owner's canonical namespace -- exactly the shape needed to exercise the conflicted/unbound-owner fallback path."
+  },
+  {
+   "taxonomyClass": "class 8 test asserts the bug (missing combined scenario)",
+   "file": "pkg/funding/tenancy_r7_test.go",
+   "line": 93,
+   "why": "TestInteriorTierExemptFromInjectivity only constructs a pool owner that is purely interior (never itself leaf-bound), so it never exercises the dual leaf+interior owner scenario that the parked P5 finding shows defeats ConflictLeafOwnerSpansNamespaces; the new test suite cannot catch a regression or confirm a fix in that exact hazardous configuration."
+  },
+  {
+   "taxonomyClass": "class 1 immortal lease (new exit path / new door)",
+   "file": "pkg/funding/evaluate.go",
+   "line": 1040,
+   "why": "lendingAllows gained a new early `return false` for `borrower == \"\"` inserted before the existing len(policy.To)==0 return -- a new exit path in a multi-return function reached by a new door (empty-namespace derivation); worth confirming the Borrowed->Unfunded demotion this produces is actually observed everywhere a previously-Borrowed lease's classification is cached or relied upon, not just recomputed at Evaluate() time."
+  }
+ ],
+ "scoutDied": false,
+ "confirmed": [
+  {
+   "title": "Empty derived owner routes reservation activation into InvalidRequest early return, making failReservationNoEnvelope unreachable \u2014 reservations become immortal",
+   "severity": "high",
+   "file": "controllers/run_controller.go",
+   "line": 1234,
+   "failure_scenario": "Run 'blocked' in ns default reserves against Budget team (owner org:team). Admin deletes that Budget or adds a second, different-owner Budget to the namespace, tripping ConflictMultipleOwners. Probe 6 on the branch, 20 activation ticks over 20 simulated hours: ActivateReservations returns 'reservation default/blocked-res-1704067200: owner and flavor must be set' on tick 1 AND tick 20; reservation state stays Pending, backlog gauge frozen at map[default/blocked-res-1704067200:{Flavor:H100-80GB Seconds:1020}] forever since metrics.ClearReservationBacklog is only called on paths the early return skips. Identical baseline test on main: tick 1 err = 'run default/blocked has no envelope to fund reservation blocked-res-1704067200 (budget removed)', reservation state=Failed, tick 20 err=nil. So main terminates it and the branch does not; the run keeps reporting Admitted=True(Reserved) forever. R7-tenancy-amendment.md:126-127 and :590 both state this path 'fails terminally at failReservationNoEnvelope'; it does not, and failReservationNoEnvelope has no test anywhere in the repo on either branch, so nothing went red.",
+   "taxonomyClass": "1 IMMORTAL LEASE (new door into an existing multi-return function) + 8 THE TEST ASSERTS THE BUG (no test at all)",
+   "lens": "std:ledger-lifecycle",
+   "lensModel": "opus",
+   "why": "reproduced by a compiled, running test",
+   "reaperWarning": null,
+   "votes": [
+    {
+     "role": "reproduce",
+     "refuted": false,
+     "ranCode": true,
+     "reasoning": "The investigator confirmed the finding by reading the diff (run_controller.go activateReservation, cover.go Plan, funding/evaluate.go OwnerOf, run_types.go deleted Owner field) and by running real code: they copied the repo to /tmp/jobtree-review, wrote a new test r7_conflict_repro_test.go, and ran `go test ./controllers/... -run TestRepro_ConflictedNamespaceReservationNeverTerminates -v` against a fixture with conflicting Budgets producing an empty OwnerOf result and a Pending Reservation, driving ActivateReservations 20 times over 20 simulated hours. The reservation.Status.State remained \"Pending\" for all 20 ticks and never became \"Failed\", with the same error repeated every tick: \"owner and flavor must be set\". The investigator explains that empty owner causes an immediate bare `return err` in the FailureReasonInvalidRequest branch, before reaching the packErr/coverPlanErr block that calls failReservationNoEnvelope (the only place that sets Status.State = \"Failed\" and clears the backlog metric). They conclude this is not merely pre-existing: on main, run.Spec.Owner was validated non-empty at admission and effectively immutable, making the branch dead code; R7 pt2 replaces that with a live re-derivation via Evaluation.OwnerOf every reconcile tick, making the branch reachable post-admission via routine admin actions like deleting a Budget. They also found the design document (R7-tenancy-amendment.md near lines 124-127 and ~590) falsely claims this path \"fails terminally\" via failReservationNoEnvelope, which the code and test contradict. They searched the test tree and found no test covering this exact scenario. They conclude the finding is not refuted, the fix (routing empty-owner case into the terminal failReservationNoEnvelope path) is not a reaper of any legitimate design intent since the amendment document itself asserts this is the intended terminal behavior. They noted a nuance: no GPULease is minted in this scenario, so this is more precisely an \"immortal Reservation / permanently stuck Run\" rather than the canonical \"immortal lease\" with an open lease charging a budget, though the operational consequence (silent, permanent non-convergence) is the same class of harm."
+    },
+    {
+     "role": "trace",
+     "refuted": false,
+     "ranCode": false,
+     "reasoning": "The investigator relayed codex's verdict as NOT REFUTED for the review target 0b77fbe7d4449beec1cd463474a7353b0e84ee7c. The investigator independently confirmed (via git merge-base --is-ancestor and git grep at both revisions) that the guard and test cited as fixing the issue exist only at a later commit 953c357, which is a descendant on the same branch, and are absent at 0b77fbe - so the fix is a \"reaper\" commit outside the reviewed range, meaning the bug was pre-existing at the review target. No code was executed to reproduce the runtime behavior; codex explicitly stated it could not run Go tests in the read-only sandbox (\"Targeted Go tests could not be executed because the environment is fully read-only and Go could not create its /tmp/go-build\u2026 directory\"), so this was a trace, not a reproduction. The investigator did directly verify file/line citations with sed -n/grep -n and confirmed ancestry/guard/test presence with git commands, but did not execute any Go code or tests to observe the runtime freeze behavior described in the finding."
+    },
+    {
+     "role": "consequence",
+     "refuted": false,
+     "ranCode": true,
+     "reasoning": "The investigator's verdict is explicit and unhedged: NOT REFUTED \u2014 CONFIRMED by execution on both branches, with refuted=false, verdict=CONFIRMED, preExisting=false, fixIsReaper=false, all stated verbatim. They describe building a scratch Go module in /tmp with a replace directive against the working tree and against a git archive extraction of main, and running three probes: Probe 1 on branch 0b77fbe reproduces the immortal reservation exactly (error \"reservation default/blocked-res-1704067200: owner and flavor must be set\", Pending at tick 1 and tick 20, backlog gauge stuck at 1020). Probe 2 on main shows the baseline terminates the reservation via failReservationNoEnvelope. Probe 3 shows recovery after terminal failure on main, supporting fixIsReaper=false. They explicitly answer the schema-mapper questions: \"I ran code: yes \u2014 three probes, all compiled and executed... Reproduced: yes... refuted: false... preExisting: false... fixIsReaper: false.\" All required booleans are directly supported by explicit statements, so I mapped them straightforwardly. The reproduction narrative and evidence locations are copied from the prose to populate the reproduction field faithfully."
+    }
+   ]
+  },
+  {
+   "title": "promiseProvenanceValid's namespace-equality check is not 'strictly stronger' than the owner check it replaced \u2014 accepts a charge against a different principal's Budget in the same namespace",
+   "severity": "medium",
+   "file": "cmd/scheduler/plugin/gang.go",
+   "line": 731,
+   "failure_scenario": "Probe 5, real fake client: ns default holds Budget team(Owner org:ai:team) and Budget intruder(Owner org:ai:intruder, envelope intruder-west). Segment{Namespace: default, BudgetName: intruder, EnvelopeName: intruder-west} for run default/train. promiseProvenanceValid returns TRUE, whereas the deleted check (b.Spec.Owner != run.Spec.Owner) would have returned false for this segment. The companion probe on the identical world shows funding.OwnerOf('default')=='' with conflicts [{Namespace:default Reason:MultipleOwners}] \u2014 i.e. this namespace participates in no funding at all \u2014 while the sole committer mints a gate-free Lease against it. The lease classes Unfunded so it does not bill, but it holds GPUs on a namespace the engine has ruled unbound, contradicting the amendment's 'nothing new runs on nobody's quota'. TestPromiseProvenanceValid's existing negative cases all put the foreign Budget in a different namespace or name a nonexistent Budget, so the same-namespace-different-owner configuration is untested.",
+   "taxonomyClass": "7 CLONED OBLIGATION (the binding rule reimplemented in the sole committer, without the fail-safes) + 2 THE COMMENT IS THE ONLY ENFORCEMENT",
+   "lens": "std:ledger-lifecycle",
+   "lensModel": "opus",
+   "why": "reproduced by a compiled, running test",
+   "reaperWarning": null,
+   "votes": [
+    {
+     "role": "reproduce",
+     "refuted": false,
+     "ranCode": true,
+     "reasoning": "The investigator's prose concludes the finding is CONFIRMED, not refuted. They read the code (gang.go promiseProvenanceValid, evaluate.go deriveOwners/OwnerOf/lendingAllows), wrote and executed a new Go test against a copy of the repo at the exact reviewed commit, and observed promiseProvenanceValid returning true for a cross-owner, same-namespace segment while funding.Evaluate independently rules the namespace unbound/conflicted. They also diffed against the pre-R7pt2 version of the function and against a later downstream fix commit (953c357) that patches the same gap, corroborating the finding independently. The prose explicitly states ranCode: yes, reproduced: yes, preExisting: no (a genuine regression from this PR replacing the owner-string check with a namespace-only check), and fixIsReaper: no (the actual shipped fix is a narrow tightening that doesn't foreclose legitimate use cases). Severity 'medium' is concurred as reasonable."
+    },
+    {
+     "role": "consequence",
+     "refuted": true,
+     "ranCode": true,
+     "reasoning": "The investigator explicitly states refuted=true for the finding as stated: \"refuted = true for the finding as stated (severity medium, consequence \\\"accepts a charge against a different principal's Budget\\\" \u2014 disproven by a compiled, running probe: class Unfunded, zero funded consumption, zero cap usage, alarmed, junior, reclaimable, and reachable only under VAP-absent + admin misconfiguration).\" They ran code (a standalone probe module) and reproduced the funding-side consequence exactly, matching a companion result, and confirmed the mechanism (the boolean/gang.go half) by direct inspection. They conclude a LOW severity residue survives (the overclaiming \"strictly stronger\" comment, a real gap vs. the controller's letter in the conflicted-namespace corner via forged-pod path, and an untested negative case), but the finding's claimed medium-severity consequence is refuted. On the reaper question, they state fixIsReaper=false for the correctly-shaped bind-refusal fix (it destroys no legal state \u2014 it only refuses a fresh mint into an already-conflicted namespace, not closing any existing lease), while explicitly vetoing two alternative fix shapes (a sweep of existing Unfunded leases, and a plugin-local re-derivation clone) as bad choices, without claiming those are the recommended fix. preExisting=false was stated explicitly (\"preExisting = false for the check itself\") though they note the underlying gate-free-mint surface predates it and the change is a strict improvement, not a regression. All fields map directly onto explicit verdict statements at the end of the prose (\"Verdicts, explicitly: ...\"), so no fabrication was needed and no required field is unsupported.</reasoning>\n<parameter name=\"reproduction\">Investigator built a standalone probe module (/tmp/probe, replace-directive against repo, no repo files touched) reconstructing namespace `default` with Budget `team` (Owner org:ai:team) and Budget `intruder` (Owner org:ai:intruder, envelope intruder-west), run default/train, and the lease PreBind would mint after promiseProvenanceValid returns true, fed to funding.Evaluate at HEAD. Result: OwnerOf(default) = \"\", Conflicts = [{Namespace:default Owner: Reason:MultipleOwners}], lease class \"Unfunded\", intruder envelope HoursByClass=map[Unfunded:24] with zero funded consumption; a counterfactual healthy single-owner namespace classes the same mint Owned."
+    }
+   ]
+  },
+  {
+   "title": "promiseProvenanceValid no longer pins seg.Owner, letting a forged Promise pod set Lease.Spec.Owner to any string",
+   "severity": "low",
+   "file": "cmd/scheduler/plugin/gang.go",
+   "line": 732,
+   "taxonomyClass": "4 SIGNAL != REALITY",
+   "failure_scenario": "The rewritten check reads only seg.Namespace, seg.BudgetName, and seg.EnvelopeName, dropping the prior seg.Owner pin; PreBind only requires seg.Owner be non-empty (plugin.go:294), and PodLeaseWithRole stamps Lease.Spec.Owner=seg.Owner, a field R7-tenancy-amendment.md \u00a74 keeps expressly because it 'makes a lease's payer legible in audit output.' The new test gang_test.go:515-517 constructs cover.Segment{Namespace:'default', Owner:'org:whatever', BudgetName:'team', EnvelopeName:'west'} and asserts promiseProvenanceValid returns true, confirming an arbitrary owner string now passes; the forged value further propagates via gang.go:483 (segment reconstruction from l.Spec.Owner) and run_controller.go:2816/2888 (re-emitted via AnnotationPayerOwner).",
+   "lens": "std:signal-and-identity",
+   "lensModel": "opus",
+   "why": "reproduced by a compiled, running test",
+   "reaperWarning": "The investigator's verdict is REFUTED (refuted=true) as a defect requiring action, while confirming the mechanism itself (an arbitrary owner string passes the check, as the shipped test gang_test.go:515-517 asserts on purpose) but showing the consequence is nil in both funding planes. They explicitly state preExisting=true \"in the strong sense: the change narrows this exposure\" \u2014 before the change the same attacker forged owner via Run.Spec.Owner which was load-bearing for funding, and this PR exists to kill that escalation, leaving the cosmetic forgeability's reachability the same while strictly shrinking consequences. They explicitly state fixIsReaper=true for the obvious fix (restoring an owner pin such as seg.Owner == b.Spec.Owner), reasoning it \"reaps healthy runs and buys nothing\" \u2014 it buys nothing because owner strings aren't secrets, and it reaps because of the top-up path (gangProvenance in run_controller.go:2774-2819) where a legacy Spec.Owner or an admin reorg of Budget.Spec.Owner would wedge a healthy, funded, running gang forever via PreBind refusal. Code was run: a scratch test at /tmp/owner-probe (outside the repo, module replace onto the repo) built two worlds (honest owner string vs forged owner string) and executed `go test`, producing PASS with identical funding outcomes in both worlds (class=Owned in both, victim envelope AvailableWidth=8/8 untouched in both, charged own envelope 4-of-8 in both). The investigator explicitly frames this as \"executed and shown to be nil,\" and states \"No repo files were created or modified; no mutating git commands were run.\" All of refuted, reproduced (mechanism), ranCode, fixIsReaper, and preExisting are directly and explicitly supported by the prose. I mapped the reproduction field to the executed probe description and its exact result strings, copied verbatim from the report.</reasoning>\n<parameter name=\"reproduced\">true",
+   "votes": [
+    {
+     "role": "reproduce",
+     "refuted": true,
+     "ranCode": true,
+     "reasoning": "The investigator ran real code (ranCode=true) and reproduced the literal mechanism claim (reproduced=true): a forged Promise pod's seg.Owner passes promiseProvenanceValid unchecked and lands verbatim in Lease.Spec.Owner via pkg/admission/admission.go:245 (Owner: seg.Owner), propagating further via gang.go:483 and run_controller.go:2816/2888. That mechanism is true and undisputed. However, the investigator could not reproduce any effect on funding class, capacity accounting, or budget charging: pkg/funding/evaluate.go never reads Lease.Spec.Owner (confirmed by exhaustive grep), and the executed test showed a forged-owner lease and an honest one classify identically (Owned, funded width 4, 4 GPUs, 8 GPU-hours). This is corroborated by gang.go:701-710's comment and docs/project/remediation/R7-tenancy-amendment.md lines 184-188 stating Lease.Spec.Owner survives as a stamped fact but Evaluate ignores it for charging. The investigator also determined via git show main:api/v1/run_types.go and diffing the pre-change promiseProvenanceValid that this capability (self-consistent forgery of Lease.Spec.Owner) already existed before this PR since Run.Spec.Owner was only validated for non-emptiness \u2014 making this pre-existing in substance and not worsened in consequence or reachability by the change. The investigator's verdict is explicit: \"Refuted.\" On the fix question, the investigator states the \"obvious fix\" (re-adding the seg.Owner equality check) \"would not be a reaper in the sense of breaking legitimate functionality, but it would also not close any real security gap\" \u2014 meaning it's not characterized as a reaper fix, so fixIsReaper is set false per the text (\"would not be a reaper\")."
+    },
+    {
+     "role": "consequence",
+     "refuted": true,
+     "ranCode": true,
+     "reasoning": "The investigator's verdict is REFUTED (refuted=true) as a defect requiring action, while confirming the mechanism itself (an arbitrary owner string passes the check, as the shipped test gang_test.go:515-517 asserts on purpose) but showing the consequence is nil in both funding planes. They explicitly state preExisting=true \"in the strong sense: the change narrows this exposure\" \u2014 before the change the same attacker forged owner via Run.Spec.Owner which was load-bearing for funding, and this PR exists to kill that escalation, leaving the cosmetic forgeability's reachability the same while strictly shrinking consequences. They explicitly state fixIsReaper=true for the obvious fix (restoring an owner pin such as seg.Owner == b.Spec.Owner), reasoning it \"reaps healthy runs and buys nothing\" \u2014 it buys nothing because owner strings aren't secrets, and it reaps because of the top-up path (gangProvenance in run_controller.go:2774-2819) where a legacy Spec.Owner or an admin reorg of Budget.Spec.Owner would wedge a healthy, funded, running gang forever via PreBind refusal. Code was run: a scratch test at /tmp/owner-probe (outside the repo, module replace onto the repo) built two worlds (honest owner string vs forged owner string) and executed `go test`, producing PASS with identical funding outcomes in both worlds (class=Owned in both, victim envelope AvailableWidth=8/8 untouched in both, charged own envelope 4-of-8 in both). The investigator explicitly frames this as \"executed and shown to be nil,\" and states \"No repo files were created or modified; no mutating git commands were run.\" All of refuted, reproduced (mechanism), ranCode, fixIsReaper, and preExisting are directly and explicitly supported by the prose. I mapped the reproduction field to the executed probe description and its exact result strings, copied verbatim from the report.</reasoning>\n<parameter name=\"reproduced\">true"
+    }
+   ]
+  },
+  {
+   "title": "metrics.BudgetKey lacks a Namespace field, unlike funding.EnvelopeKey, causing cross-namespace gauge collisions",
+   "severity": "low",
+   "file": "pkg/metrics/metrics.go",
+   "line": 237,
+   "taxonomyClass": "5 IDENTITY COARSENING",
+   "failure_scenario": "metricKey (budget_controller.go:218-234) and metrics.BudgetKey (metrics.go:237,298) key on Owner+Budget-name+Envelope+Flavor with no Namespace, while funding.EnvelopeKey (funding.go:177) was namespaced specifically to close envelope aliasing; RecordBudgetUsage does a plain overwrite (budgetData[key]=usage). Two Budgets with equal owner, name, envelope name, and flavor in different namespaces share one map entry, last-writer-wins by reconcile order; \u00a79's retopology to per-owner namespaces and deliberately cross-namespace interior tiers worsen reachability, so exactly when a leaf-owner collision unbinds two namespaces (finding 2), the operator's dashboard merges what should be two distinct budget series into one.",
+   "lens": "std:signal-and-identity",
+   "lensModel": "opus",
+   "why": "reproduced by a compiled, running test",
+   "reaperWarning": null,
+   "votes": [
+    {
+     "role": "reproduce",
+     "refuted": true,
+     "ranCode": true,
+     "reasoning": "The investigator concludes: 'Refuted as a defect introduced or worsened by this PR, though not refuted as a real bug.' They verified via git diff that pkg/metrics/metrics.go and controllers/budget_controller.go have a zero-line diff between main and HEAD, meaning this PR touches neither file implementing the coarse BudgetKey/metricKey. They reproduced the underlying collision bug with a real compiled Go test, confirming the bug is real but pre-existing and not introduced or worsened by this PR (R7 pt2). They argue the pre-PR codebase had no namespace-owner uniqueness constraint, so the collision was already reachable, and that this PR's own fixture retopology in golden_test.go actually diversifies namespaces per owner rather than consolidating them, working against the 'worsens' claim. They also note the design doc never mentions metrics/dashboards, confirming it was out of scope."
+    },
+    {
+     "role": "consequence",
+     "refuted": true,
+     "ranCode": true,
+     "reasoning": "The investigator explicitly ran code (a scratch Go module in /tmp/collide) and reproduced the defect in two configurations: the interior-pool case and the leaf-owner-collision case, both showing budgetData/entries gauge collapsing two envelope series into one due to last-writer-wins overwrite at metrics.go:239 and budget_controller.go:62. They concluded 'refuted (as a real defect): no \u2014 confirmed. refuted (as a merge-blocker for R7 pt2): yes \u2014 pre-existing, files untouched, consequences and reachability un-worsened.' Since the schema's top-level 'refuted' is meant to capture the merge-blocker verdict for this PR, and the investigator states git diff for the relevant files is empty and the issue is pre-existing and un-worsened by the change, I mark refuted=true (i.e., not a valid blocking finding for this PR), while preserving the nuance that the underlying defect is real via reasoning and reproduction fields. preExisting=true is directly stated ('preExisting: true'). fixIsReaper=false is directly stated ('fixIsReaper = false'). ranCode=true and reproduced=true are directly stated ('Ran code: yes', 'Reproduced: yes, both'). The reproduction field captures the two scenarios and file/line evidence as given verbatim in the prose."
+    }
+   ]
+  }
+ ],
+ "unresolved": [],
+ "deferred": [
+  {
+   "title": "Evaluation.Conflicts() has zero production consumers, so an admin typo silently demotes a whole tenant's running work Owned->Unfunded with no alarm",
+   "severity": "high",
+   "file": "pkg/funding/evaluate.go",
+   "line": 173,
+   "failure_scenario": "Probe 2: run train, 8 GPUs, Running in ns default on Budget team(org:team); Funding{OwnedGPUs:8, UnfundedGPUs:0}. Admin adds another Budget named 'intruder' with Owner org:intruder to the same namespace (ConflictMultipleOwners; OwnerOf(default)==''). After 20 Reconciles/20 simulated hours: Funding{OwnedGPUs:0, UnfundedGPUs:8, UnfundedGPUHours:160}, lease still open, phase still Running, SettleLeases sweeps nothing, no event/metric/log reports the conflict. Probe 7: bystander tenant 'challenger' in ns org-other needs the node; one Reconcile of the challenger and the victim's lease is gone: 'lease victim-g00-team-west-... closed=true reason=ReclaimUnfunded', ResolverActions map[ReclaimUnfunded:1], victim open leases 0. The same demotion also arms run_controller.go:1898-1906 (reclaimSquatter closes any lease classed ClassUnfunded and deletes its pods). One mistyped Budget namespace converts a tenant's senior Owned claim into free-for-all capacity, with nothing to alert on, despite evaluate.go:80-81 and :172-173 comments claiming R26's ledger auditor consumes Conflicts() to alarm \u2014 controllers/kube/ledger_auditor.go never calls funding.Evaluate and never sees an Evaluation.",
+   "taxonomyClass": "7 CLONED OBLIGATION (half the obligation was never implemented) + 2 THE COMMENT IS THE ONLY ENFORCEMENT",
+   "lens": "std:ledger-lifecycle",
+   "lensModel": "opus",
+   "why": "out of judgeOnly scope \u2014 never adjudicated"
+  },
+  {
+   "title": "resolver.ownerOf's raw-namespace fallback is a second, divergent implementation of owner derivation \u2014 currently unreachable in production but a latent trap",
+   "severity": "low",
+   "file": "pkg/resolver/resolver.go",
+   "line": 480,
+   "failure_scenario": "ownerOf returns in.Evaluation.OwnerOf(run.Namespace) when an Evaluation is present and the raw run.Namespace string when it is not; the comment asserting the fallback is 'exactly what the owner would resolve to' is false in two ways \u2014 the owner tier string (org:ai:rai) is not the namespace string (org-ai-rai), and for a conflicted/unbound namespace the real derivation yields the '' sentinel that collapses several tenants into one lottery bucket while the fallback keeps them apart. Both production construction sites of resolver.Input (run_controller.go:458 and :1276) pass a non-nil c.hypotheticalEvaluation(...) so the fallback cannot fire today; it becomes live the moment any future caller (a pure-scheduling reclaim, a CLI dry-run, a new admission path) omits the Evaluation, at which point reclaimUnfunded and runLottery bucket by a different key space than the one the funding classes were computed in and the attested-lottery fairness guarantee silently keys on the wrong identity.",
+   "taxonomyClass": "5 IDENTITY COARSENING + 2 THE COMMENT IS THE ONLY ENFORCEMENT (latent, not live)",
+   "lens": "std:ledger-lifecycle",
+   "lensModel": "opus",
+   "why": "out of judgeOnly scope \u2014 never adjudicated"
+  },
+  {
+   "title": "collided[ns] = owner is a last-writer-wins scalar over a Go map, randomizing BindingConflict.Owner",
+   "severity": "medium",
+   "file": "pkg/funding/evaluate.go",
+   "line": 225,
+   "taxonomyClass": "3 LAST-WRITER-WINS",
+   "failure_scenario": "deriveOwners iterates `for owner, nss := range nsByOwner` (line 219) and writes `collided[ns] = owner` (line 225) with no comparison against what is already there. When a namespace is poisoned by two or more distinct leaf owners, the surviving value is whichever owner Go's randomized map iteration handed the loop last, copied verbatim into the surfaced BindingConflict.Owner at line 234. Reproduced with four budgets where owners org:ai:aaa and org:ai:zzz are each bound in both namespaces alice and bob: calling funding.Evaluate 200x in one process produced 2 distinct outcomes (19x owner org:ai:aaa, 181x owner org:ai:zzz) for the same conflicts. The funding decision itself is unaffected (proved by experiment), but once R26's auditor is wired up as its doc comment claims, an admin who mis-binds two owners across two namespaces would get an alarm naming a randomly chosen one of them, fix that one, and see the alarm reappear naming the other; the namespace also silently loses its ConflictMultipleOwners reason because of a `continue` at line 236 that reports at most one reason per namespace.",
+   "lens": "std:order-dependence",
+   "lensModel": "opus",
+   "why": "out of judgeOnly scope \u2014 never adjudicated"
+  },
+  {
+   "title": "Conflicts() enumeration order is Go map order; the change's own new test already indexes conflicts[0]",
+   "severity": "low",
+   "file": "pkg/funding/evaluate.go",
+   "line": 231,
+   "taxonomyClass": "3 LAST-WRITER-WINS",
+   "failure_scenario": "`for ns, owners := range ownersByNS` (line 231) appends BindingConflict entries to ev.conflicts in map order with nothing sorting the result before or after, so Evaluation.Conflicts() returns a slice whose order is randomized per process. TestMultiOwnerNamespaceFailsSafe (pkg/funding/tenancy_r7_test.go:53) asserts positionally on conflicts[0]; it is safe today only because its fixture happens to produce exactly one conflict. Reproduced with four independently multi-owner namespaces ns1..ns4: funding.Evaluate called 200x in one process produced 4 distinct Conflicts() orders (126x/27x/25x/22x rotations of the same four entries). There is no production consumer today, so no runtime effect yet, but it is a latent CI flake the moment a second conflicted namespace is added to the tenancy_r7 fixture or R26's auditor emits one event per conflict.",
+   "lens": "std:order-dependence",
+   "lensModel": "opus",
+   "why": "out of judgeOnly scope \u2014 never adjudicated"
+  },
+  {
+   "title": "Doc comment claiming R26's ledger auditor consumes BindingConflict/Conflicts() is false; there are zero non-test consumers",
+   "severity": "medium",
+   "file": "pkg/funding/evaluate.go",
+   "line": 173,
+   "taxonomyClass": "2 THE COMMENT IS THE ONLY ENFORCEMENT (cross-lens; caps LWW-1/LWW-2 severity)",
+   "failure_scenario": "A repo-wide grep for BindingConflict|ConflictMultipleOwners|ConflictLeafOwnerSpans|Conflicts() across all .go files returns hits only inside pkg/funding (the definition) and pkg/funding/tenancy_r7_test.go; controllers/kube/ledger_auditor.go never touches funding.Evaluation.Conflicts(). As a result, the two fail-safes fire completely silently: an admin who mis-binds a namespace strands every run in it and every pre-existing lease coasts Unfunded with no alarm, no Event, no log line, the only observable being a Run status message reading \"owner and flavor must be set\" that after R7 names a field the researcher can no longer set and cannot fix. This means the two confirmed map-order nondeterminisms above are currently latent rather than live, and fixing them is cheap only until R26 is actually wired to consume the conflicts.",
+   "lens": "std:order-dependence",
+   "lensModel": "opus",
+   "why": "out of judgeOnly scope \u2014 never adjudicated"
+  },
+  {
+   "title": "Three new map iterations in funding.Evaluate have no permutation/repetition rail extended to cover them",
+   "severity": "low",
+   "file": "controllers/order_independence_test.go",
+   "line": 27,
+   "taxonomyClass": "3 LAST-WRITER-WINS (missing rail) / 8 THE TEST ASSERTS THE BUG (coverage)",
+   "failure_scenario": "The repo's class-3 rail covers exactly two entry points (HandleNodeFailure under lease permutation, and applyResolution under 64 repetitions) and was not touched by this change, even though R7 moves the owner into three brand-new Go map iterations inside Evaluate (evaluate.go lines 219, 231, 244). Nothing in CI permutes in.Budgets and nothing repeats Evaluate in-process, so both confirmed nondeterminisms above were free to ship green. The line-244 pattern `for owner := range owners { ev.ownerByNamespace[ns] = owner }` is a pick-one-from-a-map that is safe only because of the `len(owners) >= 2 { continue }` guard three lines above it; one edit to that guard would silently randomize who pays for a whole namespace and no test would fail.",
+   "lens": "std:order-dependence",
+   "lensModel": "opus",
+   "why": "out of judgeOnly scope \u2014 never adjudicated"
+  },
+  {
+   "title": "interior-tier exemption coarsens 'is a pool' to 'named in ANY Budget's Parents' and continue runs before collision predicate",
+   "severity": "critical",
+   "file": "pkg/funding/evaluate.go",
+   "line": 220,
+   "taxonomyClass": "5 IDENTITY COARSENING (compounded by 6 GUARD BEFORE PREDICATE)",
+   "failure_scenario": "deriveOwners builds the 'interior' set from every Budget's Spec.Parents entry cluster-wide with no check that the named tier is a real pool or is not itself directly leaf-bound; membership short-circuits the one-namespace-per-leaf-owner fail-safe via a continue placed before the len(nss)>=2 predicate. Reproduced: Budgets alice/alice-b (owner org:ai:alice, env alice-west, 64), mallory/m-b (owner org:ai:alice, env m-west, 1), carol/c-b (owner org:ai:carol, Parents=[org:ai:alice], env c-west, 1) yield OwnerOf(mallory)==org:ai:alice, conflicts==[], and cover.Inventory.Plan for a mallory Run requesting 64 GPUs on org:ai:alice returns a single non-borrowed segment charging alice's envelope for 64 GPUs -- a senior, non-recallable Owned claim outranking Shared/Borrowed work that the resolver cannot reclaim at any deficit.",
+   "lens": "std:signal-and-identity",
+   "lensModel": "opus",
+   "why": "out of judgeOnly scope \u2014 never adjudicated"
+  },
+  {
+   "title": "Binding fail-safe's documented 'coast' behavior is false; Unfunded leases become the first reclaim target, and an unrelated-namespace Budget can silently reap a healthy tenant's fleet",
+   "severity": "high",
+   "file": "pkg/funding/evaluate.go",
+   "line": 256,
+   "taxonomyClass": "4 SIGNAL != REALITY",
+   "failure_scenario": "OwnerOf returns '' for a conflicted namespace, making every OPEN lease there evaluate Unfunded, but R7-tenancy-amendment.md:403-404 and \u00a714 C-2 claim such leases 'reclassify Unfunded and coast'; quota-semantics.md:106 instead defines unfunded as 'first cut, by lottery, on demand', and run_controller.go:467 runs resolver.Resolve with OnlyUnfunded:true on every admission hitting a capacity deficit. Reproduced: starting with a funded alice namespace and an OPEN lease alice-l0 (8 slots, Owned, conflicts=[]), adding one unrelated Budget mallory/m-b with Spec.Owner=org:ai:alice flips OwnerOf(alice) to '', Class(alice-l0) to Unfunded, and conflicts to a LeafOwnerSpansNamespaces pair; feeding that evaluation to resolver.Resolve with OnlyUnfunded:true returns a ReclaimUnfunded action against alice-l0. Since Evaluation.Conflicts() has zero production consumers, this demotion and reap happen with no error, event, metric, or condition.",
+   "lens": "std:signal-and-identity",
+   "lensModel": "opus",
+   "why": "out of judgeOnly scope \u2014 never adjudicated"
+  },
+  {
+   "title": "Empty-owner sentinel merges all unbound/conflicted tenants into one lottery bucket, skewing victim-selection fairness",
+   "severity": "medium",
+   "file": "pkg/resolver/resolver.go",
+   "line": 305,
+   "taxonomyClass": "5 IDENTITY COARSENING",
+   "failure_scenario": "reclaimUnfunded (line 305) and runLottery (line 516) bucket victims by ownerOf, which now returns '' for unbound, MultipleOwners, and LeafOwnerSpansNamespaces namespaces alike, collapsing all affected tenants into a single principal in a lottery whose fairness rule is uniform-over-owners. Measured over 500 seeded resolver.Resolve calls with a 1-group small-ns tenant and a 9-group big-ns tenant: with both namespaces unbound (OwnerOf==''), small-ns absorbed only 51/500 cuts (10.2%); with the identical topology but each namespace bound to a distinct owner, small-ns absorbed 240/500 cuts (48.0%) -- the same seeds and shapes, differing only in derived owner, produce a materially unfair draw.",
+   "lens": "std:signal-and-identity",
+   "lensModel": "opus",
+   "why": "out of judgeOnly scope \u2014 never adjudicated"
+  },
+  {
+   "title": "resolver.ownerOf's nil-Evaluation fallback puts a namespace string into an owner-keyed map, contradicting its own comment",
+   "severity": "low",
+   "file": "pkg/resolver/resolver.go",
+   "line": 480,
+   "taxonomyClass": "5 IDENTITY COARSENING (latent)",
+   "failure_scenario": "When in.Evaluation is nil, ownerOf returns run.Namespace directly into a map otherwise keyed by tier/owner strings; the comment claims this is 'exactly what the owner would resolve to,' which is false for any unbound or conflicted namespace (where real derivation yields '') and false whenever a namespace's bound tier differs from its own name. Currently unreachable in production since both callers of resolver.Resolve (run_controller.go:458, :1287) set Evaluation and reclaimUnfunded is gated on in.Evaluation != nil, but the fallback remains a latent trap reachable by any future caller that omits Evaluation, e.g. via runLottery.",
+   "lens": "std:signal-and-identity",
+   "lensModel": "opus",
+   "why": "out of judgeOnly scope \u2014 never adjudicated"
+  },
+  {
+   "title": "Interior-owner exemption lets a dual leaf-bound owner mint a permanent cross-tenant Owned charge",
+   "severity": "high",
+   "file": "pkg/funding/evaluate.go",
+   "line": 220,
+   "failure_scenario": "An admin (or any writer the 'no principal writes Budgets' precondition fails to stop) leaves or creates budgets owned by one string in two runnable namespaces plus any child budget naming that string as a Parent; a run in either namespace then mints a senior, non-recallable Owned charge against the other namespace's envelope with Conflicts() empty, so the R26 auditor has nothing to consume. Reproduced by the investigator on commit 0b77fbe: OwnerOf(alice)=\"org:ai\" OwnerOf(bob)=\"org:ai\" conflicts=[] class=Owned at simulated hours 0, 5, 10, and 20, for a lease whose run lives in alice but whose PaidByBudgetNamespace is bob, never demoting, while removing the interior-making child produces two LeafOwnerSpansNamespaces conflicts and class=Unfunded. This is parked as DECISIONS-NEEDED P5 by owner ruling; the investigator confirms the defect is live on this HEAD rather than re-litigating the park.",
+   "taxonomyClass": "2 comment-as-enforcement / consequences in class 1 territory",
+   "lens": "std:consequence-and-reapers",
+   "lensModel": "fable",
+   "why": "out of judgeOnly scope \u2014 never adjudicated"
+  },
+  {
+   "title": "Map-order nondeterminism in Conflicts() ordering and surfaced conflicting owner",
+   "severity": "low",
+   "file": "pkg/funding/evaluate.go",
+   "line": 219,
+   "failure_scenario": "pkg/funding/evaluate.go:219 and :231 iterate Go maps (nsByOwner into collided[ns]=owner, and ownersByNS into ev.conflicts). A compiled probe ran Evaluate 300 times over a topology where namespace ns1 collides via two owners and observed 6 distinct Conflicts() orderings, with ns1's surfaced BindingConflict.Owner field itself flipping between own:x and own:y across runs. OwnerOf still returns \"\" for the namespace in every ordering, so no funding decision, charge, or GPU placement varies; the blast radius is confined to R26 audit attribution and any future test asserting on conflict order.",
+   "taxonomyClass": "3 last-writer-wins / map-order nondeterminism",
+   "lens": "std:consequence-and-reapers",
+   "lensModel": "fable",
+   "why": "out of judgeOnly scope \u2014 never adjudicated"
+  },
+  {
+   "title": "resolver.ownerOf nil-Evaluation fallback keys a conflicted namespace by its raw name instead of empty string",
+   "severity": "low",
+   "file": "pkg/resolver/resolver.go",
+   "line": 480,
+   "failure_scenario": "pkg/resolver/resolver.go:476-480's ownerOf returns in.Evaluation.OwnerOf(run.Namespace) when an Evaluation is present but falls back to return run.Namespace when it is nil, so a conflicted namespace that the real derivation would key as \"\" is instead keyed as its raw namespace string. Both current production resolver.Resolve call sites (run_controller.go:466 and :1285) pass c.hypotheticalEvaluation(...), which unconditionally constructs a real Evaluation, so the fallback is unreachable in production today; a future nil-Evaluation caller would mis-bucket reclaim/lottery fairness, a fairness error bounded to one resolution pass rather than an immortal charge.",
+   "taxonomyClass": "5 identity coarsening",
+   "lens": "std:consequence-and-reapers",
+   "lensModel": "fable",
+   "why": "out of judgeOnly scope \u2014 never adjudicated"
+  },
+  {
+   "title": "Interior-tier exemption line has zero effective test coverage; mutant survives whole suite",
+   "severity": "high",
+   "file": "pkg/funding/evaluate.go",
+   "line": 220,
+   "failure_scenario": "Deleting the three lines `if _, isInterior := interior[owner]; isInterior { continue }` from deriveOwners leaves `go test -count=1 ./...` fully green because TestInteriorTierExemptFromInjectivity binds its pool owner in exactly one namespace, so `len(nss) >= 2` is false and the exemption never decides anything. The investigator built the missing fixture and reproduced a Run in tenant-b minting class Owned against tenant-a's envelope (FundedWidth=4, consumed=4) with Conflicts() empty \u2014 the parked P5 hazard.",
+   "taxonomyClass": "8 THE TEST ASSERTS THE BUG (step 4: mutate the fix)",
+   "lens": "std:test-integrity",
+   "lensModel": "opus",
+   "why": "out of judgeOnly scope \u2014 never adjudicated"
+  },
+  {
+   "title": "resolver.ownerOf has zero effective coverage on both branches; buildRun discards its namespace parameter",
+   "severity": "high",
+   "file": "pkg/resolver/resolver_test.go",
+   "line": 229,
+   "failure_scenario": "Replacing `return in.Evaluation.OwnerOf(run.Namespace)` with a constant, or `return run.Namespace` with a different constant, or both, leaves `go test -count=1 ./...` fully green. No pkg/resolver test sets Input.Evaluation while both production callers always do, so tests exercise a branch production never takes. `_ = namespace` in buildRun structurally forbids constructing a run whose namespace derives owner \"\" \u2014 the one fixture shape R7 newly makes reachable \u2014 so in production, N distinct stranded tenants could collapse into one lottery/reclaim bucket keyed \"\" with no test able to observe it.",
+   "taxonomyClass": "8 THE TEST ASSERTS THE BUG (helper masks parameter; mutation survives)",
+   "lens": "std:test-integrity",
+   "lensModel": "opus",
+   "why": "out of judgeOnly scope \u2014 never adjudicated"
+  },
+  {
+   "title": "e2e webhook test provokes rejection using a stimulus this change made legal",
+   "severity": "high",
+   "file": "test/e2e/smoke_test.go",
+   "line": 68,
+   "failure_scenario": "TestValidatingWebhookRejectsInvalidRun submits a Run with spec.owner omitted and asserts Create fails, but this change deleted spec.owner and its required-field check, so the Run is now valid and Create succeeds, causing `t.Fatalf(\"expected the real validating webhook to reject a Run with no owner, but Create succeeded\")`. Because the file is behind `//go:build e2e`, `go test ./...` never compiles it, so all 8 commits stayed green while the guarantee this test exists to hold (that the validating webhook is really wired) is now unproven by any test.",
+   "taxonomyClass": "8 THE TEST ASSERTS THE BUG (step 2: the trigger is no longer legitimate)",
+   "lens": "std:test-integrity",
+   "lensModel": "opus",
+   "why": "out of judgeOnly scope \u2014 never adjudicated"
+  },
+  {
+   "title": "Seven hack/e2e smoke scripts still apply Run manifests carrying a field the CRD removed",
+   "severity": "medium",
+   "file": "hack/e2e/runbook-smoke.sh",
+   "line": 140,
+   "failure_scenario": "kubectl has defaulted to server-side strict field validation since v1.25, so an unknown `spec.owner` becomes a hard apply error. In runbook-smoke.sh, a negative assertion meant to prove Run writes are refused while the webhook is unreachable would now pass because of the unrelated strict-decoding failure rather than the webhook behaviour it's supposed to test, misattributing the cause. The same stale owner: line appears in failure-smoke.sh, fullstack-smoke.sh, grow-smoke.sh, plugin-smoke.sh, rendezvous-smoke.sh and swap-smoke.sh, none of which appear in `git diff main...HEAD --stat`.",
+   "taxonomyClass": "8 THE TEST ASSERTS THE BUG (step 2) + 3 (green for the wrong reason)",
+   "lens": "std:test-integrity",
+   "lensModel": "opus",
+   "why": "out of judgeOnly scope \u2014 never adjudicated"
+  },
+  {
+   "title": "Provenance test inverted: forged seg.Owner is now asserted acceptable, contradicting the audit-legibility rationale for Lease.Spec.Owner",
+   "severity": "critical",
+   "file": "cmd/scheduler/plugin/gang_test.go",
+   "line": 517,
+   "failure_scenario": "With the R5/R6 ValidatingAdmissionPolicy absent (a case this test explicitly exists to cover), an attacker in their own namespace can create a pod with lease-reason=Promise and payer-owner set to any string; promiseProvenanceValid returns true since gang.go no longer reads seg.Owner, PreBind mints a Lease with Owner: seg.Owner, producing an open Lease whose Spec.Owner is a lie, and no controller cross-checks it. This contradicts R7-tenancy-amendment.md:187, which keeps the field specifically to keep the payer legible in audit output.",
+   "taxonomyClass": "8 THE TEST ASSERTS THE BUG (step 5: an existing assertion rewritten to accommodate the change) + 2",
+   "lens": "std:test-integrity",
+   "lensModel": "opus",
+   "why": "out of judgeOnly scope \u2014 never adjudicated"
+  },
+  {
+   "title": "Evaluation.Conflicts() has no production consumer despite comment promising R26 alarms",
+   "severity": "medium",
+   "file": "pkg/funding/evaluate.go",
+   "line": 260,
+   "failure_scenario": "A repo-wide grep shows Conflicts()'s only callers are the four assertions in pkg/funding/tenancy_r7_test.go, so an admin misconfiguration that strands an entire namespace (two owners in one namespace, or a leaf owner spanning namespaces) produces no event, metric, log, or status condition anywhere in production; the only human-visible signal is the generic 'owner and flavor must be set' status message, observed during mutation testing as `default/train-1  Pending  owner and flavor must be set`.",
+   "taxonomyClass": "2 THE COMMENT IS THE ONLY ENFORCEMENT (+ omission)",
+   "lens": "std:test-integrity",
+   "lensModel": "opus",
+   "why": "out of judgeOnly scope \u2014 never adjudicated"
+  },
+  {
+   "title": "CRD 'empty owner' schema probe deleted with no replacement regression test for the privilege escalation R7 exists to close",
+   "severity": "high",
+   "file": "controllers/kube/crd_validation_envtest_test.go",
+   "line": 202,
+   "failure_scenario": "The change deleted the envtest table entry `{\"empty owner\", \"owner\", func(r *v1.Run) { r.Spec.Owner = \"\" }}` and added nothing replacing it; because Run.Spec.Owner no longer exists in Go, no Go fixture can express the attack this change fixes, so if a future refactor reintroduced any run-writable owner input (an annotation, label, or restored field), nothing would fail. internal/manifestcorpus/corpus.go still keeps thirteen Run manifests carrying `\"owner\": \"org:ai\"`, and cmd/kubectl-runs/cmd/root_test.go:57 and doc_examples_test.go:95 still submit Run JSON with an owner field that happens to coincide with the derived owner, so nothing separates a forged owner from a derived one in any test.",
+   "taxonomyClass": "8 THE TEST ASSERTS THE BUG (mutation testing cannot find omissions)",
+   "lens": "std:test-integrity",
+   "lensModel": "opus",
+   "why": "out of judgeOnly scope \u2014 never adjudicated"
+  },
+  {
+   "title": "Test fixtures bind namespaces using envelope-less Budgets the API server rejects",
+   "severity": "medium",
+   "file": "pkg/forecast/forecast_test.go",
+   "line": 400,
+   "failure_scenario": "forecast_test.go:399-401 and evaluate_test.go:604/633 construct Budgets with no Envelopes to bind org-ai-peer/team-child namespaces, but api/v1/budget_types.go rejects `len(Spec.Envelopes) == 0` via ValidateCreate, so this state could never exist in a real cluster; in a real cluster these namespaces would be unbound, OwnerOf would return \"\", and with the empty-borrower guard the family/peer claim would evaluate Unfunded rather than Shared, contradicting the world the tests reason about. The investigator noted no current assertion depends on the illegality after rewriting with a legal envelope, but the pattern risks being copied by future authors.",
+   "taxonomyClass": "8 THE TEST ASSERTS THE BUG (step 5: the oracle would reject this state)",
+   "lens": "std:test-integrity",
+   "lensModel": "opus",
+   "why": "out of judgeOnly scope \u2014 never adjudicated"
+  }
+ ],
+ "traceSeat": {
+  "vendor": "openai",
+  "model": "gpt-5.6",
+  "mode": "cross-vendor relay, read-only (compiles nothing)"
+ },
+ "refuted": [],
+ "summaries": [
+  {
+   "lens": "std:ledger-lifecycle",
+   "summary": "Immortal-lease / cloned-obligation lens on r7pt2/tenancy-owner-from-namespace (HEAD 0b77fbe, 8 commits off e918ca6b), repo root /home/runner/work/jobtree/jobtree. Investigator read the playbook in full, enumerated every exit path of every function the diff adds or modifies (funding.deriveOwners/OwnerOf/Conflicts/lendingAllows/fill, resolver.ownerOf/reclaimUnfunded/runLottery, admission.Feasible, forecast.computeHeadroom/selectEnvelope, run_controller.Reconcile/reclaimForAdmission/activateReservation/opportunisticCoverPlan, plugin.promiseProvenanceValid, api/v1.validate). Rather than speculate, copied the tree to /tmp/probe/jobtree and to /tmp/mainref (git archive main) and ran seven executable probes through the pure engine. Headline result: the change did NOT leak a Lease -- probe 3 (checkpoint grace + conflicted namespace, 20 Reconciles over 20 simulated hours) closes every lease via failRun -> releaseRun, and probe 2 shows a Running run correctly coasts Unfunded with its lease open, the documented legal state. What the change DID leak is the sibling obligation: because ev.OwnerOf(run.Namespace) can now be \"\" and cover.Inventory.Plan turns an empty owner into FailureReasonInvalidRequest, activateReservation hits its \"programmer error\" early return and NEVER reaches failReservationNoEnvelope. Probe 6 on the branch vs the identical baseline on main proves a regression: delete a run's Budget after its reservation exists and main fails the reservation terminally on tick 1, while the branch loops \"owner and flavor must be set\" for 20 ticks with the reservation stuck Pending and its backlog gauge frozen forever. This falsifies R7-tenancy-amendment.md 4/14 C-2. Two further confirmed defects: Evaluation.Conflicts() has zero production consumers despite two doc-comments asserting R26 alarms on them, so an admin typo silently demotes a whole tenant's running work Owned->Unfunded (probe 2: 8 owned GPUs -> 8 unfunded), and probe 7 shows the very next competing admission closes it with ReclaimUnfunded -- a silent reaper with no event, no metric, no log; and promiseProvenanceValid's namespace-equality rewrite is NOT \"strictly stronger\" as its comment claims (probe 5: the sole committer accepts a Promise charge against a different owner's Budget in the same namespace, which the old owner-string check refused). The full unit suite is green on the branch -- nothing turns red for any of this."
+  },
+  {
+   "lens": "std:order-dependence",
+   "summary": "This is a class-3 (last-writer-wins) adversarial review of branch r7pt2/tenancy-owner-from-namespace at commit 0b77fbe against main, covering an 8-commit, 82-file diff. The investigator read the adversarial-review playbook, copied the worktree to /tmp/jtscratch/repo to avoid writing into the repo, wrote and ran five throwaway probes, then deleted them and reran the suite clean. The overall verdict is that the change introduces no order dependence in any funding outcome: four metamorphic experiments (HandleNodeFailure over 120 lease/budget permutations x3 repeats, funding.Evaluate over 24 permutations x30 repeats, resolver.Resolve over 400 in-process repeats, and deriveOwners over 24 budget permutations) all returned byte-invariant results, and a negative control (breaking runPhaseTracker.apply's severity guard) correctly turned the existing rail red, confirming the experiments have teeth. However, two CONFIRMED, executed nondeterminisms were found in the new deriveOwners code, both confined to the diagnostic surface rather than the funding decision: collided[ns] = owner in pkg/funding/evaluate.go is a last-writer-wins scalar over a Go map (200 runs produced 2 distinct BindingConflict.Owner answers), and Conflicts() is appended in map order (200 runs produced 4 distinct orders) while the new test at tenancy_r7_test.go:53 already indexes conflicts[0] positionally. Their severity is capped because grep shows BindingConflict/Conflicts() has zero non-test consumers today, the doc comment claiming R26's ledger auditor consumes them is false as of this review, which the investigator argues is itself the reason to fix the shape now while the type is still free to change. The investigator also flags that the repo's class-3 permutation/repetition rail (controllers/order_independence_test.go) was not extended to cover the three new map iterations introduced in Evaluate, so both confirmed nondeterminisms shipped green. The full suite passed at go test ./... -count=3."
+  },
+  {
+   "lens": "std:signal-and-identity",
+   "summary": "Investigator reviewed the 8-commit R7 pt2 stack (git diff main...HEAD @ 0b77fbe) through SIGNAL != REALITY (class 4), IDENTITY COARSENING (class 5) and GUARD BEFORE PREDICATE (class 6) lenses, after reading the adversarial-review-playbook and the binding sections of R7-tenancy-amendment.md and quota-semantics.md. Built a scratch Go module under /tmp importing pkg/funding, pkg/cover, pkg/resolver and ran four compiled reproductions. Key results: (1) the interior-tier exemption at evaluate.go:220 is a guard-before-predicate bug where the isInterior continue runs before the len(nss)>=2 match predicate, and the interior set is coarsened to 'any string in any Budget.Spec.Parents cluster-wide,' so one stray Parents entry lets a Run in an unrelated namespace take a non-borrowed 64-GPU Owned cover segment on a victim's envelope with conflicts==[] -- a cheaper trigger than the previously parked P5 record; (2) the fail-safe's documented 'coast' behavior is false: adding an unrelated-namespace Budget flips a live Owned lease to Unfunded, and resolver.Resolve with OnlyUnfunded:true (the exact call made on any tenant's admission with a deficit) then reclaims it, silently since Evaluation.Conflicts() has zero production consumers; (3) the empty-owner sentinel merges unbound/conflicted tenants into one lottery bucket, measured to skew a small tenant's share of reclaim cuts from 48% to 10% over 500 seeds; (4) promiseProvenanceValid dropped its seg.Owner check, letting Lease.Spec.Owner be set to any string by a forged Promise pod, confirmed by a new test asserting the absence of that check. Two questions (physical-liveness signals, and errors matched by text) came back clean with no findings."
+  },
+  {
+   "lens": "std:consequence-and-reapers",
+   "summary": "Adversarial review of PR #127 (r7pt2/tenancy-owner-from-namespace, head 0b77fbe) across the half-plane/reapers lens. The investigator grepped the production diff for lease-closure and pod-deletion sites and found none introduced by this change; all newly reachable demotion doors (conflict/unbound namespace -> OwnerOf returning \"\", the lendingAllows empty-borrower guard) feed into three pre-existing, verified two-plane actors: applyResolution (run_controller.go:2157, 2181-2193), reclaimSquatter, and failRun/releaseRun (run_controller.go:2032). The checkpoint-grace exemption in applyResolution keys on run.Status.CheckpointDeadline, not a phase name (run_controller.go:2235). Using two compiled throwaway Go probes against commit 0b77fbe (built at /tmp/r7probe with a replace directive; no repo files were touched), the investigator reconfirmed the previously parked P5 finding: an owner leaf-bound in two namespaces plus named as a child budget's Parent produces zero conflicts and an Owned, non-demoting, cross-tenant charge (Finding 1, adjudicated as real and live on this HEAD). Probe B found map-order nondeterminism in Conflicts() ordering and surfaced Owner field (Finding 2, LOW, diagnostics-only). A latent, currently-unreachable-in-production identity-coarsening fallback in resolver.go was also identified (Finding 3, LOW). The investigator ruled that dropping the isInterior exemption is not a run-reaper under the design's ratified posture, but would create false alarms for legal multi-namespace pools. No pkg/invariant panics are added or strengthened in a way that trips on any legal state found; the invariants err too-weak (via the exemption) rather than reaper-direction. Quantified consequence: Finding 1 lets an attacker mint an unbounded-duration Owned charge (bounded only by victim envelope Concurrency, e.g. 4 of 8 GPUs in the probe) against a victim's budget, silently burning GPU-hours until exhaustion, at which point the victim's own legitimate work becomes reclaimable, with zero conflict/audit signal generated for R26's auditor to consume."
+  },
+  {
+   "lens": "std:test-integrity",
+   "summary": "The investigator reviewed an 8-commit R7 pt2 stack (main...HEAD, head 0b77fbe) using playbook class 8 ('the test asserts the bug'), running mutation testing in a scratch copy at /tmp/r7mut/repo (no repo files were created/edited/deleted) plus direct reading of oracle/API-validation code. Ten mutations were run against the real suite. Seven core fail-safes were confirmed genuinely load-bearing (mutants went red): the empty-borrower guard in evaluate.go's lendingAllows, the leaf-owner-span fail-safe, the multi-owner fail-safe, OwnerOf's positive derivation path, and the namespace guards in promiseProvenanceValid. Three defenses were found NOT tested: (a) deleting the interior-tier exemption line in evaluate.go leaves the whole suite green because TestInteriorTierExemptFromInjectivity's pool owner is bound in only one namespace, and a concrete fixture was built reproducing a cross-tenant Owned-claim hazard with Conflicts() empty; (b) pkg/resolver.ownerOf survives both branches being replaced by a constant, and buildRun discards its namespace parameter via `_ = namespace`, structurally forbidding the fixture shape R7 newly makes reachable; (c) two test surfaces excluded from the default build were not updated \u2014 test/e2e/smoke_test.go's TestValidatingWebhookRejectsInvalidRun still provokes rejection via a now-legal stimulus (omitted spec.owner), and seven hack/e2e/*.sh scripts still kubectl-apply Run manifests carrying spec.owner. Additional findings: Evaluation.Conflicts() has zero production consumers despite documentation promising R26 alarms; two fixtures bind namespaces via envelope-less Budgets the API server rejects; and the change deleted the CRD 'empty owner' probe without adding a replacement regression test for the privilege escalation R7 exists to close. One inverted assertion was found in cmd/scheduler/plugin/gang_test.go, where an owner-consistency check was replaced with its opposite, contradicting R7-tenancy-amendment.md's stated rationale for keeping Lease.Spec.Owner as an audit-legible field."
+  }
+ ]
+}

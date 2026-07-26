@@ -1929,3 +1929,94 @@ namespace rather than an empty one on purpose — with no Budgets the envelope w
 `promiseProvenanceValid` refuses anyway, so a permit could never be observed and every assertion would
 have been vacuous for the wrong reason. That is the same shape as the two decorative assertions this
 file has already had to repair.
+## 2026-07-25 — the Judge phase finally ran, and it overturned two of my own calls
+
+Judge-only resume of `wf_7b4dc0d8-aa0` against `0b77fbe`. Full record:
+`../reviews/2026-07-25-r7pt2-judge-0b77fbe/`. Four findings adjudicated, 21 deferred, verdict
+`BLOCKED`. No fixes written — this run was for verdicts only.
+
+**Judgment call: bound Judge with `judgeOnly` instead of attempting all 42 findings.** 42 × 3 seats
+× 2 agents ≈ 252 agents. Scope went to where a verdict changes something: the reaper-check on the
+fixes made *in response to this panel* (self-review is the correlated failure the panel exists to
+break) and findings nobody had reproduced. The scope was posted to the issue before any spend.
+
+**Judgment call: patch the harness so Attest verifies citations against the reviewed SHA.** The
+first attempt returned `BLOCKED` in 8 minutes with all five lenses reporting "fabricated or
+unlocatable citations" — every miss a line displaced by a comment added in one of my own fixes, plus
+one quote a fix had rewritten. Attest reads the working tree; the tree was on the fixed branch. The
+panel returned before Judge existed, and the failed attestations were cached and would have replayed
+forever. `attestAgainst: '<sha>'` makes Attest read `git show <sha>:<file>`; default unchanged. This
+is the lesson already written into the 2026-07-24 archive and not applied to the harness. Patch
+filed in the archive for `feat/cross-vendor-trace-seat`.
+
+**Overturned #1 — the reservation fix does not fix it.** `run_controller.go:1234`, CONFIRMED 3/3
+with two seats running probes on both branches: `main` terminates the reservation via
+`failReservationNoEnvelope`; the branch leaves it Pending for 20 ticks with the backlog gauge frozen.
+`preExisting=false`, `fixIsReaper=false`. I had argued terminating would be a reaper and made the
+refusal non-terminal; the amendment (`:126-127`, `:590`) specifies terminating, `main` did terminate,
+and a third probe showed recovery afterwards. **My fix silenced the error and left the reservation
+immortal.** Still open on #127. `failReservationNoEnvelope` has never had a test on either branch,
+which is why nothing went red.
+
+**Overturned #2 — reaper veto on the `seg.Owner` pin.** Both seats refuted it as actionable
+(`Evaluate` never reads `Lease.Spec.Owner`; a forged-owner lease classifies identically), and the
+consequence seat set `fixIsReaper=true` on the repair I shipped: the top-up path (`gangProvenance`,
+`run_controller.go:2774-2819`) means a legacy `Spec.Owner` or an admin owner reorg would wedge a
+healthy, funded, **running** gang forever via PreBind refusal. My comment weighed a stranded Promise
+pod and missed the running-gang case entirely. Probably revert.
+
+**Vindicated:** the `gang.go:731` refusal (confirmed regression, fix closes it) and the decision not
+to touch `metrics.go:237` (zero-line diff vs `main` in those files; pre-existing, un-worsened).
+
+**Attribution.** `traceSeat` = openai `gpt-5.6`, genuinely cross-vendor. `reproduce` votes 4 /
+ranCode 4 / **decisive 4**; `trace` votes 1 / ranCode 0 / **decisive 0** / reaperVetoes 1;
+`consequence` votes 4 / ranCode 4 / reaperVetoes 1. **The cross-vendor seat raises findings but
+changed no verdict** — 3 of its 4 votes were lost to OpenAI *Quota exceeded*, where it correctly
+emitted `CODEX UNAVAILABLE` and cast nothing rather than a counterfeit vote. Structurally it also
+cannot win: verdicts here are decided by execution, and the codex seat is read-only and compiles
+nothing. More quota buys votes; a writable scratch dir is what would buy decisiveness.
+
+**Which wall: neither cores nor the plan quota.** 24/24 then 49/49 agents, zero errors, no usage
+limit hit all day; sampled concurrency 1–5 with no sustained queue. The only wall was OpenAI's quota
+on one seat, plus external-subprocess latency. A bigger runner would have bought nothing.
+
+**Also carried the 2026-07-24 archive onto a main-based branch.** It existed only on the unmerged
+#127 branch and would have gone with it if that PR were ever closed.
+
+## 2026-07-26 — the fix-diff review: the repairs were the most defective code on the branch
+
+First review ever pointed at the *fixes* rather than the feature
+(`../reviews/2026-07-26-r7pt2-fixdiff-ec5cb64/`). It found more than the feature reviews did.
+
+**The judgment call that was wrong, and why.** The 2026-07-25 panel ruled `fixIsReaper=false` on
+terminating a reservation whose namespace has no funding principal, and I generalised that to
+"terminating is safe". It was established for an **admin typo**. The fix-diff panel executed two
+cases it does not cover: a Budget created in any namespace naming the victim's owner destroys the
+victim's reservation in one tick (`Budget.Spec.Owner` is free-form and the victim does not control
+it), and a plain `kubectl delete && apply` window does the same with no adversary at all. Closing a
+forgeable `Run.Spec.Owner` and then weaponising `Budget.Spec.Owner` is the same mistake twice.
+Parked as **P8**; the unsafe option is what is committed, by accident rather than decision, and the
+archive says so.
+
+**Three decorative tests, all written to answer earlier panels.** The recovery test passed with the
+repair deleted, printing the message the fix claims to remove. Both backlog-gauge assertions were
+vacuous — deleting `ClearReservationBacklog` outright left `./controllers` green, because the
+fixture's `EarliestStart` is in the past so the gauge was empty before and after. The second one is
+the sharper lesson: it guarded my own repeated claim that "the metric lied about it in the same
+breath", and proved nothing. Fixed in `37270af` and `9ed3193`, both mutation-verified in the
+direction that matters. A third — the `failReservationNoEnvelope` call site at `run_controller.go:1357`
+— has no test at all and is left OPEN rather than faked under time pressure.
+
+**Judgment call: freeze the reviewed branch, and treat comments as code.** Two commits landed on the
+branch mid-review before this rule was adopted, one of them a comment fix. A comment moves line
+numbers exactly as much as code does, and Attest is pinned to a sha. The later resume only worked
+because the tree was detached to `ec5cb64` first. Both halves are required: pass `commit` AND check
+the tree out at it.
+
+**Judgment call: push through a worktree rather than break the freeze.** Fixes were committed to
+side branches from `git worktree` checkouts and fast-forwarded into #127, so work was durable
+without the reviewed tree ever moving.
+
+**Codex, corrected again.** Not auth. The ChatGPT subscription serves `gpt-5.6-sol` and rejects every
+explicitly named model, so the harness's hardcoded `-m gpt-5.6` silently downgrades a working
+cross-vendor seat to the Opus fallback. Patch filed in the archive for the harness's PR.
