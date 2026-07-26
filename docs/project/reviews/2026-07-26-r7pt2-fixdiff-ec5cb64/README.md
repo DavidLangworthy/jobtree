@@ -18,6 +18,37 @@ It found more. **The fixes are the least reviewed and most defective code on the
 
 ## VERDICT: not green, and the most important finding is that a fix introduced a DoS
 
+### JUDGE NEVER RAN. Nothing here is adjudicated.
+
+The harness's own final return is `BLOCKED — a lens produced no verifiable work; this is NOT a green
+review`, with all five lenses listed as blocked and `attribution`, `confirmed` and `unresolved` all
+**empty**. Say plainly what that means: **there is no `traceSeat`, no `byModel`, no `skepticRoles`,
+and no `confirmedFoundByExactlyOneLens` for this review.** Every finding below is `UNRESOLVED` in
+the harness's sense — raised and attested, never adjudicated by a skeptic panel.
+
+Why: two quota walls. The first (03:10 reset) killed the Attest agents; the resume after it passed
+Attest cleanly. The second (08:10 reset) killed the lens *shapers*, and their retries, and their
+retries' retries — three attempts each, so the harness marked every lens "produced no output at
+all". Judge is gated on at least one lens surviving, so it never started.
+
+**The findings in this record are therefore evidence, not verdicts.** They are worth acting on
+because of *how* they were produced, not because a panel ratified them: every one quoted here was
+obtained by a lens that **executed code** — copied the repo to a temp dir, built fixtures, drove
+`RunController` through simulated hours and printed the resulting state. Three of them were
+independently re-executed by hand afterwards (the two decorative tests and the drifted citation),
+and all three reproduced exactly. That is the same evidence class the harness calls decisive; it
+simply has not been through the adversarial half.
+
+**What is missing, and it is the half that matters most here:** nobody refuted anything. The
+skeptic panel exists to kill plausible-but-wrong findings, and it did not run. Treat the DoS and the
+partial-gang stranding as strong claims backed by reproductions, not as adjudicated facts — and note
+that the last time a Judge phase *did* run on this branch it refuted two findings outright and
+vetoed a fix, so its absence is not a formality.
+
+The run remains resumable at `wf_5a636517-097`: Scout, the lens prose, and the five attestations are
+cached; only the shapers and Judge need quota.
+
+
 Attest passed cleanly on the second attempt — **five lenses, 56 citations, all verified against
 `git show ec5cb64:<path>`** (`"Checked all 8 citations against the ec5cb64 snapshot…"`, `missing: []`
 ×5). 50 raised findings across 20 sites (some duplicated by re-shapes; ~25 distinct).
