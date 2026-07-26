@@ -1,0 +1,1579 @@
+{
+ "reports": [
+  {
+   "summary": "I read the playbook in full, took the remediation diff (0b77fbe..HEAD over controllers/pkg/cmd/api/internal/test/hack/e2e, 22 files, +1096/-55), and hunted playbook class 3 by execution rather than by reading. I copied the tree to /tmp/jt (no repo file was created, edited, or deleted) and wrote four probes: two metamorphic order-invariance probes over the exact scenarios the change exercises (pkg/resolver reclaim/lottery with the new \"\\x00unbound-namespace/<ns>\" bucket key under all 24 permutations of in.Leases plus 400 identical-input rounds to catch Go map randomization; controllers ActivateReservations+Reconcile over a CONFLICTED namespace with an unfunded RUNNING neighbour and a well-bound foreign tenant, 24 lease permutations plus 200 identical-input rounds with three competing terminal failures), and two behavioural probes. Both order-invariance probes PASS: the resolver verdict and the engine outcome (run phase/message/width/conditions, lease closure+reason, reservation state/countdown/reason, pod plane, and the joined error text) are byte-identical under every ordering. The probes were validated as not decorative by mutation: deleting sortTokensByOwner turns both resolver probes red immediately. deriveOwners' sorted walk plus its lexicographic-min fold is genuinely commutative, and the resolver's ownerOf change (NUL-prefixed key) introduces no ordering dependence, because owners are uniqued+sorted and tokens are sorted before the seeded draw. So the answer to the literal shuffle question is: INVARIANT. But the hunt found a real last-writer-wins defect one level up, between engine entry points rather than inside a loop: run.Status.Message for a namespace with no funding principal has two disagreeing writers, and the durable winner is the wrong one. The new guard at run_controller.go:1217 writes the informative \"no funding principal\" message; Reconcile's admission arm at run_controller.go:400 writes cover.PlanError's \"owner and flavor must be set\" - the exact string the change's own test asserts must never be shown. Because ReservationReconciler returns early once the reservation is Failed while RunReconciler requeues the parked Pending run every 60s, the bad message is the permanent one. This was confirmed over 240 simulated hours and by mutation (deleting the guard's setState fails exactly one assertion in the entire repo, the transient one).",
+   "answers": [
+    {
+     "question": "1. Find every assignment to run.Status.* (Phase, Message, Width, CheckpointDeadline) that happens INSIDE a loop in the changed code. For each, is the write guarded by a comparison against what is already there, or does the last iteration simply win?",
+     "conclusion": "The changed controllers code contains exactly two run.Status.* writes, both in the new guard in activateReservation (run_controller.go:1216-1226): setState(run, v1.RunStateUnfunded, ...) which writes Phase+Message+Conditions, and run.Status.Funding = summarizeRunFunding(run, ev). failReservationTerminally itself writes no run status (only Reservation.Status.State/CountdownSeconds and the backlog gauge). Both execute inside a loop transitively: ActivateReservations iterates `for _, key := range dueKeys` and calls activateReservation per reservation. NEITHER write is guarded by a comparison against what is already there - the last iteration simply wins. Within a single pass that is nevertheless safe, for two reasons checked rather than assumed: dueKeys is sorted (run_controller.go:1057) so the iteration order is a specification, and if two reservations of the SAME run both reach the guard they compute a byte-identical message from run.Namespace alone, so the fold is idempotent. The 200-round map-iteration probe with three competing terminal failures in one namespace confirmed the state and the joined error text are stable. Neither Width nor CheckpointDeadline is written by the new block (a minor gap: sibling terminal branches refresh run.Status.Width, so a run that had a stale Width keeps it - not an ordering issue, so it was not raised as a finding). The unguarded write that actually bites is not inside the loop at all: it is the same field written by a SECOND engine entry point with a different value; see finding 1."
+    },
+    {
+     "question": "2. Find every `for k := range someMap` in the changed code. Go randomizes map iteration order per process. Does any observable outcome depend on that order?",
+     "conclusion": "Three map ranges survive in the changed code, all in pkg/funding/evaluate.go's deriveOwners, and the change converted two others to sortedKeys. (a) evaluate.go:244 `for ns := range nss` is still a raw map range, but its body is now a commutative min-fold (`if prior, ok := collided[ns]; !ok || owner < prior`, evaluate.go:245-247), so the result is order-independent by construction - the correct shape. (b) evaluate.go:268 `for owner := range owners` is a raw map range performing an UNGUARDED write, ev.ownerByNamespace[ns] = owner. It is safe today only because the `len(owners) >= 2 { ...; continue }` branch immediately above guarantees the map has exactly one element; that is a guard making a last-writer-wins loop harmless, not a fold, and it silently becomes a coin flip if the multiple-owner fail-safe is ever relaxed or scoped. Worth a one-line `for owner := range owners { ... break }` -> direct single-key read, or an explicit comment. (c) evaluate.go:238 and :254 are the two the change fixed: they now walk sortedKeys(nsByOwner)/sortedKeys(ownersByNS). No new map range appears in controllers/run_controller.go, pkg/resolver/resolver.go, or cmd/scheduler/plugin/gang.go (gang.go's loop is `for i := range budgetList.Items`, a slice, and funding.OwnerOfNamespace is fed a cluster-scoped, unfiltered List so it sees the same budget set the engine does). Executed answer: no observable outcome depends on map order. 400 identical-input rounds in pkg/resolver, 200 in controllers, and the repo's own 200-round funding test all produced byte-identical results."
+    },
+    {
+     "question": "3. Apply the metamorphic test: take a scenario the change exercises, SHUFFLE the order of state.Leases, replay, and compare the resulting run statuses and lease closure reasons byte-for-byte. Report whether the outcome is invariant. Run it several times. This is the definitive experiment \u2014 actually run it.",
+     "conclusion": "Ran, twice over, in two packages. (A) pkg/resolver: four unfunded runs across two CONFLICTED namespaces (the exact shape the new \"\\x00unbound-namespace/<ns>\" bucket key exists for), Deficit=8, fixed SeedSource, all 24 permutations of in.Leases; the action list is identical both as an ordered sequence and as a set. A companion probe replayed identical input 400 times in one process across three conflicted namespaces (9 runs) and got the same three victims every round. (B) controllers: namespace `default` conflicted by a second-owner Budget, holding a Pending run with a due reservation (the new terminal path), a RUNNING neighbour on two open leases that the same conflict just reclassified Unfunded, and a well-bound tenant in another namespace; six simulated ticks of Reconcile (over SORTED run keys, so the harness is not the source of order) plus ActivateReservations, all 24 permutations of state.Leases, fingerprinting run phase/message/width/conditions, every lease's closed+ClosureReason, every reservation's state/reason/countdown, and the pod plane. Byte-identical in every permutation, and stable across 200 identical-input rounds including the joined error text of three simultaneous terminal failures. So: INVARIANT. Critically, the probes were proven able to see a violation before trusting the pass - commenting out the two sortTokensByOwner calls made both resolver probes fail on round 1 with a different victim, so the green is evidence and not silence. Both fixtures also survived pkg/invariant, which panicked on the first controllers fixture (INV-LEASE-HAS-POD) and forced the state to be made legal before it would run at all."
+    },
+    {
+     "question": "4. If an ordering dependence exists, is the correct fix a deterministic sort, or a COMMUTATIVE fold (a severity lattice, a post-loop sweep)? Argue for one. A deterministic order that happens to give the right answer is still a coincidence.",
+     "conclusion": "Two separate answers, because the change contains two situations. (i) For deriveOwners the shipped fix is both a sort AND a fold, and the fold is the load-bearing half: sorting nsByOwner alone would only have made the coin flip repeatable, whereas `!ok || owner < prior` makes the answer independent of any traversal. That is right, and the sort is then merely cosmetic ordering of the emitted Conflicts slice. It would be worth going one step further and making the fold lossless rather than min-selecting (see finding 2): the min is deterministic but still discards the second culprit. (ii) For the defect actually found, NEITHER is available, and that is the point. The two writers of run.Status.Message live in two different controllers - RunReconciler (reconcilers.go:126) and ReservationReconciler (reconcilers.go:378) - driven by independent watch/requeue triggers under the bridge mutex. There is no single loop to sort and no single pass to sweep; \"deterministic order\" is not a thing that exists between two Kubernetes controllers. A severity lattice on Message would also be wrong: the two strings are not two severities of one condition, they are one condition described correctly and incorrectly. The correct fix is the class-2 shape the playbook prescribes for failRun: make the value a pure function of state so that WHICHEVER writer runs last computes the same string. Concretely, hoist the empty-owner test out of activateReservation into a helper and apply it in Reconcile before building the cover.Request, so run_controller.go:400's InvalidRequest arm can never be reached with an empty owner. Then order stops mattering by construction, which is strictly stronger than any ordering discipline and is the only fix that survives someone adding a third writer."
+    }
+   ],
+   "evidence": [
+    {
+     "file": "controllers/run_controller.go",
+     "line": 1217,
+     "quote": "setState(run, v1.RunStateUnfunded, fmt.Sprintf("
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 400,
+     "quote": "setState(run, v1.RunStateUnfunded, coverErr.Error())"
+    },
+    {
+     "file": "controllers/kube/reconcilers.go",
+     "line": 368,
+     "quote": "if res.Status.State != \"Pending\" && res.Status.State != \"\" {"
+    },
+    {
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 96,
+     "quote": "if !strings.Contains(run.Status.Message, \"no funding principal\") {"
+    },
+    {
+     "file": "pkg/funding/evaluate.go",
+     "line": 245,
+     "quote": "// Lexicographically smallest colliding owner wins, deterministically."
+    },
+    {
+     "file": "pkg/funding/evaluate.go",
+     "line": 268,
+     "quote": "for owner := range owners {"
+    },
+    {
+     "file": "pkg/resolver/resolver.go",
+     "line": 501,
+     "quote": "return \"\\x00unbound-namespace/\" + run.Namespace"
+    },
+    {
+     "file": "pkg/resolver/resolver.go",
+     "line": 312,
+     "quote": "sortTokensByOwner(tokensByOwner)"
+    }
+   ],
+   "findings": [
+    {
+     "title": "run.Status.Message for an unbound/conflicted namespace has two disagreeing writers; durable winner is forbidden by the fix's own test",
+     "severity": "high",
+     "file": "controllers/run_controller.go",
+     "line": 1217,
+     "taxonomyClass": "3 LAST-WRITER-WINS (with 8 THE TEST ASSERTS THE BUG and 7 CLONED OBLIGATION)",
+     "failure_scenario": "An admin adds a second-owner Budget to a namespace holding a Pending run with a due reservation. Tick 1: ActivateReservations fails the reservation terminally and writes the good message (run_controller.go:1217, \"namespace %q has no funding principal ...\"). From then on ReservationReconciler never calls ActivateReservations for that reservation again (controllers/kube/reconcilers.go:368 returns early once State != \"Pending\"), while the run is parked Pending with PendingReservation == nil, so RunReconciler requeues it every pendingRunResync (60s) and rewrites the message via the admission arm at run_controller.go:400 to cover.PlanError's \"owner and flavor must be set\" - literally the string the change's own comment says must never be shown. Within 60 seconds of the fix firing, the operator-facing half of the fix is gone permanently, and the run's only pointer to the real diagnosis (the Failed reservation's Reason) is unreachable from the run because PendingReservation is nil. Confirmed via mutation: deleting the guard's setState line fails exactly one assertion in the whole repository, controllers/tenancy_reservation_test.go:96, which asserts the message only in the single instant it holds, on a state where Reconcile has never run afterward - i.e. the test certifies a 60-second transient as if it were the steady state."
+    },
+    {
+     "title": "deriveOwners' collision fold is deterministic but lossy: a namespace poisoned by two spanning leaf owners reports only the lexicographically smallest",
+     "severity": "low",
+     "file": "pkg/funding/evaluate.go",
+     "line": 245,
+     "taxonomyClass": "3 LAST-WRITER-WINS (residue of the fix)",
+     "failure_scenario": "Namespace `shared` is bound by org:x (also in x-only) and org:y (also in y-only). The diagnostic names org:x because of the min-fold at evaluate.go:245 (`if prior, ok := collided[ns]; !ok || owner < prior`), and BindingConflict carries a single Owner field so org:y is never surfaced; also the `collided` branch `continue`s before the len(owners) >= 2 test, so a namespace that is simultaneously multi-owner and leaf-spanning reports only ConflictLeafOwnerSpansNamespaces. An admin removes org:x's stray Budget, re-evaluates, and the namespace is STILL unbound, now blamed on org:y, with nothing having told them there were two problems in the first place; TestConflictDiagnosticsAreDeterministic only asserts stability of the rendering across 200 evaluations, never that both culprits appear, so this lossiness is untested and latent (the doc comment records Conflicts() has no production consumer yet) rather than live, but it is the exact shape of alarm that trains operators to distrust the alarm once it is wired to a consumer."
+    }
+   ]
+  },
+  {
+   "answers": [
+    {
+     "question": "Enumerate EVERY exit path (return, continue, break, panic, early error) of every function this change adds or modifies. For each, list which leases are open at that moment and which are closed. Name any path that exits with a lease open that should have been closed.",
+     "conclusion": "Eight functions are added or modified. (1) activateReservation gains ONE new exit, run_controller.go:1216-1225: it is reachable only after the `allocated := baseGangGPUsForRun(...) > 0` block has returned and after `runHasActivePods` returned false, so the run holds no open base-gang lease and no active pod; the only leases that can still be open for it are SPARE-role leases and Reason==Grow leases, both of which baseGangGPUsForRun skips (run_controller.go:2811-2815). It closes nothing and sets the RUN to RunStateUnfunded (= RunPhasePending, api/v1/conditions.go:133), so the run never becomes terminal and SettleLeases never sees it. I executed the spare case (spare lease + spare pod + conflicted namespace, 20 ticks / 20 h): the spare stays open \u2014 but it stays open identically at 0b77fbe and identically in a healthy namespace, and settle.go's rule (1) explicitly refutes 'spare with no active lease is an orphan' as a legal state, so I do not charge it to this change. (2) failReservationNoEnvelope now has exactly one exit, delegating; both of its call sites (1357, 1378) sit under the same allocated==0 gate, so same lease picture. (3) failReservationTerminally (new) has one exit, closes nothing, and touches no lease. (4) promiseProvenanceValid gains a new `return false` at gang.go:756 \u2014 this is the one exit in the whole diff with a lease consequence, because refusing at PreBind means the pod never binds while its already-minted SIBLING leases stay open (see finding 1). (5) deriveOwners: same two exits, loops now ordered. (6) OwnerOfNamespace (new): one exit, no leases. (7) ownerOf: two exits, both pure map/sort keys, no leases. (8) sortedKeys: generic-ised, one nil-return for empty, no leases. The path that exits with a lease open that should have been closed is (4) \u2014 indirectly, by making the rest of a gang unmintable while its minted members hold GPUs forever."
+    },
+    {
+     "question": "Does the change add a new CALLER to an existing function whose lease-closing behaviour was only correct for its old callers? failRun once carried the comment \"It never holds leases at this point\" \u2014 true when written, falsified by a new caller. Check every function the diff newly calls.",
+     "conclusion": "The newly-called functions are: funding.OwnerOfNamespace (new, called from promiseProvenanceValid), failReservationTerminally (new, called from activateReservation:1222 and failReservationNoEnvelope:1508), Evaluation.OwnerOf (newly called conditionally from resolver.ownerOf), and sortedKeys (newly called on ownersByNS/nsByOwner). None of these closes leases, so none has a closure contract to falsify \u2014 failRun, releaseRun, completeRun, closeRunLeases and CloseLease are untouched by the diff and gain no new caller. The real instance of this pattern here is the INVERSE and is worse: the diff adds a new REFUSAL to an existing function on the sole-committer path (promiseProvenanceValid, gang.go:755-757), whose old behaviour was correct only because it ACCEPTED conflicted namespaces. PreBind translates false into fwk.Error, so the new caller-visible behaviour is 'this pod never mints', and the pre-existing assumption that every emitted Promise pod eventually mints \u2014 which is what makes topUpActiveGang's re-emission loop converge and what makes a partially-minted gang's open leases temporary \u2014 is now false. I verified the reversal by execution against the base tree: promiseProvenanceValid(conflicted) is true at 0b77fbe and false at HEAD."
+    },
+    {
+     "question": "Does the change set a run to a terminal phase (Failed / Completed) anywhere? For each such site, prove that every lease referencing that run is closed on the same path or by a sweep that provably runs. Cite the sweep.",
+     "conclusion": "No. The only production run-phase write the diff adds is `setState(run, v1.RunStateUnfunded, ...)` at run_controller.go:1217, and RunStateUnfunded is declared with `Phase: RunPhasePending` (api/v1/conditions.go:133), so the run stays non-terminal. What goes terminal is the RESERVATION (`reservation.Status.State = \"Failed\"`, run_controller.go:1522), which owns no leases. That means no lease-closure obligation is created by the diff \u2014 but it also means the repo's one self-healing sweep is structurally unable to help: SettleLeases 'retires every TERMINAL run' (controllers/settle.go:103) and skips any lease whose run is not Failed/Complete (`if !terminal[key] { continue }`, settle.go:133). I executed SettleLeases against both wedged states from finding 1 and it returned an empty sweep both times, because the run sits at RunPhasePending. So for the leases stranded by the new PreBind refusal there is NO sweep that provably runs, and no timeout anywhere fails an assembling run (the plugin's gangTTL sweep only drops the in-memory gang commit, gang.go:610-620)."
+    },
+    {
+     "question": "Does the change write Lease.Status.Closed anywhere other than closeLease()? Every clone of the closing obligation drifts. Name each site and say what closeLease does that the clone does not (events, metrics, ClosureReason).",
+     "conclusion": "No. Grepping every added line of `git diff 0b77fbe..HEAD -- controllers pkg cmd api internal test hack/e2e` for `Closed` or `CloseLease` returns zero hits, so controllers.CloseLease remains the sole closer and hack/antifake/soleclose.go still has nothing to catch. The cloned obligation the diff DOES leave live is one level up, on reservations: failReservationTerminally (run_controller.go:1521) is documented as 'the one transition every permanently-unfundable reservation makes', yet activateReservation's run-not-found branch performs the same three steps inline at run_controller.go:1107-1109 and was not refactored onto it. Today the clone matches step for step (State=Failed, CountdownSeconds=nil, ClearReservationBacklog), so nothing has drifted yet; the divergence risk is the standard one \u2014 the helper's next step (an Event, a Reason, a metric) will not happen on the run-not-found path \u2014 plus a latent key mismatch, since the clone clears the gauge under the caller's map key while the helper reconstructs keys.NamespacedKey(reservation.Namespace, reservation.Name)."
+    },
+    {
+     "question": "Take the single most suspicious path you found. Write a Go test that reaches it, drive Reconcile ~20 times over ~20 simulated hours, and assert the lease is closed. Report the actual test output. If it stays open you have a critical finding; if it closes, say what closed it and cite that code.",
+     "conclusion": "IT STAYS OPEN \u2014 critical. I wrote the tests in a copy of the tree at /tmp/lensA (never in the repo) and the base at /tmp/lensB. Two variants of the most suspicious path, both driving 20 Reconciles over 20 simulated hours plus ActivateReservations, plus an explicit SettleLeases at the end. (A) /tmp/lensA/controllers/zz_lensa_partial_test.go, TestLensAPartialPromiseGangInConflictedNamespace: 't0: OwnerOf(default)=\"\" baseGang=2 open=[gang-lease-a gang-lease-b]' ... 'final: phase=Pending msg=\"assembling gang: 2/4 GPUs held (awaiting the jobtree scheduler)\" openLeases=[gang-lease-a gang-lease-b] pods=4 sweep=[]' ... 'IMMORTAL LEASES after 20 reconciles / 20 simulated hours (+SettleLeases): [gang-lease-a gang-lease-b]; run phase=Pending; funding account=&{Key:default/gang GPUs:map[Unfunded:2] SpareGPUs:0 GPUHours:map[Unfunded:40.03333333333333] ...}'. (B) /tmp/lensA/controllers/zz_lensa_running_test.go, TestLensARunningGangWedgedByDerivedOwnerRefusal: 'warm: phase=Running ... open=[gang-lease-a gang-lease-b gang-lease-c gang-lease-d]' then, after a node failure closes rank 3 and the admin adds the rival Budget, 'final: phase=Pending msg=\"assembling gang: 3/4 GPUs held\" open=[gang-lease-a gang-lease-b gang-lease-c] pods=4 sweep=[]', 'funding: ... GPUs:map[Unfunded:3] GPUHours:map[Unfunded:63.083333333333336]'. Both bound-namespace controls PASS at RunPhaseRunning. Supporting probes: TestLensATopUpPodIsAPromisePod shows the re-emitted rank carries lease-reason=\"Promise\" with payer org:ai:team/team/west, so PreBind routes it through promiseProvenanceValid and not the ordinary funding gate; and in /tmp/lensB (0b77fbe) TestLensBBasePromiseInConflictedNamespace logs 'BASE promiseProvenanceValid(conflicted namespace) = true' / '(unbound namespace) = false', which pins the regression to the conflicted case introduced at cmd/scheduler/plugin/gang.go:755-757. Nothing closed the leases: SettleLeases skipped them at controllers/settle.go:133 because the run is RunPhasePending, and the full test suite for controllers, controllers/kube, pkg/funding, pkg/resolver and cmd/scheduler/plugin is otherwise green \u2014 only my probes fail."
+    }
+   ],
+   "evidence": [
+    {
+     "file": "cmd/scheduler/plugin/gang.go",
+     "line": 755,
+     "quote": "\tderived := funding.OwnerOfNamespace(budgetList.Items, run.Namespace)"
+    },
+    {
+     "file": "controllers/settle.go",
+     "line": 133,
+     "quote": "\t\tif !terminal[key] {"
+    },
+    {
+     "file": "controllers/settle.go",
+     "line": 103,
+     "quote": "// SettleLeases retires every TERMINAL run in both planes: it closes the run's open"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 1216,
+     "quote": "\tif ev.OwnerOf(run.Namespace) == \"\" {"
+    },
+    {
+     "file": "api/v1/conditions.go",
+     "line": 133,
+     "quote": "\tRunStateUnfunded = RunState{Reason: \"Unfunded\", Phase: RunPhasePending, whenFalse: []string{RunConditionAdmitted}}"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 2811,
+     "quote": "\t\tif lease.Status.Closed || lease.Spec.Slice.Role == binder.RoleSpare {"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 400,
+     "quote": "\t\t\tsetState(run, v1.RunStateUnfunded, coverErr.Error())"
+    },
+    {
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 136,
+     "quote": "\tif strings.Contains(run.Status.Message, \"no funding principal\") {"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 1107,
+     "quote": "\t\treservation.Status.State = \"Failed\""
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 1521,
+     "quote": "func (c *RunController) failReservationTerminally(reservation *v1.Reservation, cause error) error {"
+    },
+    {
+     "file": "pkg/funding/evaluate.go",
+     "line": 304,
+     "quote": "func OwnerOfNamespace(budgets []v1.Budget, namespace string) string {"
+    },
+    {
+     "file": "pkg/resolver/resolver.go",
+     "line": 501,
+     "quote": "\treturn \"\\x00unbound-namespace/\" + run.Namespace"
+    }
+   ],
+   "findings": [
+    {
+     "title": "New PreBind refusal for CONFLICTED namespaces strands a partial Promise gang's already-minted leases open forever",
+     "severity": "critical",
+     "file": "cmd/scheduler/plugin/gang.go",
+     "line": 756,
+     "taxonomyClass": "1 (IMMORTAL LEASE); secondary 9 (HALF-PLANE ACTION)",
+     "failure_scenario": "Executed. (a) Partial promise gang: 4-GPU Promise gang, 2 of 4 ranks minted, admin adds a second-owner Budget to the namespace. 20 Reconciles over 20 simulated hours -> open leases [gang-lease-a gang-lease-b], phase=Pending, msg=\"assembling gang: 2/4 GPUs held\", SettleLeases sweep=[] , funding account GPUs:map[Unfunded:2] GPUHours:map[Unfunded:40.03333333333333]. (b) Live gang: 4/4 Promise gang Running, node failure closes rank 3's lease and removes its pod, admin adds the second Budget. topUpActiveGang re-emits rank 3 (verified: lease-reason=\"Promise\", payer org:ai:team/team/west), PreBind refuses it. After 20 hours -> open leases [gang-lease-a gang-lease-b gang-lease-c], phase=Pending, sweep=[], GPUHours:map[Unfunded:63.083333333333336]. Both bound-namespace controls reach RunPhaseRunning. Attribution proved on the base tree: at 0b77fbe `promiseProvenanceValid(conflicted namespace) = true`, `promiseProvenanceValid(unbound namespace) = false`; at HEAD the shipped TestPromiseProvenanceRefusedWhenNamespaceConflicted asserts false. So the conflicted case, and only the conflicted case, is newly refused \u2014 and the refusal converts a bounded Unfunded occupancy (gang assembles, runs, completeRun closes every lease) into an unbounded one. Nothing goes red: the full suite passes and the invariant oracle is silent because the run is Pending, not terminal, so neither INV terminal-cleanliness nor INV-WIDTH-ASSEMBLED applies. This is exactly the reaping property the 2026-07-25 consequence seat used to veto the seg.Owner pin ('would wedge a healthy, funded, RUNNING gang forever on PreBind refusal'), reintroduced by the sibling check that stayed, under a MORE ordinary admin action (adding a Budget rather than renaming an owner)."
+    },
+    {
+     "title": "TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired passes with the repair deleted \u2014 the mutant survives",
+     "severity": "medium",
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 136,
+     "taxonomyClass": "8 (THE TEST ASSERTS THE BUG)",
+     "failure_scenario": "Executed: an exact copy of the shipped test with the repair line commented out ends at phase=Pending, msg=\"owner and flavor must be set\" \u2014 both shipped assertions hold, so the mutant survives. The test therefore proves nothing about recovery. A real assertion exists and is cheap: my probe shows the repaired run reaches phase=Pending with msg=\"scheduling 4 GPUs (awaiting the jobtree scheduler)\" and 4 emitted active pods, none of which the unrepaired run ever produces."
+    },
+    {
+     "title": "The operator message the terminal-reservation fix installs is overwritten one Reconcile later by the exact text the fix says operators must not see",
+     "severity": "medium",
+     "file": "controllers/run_controller.go",
+     "line": 400,
+     "taxonomyClass": "2 (COMMENT IS THE ONLY ENFORCEMENT) / 'does this fix do anything?'",
+     "failure_scenario": "Executed: after ActivateReservations the run message is 'namespace \"default\" has no funding principal: ... An administrator must fix the namespace\u2192owner binding and resubmit.'; after ONE Reconcile at now+1m it is 'owner and flavor must be set'. The reconcile-only path (no reservation at all) in a conflicted namespace never shows the good message even once. TestActivateReservationFailsTerminallyWhenNamespaceHasNoOwner only inspects the message before any Reconcile runs, so it certifies a state that lasts a single tick."
+    },
+    {
+     "title": "failReservationTerminally has an un-refactored clone in the same function, while its doc claims to be the only such transition",
+     "severity": "low",
+     "file": "controllers/run_controller.go",
+     "line": 1107,
+     "taxonomyClass": "7 (CLONED OBLIGATION)",
+     "failure_scenario": "Add an Event or jobtree metric to failReservationTerminally \u2014 the standard class-7 detector the playbook prescribes \u2014 and the reservation whose Run object was deleted between planning and activation fails Failed with no Event and no metric, while every other permanently-unfundable reservation gets both. The two sites also key the backlog gauge differently (the clone uses the caller's map key `key`, the helper reconstructs keys.NamespacedKey(reservation.Namespace, reservation.Name)); those agree only because planReservation happens to key State.Reservations the same way, which is a coincidence nothing asserts."
+    }
+   ],
+   "summary": "Investigator reviewed the diff 0b77fbe..HEAD (working tree at 2666bd0, two commits past the pinned ec5cb64) through the immortal-lease and cloned-obligation lenses using executed differential probes against a copy of the tree (/tmp/lensA) and a git-archive extraction of the base commit (/tmp/lensB), rather than static reading alone. The controller-side reservation fix (activateReservation's new empty-owner branch) is judged clean: it is gated on baseGangGPUsForRun==0 and !runHasActivePods, sets the run to RunStateUnfunded (RunPhasePending, non-terminal), and writes Lease.Status.Closed nowhere, leaving the sole-closer rail untouched. The critical defect is on the plugin side: the new `derived == \\\"\\\"` refusal in promiseProvenanceValid turns the sole committer from 'mints' into 'refuses forever' for a namespace that becomes CONFLICTED, verified by executing promiseProvenanceValid against both the base and HEAD trees (true at 0b77fbe for a conflicted namespace, false at HEAD). This strands already-minted sibling leases of a partial or live Promise gang open indefinitely, since SettleLeases only sweeps terminal runs and the run stays at RunPhasePending. Two executed test scenarios (a partial 2/4 gang and a live 4/4 gang that loses a rank to node failure) both leave leases open after 20 simulated Reconcile/hour cycles with an empty SettleLeases sweep, accruing Unfunded GPU-hours, while bound-namespace controls recover to Running. A shipped regression test (TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired) was shown to pass even with its repair step deleted, because Reconcile overwrites the run message with cover's generic error one tick later, which also means the new operator-facing message from the reservation fix is overwritten almost immediately. Finally, a cloned three-step 'fail reservation terminally' obligation exists inline in activateReservation's run-not-found branch alongside the new failReservationTerminally helper, which is documented as the sole such transition; the two currently agree but risk future drift, including a latent gauge-key mismatch.</summary>\n<parameter name=\"unsupported\">[]"
+  },
+  {
+   "summary": "Investigator reviewed the R7-pt2 remediation diff (0b77fbe..HEAD, 22 files, +1096/-55) across controllers, pkg, cmd, api, internal, test, hack/e2e, using SIGNAL != REALITY, IDENTITY COARSENING, and GUARD BEFORE PREDICATE lenses. Work was done by copying the tree to /tmp/probe/repo (repo itself untouched) and writing nine executable probes against the pure engine and plugin fake-client manager; five hit. Headline finding (class 6): the new terminal guard at run_controller.go:1216 sits behind two earlier returns in the same function (allocated>0 at line 1122, runHasActivePods at line 1168), so the exact defect the fix was meant to kill -- an immortal Pending reservation with a lying/frozen or cleared backlog gauge -- survives via both bypass doors, confirmed by 20-tick executed probes. Class 4 finding: the change reads OBJECT ABSENCE (Budget existence/multiplicity) as a permanent fact with no debounce, and because ReservationReconciler polls every minute, an ordinary delete-then-apply or GitOps prune-then-apply window terminally Fails every due reservation cluster-wide. Sharper class-4 finding: Budget.Spec.Owner is a free-form string validated only for non-emptiness, with a ValidatingAdmissionPolicy that matches only pods, so a Budget created in ANY namespace naming another tenant's owner poisons that tenant via LeafOwnerSpansNamespaces, terminally kills its reservations, and makes PreBind refuse its own top-ups. Mutation-testing the new tests found that TestActivateReservationFailsTerminallyWhenNamespaceHasNoOwner's assertion doesn't survive a single Reconcile, because the unguarded sibling call site (run_controller.go:391-402) overwrites run.Status.Message with 'owner and flavor must be set', the exact string the test forbids -- passing only because the test never calls Reconcile. Additional findings: the seg.Owner pin removal (vetoed for wedging healthy running gangs) does not remove the underlying reaping mechanism, since the retained derived==\"\" refusal produces the identical outcome via gangProvenance rebuilding from the run's own open lease; baseGangGPUsForRun is coarser than 'any open lease matching runKey' since it skips Spare/Grow leases, letting a run with only such a lease open fall through to the terminal guard; and the interior-owner exemption in deriveOwners is keyed on owner string alone (continue before the span predicate), so it can be both weaponized and self-disabled via the same free-form field. Several hypotheses were cleared by probe or reading: EnvelopeKey correctly carries Namespace, OwnerOfNamespace is genuinely computed cluster-wide, the NUL bucket key never escapes pkg/resolver, and no production code compares errors by message text. The full existing test suite is reported green with all of these defects present.",
+   "answers": [
+    {
+     "question": "Does the change read any Kubernetes condition, taint, timestamp, or object-absence and treat it as a fact about what is PHYSICALLY running on a machine? For each: if that inference is wrong, WHAT RUNS TWICE?",
+     "conclusion": "No condition, taint or timestamp: grepping the whole reviewed diff for NodeReady, Unschedulable, Taint, LastTransitionTime and nodeUsable returns nothing, and the only Phase read added is `run.Status.Phase == RunPhaseFailed` in a test. The change DOES read object-absence, in two places, and treats it as permanent: `ev.OwnerOf(run.Namespace) == \"\"` (run_controller.go:1216) and `derived == \"\"` (gang.go:756) turn 'this namespace currently has no Budget, or has two owners' into 'this reservation can never activate' and 'this mint must be refused'. Nothing runs twice as a direct consequence -- both new refusals are fail-CLOSED, and PreBind returns its Error before the Lease is created, so there is no double-mint window. The harm runs the other way: work that should run does not, reservations are destroyed for conditions that lasted seconds (probe: one tick with zero Budgets = Failed), and leases are stranded open while the gang can never re-assemble. There is one second-order physical consequence, and this diff's own new comment names it: the same misread reclassifies open leases Unfunded, and Unfunded is the resolver's FIRST reclaim target, so a mis-derived binding does eventually reach real container eviction -- just via the resolver rather than directly."
+    },
+    {
+     "question": "For each such signal: WHO can write that field, and can they lie? Check the shipped RBAC in deploy/helm/gpu-fleet/templates/rbac.yaml.",
+     "conclusion": "The signal is Budget.Spec.Owner, and yes, it can lie. api/v1/budget_types.go:188 validates it only for non-emptiness -- no format, no namespace scoping, no relationship to any authenticated identity. The shipped chart does not constrain it either: rbac.yaml defines only the controller ServiceAccount's ClusterRole and the scheduler ClusterRole gives get/list/watch on runs, budgets, gpuleases -- neither says anything about who else may create a Budget, and the ValidatingAdmissionPolicy matches only `pods`, so no admission control sees a Budget at all. Because deriveOwners must run over every Budget cluster-wide to enforce injectivity, a lie is global: a Budget created in namespace `attacker` whose owner string is simply `org:team` flips OwnerOf(\"default\") from \"org:team\" to \"\", emits LeafOwnerSpansNamespaces conflicts for both namespaces, terminally Fails default's reservation on the next tick, and makes the plugin refuse default's own top-up. The victim controls nothing in that chain."
+    },
+    {
+     "question": "Does the change compare a COARSER key than the one that matters? Find every equality test on an identity and name the finest key that should have been used.",
+     "conclusion": "Every identity comparison in the diff, with the finest key that should have been used: (1) baseGangGPUsForRun(runKey, c.State.Leases) > 0 at run_controller.go:1122 skips Role==Spare and Reason==Grow (line 2811, 2814), so it is coarser than the property that matters, which is 'any open lease whose RunRef equals runKey' -- executed: a run holding only an open Grow lease reads 0 and falls through the guard with the lease open. (2) interior[owner] in deriveOwners keys on the owner string alone; the finest key is (owner, namespace), since an owner can be a pool in one namespace and a leaf in another -- P5, parked, but see finding 7 for the new stake. (3) ownerOf's NUL fallback in pkg/resolver is the FIX for this class and it is correct: verified both call sites use it only as a map key, a slice element and an rng index; it never reaches an Action, a Reason or a message. (4) EnvelopeKey is {Namespace, Budget, Envelope}, i.e. already the finest key, and the plugin's budget walk matches on b.Namespace + b.Name + env.Name, so the envelope-names-are-unique-only-within-a-Budget trap is not present. (5) funding.OwnerOfNamespace in the plugin derives from the same universe as the engine -- the scout's scoping suspicion is CLEAR. (6) The reservation metric key is consistent across all writers of State.Reservations, not a defect."
+    },
+    {
+     "question": "Does the change contain a loop with BOTH a type/role filter (`if ... continue`) AND a match predicate? Check their ORDER.",
+     "conclusion": "Yes, one, and it is in the code the diff rewrote. deriveOwners' new sorted loop keeps `if _, isInterior := interior[owner]; isInterior { continue }` (evaluate.go:239) BEFORE the `if len(nss) >= 2` span predicate (line 243), so an owner that genuinely spans namespaces is suppressed before the test that decides it is a violation, no BindingConflict is recorded and no namespace is poisoned. The diff's own new TestInteriorExemptionAdmitsALeafOwnerInTwoNamespaces pins that hole rather than fixing it (P5, parked). The second loop is correctly ordered. The plugin's budget walk has a single combined match predicate and no role filter, so no ordering hazard there. The same class shows up at FUNCTION level rather than loop level and is the top finding: activateReservation's two early returns at lines 1122 and 1168 run before the predicate (line 1216) that decides the reservation can never activate, which is the R25 shape scaled up, confirmed by execution."
+    },
+    {
+     "question": "Grep the changed code and its callers for `strings.Contains(err.Error(), ...)` or any error compared by TEXT. Enumerate every error the changed functions can return and confirm each swallow site swallows only a typed sentinel via errors.Is.",
+     "conclusion": "No production code anywhere in the repo compares an error by text: grepping strings.Contains across controllers/ pkg/ cmd/ internal/ excluding _test.go returns zero hits, so the R25 corollary is clean on the shipped path. The changed functions return plain fmt.Errorf values (none typed sentinels), but there is no swallow site to audit: ActivateReservations wraps each with %w and errors.Join, and ReservationReconciler hands the joined error to controller-runtime, which requeues; the next reconcile short-circuits on `res.Status.State != \"Pending\"`, so a terminal failure is not retried forever. The one text coupling the diff ADDS is in the new tests -- controllers/tenancy_reservation_test.go:75, :78 and :196 match err.Error() and run.Status.Message by substring -- and a probe shows that coupling already misdescribes production: the message the test matches is overwritten by 'owner and flavor must be set' on the next Reconcile, so the assertion is green about a state the operator never sees."
+    }
+   ],
+   "evidence": [
+    {
+     "file": "controllers/run_controller.go",
+     "line": 1216,
+     "quote": "\tif ev.OwnerOf(run.Namespace) == \"\" {"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 1122,
+     "quote": "\tif allocated := baseGangGPUsForRun(runKey, c.State.Leases); allocated > 0 {"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 1168,
+     "quote": "\tif runHasActivePods(c.State.Pods, run) {"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 400,
+     "quote": "\t\t\tsetState(run, v1.RunStateUnfunded, coverErr.Error())"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 2811,
+     "quote": "\t\tif lease.Status.Closed || lease.Spec.Slice.Role == binder.RoleSpare {"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 1441,
+     "quote": "\t\tif p.Namespace == run.Namespace && p.Labels[binder.LabelRunName] == run.Name && p.Labels[binder.LabelRunRole] == binder.RoleActive {"
+    },
+    {
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 78,
+     "quote": "\tif strings.Contains(err.Error(), \"owner and flavor must be set\") {"
+    },
+    {
+     "file": "cmd/scheduler/plugin/gang.go",
+     "line": 755,
+     "quote": "\tderived := funding.OwnerOfNamespace(budgetList.Items, run.Namespace)"
+    },
+    {
+     "file": "cmd/scheduler/plugin/gang.go",
+     "line": 756,
+     "quote": "\tif derived == \"\" {"
+    },
+    {
+     "file": "pkg/funding/evaluate.go",
+     "line": 239,
+     "quote": "\t\tif _, isInterior := interior[owner]; isInterior {"
+    },
+    {
+     "file": "api/v1/budget_types.go",
+     "line": 188,
+     "quote": "\tif b.Spec.Owner == \"\" {"
+    },
+    {
+     "file": "controllers/kube/reconcilers.go",
+     "line": 383,
+     "quote": "\t\t\trequeueAfter = pendingRunResync"
+    },
+    {
+     "file": "pkg/resolver/resolver.go",
+     "line": 493,
+     "quote": "// reintroduces the pooling it exists to prevent. The key never escapes this"
+    }
+   ],
+   "findings": [
+    {
+     "title": "The new terminal guard sits behind two earlier returns; the immortal reservation and the lying gauge both survive",
+     "severity": "high",
+     "file": "controllers/run_controller.go",
+     "line": 1216,
+     "taxonomyClass": "6 GUARD BEFORE PREDICATE (composite with 1 IMMORTAL LEASE)",
+     "failure_scenario": "EXECUTED, door 1: run train (8 GPUs) in namespace default holding one open 4-GPU Promise lease; an admin adds a second Budget with a different owner. 20 reconcile+activate ticks over 20 simulated hours -> reservation state=\"Pending\", CountdownSeconds still set, backlog gauge still map[default/res:{H100-80GB 1020}], lease still open, 8 top-up Promise pods re-emitted. EXECUTED, door 2: same namespace, no leases, one Active intent pod already emitted -> 20 activation ticks -> reservation state=\"Pending\" forever and the gauge reads map[] (cleared), so the immortal reservation is also invisible rather than merely frozen. Door 2 is reachable from door 1 (topUpActiveGang emits Active pods and holds the reservation) and from the R28 lost-status-write case the code comment at 1123-1127 explicitly anticipates."
+    },
+    {
+     "title": "Budget.Spec.Owner is an unauthenticated free-form string; a Budget in any namespace can terminally kill another namespace's reservations and wedge its PreBind",
+     "severity": "high",
+     "file": "pkg/funding/evaluate.go",
+     "line": 239,
+     "taxonomyClass": "4 SIGNAL != REALITY + 5 IDENTITY COARSENING",
+     "failure_scenario": "EXECUTED: namespace default is correctly bound to org:team with a valid Budget and a due reservation. A Budget named `squatter` is created in namespace `attacker` whose only distinguishing feature is `owner: org:team`. Nothing in `default` changes. OwnerOf(\"default\") flips \"org:team\" -> \"\" with conflicts [{attacker org:team LeafOwnerSpansNamespaces} {default org:team LeafOwnerSpansNamespaces}], and one ActivateReservations tick marks default/res Failed. In the plugin, the same foreign Budget makes promiseProvenanceValid refuse default's own top-up naming default's own budget `team` and its own envelope `west`. That is a cross-tenant denial of service driven by a string the victim does not control."
+    },
+    {
+     "title": "Object-absence is read as a permanent fact and acted on terminally within one poll tick: a delete-then-apply window destroys every due reservation",
+     "severity": "high",
+     "file": "controllers/run_controller.go",
+     "line": 1216,
+     "taxonomyClass": "4 SIGNAL != REALITY",
+     "failure_scenario": "EXECUTED: a namespace with zero Budgets and one due reservation -> one ActivateReservations call -> state=\"Failed\" with 'namespace \"default\" has no funding principal ... can never activate'. In production the window is any `kubectl delete budget && kubectl apply`, a `kubectl replace --force`, a helm upgrade that recreates Budgets, or a GitOps sync that prunes before applying; pendingRunResync is one minute (controllers/kube/reconcilers.go:383), so any window of that order is hit reliably, and a gang scheduler runs for months. Recovery is real but partial: the run re-admits (phase Pending, 'scheduling 4 GPUs'), but the reservation object stays Failed and the operator sees a destroyed reservation for a condition that lasted seconds."
+    },
+    {
+     "title": "The fix's stated purpose is defeated at the sibling call site: the operator IS told 'owner and flavor must be set', and the new test only passes because it never calls Reconcile",
+     "severity": "high",
+     "file": "controllers/run_controller.go",
+     "line": 400,
+     "taxonomyClass": "5 IDENTITY COARSENING (guard keyed to one of six call sites) + 8 THE TEST ASSERTS THE BUG",
+     "failure_scenario": "EXECUTED against the shipped fixture verbatim: after ActivateReservations, run.Status.Message = 'namespace \"default\" has no funding principal: ...'. After ONE ordinary Reconcile on the same state, run.Status.Message = 'owner and flavor must be set'. The guard's message is clobbered on the next tick and the operator is told about a field the Run does not have -- exactly what the fix and its test declare impossible. Six sites build a cover.Request from ev.OwnerOf(run.Namespace) (lines 351, 367, 436, 1236 and pkg/admission/admission.go:114); the guard was added to exactly one of them."
+    },
+    {
+     "title": "The seg.Owner removal does not remove the reaping the veto cited; the refusal that stayed wedges the same live gang through a different field, and nothing tests that case",
+     "severity": "medium",
+     "file": "cmd/scheduler/plugin/gang.go",
+     "line": 756,
+     "taxonomyClass": "5 IDENTITY COARSENING (the veto's reasoning generalises past the field it removed)",
+     "failure_scenario": "EXECUTED: newManager(trainRun, teamBudget, second-Budget-with-a-different-owner-in-default) -> promiseProvenanceValid(default/train, seg{default,org:ai:team,team,west}) returns false. The gang holds its existing leases open, can never replace a lost member, and the controller (finding 1, door 1) holds its reservation Pending forever while re-emitting the pods PreBind keeps rejecting. The restored gang_test.go assertion only covers a same-namespace, well-funded forged-owner segment; nothing covers the live-gang top-up the veto's own justification names."
+    },
+    {
+     "title": "baseGangGPUsForRun is a coarser key than 'this run holds an open lease', so the guard is reachable with a lease still open",
+     "severity": "medium",
+     "file": "controllers/run_controller.go",
+     "line": 2811,
+     "taxonomyClass": "5 IDENTITY COARSENING",
+     "failure_scenario": "EXECUTED, two variants. Spare: run holds one open 4-GPU Spare lease, allocated reads 0, the guard fires and fails the reservation at tick 1 -- the spare happens to be closed by a later sweep, so no immortal lease in this variant. Grow: run holds one open 4-GPU Grow lease, allocated reads 0, and the run instead wedges via door 2 with the lease still open at tick 20. The clearance was reached by reading control flow, and reading control flow got the predicate's meaning wrong."
+    },
+    {
+     "title": "The interior exemption is keyed on the owner string alone, so the injectivity fail-safe is self-serve to disable as well as to trigger",
+     "severity": "low",
+     "file": "pkg/funding/evaluate.go",
+     "line": 239,
+     "taxonomyClass": "5 IDENTITY COARSENING",
+     "failure_scenario": "The shipped TestInteriorExemptionAdmitsALeafOwnerInTwoNamespaces already pins the mechanism: adding one unrelated child Budget in child-ns naming org:ai as a Parent flips OwnerOf(tenant-a) and OwnerOf(tenant-b) from \"\" to \"org:ai\" with zero conflicts. What is new is the stake on the other side of the switch -- with this diff, whether the fail-safe fires now decides whether reservations are destroyed and PreBind refuses, not merely whether leases coast."
+    }
+   ],
+   "unsupported": []
+  },
+  {
+   "summary": "Investigator performed static analysis of a 22-file diff plus executed six probes against a pure engine (in /tmp, invariant oracle live) covering terminal-fail-then-repair recovery, conflicted-namespace scenarios with full/partial base gangs, an admission-path message leak, spare-only run behavior, and checkpoint-grace protection. The change adds a namespace-owner guard (activateReservation) and a derived-owner refusal (promiseProvenanceValid) plus removes a seg.Owner pin, without adding CloseLease calls or State.Pods writes, so no half-plane action is introduced. Two low-severity defects were confirmed: the 'owner and flavor must be set' operator message the fix intends to eliminate still surfaces and overwrites the new guard's message via Reconcile's admission path; and the recovery test (TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired) passes even in a permanent-limbo scenario because its assertions don't discriminate real recovery from stuck-Pending-with-wrong-message. A third item, the assembling-hold door keeping a reservation Pending with a frozen backlog gauge during a permanent namespace conflict, was judged a non-defect (self-heals on repair, avoids reaping a mid-assembly gang). No new/incorrect invariant was found; the removed seg.Owner pin was verified safe by checking all Lease.Spec.Owner read sites. The change reduces eviction paths relative to before by placing the new guard prior to the resolver block.",
+   "answers": [
+    {
+     "question": "For every site the change closes a Lease or deletes a Pod, name the pairing (half-plane action check).",
+     "conclusion": "There are NO such sites: the diff adds no CloseLease call and no write to State.Pods anywhere; the controllers change is only the OwnerOf guard plus the failReservationTerminally refactor, which mutates Reservation.Status and the backlog gauge only. Probe 2 shows an open base-gang lease causes adoption to Running before the guard; probe 5 shows active pods return before the guard; probe 4 shows a spare-only run has both lease and pod survive together consistently. The new guard sits before the resolver invocation, so a conflicted namespace terminally fails without triggering third-party evictions."
+    },
+    {
+     "question": "Does the change reach the checkpoint-grace window (a deliberate bounded half-plane state)?",
+     "conclusion": "Executed (probe 5): a Pending run with CheckpointDeadline set, surviving active pods, no open lease, in a conflicted namespace, passes through ActivateReservations untouched \u2014 reservation stays Pending, message and deadline unchanged. Protection keys on plane facts (open leases, pod presence) and the deadline check at Reconcile:228, not on a phase name. The one grace shape that reaches the guard (all grace pods gone) has its reservation terminally failed but CheckpointDeadline is left untouched, and a conflicted namespace couldn't fund re-admission anyway. Not a reaper."
+    },
+    {
+     "question": "For each fix, what legal state would its repair destroy if applied more aggressively?",
+     "conclusion": "(1) Terminal reservation guard: applied more aggressively (failing the run/closing its leases) would reap a conflicted-namespace run adopted to RUNNING with a full open base gang (probe 2), and would break the probe-1 recovery. (2) seg.Owner pin removal: keeping the pin would wedge a funded RUNNING gang's top-up via gangProvenance reading a stale Lease.Spec.Owner; Evaluate never reads Lease.Spec.Owner, so the pin bought nothing. (3) The derived==\"\" refusal: extending it to SWAP pods would destroy node-failure recovery of a legally coasting gang. (4) resolver ownerOf NUL-key: excluding ownerless runs from buckets entirely would make conflicted-namespace work unreclaimable. (5) deriveOwners determinism: erroring/panicking on a multi-owner namespace would break a legal fail-safe admin state that must coast. (6) Fixture idle envelopes: forbidding binding-only Budgets would destroy the legal 'bound tier with no capacity of this flavor' shape."
+    },
+    {
+     "question": "Does the change add or strengthen an invariant, and does any legal engine state trip it?",
+     "conclusion": "The change adds nothing to pkg/invariant (no oracle entries, no panics). It adds two runtime refusals (OwnerOf==\"\" guard, derived==\"\" refusal) plus pinned tests. Legal states found: a Promise pod stranded when namespace goes conflicted between emission and PreBind (refusal strands it but it's retried and unblocks on repair); the guard firing during a brief conflicted window destroys only a status object, not work, since probe 1 shows self-recovery. All six probe states ran with the invariant oracle live and nothing panicked. No wrong invariant found."
+    },
+    {
+     "question": "For each finding, quantify budget charged, GPUs held, and duration.",
+     "conclusion": "Finding 1 (leftover 'owner and flavor must be set' message): zero GPUs held, zero budget charged; harm is purely diagnostic/indefinite operator-time cost, delaying admin repair. Finding 2 (recovery test passes in limbo): zero direct charge/GPUs today since recovery is currently real; exposure is a future regression that could strand runs at 0 GPUs until manually resubmitted. Finding 3 (partial-gang hold, informational/non-defect): held width (e.g., 2 of 4 GPUs in the probe) stays open with reservation Pending and gauge frozen for the life of a permanent conflict, but nobody is billed since conflicted-namespace leases are Unfunded and self-heal fully on repair."
+    }
+   ],
+   "evidence": [
+    {
+     "file": "controllers/run_controller.go",
+     "line": 1216,
+     "quote": "if ev.OwnerOf(run.Namespace) == \"\" {"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 1122,
+     "quote": "if allocated := baseGangGPUsForRun(runKey, c.State.Leases); allocated > 0 {"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 1168,
+     "quote": "if runHasActivePods(c.State.Pods, run) {"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 400,
+     "quote": "setState(run, v1.RunStateUnfunded, coverErr.Error())"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 228,
+     "quote": "if run.Status.Phase == RunPhasePending && run.Status.CheckpointDeadline != nil && !now.Before(run.Status.CheckpointDeadline.Time) {"
+    },
+    {
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 134,
+     "quote": "t.Fatalf(\"REAPER: the run is Failed after the admin repaired the binding: %q\", run.Status.Message)"
+    },
+    {
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 137,
+     "quote": "t.Fatalf(\"the run is stuck on the old conflict after repair: %q\", run.Status.Message)"
+    },
+    {
+     "file": "cmd/scheduler/plugin/gang.go",
+     "line": 756,
+     "quote": "if derived == \"\" {"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 2875,
+     "quote": "return binder.LeaseReasonPromise, payer(lease.Spec.Owner, lease.Spec.PaidByBudgetNamespace, lease.Spec.PaidByBudget, lease.Spec.PaidByEnvelope)"
+    }
+   ],
+   "findings": [
+    {
+     "title": "The 'owner and flavor must be set' operator message the fix claims to remove still surfaces via Reconcile's admission path",
+     "severity": "low",
+     "file": "controllers/run_controller.go",
+     "line": 400,
+     "taxonomyClass": "2",
+     "failure_scenario": "Only the ACTIVATION path was fixed. Reconcile's admission path builds cover.Request with Owner: ev.OwnerOf(run.Namespace) (line 367), gets FailureReasonInvalidRequest for a conflicted namespace, and line 400 writes that error verbatim into run.Status.Message. Executed: a plain Pending run in a conflicted namespace reads msg='owner and flavor must be set' (probe 3b), and a run whose reservation the guard just failed with the correct message has it overwritten to the same wrong text by the next Reconcile tick (probe 4, still wrong at +20h). The new test never reconciles after activating, so it cannot see the overwrite."
+    },
+    {
+     "title": "TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired passes verbatim in a permanent-limbo world, so it does not pin the recovery it exists to prove",
+     "severity": "low",
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 134,
+     "taxonomyClass": "8",
+     "failure_scenario": "The test's only two discriminating assertions are Phase != Failed and !Contains(Message, 'no funding principal'). The investigator executed the limbo state a broken repair would leave: a run wedged in a still-conflicted namespace sits at Phase Pending with Message 'owner and flavor must be set' \u2014 which satisfies BOTH assertions. So if the repair path regressed (run never re-admits), the test would stay green, meaning it does not actually pin the recovery behavior it is named for."
+    },
+    {
+     "title": "Informational, adjudicated non-defect: the assembling-hold door keeps a due reservation Pending with a frozen backlog gauge for the life of a permanent namespace conflict",
+     "severity": "low",
+     "file": "controllers/run_controller.go",
+     "line": 1122,
+     "taxonomyClass": "1",
+     "failure_scenario": "The terminal fix covers only allocated==0. A half-applied gang in a namespace that then goes conflicted holds its reservation Pending with the gauge frozen (executed: 1020 unchanged across 20 ticks/20h). Investigator judged this non-defective since the hold self-heals completely on repair (adoption Releases the reservation and clears the gauge once missing members mint), whereas terminating would release reserved capacity out from under already-held GPUs mid-assembly."
+    }
+   ],
+   "unsupported": [
+    "verdict field per finding (CONFIRMED (executed) / etc.) not part of target schema, omitted",
+    "detail field per finding not part of target schema, omitted"
+   ]
+  },
+  {
+   "summary": "I reviewed the R7-pt2 remediation (0b77fbe..HEAD, 22 files, +1096/-55) exclusively through playbook class 8 -- does the test assert the bug -- and I answered every question by EXECUTING, not reading. I copied the repo to /tmp/scratch/jt (the repo itself was never modified; git status stayed clean throughout) and ran nine mutations plus nine probe tests. Baseline is green. Four mutations were correctly killed (the whole derived-owner guard in activateReservation; the CountdownSeconds clear in failReservationTerminally; the derived-owner refusal in gang.go; the ownerOf fallback in pkg/resolver, where the lottery probe measured 26/60 vs 11/60 pooled). Three mutations SURVIVED, and each is a real hole. (1) Deleting the admin repair from TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired leaves it passing -- the test that is the sole evidence for the fixIsReaper=false ruling has an inert stimulus; a no-repair probe reaches phase=Pending with msg=\"owner and flavor must be set\", satisfying both of its assertions. (2) Deleting metrics.ClearReservationBacklog from failReservationTerminally -- the line its own doc comment calls \"the part that is easy to forget\" -- leaves the entire ./controllers suite green, because both new fixtures set EarliestStart in the past so refreshReservationBacklog never arms the gauge; a probe that arms it legitimately (future EarliestStart, tick, then due) catches the mutant at 3600s and passes on real code. Worse, those two assertions read the PROCESS-GLOBAL metrics map with len(backlog) != 0, so on the pristine tree `go test ./controllers/ -shuffle=on` fails 4 runs in 5 with other tests' reservations in the map. (3) Neutering the post-applyResolution failReservationNoEnvelope call site at run_controller.go:1357 to `return nil` leaves ./controllers/... green -- the claim that this function \"finally has tests\" covers only the 1378 site. I also found that two NEW fixtures build Budgets the API server rejects (no envelope Selector), in the very change that made fixture legality a rule and whose helper comment asserts legality; TestTenancyFixturesAreLegalBudgets validates hand-built copies in pkg/funding and structurally cannot see them. On Q5 the modified tests are sound: the gang_test.go assertion is identical to 0b77fbe (only comment/message changed) and re-adding the vetoed seg.Owner pin goes red, so the removal does have a rail; the idleEnvelope additions are pure legality repairs of a different flavor and change no measured outcome; the e2e webhook rewrite's new stimulus checks out, and narrowing IsForbidden||IsInvalid to IsForbidden is a strengthening.",
+   "answers": [
+    {
+     "question": "1. For each test the change adds or modifies: what is the STIMULUS? Is that stimulus legitimate?",
+     "conclusion": "Per test: (a) TestActivateReservationFailsTerminallyWhenNamespaceHasNoOwner's stimulus (two different-owner Budgets plus a due Reservation) is legitimate and reachable end to end. (b) TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired's stimulus (remove the second Budget, then 5 ticks) is INERT: deleting line 120 leaves the test passing, and a no-repair probe reaches phase=Pending, msg=\"owner and flavor must be set\", satisfying both assertions. (c) TestFailReservationNoEnvelopeTerminatesAndClearsTheGauge's branch is genuinely reachable via a narrower route than documented, but the test's claim that this is \"the exact condition the function documents\" is false -- the documented \"(budget removed)\" route now hits the new derived-owner guard first, and the engine won't create a reservation on the flavor-mismatch route at all. Both tests' backlog-gauge stimulus is invalid because EarliestStart is already in the past. (d) TestPromiseProvenanceRefusedWhenNamespaceConflicted's stimulus is legitimate and kills the mutant. (e) TestPromiseProvenanceRefusedWhenNamespaceUnbound's stimulus does NOT provoke the behaviour under test -- it survives deletion of the derived-owner refusal because the envelope walk already refuses. (f) pkg/funding and pkg/resolver stimuli are legitimate. (g) controllers/kube envtest stimulus is exactly the forgery R7 closes and correctly needs a real API server. (h) the e2e webhook stimulus rewrite (allowBorrow+maxBorrowGPUs=0) was verified against the CRD schema (minimum: 0) and checks out."
+    },
+    {
+     "question": "2. Read each new assertion as a claim about the WORLD. Is the asserted state actually DESIRABLE per docs/project/quota-semantics.md and docs/concepts/leases.md?",
+     "conclusion": "The core world-claim -- a namespace with no funding principal can never activate a reservation, so fail it terminally -- matches R7-tenancy-amendment.md Section 4 verbatim, so terminal IS the desirable state and the fix is right. But two assertions are world-claims the world falsifies. First, \"the operator must not be told about fields the Run does not have\" (asserted only against err.Error()): executing one ordinary Reconcile on the same conflicted state makes run.Status.Message become exactly \"owner and flavor must be set\" -- the field the fix's own comment says it exists to avoid -- and because production runs two independent reconcilers, the good message is overwritten on the very next tick. Second, \"the backlog gauge must be cleared on the terminal path\" is asserted as len(whole-global-map) == 0, a claim about every other test in the package rather than about this reservation. The R7 amendment's \"coast Unfunded\" wording and quota-semantics.md Decision 1 are correctly reflected elsewhere, and the resolver's per-tenant bucket assertion is the right world-claim."
+    },
+    {
+     "question": "3. MUTATE THE FIX. Delete the load-bearing line in a scratch copy, and re-run the tests that supposedly cover it. Report exact commands and output.",
+     "conclusion": "Nine mutations in /tmp/scratch/jt, run with `go test ./<pkg>/`. KILLED: (1) deleting the whole `if ev.OwnerOf(run.Namespace) == \"\"` guard fails TestActivateReservationFailsTerminallyWhenNamespaceHasNoOwner and TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired. (2) deleting `reservation.Status.CountdownSeconds = nil` fails both reservation tests (\"got 1020\"). (3) deleting the `derived == \"\"` refusal in gang.go fails TestPromiseProvenanceRefusedWhenNamespaceConflicted (not ...Unbound). (4) reverting ownerOf fails all three resolver tenancy tests, lottery 11/60 vs 26/60 unmutated, threshold 15. (5) reverting deriveOwners to unsorted map walks fails TestConflictDiagnosticsAreDeterministic but TestOwnerDerivationIsInvariantUnderBudgetOrder still passed 20/20. (6) re-adding the vetoed `seg.Owner != derived` pin fails TestPromiseProvenanceValid, confirming a regression rail for the removal. SURVIVED: (7) deleting `metrics.ClearReservationBacklog(...)` from failReservationTerminally: `ok github.com/davidlangworthy/jobtree/controllers 1.104s`. (8) replacing `return c.failReservationNoEnvelope(reservation, runKey)` at run_controller.go:1357 with `return nil`: `ok .../controllers 1.503s` and `ok .../controllers/kube`. (9) deleting line 120 (`state.Budgets = ...h100Budget...`) from the recovery test: `--- PASS: TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired (0.00s)` with its own log printing `after repair: phase=Pending msg=\"owner and flavor must be set\"`. A positive control for (7) -- a probe that arms the gauge legitimately (future EarliestStart, one tick, then due) -- FAILS under the mutant (\"GAUGE NOT CLEARED\") and PASSES on real code, proving the fix works but the shipped tests are blind to it."
+    },
+    {
+     "question": "4. Does any test assert on a state the invariant oracle (pkg/invariant) would reject as illegal? If it doesn't exist, which invariants would the fixtures violate?",
+     "conclusion": "pkg/invariant exists and auto-arms under `go test` (invariant.UnderTest, Report=Panic), and both RunController.Reconcile and ActivateReservations defer checkInvariants, so the new controllers fixtures run through it and none panics -- they are legal engine states. The important negative result is structural: invariant.World (pkg/invariant/invariant.go:229) contains only Runs and Leases -- there is no Reservation projection and no invariant analogous to INV-TERMINAL-PRESENT for reservations, so the oracle is blind by construction to the immortal-reservation class this change exists to close, which is why the surviving ClearReservationBacklog mutant went unnoticed. Separately, two NEW fixtures (pkg/resolver/tenancy_buckets_test.go:27 and cmd/scheduler/plugin/tenancy_conflict_test.go:38) build BudgetEnvelopes with no Selector, which api/v1/budget_types.go:266 rejects (\"selector must contain at least one label\") -- confirmed by calling ValidateCreate() on the exact literals. The specific conclusions those tests draw survive, but the change's own stated rule that an illegal fixture is not evidence is violated by the repair itself."
+    },
+    {
+     "question": "5. Did the change MODIFY or DELETE an existing test? Was the old test wrong, or is the new test reshaped to accommodate a defect?",
+     "conclusion": "Five modifications, all ruled correct except one comment-only concern. (a) cmd/scheduler/plugin/gang_test.go: the assertion is byte-identical to 0b77fbe (`if !m.promiseProvenanceValid(ctx, \"default\", \"train\", cosmeticOwner)`); only the comment and t.Errorf string changed. The restored assertion describes the correct system, verified true because gangProvenance rebuilds a segment from the existing open Promise lease's owner, so a pin would wedge a live gang; re-adding the pin turns the test red, confirming a rail. (b/c) pkg/funding/evaluate_test.go and pkg/forecast/forecast_test.go gained an A100 idleEnvelope() -- a correct legality repair, not accommodation, since the flavor differs and asserted numbers are unchanged. (d) test/e2e/smoke_test.go: old stimulus (\"Owner deliberately omitted\") accepting IsForbidden||IsInvalid was WRONG (spec.owner is deleted, so that Run is now valid); new stimulus (allowBorrow+maxBorrowGPUs=0) accepting IsForbidden only is strictly stronger and its premise checks out (CRD minimum:0, MaxBorrowGPUs *int32 with omitempty, RunSpec.validate calls Funding.Validate). (e) hack/e2e/runbook-smoke.sh: the repair is right but the guard is prose and CI never runs these scripts, so it is unverified. (f) internal/manifestcorpus/corpus.go: owner stripped from Run cases only, Budget cases untouched -- correct."
+    }
+   ],
+   "evidence": [
+    {
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 120,
+     "quote": "state.Budgets = []v1.Budget{h100Budget(\"team\", \"org:team\", 16)}"
+    },
+    {
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 91,
+     "quote": "if backlog := metrics.Snapshot().ReservationBacklog; len(backlog) != 0 {"
+    },
+    {
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 207,
+     "quote": "if backlog := metrics.Snapshot().ReservationBacklog; len(backlog) != 0 {"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 1524,
+     "quote": "metrics.ClearReservationBacklog(keys.NamespacedKey(reservation.Namespace, reservation.Name))"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 1513,
+     "quote": "// reservation makes: Failed, countdown cleared, and -- the part that is easy to"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 1357,
+     "quote": "return c.failReservationNoEnvelope(reservation, runKey)"
+    },
+    {
+     "file": "pkg/resolver/tenancy_buckets_test.go",
+     "line": 27,
+     "quote": "envelope := []v1.BudgetEnvelope{{Name: \"west\", Flavor: \"H100\", Concurrency: 8}}"
+    },
+    {
+     "file": "cmd/scheduler/plugin/tenancy_conflict_test.go",
+     "line": 38,
+     "quote": "Name: \"east\", Flavor: \"H100-80GB\", Concurrency: 8,"
+    },
+    {
+     "file": "api/v1/budget_types.go",
+     "line": 266,
+     "quote": "return fmt.Errorf(\"selector must contain at least one label\")"
+    },
+    {
+     "file": "pkg/invariant/invariant.go",
+     "line": 229,
+     "quote": "// World is a complete engine state, projected."
+    },
+    {
+     "file": "controllers/kube/reconcilers.go",
+     "line": 126,
+     "quote": "err := rc.Reconcile(req.Namespace, req.Name)"
+    },
+    {
+     "file": "controllers/kube/reconcilers.go",
+     "line": 378,
+     "quote": "err := rc.ActivateReservations(now)"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 2875,
+     "quote": "return binder.LeaseReasonPromise, payer(lease.Spec.Owner, lease.Spec.PaidByBudgetNamespace, lease.Spec.PaidByBudget, lease.Spec.PaidByEnvelope)"
+    },
+    {
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 133,
+     "quote": "if run.Status.Phase == RunPhaseFailed {"
+    }
+   ],
+   "findings": [
+    {
+     "title": "TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired passes with the admin repair deleted -- no rail",
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 120,
+     "severity": "high",
+     "taxonomyClass": "8 (the test asserts the bug)",
+     "failure_scenario": "Mutation: delete line 120 (state.Budgets = []v1.Budget{h100Budget(\"team\", \"org:team\", 16)}). go test ./controllers/ -run TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired -v -> --- PASS (0.00s) with the test's own log line reading after repair: phase=Pending msg=\"owner and flavor must be set\". An independent probe running the identical 5 ticks with NO repair confirms run.Status.Phase != RunPhaseFailed is true (Pending) and !strings.Contains(run.Status.Message, \"no funding principal\") is true (message overwritten with \"owner and flavor must be set\"). The test never asserts the run reaches Running, that a lease or fresh reservation formed, or that intent pods were emitted -- a run wedged in permanent limbo passes identically, so a future regression removing recovery would ship green."
+    },
+    {
+     "title": "Both backlog-gauge assertions are vacuous: deleting ClearReservationBacklog leaves ./controllers green",
+     "file": "controllers/run_controller.go",
+     "line": 1524,
+     "severity": "high",
+     "taxonomyClass": "8 (the test asserts the bug)",
+     "failure_scenario": "Mutation: replace metrics.ClearReservationBacklog(keys.NamespacedKey(reservation.Namespace, reservation.Name)) with a comment. go test ./controllers/ -> ok github.com/davidlangworthy/jobtree/controllers 1.104s. Cause: conflictedNamespaceState sets EarliestStart: now.Add(-time.Hour), so ActivateReservations never calls refreshReservationBacklog and metrics.Snapshot().ReservationBacklog is map[] before AND after -- len(backlog) != 0 is vacuously satisfied. A positive-control probe that sets EarliestStart one hour in the future, ticks once (gauge armed), then advances past it, FAILS under the mutant (\"GAUGE NOT CLEARED: map[default/res:{H100-80GB 3600}]\") and PASSES on real code -- that production sequence is the only way the gauge is ever set, so the shipped tests exercise the one arrangement in which the assertion cannot fire."
+    },
+    {
+     "title": "failReservationNoEnvelope call site at run_controller.go:1357 has no test; neutering it to return nil leaves the suite green",
+     "file": "controllers/run_controller.go",
+     "line": 1357,
+     "severity": "high",
+     "taxonomyClass": "8 (the test asserts the bug) / 1 (immortal lease-analogue)",
+     "failure_scenario": "Mutation: replace return c.failReservationNoEnvelope(reservation, runKey) at line 1357 with return nil. go test ./controllers/... -> ok .../controllers 1.503s, ok .../controllers/kube 0.232s. The resulting production state is the exact defect this change exists to kill: the resolver has already fired and evicted victims to make room, the reservation stays Pending forever, ActivateReservations returns nil so nothing is even logged, and the backlog gauge stays frozen for the life of the process. Reproducing it needs a scenario where the initial cover.Plan fails with a non-InvalidRequest reason, the resolver runs, and the SECOND cover.Plan still fails with opportunisticCoverPlan finding no payer -- a budget removed mid-reservation while contention is present, which is routine over months."
+    },
+    {
+     "title": "Two NEW fixtures build Budgets the API server rejects, in the change whose own rule is that an illegal fixture is not evidence",
+     "file": "pkg/resolver/tenancy_buckets_test.go",
+     "line": 27,
+     "severity": "medium",
+     "taxonomyClass": "8 (the test asserts the bug)",
+     "failure_scenario": "Calling ValidateCreate() on the exact literals: pkg/resolver/tenancy_buckets_test.go:27 (envelope := []v1.BudgetEnvelope{{Name: \"west\", Flavor: \"H100\", Concurrency: 8}}) -> envelope[0]: selector must contain at least one label. cmd/scheduler/plugin/tenancy_conflict_test.go:38 triggers the same error. The pre-existing teamBudget in the same package carries a full topology selector, so this is a new regression, not inherited. TestTenancyFixturesAreLegalBudgets cannot catch it: it lives in pkg/funding and validates hand-built COPIES rather than the fixtures other packages actually use, so a fourth illegal fixture added tomorrow is equally invisible."
+    },
+    {
+     "title": "\"The operator must not be told about fields the Run does not have\" is falsified by the next ordinary Reconcile",
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 78,
+     "severity": "medium",
+     "taxonomyClass": "8 (the test asserts the bug)",
+     "failure_scenario": "Probe on the same conflictedNamespaceState: NewRunController(state, runClock{now}).Reconcile(\"default\", \"train\") returns nil and leaves run.Status.Message == \"owner and flavor must be set\". Sequenced: after ActivateReservations the message is the good funding-principal message; after ONE Reconcile it becomes \"owner and flavor must be set\". In production these are two separate reconcilers (controllers/kube/reconcilers.go:126 RunReconciler -> Reconcile; :378 ReservationReconciler -> ActivateReservations) and the run stays Pending and resyncs, so the operator sees the useless message essentially always. The test certifies a fixed operator experience the system does not deliver."
+    },
+    {
+     "title": "Backlog assertions read the process-global metrics map: -shuffle=on fails 4 runs in 5 on the pristine tree",
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 91,
+     "severity": "medium",
+     "taxonomyClass": "3 (last-writer-wins / order dependence)",
+     "failure_scenario": "On the unmodified repo (git status clean): go test ./controllers/ -shuffle=on -count=1 fails 4 times in 5, e.g. --- FAIL: TestActivateReservationFailsTerminallyWhenNamespaceHasNoOwner: the backlog gauge must be cleared on the terminal path, still reporting map[default/gang-res-1704103200:{H100-80GB 930} default/rebuffed-res-1782907200:... default/train-8-res-1704103200:{H100-80GB 7210}] -- every key belongs to an unrelated test. CI does not pass -shuffle today, so this is latent, but any new controllers test that leaves a pending reservation behind breaks these two tests for a reason unrelated to them."
+    },
+    {
+     "title": "TestPromiseProvenanceRefusedWhenNamespaceUnbound proves nothing about the guard it names",
+     "file": "cmd/scheduler/plugin/tenancy_conflict_test.go",
+     "line": 55,
+     "severity": "low",
+     "taxonomyClass": "8 (the test asserts the bug)",
+     "failure_scenario": "Mutation: delete derived := funding.OwnerOfNamespace(...); if derived == \"\" { return false } from gang.go. go test ./cmd/scheduler/plugin/ -run TestPromiseProvenanceRefusedWhenNamespaceUnbound -v -> --- PASS (0.07s). Only the conflicted-namespace sibling goes red. The test comment says the promise \"must be refused for the tenancy reason, not by accident of lookup order\" and then asserts only the boolean, which cannot distinguish the two; to be a rail it would need a Budget list where the envelope walk would match while the namespace still derives no owner."
+    },
+    {
+     "title": "TestFailReservationNoEnvelope's comment misstates its condition",
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 149,
+     "severity": "low",
+     "taxonomyClass": "8 (the test asserts the bug)",
+     "failure_scenario": "Driven probe: build a legitimate reservation then set state.Budgets = nil and activate. Result: \"namespace ... has no funding principal ...\" -- failReservationNoEnvelope is NOT reached. A second probe shows the engine never creates a reservation on the test's flavor-mismatch route either (refuses at planning, reservations=0). The branch is still live on a narrower route (two same-owner Budgets, admin deletes only the H100 Budget), so the outcome is fine, but the test hand-plants a state and mis-labels which condition it represents, and neither the code comment nor the test now describes the reachable route."
+    },
+    {
+     "title": "TestOwnerDerivationIsInvariantUnderBudgetOrder is not a rail for the sorted-walk fix",
+     "file": "pkg/funding/tenancy_r7_conflicts_test.go",
+     "line": 60,
+     "severity": "low",
+     "taxonomyClass": "8 (the test asserts the bug)",
+     "failure_scenario": "Mutation: revert both sorted-key loops in deriveOwners to plain map ranges and drop the lexicographic tie-break. go test ./pkg/funding/ -run TestOwnerDerivationIsInvariantUnderBudgetOrder -count=20 -> ok (20/20). The same mutant kills TestConflictDiagnosticsAreDeterministic immediately. The file's comment presents the two as complementary halves of a class-3 rail, and a reader would reasonably assume either would catch a regression in the sorted walk, but only one would."
+    }
+   ]
+  },
+  {
+   "summary": "Investigator report for class-3 LAST-WRITER-WINS lens on commit ec5cb64, examining the tenancy/reservation remediation diff (0b77fbe..HEAD over controllers/pkg/cmd/api/internal/test/hack/e2e, 22 files, +1096/-55). The investigator copied the tree to /tmp/jt and wrote four probes: two metamorphic order-invariance probes over pkg/resolver reclaim/lottery and controllers ActivateReservations+Reconcile scenarios (24 lease permutations plus 400/200 identical-input rounds), and two behavioural probes. Both order-invariance probes PASS: resolver verdict and engine outcome are byte-identical under every ordering, validated as non-decorative by mutation (deleting sortTokensByOwner turns both resolver probes red immediately). So the literal shuffle question answer is INVARIANT. However, the hunt found a real last-writer-wins defect one level up, between engine entry points rather than inside a loop: run.Status.Message for a namespace with no funding principal has two disagreeing writers, and the durable winner is the wrong one. The new guard at run_controller.go:1217 writes the informative \"no funding principal\" message; Reconcile's admission arm at run_controller.go:400 writes cover.PlanError's \"owner and flavor must be set\" - the exact string the change's own test asserts must never be shown. Because ReservationReconciler returns early once the reservation is Failed while RunReconciler requeues the parked Pending run every 60s, the bad message is the permanent one. This was confirmed over 240 simulated hours and by mutation (deleting the guard's setState fails exactly one assertion in the entire repo, the transient one). A second, lower-severity finding concerns deriveOwners' collision fold in pkg/funding/evaluate.go: it is deterministic (correctly fixing the original coin-flip) but lossy, reporting only the lexicographically smallest of possibly multiple colliding owners.",
+   "answers": [
+    {
+     "question": "Find every assignment to run.Status.* (Phase, Message, Width, CheckpointDeadline) that happens INSIDE a loop in the changed code. For each, is the write guarded by a comparison against what is already there, or does the last iteration simply win?",
+     "conclusion": "The changed controllers code contains exactly two run.Status.* writes, both in the new guard in activateReservation (run_controller.go:1216-1226): setState(run, v1.RunStateUnfunded, ...) which writes Phase+Message+Conditions, and run.Status.Funding = summarizeRunFunding(run, ev). Both execute inside a loop transitively via ActivateReservations' `for _, key := range dueKeys`. NEITHER write is guarded by a comparison against what is already there - the last iteration simply wins. Within a single pass this is safe because dueKeys is sorted and same-run reservations compute a byte-identical message from run.Namespace alone (confirmed by a 200-round map-iteration probe). Neither Width nor CheckpointDeadline is written by the new block. The unguarded write that actually bites is not inside the loop at all: it is the same field written by a SECOND engine entry point with a different value; see finding 1."
+    },
+    {
+     "question": "Find every `for k := range someMap` in the changed code. Go randomizes map iteration order per process. Does any observable outcome depend on that order?",
+     "conclusion": "Three map ranges survive in the changed code, all in pkg/funding/evaluate.go's deriveOwners, and the change converted two others to sortedKeys. (a) evaluate.go:244 `for ns := range nss` is a raw map range but its body is now a commutative min-fold, order-independent by construction. (b) evaluate.go:268 `for owner := range owners` is a raw map range performing an unguarded write, ev.ownerByNamespace[ns] = owner, safe today only because a preceding len(owners) >= 2 branch guarantees the map has exactly one element - a guard making a last-writer-wins loop harmless, not a fold, and it silently becomes a coin flip if that fail-safe is ever relaxed. (c) evaluate.go:238 and :254 are the two the change fixed, now walking sortedKeys. No new map range appears in controllers/run_controller.go, pkg/resolver/resolver.go, or cmd/scheduler/plugin/gang.go. Executed answer: no observable outcome depends on map order, confirmed via 400 identical-input rounds in pkg/resolver, 200 in controllers, and the repo's own 200-round funding test all producing byte-identical results."
+    },
+    {
+     "question": "Apply the metamorphic test: take a scenario the change exercises, SHUFFLE the order of state.Leases, replay, and compare the resulting run statuses and lease closure reasons byte-for-byte. Report whether the outcome is invariant. Run it several times. This is the definitive experiment \u2014 actually run it.",
+     "conclusion": "Ran, twice over, in two packages. (A) pkg/resolver: four unfunded runs across two CONFLICTED namespaces, Deficit=8, fixed SeedSource, all 24 permutations of in.Leases; the action list is identical both as an ordered sequence and as a set, and a companion probe replayed identical input 400 times across three conflicted namespaces with the same three victims every round. (B) controllers: a CONFLICTED namespace scenario with a Pending run, a due reservation, a RUNNING neighbour on two open leases, and a well-bound tenant elsewhere; six simulated ticks of Reconcile plus ActivateReservations, all 24 permutations of state.Leases, fingerprinting run phase/message/width/conditions, lease closure reasons, reservation state/reason/countdown, and the pod plane. Byte-identical in every permutation, stable across 200 identical-input rounds. Conclusion: INVARIANT. The investigator proved the probes could detect a violation before trusting the pass: commenting out the two sortTokensByOwner calls made both resolver probes fail on round 1 with a different victim."
+    },
+    {
+     "question": "If an ordering dependence exists, is the correct fix a deterministic sort, or a COMMUTATIVE fold (a severity lattice, a post-loop sweep)? Argue for one. A deterministic order that happens to give the right answer is still a coincidence.",
+     "conclusion": "Two separate answers for two situations. (i) For deriveOwners the shipped fix is both a sort AND a fold, and the fold is the load-bearing half: sorting nsByOwner alone would only have made the coin flip repeatable, whereas the min-selecting fold makes the answer independent of any traversal; the sort is then merely cosmetic ordering of the emitted Conflicts slice. The investigator would go further and make the fold lossless rather than min-selecting (see finding 2). (ii) For the defect actually found, neither sort nor fold is available: the two writers of run.Status.Message live in two different controllers (RunReconciler at reconcilers.go:126 and ReservationReconciler at reconcilers.go:378) driven by independent watch/requeue triggers, so there is no single loop to sort and no single pass to sweep. A severity lattice on Message would also be wrong since the two strings are not two severities of one condition but one condition described correctly and incorrectly. The correct fix is to make the value a pure function of state so whichever writer runs last computes the same string - concretely, hoist the empty-owner test out of activateReservation into a helper applied in Reconcile before building the cover.Request, so run_controller.go:400's InvalidRequest arm can never be reached with an empty owner."
+    }
+   ],
+   "evidence": [
+    {
+     "file": "controllers/run_controller.go",
+     "line": 1217,
+     "quote": "setState(run, v1.RunStateUnfunded, fmt.Sprintf("
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 400,
+     "quote": "setState(run, v1.RunStateUnfunded, coverErr.Error())"
+    },
+    {
+     "file": "controllers/kube/reconcilers.go",
+     "line": 368,
+     "quote": "if res.Status.State != \"Pending\" && res.Status.State != \"\" {"
+    },
+    {
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 96,
+     "quote": "if !strings.Contains(run.Status.Message, \"no funding principal\") {"
+    },
+    {
+     "file": "pkg/funding/evaluate.go",
+     "line": 245,
+     "quote": "// Lexicographically smallest colliding owner wins, deterministically."
+    },
+    {
+     "file": "pkg/funding/evaluate.go",
+     "line": 268,
+     "quote": "for owner := range owners {"
+    },
+    {
+     "file": "pkg/resolver/resolver.go",
+     "line": 501,
+     "quote": "return \"\\x00unbound-namespace/\" + run.Namespace"
+    },
+    {
+     "file": "pkg/resolver/resolver.go",
+     "line": 312,
+     "quote": "sortTokensByOwner(tokensByOwner)"
+    }
+   ],
+   "findings": [
+    {
+     "title": "run.Status.Message for an unbound/conflicted namespace has two disagreeing writers; durable winner is forbidden string",
+     "severity": "high",
+     "file": "controllers/run_controller.go",
+     "line": 1217,
+     "taxonomyClass": "3 LAST-WRITER-WINS (with 8 THE TEST ASSERTS THE BUG and 7 CLONED OBLIGATION)",
+     "failure_scenario": "An admin adds a second-owner Budget to a namespace holding a Pending run with a due reservation. Tick 1: ActivateReservations fails the reservation terminally and writes the good message ('namespace has no funding principal...') via the new guard at run_controller.go:1217. From then on ReservationReconciler never calls ActivateReservations for that reservation again (controllers/kube/reconcilers.go:368 returns early once State != 'Pending'), while the run is parked Pending with PendingReservation == nil, so RunReconciler requeues it every pendingRunResync (60s) and Reconcile's admission arm at run_controller.go:400 rewrites the message to cover.PlanError's 'owner and flavor must be set' - the string the fix's own comment says must never be shown. Within 60 seconds of the fix firing, the operator-facing half of the fix is gone permanently, confirmed over 240 simulated hours of Reconcile+ActivateReservations leaving phase=Pending msg='owner and flavor must be set' with pendingRes=<nil>. Mutation testing confirmed only controllers/tenancy_reservation_test.go:96 catches the guard's removal, and that test asserts the message only in the single instant before Reconcile has run, certifying a 60-second transient as if it were the steady state."
+    },
+    {
+     "title": "deriveOwners' collision fold is deterministic but lossy: only the lexicographically smallest of multiple colliding owners is reported",
+     "severity": "low",
+     "file": "pkg/funding/evaluate.go",
+     "line": 245,
+     "taxonomyClass": "3 LAST-WRITER-WINS (residue of the fix)",
+     "failure_scenario": "Namespace 'shared' is bound by org:x (also spanning x-only namespaces) and org:y (also spanning y-only namespaces). The diagnostic names only org:x because the min-fold at evaluate.go:245-247 keeps the lexicographically smallest colliding owner and BindingConflict carries a single Owner field. An admin removes org:x's stray Budget, re-evaluates, and the namespace is still unbound, now blamed on org:y, with nothing having told them there were two problems originally. The repo's own TestConflictDiagnosticsAreDeterministic fixture builds precisely this two-spanning-owner case but only asserts rendering is stable across 200 evaluations, never that both culprits appear, so the determinism claim holds while the (never-made) completeness claim does not."
+    }
+   ]
+  },
+  {
+   "summary": "I reviewed 0b77fbe..HEAD (22 files, +1096/-55) through the immortal-lease (class 1) and cloned-obligation (class 7) lenses, and I did it by executing rather than reading: I copied the tree to /tmp/lensA, extracted 0b77fbe with `git archive` to /tmp/lensB, and ran differential probes against both. Note first that the working tree is at 2666bd0, TWO commits past the pinned ec5cb64 (42d9657 and 2666bd0); 2666bd0 rewrites two comment blocks in cmd/scheduler/plugin/gang.go and gang_test.go, shifting gang.go by +2 lines after line 768 \u2014 every citation below is at a line unaffected by that drift. On the controller side the fix is clean for my lens: the new empty-owner branch in activateReservation is gated behind `baseGangGPUsForRun == 0` and `!runHasActivePods`, it sets the RUN to RunStateUnfunded (which maps to RunPhasePending, not terminal), and the diff writes Lease.Status.Closed nowhere at all, so the sole-closer rail is untouched. The defect is on the PLUGIN side, and it is the playbook's own warning that 'a fix for this class can create this class'. The new `derived == \"\"` refusal in promiseProvenanceValid turns the SOLE COMMITTER from 'mints' into 'refuses forever' for a namespace that becomes CONFLICTED \u2014 and I proved the flip by execution: at 0b77fbe promiseProvenanceValid(conflicted) returns true, at HEAD it returns false (the unbound case was already false at base, so only the conflicted case is new). A Promise gang whose namespace goes conflicted mid-bind, or a live 4/4 Promise gang that loses one rank to a node failure afterwards, therefore keeps its already-minted leases OPEN forever: 20 Reconciles over 20 simulated hours left 2 and 3 open leases respectively, run stuck 'assembling gang: 2/4' / '3/4' at RunPhasePending, 40.0 and 63.1 Unfunded GPU-hours accrued, and SettleLeases \u2014 whose only rule is 'the run is Failed or Complete' \u2014 swept nothing. The bound-namespace controls recover to Running in both cases. I also mutated the new tests: TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired PASSES with the admin repair deleted, because Reconcile overwrites the run message with cover's 'owner and flavor must be set' one tick later \u2014 which additionally defeats the operator-message half of the reservation fix. I investigated and then discarded the leftover-spare immortal-lease hypothesis: it reproduces identically at 0b77fbe and in a healthy namespace, and settle.go explicitly refutes that sweep rule as legal state.",
+   "answers": [
+    {
+     "question": "Enumerate EVERY exit path (return, continue, break, panic, early error) of every function this change adds or modifies. For each, list which leases are open at that moment and which are closed. Name any path that exits with a lease open that should have been closed.",
+     "conclusion": "Eight functions are added or modified. (1) activateReservation gains ONE new exit, run_controller.go:1216-1225: it is reachable only after the `allocated := baseGangGPUsForRun(...) > 0` block has returned and after `runHasActivePods` returned false, so the run holds no open base-gang lease and no active pod; the only leases that can still be open for it are SPARE-role leases and Reason==Grow leases, both of which baseGangGPUsForRun skips (run_controller.go:2811-2815). It closes nothing and sets the RUN to RunStateUnfunded (= RunPhasePending, api/v1/conditions.go:133), so the run never becomes terminal and SettleLeases never sees it. I executed the spare case (spare lease + spare pod + conflicted namespace, 20 ticks / 20 h): the spare stays open \u2014 but it stays open identically at 0b77fbe and identically in a healthy namespace, and settle.go's rule (1) explicitly refutes 'spare with no active lease is an orphan' as a legal state, so I do not charge it to this change. (2) failReservationNoEnvelope now has exactly one exit, delegating; both of its call sites (1357, 1378) sit under the same allocated==0 gate, so same lease picture. (3) failReservationTerminally (new) has one exit, closes nothing, and touches no lease. (4) promiseProvenanceValid gains a new `return false` at gang.go:756 \u2014 this is the one exit in the whole diff with a lease consequence, because refusing at PreBind means the pod never binds while its already-minted SIBLING leases stay open (see finding 1). (5) deriveOwners: same two exits, loops now ordered. (6) OwnerOfNamespace (new): one exit, no leases. (7) ownerOf: two exits, both pure map/sort keys, no leases. (8) sortedKeys: generic-ised, one nil-return for empty, no leases. The path that exits with a lease open that should have been closed is (4) \u2014 indirectly, by making the rest of a gang unmintable while its minted members hold GPUs forever."
+    },
+    {
+     "question": "Does the change add a new CALLER to an existing function whose lease-closing behaviour was only correct for its old callers? failRun once carried the comment \"It never holds leases at this point\" \u2014 true when written, falsified by a new caller. Check every function the diff newly calls.",
+     "conclusion": "The newly-called functions are: funding.OwnerOfNamespace (new, called from promiseProvenanceValid), failReservationTerminally (new, called from activateReservation:1222 and failReservationNoEnvelope:1508), Evaluation.OwnerOf (newly called conditionally from resolver.ownerOf), and sortedKeys (newly called on ownersByNS/nsByOwner). None of these closes leases, so none has a closure contract to falsify \u2014 failRun, releaseRun, completeRun, closeRunLeases and CloseLease are untouched by the diff and gain no new caller. The real instance of this pattern here is the INVERSE and is worse: the diff adds a new REFUSAL to an existing function on the sole-committer path (promiseProvenanceValid, gang.go:755-757), whose old behaviour was correct only because it ACCEPTED conflicted namespaces. PreBind translates false into fwk.Error, so the new caller-visible behaviour is 'this pod never mints', and the pre-existing assumption that every emitted Promise pod eventually mints \u2014 which is what makes topUpActiveGang's re-emission loop converge and what makes a partially-minted gang's open leases temporary \u2014 is now false. I verified the reversal by execution against the base tree: promiseProvenanceValid(conflicted) is true at 0b77fbe and false at HEAD."
+    },
+    {
+     "question": "Does the change set a run to a terminal phase (Failed / Completed) anywhere? For each such site, prove that every lease referencing that run is closed on the same path or by a sweep that provably runs. Cite the sweep.",
+     "conclusion": "No. The only production run-phase write the diff adds is `setState(run, v1.RunStateUnfunded, ...)` at run_controller.go:1217, and RunStateUnfunded is declared with `Phase: RunPhasePending` (api/v1/conditions.go:133), so the run stays non-terminal. What goes terminal is the RESERVATION (`reservation.Status.State = \"Failed\"`, run_controller.go:1522), which owns no leases. That means no lease-closure obligation is created by the diff \u2014 but it also means the repo's one self-healing sweep is structurally unable to help: SettleLeases 'retires every TERMINAL run' (controllers/settle.go:103) and skips any lease whose run is not Failed/Complete (`if !terminal[key] { continue }`, settle.go:133). I executed SettleLeases against both wedged states from finding 1 and it returned an empty sweep both times, because the run sits at RunPhasePending. So for the leases stranded by the new PreBind refusal there is NO sweep that provably runs, and no timeout anywhere fails an assembling run (the plugin's gangTTL sweep only drops the in-memory gang commit, gang.go:610-620)."
+    },
+    {
+     "question": "Does the change write Lease.Status.Closed anywhere other than closeLease()? Every clone of the closing obligation drifts. Name each site and say what closeLease does that the clone does not (events, metrics, ClosureReason).",
+     "conclusion": "No. Grepping every added line of `git diff 0b77fbe..HEAD -- controllers pkg cmd api internal test hack/e2e` for `Closed` or `CloseLease` returns zero hits, so controllers.CloseLease remains the sole closer and hack/antifake/soleclose.go still has nothing to catch. The cloned obligation the diff DOES leave live is one level up, on reservations: failReservationTerminally (run_controller.go:1521) is documented as 'the one transition every permanently-unfundable reservation makes', yet activateReservation's run-not-found branch performs the same three steps inline at run_controller.go:1107-1109 and was not refactored onto it. Today the clone matches step for step (State=Failed, CountdownSeconds=nil, ClearReservationBacklog), so nothing has drifted yet; the divergence risk is the standard one \u2014 the helper's next step (an Event, a Reason, a metric) will not happen on the run-not-found path \u2014 plus a latent key mismatch, since the clone clears the gauge under the caller's map key while the helper reconstructs keys.NamespacedKey(reservation.Namespace, reservation.Name)."
+    },
+    {
+     "question": "Take the single most suspicious path you found. Write a Go test that reaches it, drive Reconcile ~20 times over ~20 simulated hours, and assert the lease is closed. Report the actual test output. If it stays open you have a critical finding; if it closes, say what closed it and cite that code.",
+     "conclusion": "IT STAYS OPEN \u2014 critical. I wrote the tests in a copy of the tree at /tmp/lensA (never in the repo) and the base at /tmp/lensB. Two variants of the most suspicious path, both driving 20 Reconciles over 20 simulated hours plus ActivateReservations, plus an explicit SettleLeases at the end. (A) /tmp/lensA/controllers/zz_lensa_partial_test.go, TestLensAPartialPromiseGangInConflictedNamespace: 't0: OwnerOf(default)=\"\" baseGang=2 open=[gang-lease-a gang-lease-b]' ... 'final: phase=Pending msg=\"assembling gang: 2/4 GPUs held (awaiting the jobtree scheduler)\" openLeases=[gang-lease-a gang-lease-b] pods=4 sweep=[]' ... 'IMMORTAL LEASES after 20 reconciles / 20 simulated hours (+SettleLeases): [gang-lease-a gang-lease-b]; run phase=Pending; funding account=&{Key:default/gang GPUs:map[Unfunded:2] SpareGPUs:0 GPUHours:map[Unfunded:40.03333333333333] ...}'. (B) /tmp/lensA/controllers/zz_lensa_running_test.go, TestLensARunningGangWedgedByDerivedOwnerRefusal: 'warm: phase=Running ... open=[gang-lease-a gang-lease-b gang-lease-c gang-lease-d]' then, after a node failure closes rank 3 and the admin adds the rival Budget, 'final: phase=Pending msg=\"assembling gang: 3/4 GPUs held\" open=[gang-lease-a gang-lease-b gang-lease-c] pods=4 sweep=[]', 'funding: ... GPUs:map[Unfunded:3] GPUHours:map[Unfunded:63.083333333333336]'. Both bound-namespace controls PASS at RunPhaseRunning. Supporting probes: TestLensATopUpPodIsAPromisePod shows the re-emitted rank carries lease-reason=\"Promise\" with payer org:ai:team/team/west, so PreBind routes it through promiseProvenanceValid and not the ordinary funding gate; and in /tmp/lensB (0b77fbe) TestLensBBasePromiseInConflictedNamespace logs 'BASE promiseProvenanceValid(conflicted namespace) = true' / '(unbound namespace) = false', which pins the regression to the conflicted case introduced at cmd/scheduler/plugin/gang.go:755-757. Nothing closed the leases: SettleLeases skipped them at controllers/settle.go:133 because the run is RunPhasePending, and the full test suite for controllers, controllers/kube, pkg/funding, pkg/resolver and cmd/scheduler/plugin is otherwise green \u2014 only my probes fail."
+    }
+   ],
+   "evidence": [
+    {
+     "file": "cmd/scheduler/plugin/gang.go",
+     "line": 755,
+     "quote": "\tderived := funding.OwnerOfNamespace(budgetList.Items, run.Namespace)"
+    },
+    {
+     "file": "controllers/settle.go",
+     "line": 133,
+     "quote": "\t\tif !terminal[key] {"
+    },
+    {
+     "file": "controllers/settle.go",
+     "line": 103,
+     "quote": "// SettleLeases retires every TERMINAL run in both planes: it closes the run's open"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 1216,
+     "quote": "\tif ev.OwnerOf(run.Namespace) == \"\" {"
+    },
+    {
+     "file": "api/v1/conditions.go",
+     "line": 133,
+     "quote": "\tRunStateUnfunded = RunState{Reason: \"Unfunded\", Phase: RunPhasePending, whenFalse: []string{RunConditionAdmitted}}"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 2811,
+     "quote": "\t\tif lease.Status.Closed || lease.Spec.Slice.Role == binder.RoleSpare {"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 400,
+     "quote": "\t\t\tsetState(run, v1.RunStateUnfunded, coverErr.Error())"
+    },
+    {
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 136,
+     "quote": "\tif strings.Contains(run.Status.Message, \"no funding principal\") {"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 1107,
+     "quote": "\t\treservation.Status.State = \"Failed\""
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 1521,
+     "quote": "func (c *RunController) failReservationTerminally(reservation *v1.Reservation, cause error) error {"
+    },
+    {
+     "file": "pkg/funding/evaluate.go",
+     "line": 304,
+     "quote": "func OwnerOfNamespace(budgets []v1.Budget, namespace string) string {"
+    },
+    {
+     "file": "pkg/resolver/resolver.go",
+     "line": 501,
+     "quote": "\treturn \"\\x00unbound-namespace/\" + run.Namespace"
+    }
+   ],
+   "findings": [
+    {
+     "title": "New PreBind refusal for CONFLICTED namespaces strands a partial Promise gang's already-minted leases open forever",
+     "severity": "critical",
+     "file": "cmd/scheduler/plugin/gang.go",
+     "line": 756,
+     "taxonomyClass": "1 (IMMORTAL LEASE); secondary 9 (HALF-PLANE ACTION)",
+     "failure_scenario": "Executed. (a) Partial promise gang: 4-GPU Promise gang, 2 of 4 ranks minted, admin adds a second-owner Budget to the namespace. 20 Reconciles over 20 simulated hours -> open leases [gang-lease-a gang-lease-b], phase=Pending, msg=\"assembling gang: 2/4 GPUs held\", SettleLeases sweep=[] , funding account GPUs:map[Unfunded:2] GPUHours:map[Unfunded:40.03333333333333]. (b) Live gang: 4/4 Promise gang Running, node failure closes rank 3's lease and removes its pod, admin adds the second Budget. topUpActiveGang re-emits rank 3 (verified: lease-reason=\"Promise\", payer org:ai:team/team/west), PreBind refuses it. After 20 hours -> open leases [gang-lease-a gang-lease-b gang-lease-c], phase=Pending, sweep=[], GPUHours:map[Unfunded:63.083333333333336]. Both bound-namespace controls reach RunPhaseRunning. Attribution proved on the base tree: at 0b77fbe `promiseProvenanceValid(conflicted namespace) = true`, `promiseProvenanceValid(unbound namespace) = false`; at HEAD the shipped TestPromiseProvenanceRefusedWhenNamespaceConflicted asserts false. So the conflicted case, and only the conflicted case, is newly refused \u2014 and the refusal converts a bounded Unfunded occupancy (gang assembles, runs, completeRun closes every lease) into an unbounded one. Nothing goes red: the full suite passes and the invariant oracle is silent because the run is Pending, not terminal, so neither INV terminal-cleanliness nor INV-WIDTH-ASSEMBLED applies. This is exactly the reaping property the 2026-07-25 consequence seat used to veto the seg.Owner pin ('would wedge a healthy, funded, RUNNING gang forever on PreBind refusal'), reintroduced by the sibling check that stayed, under a MORE ordinary admin action (adding a Budget rather than renaming an owner)."
+    },
+    {
+     "title": "TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired passes with the repair deleted \u2014 the mutant survives",
+     "severity": "medium",
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 136,
+     "taxonomyClass": "8 (THE TEST ASSERTS THE BUG)",
+     "failure_scenario": "Executed: an exact copy of the shipped test with the repair line commented out ends at phase=Pending, msg=\"owner and flavor must be set\" \u2014 both shipped assertions hold, so the mutant survives. The test therefore proves nothing about recovery. A real assertion exists and is cheap: my probe shows the repaired run reaches phase=Pending with msg=\"scheduling 4 GPUs (awaiting the jobtree scheduler)\" and 4 emitted active pods, none of which the unrepaired run ever produces."
+    },
+    {
+     "title": "The operator message the terminal-reservation fix installs is overwritten one Reconcile later by the exact text the fix says operators must not see",
+     "severity": "medium",
+     "file": "controllers/run_controller.go",
+     "line": 400,
+     "taxonomyClass": "2 (COMMENT IS THE ONLY ENFORCEMENT) / 'does this fix do anything?'",
+     "failure_scenario": "Executed: after ActivateReservations the run message is 'namespace \"default\" has no funding principal: ... An administrator must fix the namespace\u2192owner binding and resubmit.'; after ONE Reconcile at now+1m it is 'owner and flavor must be set'. The reconcile-only path (no reservation at all) in a conflicted namespace never shows the good message even once. TestActivateReservationFailsTerminallyWhenNamespaceHasNoOwner only inspects the message before any Reconcile runs, so it certifies a state that lasts a single tick."
+    },
+    {
+     "title": "failReservationTerminally has an un-refactored clone in the same function, while its doc claims to be the only such transition",
+     "severity": "low",
+     "file": "controllers/run_controller.go",
+     "line": 1107,
+     "taxonomyClass": "7 (CLONED OBLIGATION)",
+     "failure_scenario": "Add an Event or jobtree metric to failReservationTerminally \u2014 the standard class-7 detector the playbook prescribes \u2014 and the reservation whose Run object was deleted between planning and activation fails Failed with no Event and no metric, while every other permanently-unfundable reservation gets both. The two sites also key the backlog gauge differently (the clone uses the caller's map key `key`, the helper reconstructs keys.NamespacedKey(reservation.Namespace, reservation.Name)); those agree only because planReservation happens to key State.Reservations the same way, which is a coincidence nothing asserts."
+    }
+   ]
+  },
+  {
+   "summary": "Investigator reviewed the R7-pt2 remediation diff (0b77fbe..HEAD, controllers/pkg/cmd/api/internal/test/hack-e2e, 22 files +1096/-55) using SIGNAL != REALITY, IDENTITY COARSENING and GUARD BEFORE PREDICATE lenses, verifying hypotheses by copying the repo to /tmp/probe and running nine executable probes against the pure engine and the plugin's fake-client manager (five hit). The two headline results are class-6 GUARD BEFORE PREDICATE: the new terminal guard at run_controller.go:1216 sits behind two earlier returns (lines 1122 and 1168) in the same function, so the exact defect the fix targeted -- an immortal Pending reservation with a frozen/lying backlog gauge -- survives on both paths, confirmed by 20-tick executed probes. A class-4 SIGNAL != REALITY finding treats object absence (no Budget, or conflicting owners) as a permanent fact with no debounce, so a routine delete-then-apply or GitOps prune window terminally Fails every due reservation cluster-wide within one poll (one minute). A related class-4/5 finding: Budget.Spec.Owner is a free-form string validated only for non-emptiness, unconstrained by RBAC or the shipped ValidatingAdmissionPolicy (which matches only pods), so a Budget in any namespace naming another tenant's owner poisons that tenant's namespace, terminally kills its reservations, and makes PreBind refuse its own top-ups. A mutation-testing finding shows the new test's assertion that the operator never sees 'owner and flavor must be set' is falsified by one ordinary Reconcile call at the unguarded sibling site (line 400), meaning the test passes only because it avoids calling the code path that breaks it. Two IDENTITY COARSENING findings show baseGangGPUsForRun skips Spare/Grow leases (letting a run reach the terminal guard with an open lease) and the interior-owner exemption in deriveOwners is keyed on owner string alone, self-serve to trigger or disable. Several hypotheses were cleared by probe or reading: EnvelopeKey correctly scopes by namespace, OwnerOfNamespace is computed cluster-wide consistently between engine and plugin, the NUL bucket key never escapes pkg/resolver, and no production code compares errors by message text. The full existing test suite is reported green with all of these defects present.",
+   "answers": [
+    {
+     "question": "Does the change read any Kubernetes condition, taint, timestamp, or object-absence and treat it as a fact about what is PHYSICALLY running on a machine? For each: if that inference is wrong, WHAT RUNS TWICE?",
+     "conclusion": "No condition, taint or timestamp: grepping the whole reviewed diff for NodeReady, Unschedulable, Taint, LastTransitionTime and nodeUsable returns nothing, and the only Phase read added is `run.Status.Phase == RunPhaseFailed` in a test. The change DOES read object-absence, in two places, and treats it as permanent: `ev.OwnerOf(run.Namespace) == \"\"` (run_controller.go:1216) and `derived == \"\"` (gang.go:756) turn 'this namespace currently has no Budget, or has two owners' into 'this reservation can never activate' and 'this mint must be refused'. Nothing runs twice as a direct consequence -- both new refusals are fail-CLOSED, and PreBind returns its Error before the Lease is created, so there is no double-mint window. The harm runs the other way: work that should run does not, reservations are destroyed for conditions that lasted seconds, and leases are stranded open while the gang can never re-assemble. There is one second-order physical consequence, and this diff's own new comment names it: the same misread reclassifies open leases Unfunded, and Unfunded is the resolver's FIRST reclaim target, so a mis-derived binding does eventually reach real container eviction -- just via the resolver rather than directly."
+    },
+    {
+     "question": "For each such signal: WHO can write that field, and can they lie?",
+     "conclusion": "The signal is Budget.Spec.Owner, and yes, it can lie. api/v1/budget_types.go:188 validates it only for non-emptiness -- no format, no namespace scoping, no relationship to any authenticated identity. The shipped chart does not constrain it either: deploy/helm/gpu-fleet/templates/rbac.yaml defines only the controller ServiceAccount's ClusterRole and the scheduler-deployment.yaml ClusterRole gives the scheduler get/list/watch on runs, budgets, gpuleases -- neither says anything about who else may create a Budget, and the ValidatingAdmissionPolicy matches only `pods`, so no admission control sees a Budget at all. Because deriveOwners must run over every Budget cluster-wide to enforce injectivity, a lie is global: a Budget created in namespace `attacker` whose owner string is simply `org:team` flips OwnerOf(\"default\") from \"org:team\" to \"\", emits LeafOwnerSpansNamespaces conflicts for both namespaces, terminally Fails default's reservation on the next tick, and makes the plugin refuse default's own top-up. The victim controls nothing in that chain."
+    },
+    {
+     "question": "Does the change compare a COARSER key than the one that matters? Find every equality test on an identity and name the finest key that should have been used.",
+     "conclusion": "(1) `baseGangGPUsForRun(runKey, c.State.Leases) > 0` at run_controller.go:1122 skips Role==Spare and Reason==Grow (line 2811, 2814), so it is coarser than the property that matters, which is 'any open lease whose RunRef equals runKey'; a run holding only an open Grow lease reads 0 and falls through the guard with the lease open. (2) `interior[owner]` in deriveOwners keys on the owner string alone; the finest key is (owner, namespace), since an owner can be a pool in one namespace and a leaf in another -- P5, parked. (3) `ownerOf`'s NUL fallback in pkg/resolver is correct: both call sites use it only as a map key, a slice element and an rng index; it never reaches an Action, a Reason or a message. (4) EnvelopeKey is {Namespace, Budget, Envelope}, already the finest key, and the plugin's budget walk matches on b.Namespace + b.Name + env.Name, so the envelope-names-are-unique-only-within-a-Budget trap is not present. (5) funding.OwnerOfNamespace in the plugin derives from ALL budgets via a direct uncached client with no selectors, matching the engine's universe -- clear. (6) The reservation metric key is consistent across all writers of State.Reservations -- not a defect."
+    },
+    {
+     "question": "Does the change contain a loop with BOTH a type/role filter (`if ... continue`) AND a match predicate? Check their ORDER.",
+     "conclusion": "Yes, one, and it is in the code the diff rewrote. deriveOwners' new sorted loop keeps `if _, isInterior := interior[owner]; isInterior { continue }` (evaluate.go:239) BEFORE the `if len(nss) >= 2` span predicate (line 243), so an owner that genuinely spans namespaces is suppressed before the test that decides it is a violation, no BindingConflict is recorded and no namespace is poisoned. The diff's own new TestInteriorExemptionAdmitsALeafOwnerInTwoNamespaces pins that hole rather than fixing it (P5, parked). The second loop is correctly ordered. The plugin's budget walk has a single combined match predicate and no role filter. No `handled`/`found` flag in the diff is left false on a path that handled something. The same class shows up at FUNCTION level rather than loop level and is the top finding: activateReservation's two early returns at lines 1122 and 1168 run before the predicate (line 1216) that decides the reservation can never activate, which is the R25 shape scaled up, and this was confirmed by execution."
+    },
+    {
+     "question": "Grep the changed code and its callers for `strings.Contains(err.Error(), ...)` or any error compared by TEXT. Enumerate every error the changed functions can return and confirm each swallow site swallows only a typed sentinel via errors.Is.",
+     "conclusion": "No production code anywhere in the repo compares an error by text: grepping strings.Contains across controllers/ pkg/ cmd/ internal/ excluding _test.go returns zero hits, so this is clean on the shipped path. All errors returned by the changed functions are plain fmt.Errorf values, none typed sentinels, but there is no swallow site to audit: ActivateReservations wraps each with %w and errors.Join, and ReservationReconciler hands the joined error to controller-runtime, which requeues; the next reconcile short-circuits on `res.Status.State != \"Pending\"`, so a terminal failure is not retried forever. The one text coupling the diff ADDS is in the new tests -- controllers/tenancy_reservation_test.go:75, :78 and :196 match err.Error() and run.Status.Message by substring -- and a probe shows that coupling already misdescribes production: the message the test matches is overwritten by 'owner and flavor must be set' on the next Reconcile, so the assertion is green about a state the operator never sees."
+    }
+   ],
+   "evidence": [
+    {
+     "file": "controllers/run_controller.go",
+     "line": 1216,
+     "quote": "\tif ev.OwnerOf(run.Namespace) == \"\" {"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 1122,
+     "quote": "\tif allocated := baseGangGPUsForRun(runKey, c.State.Leases); allocated > 0 {"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 1168,
+     "quote": "\tif runHasActivePods(c.State.Pods, run) {"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 400,
+     "quote": "\t\t\tsetState(run, v1.RunStateUnfunded, coverErr.Error())"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 2811,
+     "quote": "\t\tif lease.Status.Closed || lease.Spec.Slice.Role == binder.RoleSpare {"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 1441,
+     "quote": "\t\tif p.Namespace == run.Namespace && p.Labels[binder.LabelRunName] == run.Name && p.Labels[binder.LabelRunRole] == binder.RoleActive {"
+    },
+    {
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 78,
+     "quote": "\tif strings.Contains(err.Error(), \"owner and flavor must be set\") {"
+    },
+    {
+     "file": "cmd/scheduler/plugin/gang.go",
+     "line": 755,
+     "quote": "\tderived := funding.OwnerOfNamespace(budgetList.Items, run.Namespace)"
+    },
+    {
+     "file": "cmd/scheduler/plugin/gang.go",
+     "line": 756,
+     "quote": "\tif derived == \"\" {"
+    },
+    {
+     "file": "pkg/funding/evaluate.go",
+     "line": 239,
+     "quote": "\t\tif _, isInterior := interior[owner]; isInterior {"
+    },
+    {
+     "file": "api/v1/budget_types.go",
+     "line": 188,
+     "quote": "\tif b.Spec.Owner == \"\" {"
+    },
+    {
+     "file": "controllers/kube/reconcilers.go",
+     "line": 383,
+     "quote": "\t\t\trequeueAfter = pendingRunResync"
+    },
+    {
+     "file": "pkg/resolver/resolver.go",
+     "line": 493,
+     "quote": "// reintroduces the pooling it exists to prevent. The key never escapes this"
+    }
+   ],
+   "findings": [
+    {
+     "title": "The new terminal guard sits behind two earlier returns; the immortal reservation and the lying gauge both survive",
+     "severity": "high",
+     "file": "controllers/run_controller.go",
+     "line": 1216,
+     "taxonomyClass": "6 GUARD BEFORE PREDICATE (composite with 1 IMMORTAL LEASE)",
+     "failure_scenario": "EXECUTED, door 1: run train (8 GPUs) in namespace default holding one open 4-GPU Promise lease; an admin adds a second Budget with a different owner. 20 reconcile+activate ticks over 20 simulated hours -> reservation state=\"Pending\", CountdownSeconds still set, backlog gauge still map[default/res:{H100-80GB 1020}], lease still open, 8 top-up Promise pods re-emitted. EXECUTED, door 2: same namespace, no leases, one Active intent pod already emitted -> 20 activation ticks -> reservation state=\"Pending\" forever and the gauge reads map[] (cleared), so the immortal reservation is also invisible rather than merely frozen. Door 2 is reachable from door 1 (topUpActiveGang emits Active pods and holds the reservation) and from the R28 lost-status-write case the code comment at 1123-1127 explicitly anticipates."
+    },
+    {
+     "title": "Budget.Spec.Owner is unauthenticated free-form and a Budget in any namespace can terminally kill another namespace's reservations and wedge its PreBind",
+     "severity": "high",
+     "file": "pkg/funding/evaluate.go",
+     "line": 239,
+     "taxonomyClass": "4 SIGNAL != REALITY (who can write this field, and can they lie) + 5 IDENTITY COARSENING",
+     "failure_scenario": "EXECUTED: namespace default is correctly bound to org:team with a valid Budget and a due reservation. A Budget named `squatter` is created in namespace `attacker` whose only distinguishing feature is `owner: org:team`. Nothing in `default` changes. OwnerOf(\"default\") flips \"org:team\" -> \"\" with conflicts [{attacker org:team LeafOwnerSpansNamespaces} {default org:team LeafOwnerSpansNamespaces}], and one ActivateReservations tick marks default/res Failed. In the plugin, the same foreign Budget makes promiseProvenanceValid refuse default's own top-up naming default's own budget `team` and its own envelope `west`. That is a cross-tenant denial of service driven by a string the victim does not control."
+    },
+    {
+     "title": "Object-absence is read as a permanent fact and acted on terminally within one poll tick: a delete-then-apply window destroys every due reservation",
+     "severity": "high",
+     "file": "controllers/run_controller.go",
+     "line": 1216,
+     "taxonomyClass": "4 SIGNAL != REALITY",
+     "failure_scenario": "EXECUTED: a namespace with zero Budgets and one due reservation -> one ActivateReservations call -> state=\"Failed\" with 'namespace \"default\" has no funding principal ... can never activate'. In production the window is any `kubectl delete budget && kubectl apply`, a `kubectl replace --force`, a helm upgrade that recreates Budgets, or a GitOps sync that prunes before applying; pendingRunResync is one minute (controllers/kube/reconcilers.go:383), so any window of that order is hit reliably, and a gang scheduler runs for months. Recovery is real but partial: the probe shows the run re-admits (phase Pending, 'scheduling 4 GPUs'), but the reservation object stays Failed and the operator sees a destroyed reservation for a condition that lasted seconds."
+    },
+    {
+     "title": "The fix's stated purpose is defeated at the sibling call site: the operator IS told 'owner and flavor must be set', and the new test only passes because it never calls Reconcile",
+     "severity": "high",
+     "file": "controllers/run_controller.go",
+     "line": 400,
+     "taxonomyClass": "5 IDENTITY COARSENING (guard keyed to one of six call sites) + 8 THE TEST ASSERTS THE BUG",
+     "failure_scenario": "EXECUTED against the shipped fixture verbatim: after ActivateReservations, run.Status.Message = 'namespace \"default\" has no funding principal: ...'. After ONE ordinary Reconcile on the same state, run.Status.Message = 'owner and flavor must be set'. The guard's message is clobbered on the next tick and the operator is told about a field the Run does not have -- exactly what the fix and its test declare impossible."
+    },
+    {
+     "title": "The seg.Owner removal does not remove the reaping the veto cited; the refusal that stayed wedges the same live gang through a different field, and nothing tests that case",
+     "severity": "medium",
+     "file": "cmd/scheduler/plugin/gang.go",
+     "line": 756,
+     "taxonomyClass": "5 IDENTITY COARSENING (the veto's reasoning generalises past the field it removed)",
+     "failure_scenario": "EXECUTED: newManager(trainRun, teamBudget, second-Budget-with-a-different-owner-in-default) -> promiseProvenanceValid(default/train, seg{default,org:ai:team,team,west}) returns false. The gang holds its existing leases open, can never replace a lost member, and the controller (finding 1, door 1) holds its reservation Pending forever while re-emitting the pods PreBind keeps rejecting. The restored gang_test.go assertion only covers a same-namespace, well-funded forged-owner segment; nothing covers the live-gang top-up the veto's own justification names."
+    },
+    {
+     "title": "baseGangGPUsForRun is a coarser key than 'this run holds an open lease', so the guard is reachable with a lease still open",
+     "severity": "medium",
+     "file": "controllers/run_controller.go",
+     "line": 2811,
+     "taxonomyClass": "5 IDENTITY COARSENING",
+     "failure_scenario": "EXECUTED, two variants. Spare: run holds one open 4-GPU Spare lease, allocated reads 0, the guard fires and fails the reservation at tick 1 -- the spare happens to be closed by a later sweep, so no immortal lease in this variant. Grow: run holds one open 4-GPU Grow lease, allocated reads 0, and the run instead wedges via door 2 with the lease still open at tick 20. The clearance was reached by reading control flow, and reading control flow got the predicate's meaning wrong."
+    },
+    {
+     "title": "The interior exemption is keyed on the owner string alone, so the injectivity fail-safe is self-serve to disable as well as to trigger",
+     "severity": "low",
+     "file": "pkg/funding/evaluate.go",
+     "line": 239,
+     "taxonomyClass": "5 IDENTITY COARSENING",
+     "failure_scenario": "The shipped TestInteriorExemptionAdmitsALeafOwnerInTwoNamespaces already pins the mechanism: adding one unrelated child Budget in child-ns naming org:ai as a Parent flips OwnerOf(tenant-a) and OwnerOf(tenant-b) from \"\" to \"org:ai\" with zero conflicts. What is new is the stake on the other side of the switch -- with this diff, whether the fail-safe fires now decides whether reservations are destroyed and PreBind refuses, not merely whether leases coast."
+    }
+   ]
+  },
+  {
+   "summary": "Investigator ran static analysis of a 22-file diff plus six executed probes against a pure engine with an invariant oracle live, in a scratch /tmp module (no repo files touched). Findings: no site closes a Lease while a pod still runs or deletes a Pod while a lease is open (the diff adds no CloseLease call and no State.Pods write). The checkpoint-grace window is protected by plane facts (open leases, active pods, deadline check) not phase names, and the guard does not reach it destructively. For each fix, the investigator names the legal state a more aggressive version would destroy (e.g. terminal guard one step further would kill a healthy adopted RUNNING gang; the seg.Owner pin removal's aggressive version would wedge a funded RUNNING gang at PreBind). No invariant was added or strengthened; two runtime refusals were added instead, and no probe panicked the invariant oracle. Two low-severity defects survived verification: (1) the 'owner and flavor must be set' operator message still surfaces and overwrites the new guard's message via Reconcile's admission path; (2) the recovery test cannot distinguish real recovery from permanent limbo because it only asserts phase != Failed and message doesn't contain a specific string. A third item is informational/non-defect: the assembling-hold door keeps a reservation Pending with a frozen backlog gauge during a permanent conflict, judged correct because it self-heals and bills nobody. Quantified cost: findings 1 and 2 hold zero GPUs and charge zero budget (diagnostic/test-coverage gaps only); finding 3 is informational, with GPUs held classed Unfunded (billing nobody) and self-healing on repair.",
+   "answers": [
+    {
+     "question": "For every site the change closes a Lease: whose container is still running? For every site it deletes a Pod: whose lease is still open? Name each pairing.",
+     "conclusion": "There are NO such sites: the diff adds no CloseLease call and no write to State.Pods anywhere. With an open base-gang lease the allocated>0 branch adopts and returns before the guard (probe 2); with active pods, line 1168 returns first (probe 5); with only a spare lease, the guard fires but touches neither plane, and after 20 simulated hours the spare lease and its pod are both still present together (probe 4), consistent, not half-plane. The new guard sits at 1216, before the resolver invocation at 1336, so a conflicted namespace terminally fails without evicting anyone."
+    },
+    {
+     "question": "Does the change reach the checkpoint-grace window (a deliberate, bounded half-plane state)? Check the exemption keys on the deadline or on non-terminality, not on a phase name.",
+     "conclusion": "Executed (probe 5): a Pending run with CheckpointDeadline set, surviving active pods and no open lease, in a conflicted namespace, passes through ActivateReservations untouched. The protection keys on plane facts: open base-gang leases short-circuit at 1122, surviving containers short-circuit at runHasActivePods (1168), and grace expiry keys on CheckpointDeadline at Reconcile:228. The one grace shape that reaches the guard has its reservation terminally failed but CheckpointDeadline is untouched and grace semantics survive intact. Not a reaper."
+    },
+    {
+     "question": "For each fix, state the legal state its repair would destroy if applied one step more aggressively.",
+     "conclusion": "(1) Terminal reservation guard: one step further (failing the RUN or closing its leases) would reap a conflicted-namespace run adopted to RUNNING with a full open base gang (probe 2), and a Failed run is never resurrected, so probe-1 recovery would be impossible. (2) seg.Owner pin removal: the aggressive version IS the pin, which would wedge a funded RUNNING gang at PreBind forever via a legacy owner string or admin Budget reorg; Evaluate never reads Lease.Spec.Owner so the pin bought nothing. (3) derived==\"\" refusal: extending it to SWAP pods would destroy node-failure recovery of a legally coasting gang. (4) resolver ownerOf NUL-key: excluding ownerless runs from buckets entirely would make conflicted-namespace work unreclaimable. (5) deriveOwners determinism: erroring/panicking on a multi-owner namespace would break a legal fail-safe admin state that must coast. (6) Fixture idle envelopes: forbidding binding-only Budgets would destroy the legal 'bound tier with no capacity of this flavor' shape."
+    },
+    {
+     "question": "Does the change add or strengthen an INVARIANT? If so, find a legal state this engine really produces that would trip it.",
+     "conclusion": "The change adds nothing to pkg/invariant (no oracle entries, no panics). It adds two runtime refusals: the OwnerOf==\"\" guard in activateReservation and the derived==\"\" refusal in promiseProvenanceValid, plus pinned-behaviour tests. Legal states that trip the refusals were found (a stranded Promise pod when a namespace goes conflicted between emission and PreBind, a briefly-conflicted namespace killing a reservation object) but in each case they destroy only a status object, not funded work, since probe 1 proves self-recovery. All six probe states ran with the invariant oracle live and nothing panicked. No wrong invariant found."
+    },
+    {
+     "question": "For each finding, which budget is charged, how many GPUs are held, and for how long?",
+     "conclusion": "Finding 1 (leftover operator message): zero GPUs held, zero budget charged; the harm is diagnostic and indefinite for as long as the namespace stays unbound/conflicted, costing operator time via a misleading message. Finding 2 (recovery test passes in limbo): zero direct charge and zero GPUs today since recovery is currently real (probe 1); exposure is only to a future regression that would strand a run at 0 GPUs until manual resubmission. Finding 3 (assembling-hold door, informational): the held width (2 of 4 GPUs in the probe) stays open and the reservation stays Pending with the backlog gauge frozen for the life of a permanent conflict, but the leases class Unfunded and bill no budget, and fully self-heal on repair."
+    }
+   ],
+   "evidence": [
+    {
+     "file": "controllers/run_controller.go",
+     "line": 1216,
+     "quote": "if ev.OwnerOf(run.Namespace) == \"\" {"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 1122,
+     "quote": "if allocated := baseGangGPUsForRun(runKey, c.State.Leases); allocated > 0 {"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 1168,
+     "quote": "if runHasActivePods(c.State.Pods, run) {"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 400,
+     "quote": "setState(run, v1.RunStateUnfunded, coverErr.Error())"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 228,
+     "quote": "if run.Status.Phase == RunPhasePending && run.Status.CheckpointDeadline != nil && !now.Before(run.Status.CheckpointDeadline.Time) {"
+    },
+    {
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 134,
+     "quote": "t.Fatalf(\"REAPER: the run is Failed after the admin repaired the binding: %q\", run.Status.Message)"
+    },
+    {
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 137,
+     "quote": "t.Fatalf(\"the run is stuck on the old conflict after repair: %q\", run.Status.Message)"
+    },
+    {
+     "file": "cmd/scheduler/plugin/gang.go",
+     "line": 756,
+     "quote": "if derived == \"\" {"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 2875,
+     "quote": "return binder.LeaseReasonPromise, payer(lease.Spec.Owner, lease.Spec.PaidByBudgetNamespace, lease.Spec.PaidByBudget, lease.Spec.PaidByEnvelope)"
+    }
+   ],
+   "findings": [
+    {
+     "title": "The 'owner and flavor must be set' operator message still surfaces and overwrites the fix's own message via Reconcile's admission path",
+     "severity": "low",
+     "file": "controllers/run_controller.go",
+     "line": 400,
+     "failure_scenario": "Reconcile's admission path builds cover.Request with Owner: ev.OwnerOf(run.Namespace), gets FailureReasonInvalidRequest for a conflicted namespace, and line 400 writes that error verbatim into run.Status.Message. A plain Pending run in a conflicted namespace reads msg='owner and flavor must be set' (probe 3b), and a run whose reservation the guard just failed with the correct message has it overwritten to the same wrong text by the next Reconcile tick (probe 4, still wrong at +20h), delaying the admin repair the message should be pointing toward.",
+     "taxonomyClass": "2"
+    },
+    {
+     "title": "TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired passes verbatim in a permanent-limbo world, so it does not pin the recovery it exists to prove",
+     "severity": "low",
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 134,
+     "failure_scenario": "The test's only two discriminating assertions are Phase != Failed and !Contains(Message, 'no funding principal'). A run wedged in a still-conflicted namespace sits at Phase Pending with Message 'owner and flavor must be set' which satisfies both assertions. So if the repair path regressed (run never re-admits), the test would stay green, hiding a real recovery-path regression from CI.",
+     "taxonomyClass": "8"
+    },
+    {
+     "title": "Informational: the assembling-hold door keeps a due reservation Pending with a frozen backlog gauge for the life of a permanent namespace conflict",
+     "severity": "low",
+     "file": "controllers/run_controller.go",
+     "line": 1122,
+     "failure_scenario": "The terminal fix covers only allocated==0. A half-applied gang in a namespace that then goes conflicted holds its reservation Pending with the gauge frozen (executed: 1020 unchanged across 20 ticks/20h), reached through the door above the guard; judged non-defective since it self-heals completely on repair (probe 3) and the leases bill nobody meanwhile (Unfunded), first-cut under contention.",
+     "taxonomyClass": "1"
+    }
+   ]
+  },
+  {
+   "summary": "I reviewed the R7-pt2 remediation (0b77fbe..HEAD, 22 files, +1096/-55) exclusively through playbook class 8 \u2014 does the test assert the bug \u2014 and I answered every question by EXECUTING, not reading. I copied the repo to /tmp/scratch/jt (the repo itself was never modified; git status stayed clean throughout) and ran nine mutations plus nine probe tests. Baseline is green. Four mutations were correctly killed (the whole derived-owner guard in activateReservation; the CountdownSeconds clear in failReservationTerminally; the derived-owner refusal in gang.go; the ownerOf fallback in pkg/resolver, where the lottery probe measured 26/60 vs 11/60 pooled). Three mutations SURVIVED, and each is a real hole. (1) Deleting the admin repair from TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired leaves it passing \u2014 the test that is the sole evidence for the fixIsReaper=false ruling has an inert stimulus; a no-repair probe reaches phase=Pending with msg=\"owner and flavor must be set\", satisfying both of its assertions. (2) Deleting metrics.ClearReservationBacklog from failReservationTerminally \u2014 the line its own doc comment calls \"the part that is easy to forget\" \u2014 leaves the entire ./controllers suite green, because both new fixtures set EarliestStart in the past so refreshReservationBacklog never arms the gauge; a probe that arms it legitimately (future EarliestStart, tick, then due) catches the mutant at 3600s and passes on real code. Worse, those two assertions read the PROCESS-GLOBAL metrics map with len(backlog) != 0, so on the pristine tree `go test ./controllers/ -shuffle=on` fails 4 runs in 5 with other tests' reservations in the map. (3) Neutering the post-applyResolution failReservationNoEnvelope call site at run_controller.go:1357 to `return nil` leaves ./controllers/... green \u2014 the claim that this function \"finally has tests\" covers only the 1378 site. I also found that two NEW fixtures build Budgets the API server rejects (no envelope Selector), in the very change that made fixture legality a rule and whose helper comment asserts legality; TestTenancyFixturesAreLegalBudgets validates hand-built copies in pkg/funding and structurally cannot see them. On Q5 the modified tests are sound: the gang_test.go assertion is identical to 0b77fbe (only comment/message changed) and re-adding the vetoed seg.Owner pin goes red, so the removal does have a rail; the idleEnvelope additions are pure legality repairs of a different flavor and change no measured outcome; the e2e webhook rewrite's new stimulus checks out, and narrowing IsForbidden||IsInvalid to IsForbidden is a strengthening.",
+   "answers": [
+    {
+     "question": "1. For each test the change adds or modifies: what is the STIMULUS? Is it legitimate?",
+     "conclusion": "Per test. (a) TestActivateReservationFailsTerminallyWhenNamespaceHasNoOwner \u2014 stimulus: two different-owner Budgets in one namespace plus a due Reservation. Legitimate and reachable (drove it end to end: create a real reservation, delete the Budget, activation terminates). (b) TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired \u2014 stimulus: remove the second Budget, then 5 ticks. THE STIMULUS IS INERT: deleting line 120 leaves the test passing, and a no-repair probe reaches phase=Pending, msg=\"owner and flavor must be set\", satisfying both assertions. (c) TestFailReservationNoEnvelopeTerminatesAndClearsTheGauge \u2014 stimulus: hand-planted due Reservation for an H100 run in a namespace whose only Budget owns an A100 envelope. The branch is genuinely reachable (drove it: two same-owner Budgets, H100 concurrency 2, reservation forms, admin deletes the H100 Budget -> \"has no envelope to fund reservation ... (budget removed)\"), but the test's own claim that this is \"the exact condition the function documents\" is false: the documented \"(budget removed)\" route now hits the NEW derived-owner guard first, and the engine will not itself create a reservation on the flavor-mismatch route (refuses at planning with \"no matching envelopes found for run train\", reservations=0). Both tests' backlog-gauge stimulus is invalid: EarliestStart is already in the past, so refreshReservationBacklog never runs and the gauge is never armed. (d) TestPromiseProvenanceRefusedWhenNamespaceConflicted \u2014 stimulus legitimate and it kills the mutant. (e) TestPromiseProvenanceRefusedWhenNamespaceUnbound \u2014 stimulus (zero Budgets) does NOT provoke the behaviour under test: it survives deletion of the derived-owner refusal, because the envelope walk already refuses. (f) pkg/funding determinism/permutation and pkg/resolver bucket tests \u2014 stimuli legitimate; the resolver lottery test drives a real Resolve over 60 enumerated seeds. (g) controllers/kube envtest \u2014 stimulus (raw unstructured Run carrying spec.owner) is exactly the forgery R7 closes and only a real API server can answer it; correct. (h) e2e webhook \u2014 stimulus rewritten to allowBorrow+maxBorrowGPUs=0, verified the CRD schema admits (minimum: 0) and only RunFunding.Validate rejects."
+    },
+    {
+     "question": "2. Read each new assertion as a claim about the WORLD, not about the code. Is the asserted state actually DESIRABLE?",
+     "conclusion": "The core world-claim \u2014 a namespace with no funding principal can never activate a reservation, so fail it terminally \u2014 matches R7-tenancy-amendment.md \u00a74 verbatim (\"a *fresh* Run there cannot admit at all ... and the reservation path fails terminally\"), so terminal IS the desirable state and the fix is right. But two assertions are world-claims the world falsifies. First, \"the operator must not be told about fields the Run does not have\" (asserted only against err.Error()): executing one ordinary Reconcile on the same conflicted state made run.Status.Message become exactly \"owner and flavor must be set\" \u2014 the operator-visible field the fix's own comment says it exists to avoid. Production runs two independent reconcilers (RunReconciler calls Reconcile, ReservationReconciler calls ActivateReservations), and the Pending run resyncs, so the good \"no funding principal\" message is overwritten on the very next tick. Second, \"the backlog gauge must be cleared on the terminal path\" is asserted as len(whole-global-map) == 0, which is a claim about every other test in the package rather than about this reservation. The R7 amendment's \"coast Unfunded\" wording and quota-semantics.md Decision 1 (unfunded is reclaimed first) are correctly reflected in the new evaluate.go doc comment, and the resolver's per-tenant bucket assertion is the right world-claim (one tenant, one ticket)."
+    },
+    {
+     "question": "3. MUTATE THE FIX. Delete the load-bearing line the change adds and re-run the tests that supposedly cover it. Report exact commands and output.",
+     "conclusion": "Nine mutations in /tmp/scratch/jt, all run with `go test ./<pkg>/`. KILLED: (1) delete the whole `if ev.OwnerOf(run.Namespace) == \"\"` guard -> FAIL TestActivateReservationFailsTerminallyWhenNamespaceHasNoOwner (\"reservation must fail TERMINALLY, got state \\\"Pending\\\"\") + TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired. (2) delete `reservation.Status.CountdownSeconds = nil` -> FAIL both reservation tests (\"got 1020\"). (3) delete the `derived == \"\"` refusal in gang.go -> FAIL TestPromiseProvenanceRefusedWhenNamespaceConflicted (but NOT ...Unbound). (4) revert ownerOf to pre-fix -> FAIL all three resolver tenancy tests, lottery at 11/60 vs 26/60 unmutated, threshold 15. (5) revert deriveOwners to unsorted map walks -> FAIL TestConflictDiagnosticsAreDeterministic (but TestOwnerDerivationIsInvariantUnderBudgetOrder passed 20/20 under that mutant, so only one of the two is a rail for the sorted-walk fix). (6) re-add the vetoed `seg.Owner != derived` pin -> FAIL TestPromiseProvenanceValid, so the REMOVAL has a regression rail. SURVIVED: (7) delete `metrics.ClearReservationBacklog(...)` from failReservationTerminally -> `ok github.com/davidlangworthy/jobtree/controllers 1.104s`. (8) replace `return c.failReservationNoEnvelope(reservation, runKey)` at run_controller.go:1357 with `return nil` -> `ok .../controllers 1.503s` and `ok .../controllers/kube`. (9) delete `state.Budgets = []v1.Budget{h100Budget(\"team\", \"org:team\", 16)}` (line 120) from the recovery test -> `--- PASS: TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired (0.00s)` with its own log printing `after repair: phase=Pending msg=\"owner and flavor must be set\"`. Also ran a positive control for (7): a probe that arms the gauge legitimately (EarliestStart in the future, one pending tick -> map[default/res:{H100-80GB 3600}], then due) FAILS under the mutant (\"GAUGE NOT CLEARED\") and PASSES on real code, proving the fix works and only the shipped tests are blind to it."
+    },
+    {
+     "question": "4. Does any test assert on a state that the invariant oracle (pkg/invariant) would reject as illegal?",
+     "conclusion": "pkg/invariant exists and auto-arms under `go test` (invariant.UnderTest, Report=Panic), and RunController.Reconcile / ActivateReservations both defer checkInvariants, so the new controllers fixtures DO run through it and none panics \u2014 they are legal engine states (the run parks Pending with no leases and no pods, which violates nothing). The important negative result is structural: invariant.World (pkg/invariant/invariant.go:229) contains only Runs and Leases \u2014 there is NO Reservation projection and no invariant analogous to INV-TERMINAL-PRESENT for reservations. The oracle is therefore blind by construction to the immortal-reservation class this entire change exists to close, which is exactly why the class-8 rail listed in the playbook's rails table does not cover this fix and why the surviving ClearReservationBacklog mutant went unnoticed. Separately, two NEW fixtures construct states a different oracle \u2014 the API server \u2014 rejects: pkg/resolver/tenancy_buckets_test.go:27 and cmd/scheduler/plugin/tenancy_conflict_test.go:38 build BudgetEnvelopes with no Selector, and api/v1/budget_types.go:266 returns \"selector must contain at least one label\". Confirmed both by calling ValidateCreate() on the exact literals. The specific conclusions those tests draw survive (deriveOwners reads only Owner and Namespace), but the change's own stated rule is that such a fixture is not evidence."
+    },
+    {
+     "question": "5. Did the change MODIFY or DELETE an existing test? Was the old test wrong, or is the new test being reshaped to accommodate a defect?",
+     "conclusion": "Five modifications, all ruled correct except one comment. (a) cmd/scheduler/plugin/gang_test.go: relative to 0b77fbe the ASSERTION is byte-identical \u2014 `if !m.promiseProvenanceValid(ctx, \"default\", \"train\", cosmeticOwner)`; only the comment and the t.Errorf string changed. The inversion the panel caught lived in an intermediate commit and is reverted here. RULING: the restored assertion describes the correct system, and the justification is factually true \u2014 gangProvenance rebuilds a segment from `payer(lease.Spec.Owner, ...)` for an existing open Promise lease, so a pin would wedge a live gang; re-adding the pin turns the test red, so the removal has a rail. (b/c) pkg/funding/evaluate_test.go (two budgetOf calls) and pkg/forecast/forecast_test.go (peer-budget) gained an A100 `idleEnvelope()`. RULING: correct legality repair, not accommodation \u2014 the flavor differs from testFlavor/H100, so the tests' asserted numbers are unchanged and they still measure borrowing through the parent. (d) test/e2e/smoke_test.go: old stimulus \"Owner deliberately omitted\" accepting `IsForbidden || IsInvalid`; new stimulus allowBorrow+maxBorrowGPUs=0 accepting IsForbidden only. RULING: the OLD test was wrong (spec.owner is deleted, so that Run is now valid and no rejection can happen); the new one is strictly stronger and its premise checks out. (e) hack/e2e/runbook-smoke.sh: the negative assertion was passing on strict-decoding failure; the repair removes spec.owner and adds a NOTE telling future authors to keep run_manifest acceptable. RULING: the repair is right but the guard is prose (playbook class 2) and commit 74f98d7 records that CI never runs these scripts, so the repair is unverified. (f) internal/manifestcorpus/corpus.go: owner stripped from Run cases only; the Budget cases including \"missing owner\"/\"spec.owner is required\" are untouched. Correct."
+    }
+   ],
+   "evidence": [
+    {
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 120,
+     "quote": "\tstate.Budgets = []v1.Budget{h100Budget(\"team\", \"org:team\", 16)}"
+    },
+    {
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 91,
+     "quote": "\tif backlog := metrics.Snapshot().ReservationBacklog; len(backlog) != 0 {"
+    },
+    {
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 207,
+     "quote": "\tif backlog := metrics.Snapshot().ReservationBacklog; len(backlog) != 0 {"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 1524,
+     "quote": "\tmetrics.ClearReservationBacklog(keys.NamespacedKey(reservation.Namespace, reservation.Name))"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 1513,
+     "quote": "// reservation makes: Failed, countdown cleared, and \u2014 the part that is easy to"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 1357,
+     "quote": "\t\t\t\t\t\treturn c.failReservationNoEnvelope(reservation, runKey)"
+    },
+    {
+     "file": "pkg/resolver/tenancy_buckets_test.go",
+     "line": 27,
+     "quote": "\tenvelope := []v1.BudgetEnvelope{{Name: \"west\", Flavor: \"H100\", Concurrency: 8}}"
+    },
+    {
+     "file": "cmd/scheduler/plugin/tenancy_conflict_test.go",
+     "line": 38,
+     "quote": "\t\t\tName: \"east\", Flavor: \"H100-80GB\", Concurrency: 8,"
+    },
+    {
+     "file": "api/v1/budget_types.go",
+     "line": 266,
+     "quote": "\t\treturn fmt.Errorf(\"selector must contain at least one label\")"
+    },
+    {
+     "file": "pkg/invariant/invariant.go",
+     "line": 229,
+     "quote": "// World is a complete engine state, projected."
+    },
+    {
+     "file": "controllers/kube/reconcilers.go",
+     "line": 126,
+     "quote": "\t\terr := rc.Reconcile(req.Namespace, req.Name)"
+    },
+    {
+     "file": "controllers/kube/reconcilers.go",
+     "line": 378,
+     "quote": "\t\terr := rc.ActivateReservations(now)"
+    },
+    {
+     "file": "controllers/run_controller.go",
+     "line": 2875,
+     "quote": "\t\t\treturn binder.LeaseReasonPromise, payer(lease.Spec.Owner, lease.Spec.PaidByBudgetNamespace, lease.Spec.PaidByBudget, lease.Spec.PaidByEnvelope)"
+    },
+    {
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 133,
+     "quote": "\tif run.Status.Phase == RunPhaseFailed {"
+    }
+   ],
+   "findings": [
+    {
+     "title": "TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired passes with the admin repair deleted \u2014 the recovery ruling has no rail",
+     "severity": "high",
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 120,
+     "taxonomyClass": "8 (the test asserts the bug)",
+     "failure_scenario": "Mutation: delete line 120 (`state.Budgets = []v1.Budget{h100Budget(\"team\", \"org:team\", 16)}`). `go test ./controllers/ -run TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired -v` -> `--- PASS (0.00s)` with the test's own log line reading `after repair: phase=Pending msg=\"owner and flavor must be set\"`. An independent probe running the identical 5 ticks with NO repair confirms `run.Status.Phase != RunPhaseFailed` is true (Pending) and `!strings.Contains(run.Status.Message, \"no funding principal\")` is true (the message is overwritten with \"owner and flavor must be set\"). The test never asserts the run reaches Running, that a lease or a fresh reservation formed, or that intent pods were emitted \u2014 a run wedged in permanent limbo passes identically. Real recovery does occur (probe: 4 intent pods, msg \"scheduling 4 GPUs\") but the test does not detect it, so a future regression that removes recovery would ship green."
+    },
+    {
+     "title": "Both backlog-gauge assertions are vacuous: deleting ClearReservationBacklog from failReservationTerminally leaves ./controllers green",
+     "severity": "high",
+     "file": "controllers/run_controller.go",
+     "line": 1524,
+     "taxonomyClass": "8 (the test asserts the bug)",
+     "failure_scenario": "Mutation: replace `metrics.ClearReservationBacklog(keys.NamespacedKey(reservation.Namespace, reservation.Name))` with a comment. `go test ./controllers/` -> `ok github.com/davidlangworthy/jobtree/controllers 1.104s`. Cause: `conflictedNamespaceState` sets `EarliestStart: now.Add(-time.Hour)`, so ActivateReservations never calls refreshReservationBacklog and `metrics.Snapshot().ReservationBacklog` is `map[]` before AND after \u2014 `len(backlog) != 0` is vacuously satisfied. Positive control: a probe that sets EarliestStart one hour in the FUTURE, ticks once (gauge armed at `map[default/res:{H100-80GB 3600}]`), then advances past it, FAILS under the mutant with `GAUGE NOT CLEARED: map[default/res:{H100-80GB 3600}]` and PASSES on real code. That production sequence \u2014 a reservation that counts down before becoming due \u2014 is the ONLY way the gauge is ever set, so the shipped tests exercise the one arrangement in which the assertion cannot fire."
+    },
+    {
+     "title": "The post-applyResolution failReservationNoEnvelope call site has no test; neutering it to `return nil` leaves the suite green",
+     "severity": "high",
+     "file": "controllers/run_controller.go",
+     "line": 1357,
+     "taxonomyClass": "8 (the test asserts the bug) / 1 (immortal lease-analogue)",
+     "failure_scenario": "Mutation: replace `return c.failReservationNoEnvelope(reservation, runKey)` at line 1357 with `return nil`. `go test ./controllers/...` -> `ok .../controllers 1.503s`, `ok .../controllers/kube 0.232s`. The resulting production state is the exact defect this change exists to kill: the resolver has already fired and evicted victims to make room, the reservation stays Pending forever, ActivateReservations returns nil so nothing is even logged, and the backlog gauge stays frozen for the life of the process. Reproducing it needs a scenario where the initial cover.Plan fails with a non-InvalidRequest reason, the resolver runs, and the SECOND cover.Plan still fails with opportunisticCoverPlan finding no payer \u2014 a budget removed mid-reservation while contention is present, which is routine over months. No new fixture in this change has more than one Budget-owner and no contention at all."
+    },
+    {
+     "title": "Two NEW fixtures build Budgets the API server rejects, in the change whose own rule is that an illegal fixture is not evidence",
+     "severity": "medium",
+     "file": "pkg/resolver/tenancy_buckets_test.go",
+     "line": 27,
+     "taxonomyClass": "8 (the test asserts the bug)",
+     "failure_scenario": "ValidateCreate() called on the exact literals. `pkg/resolver/tenancy_buckets_test.go:27` (`envelope := []v1.BudgetEnvelope{{Name: \"west\", Flavor: \"H100\", Concurrency: 8}}`) -> `envelope[0]: selector must contain at least one label`. `cmd/scheduler/plugin/tenancy_conflict_test.go:38` (`Name: \"east\", Flavor: \"H100-80GB\", Concurrency: 8,`) -> same error. The pre-existing teamBudget in the same package DOES carry a full topology selector, so this is a new regression, not inherited. TestTenancyFixturesAreLegalBudgets cannot catch it: it lives in pkg/funding and validates three hand-built COPIES rather than the fixtures other packages actually use, so a fourth illegal fixture added tomorrow is equally invisible. The specific conclusions survive (deriveOwners reads only Budget.Spec.Owner and Namespace), but the change's stated rule \u2014 \"a fixture the API server would refuse is not evidence about a legal system\" \u2014 is violated by the repair itself."
+    },
+    {
+     "title": "\"The operator must not be told about fields the Run does not have\" is falsified by the next ordinary Reconcile",
+     "severity": "medium",
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 78,
+     "taxonomyClass": "8 (the test asserts the bug)",
+     "failure_scenario": "Probe on the same conflictedNamespaceState: `NewRunController(state, runClock{now}).Reconcile(\"default\", \"train\")` returns nil and leaves `run.Status.Message == \"owner and flavor must be set\"`. Sequenced: after ActivateReservations the message is the good `namespace \"default\" has no funding principal: ... An administrator must fix the namespace->owner binding and resubmit.`; after ONE Reconcile it is `\"owner and flavor must be set\"`. In production these are two separate reconcilers (controllers/kube/reconcilers.go:126 RunReconciler -> Reconcile; :378 ReservationReconciler -> ActivateReservations) and the run stays Pending and resyncs on pendingRunResync, so the operator sees the useless message essentially always. The test certifies a fixed operator experience the system does not deliver."
+    },
+    {
+     "title": "The two backlog assertions read the process-global metrics map, making the suite order-dependent: -shuffle=on fails 4 runs in 5 on the pristine tree",
+     "severity": "medium",
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 91,
+     "taxonomyClass": "3 (last-writer-wins / order dependence)",
+     "failure_scenario": "On the unmodified repo (git status clean): `go test ./controllers/ -shuffle=on -count=1` fails 4 times in 5, e.g. `--- FAIL: TestActivateReservationFailsTerminallyWhenNamespaceHasNoOwner: the backlog gauge must be cleared on the terminal path, still reporting map[default/gang-res-1704103200:{H100-80GB 930} default/rebuffed-res-1782907200:... default/train-8-res-1704103200:{H100-80GB 7210}]` \u2014 every key belongs to an unrelated test. CI does not pass -shuffle today, so this is latent, but any new controllers test that leaves a pending reservation behind breaks these two tests for a reason that has nothing to do with them. The correct assertion is on the reservation's own key: `metrics.Snapshot().ReservationBacklog[\"default/res\"]`."
+    },
+    {
+     "title": "TestPromiseProvenanceRefusedWhenNamespaceUnbound proves nothing about the guard it names \u2014 it survives deletion of the derived-owner refusal",
+     "severity": "low",
+     "file": "cmd/scheduler/plugin/tenancy_conflict_test.go",
+     "line": 55,
+     "taxonomyClass": "8 (the test asserts the bug)",
+     "failure_scenario": "Mutation: delete `derived := funding.OwnerOfNamespace(...); if derived == \"\" { return false }` from gang.go. `go test ./cmd/scheduler/plugin/ -run TestPromiseProvenanceRefusedWhenNamespaceUnbound -v` -> `--- PASS (0.07s)`. Only the conflicted-namespace sibling goes red. The test comment says the promise \"must be refused for the tenancy reason, not by accident of lookup order\" and then asserts only the boolean, which cannot distinguish the two. To be a rail it would need a Budget list where the envelope walk WOULD match while the namespace still derives no owner."
+    },
+    {
+     "title": "TestFailReservationNoEnvelope's comment misstates its condition: the documented \"(budget removed)\" route now hits the new guard instead",
+     "severity": "low",
+     "file": "controllers/tenancy_reservation_test.go",
+     "line": 149,
+     "taxonomyClass": "8 (the test asserts the bug)",
+     "failure_scenario": "Driven probe: build a legitimate reservation (H100 budget, 16-GPU run on an 8-GPU node), then set `state.Budgets = nil` and activate. Result: `namespace \"default\" has no funding principal (no Budget, or Budgets naming more than one owner), so reservation train-res-... can never activate` \u2014 failReservationNoEnvelope is NOT reached. A second probe shows the engine never creates a reservation on the test's flavor-mismatch route either (refuses at planning: `reservation planning failed: no matching envelopes found for run train`, reservations=0). The branch IS still live on a narrower route driven successfully (two same-owner Budgets, H100 concurrency 2, admin deletes only the H100 Budget -> `run default/train has no envelope to fund reservation ... (budget removed)`), so the outcome is fine \u2014 but the test hand-plants a state and mis-labels which condition it represents, and neither the code comment nor the test now describes the reachable route."
+    },
+    {
+     "title": "TestOwnerDerivationIsInvariantUnderBudgetOrder is not a rail for the sorted-walk fix",
+     "severity": "low",
+     "file": "pkg/funding/tenancy_r7_conflicts_test.go",
+     "line": 60,
+     "taxonomyClass": "8 (the test asserts the bug)",
+     "failure_scenario": "Mutation: revert both `for _, k := range sortedKeys(...)` loops in deriveOwners to plain map ranges and drop the lexicographic tie-break. `go test ./pkg/funding/ -run TestOwnerDerivationIsInvariantUnderBudgetOrder -count=20` -> `ok` (20/20). The same mutant kills TestConflictDiagnosticsAreDeterministic immediately. This is not a defect in itself \u2014 the permutation test does what it says (slice-order invariance) \u2014 but the file's comment presents the two as complementary halves of a class-3 rail, and a reader would reasonably assume either would catch a regression in the sorted walk. Only one would."
+    }
+   ],
+   "unsupported": []
+  }
+ ],
+ "attestations": [
+  {
+   "allQuotesFound": true,
+   "detail": "Checked all 8 citations against the ec5cb64 snapshot using `git show ec5cb64:<path> | sed -n '<range>p'`. Each quote was found verbatim (or with only trivial whitespace differences) within \u00b115 lines of the stated line number: (1) run_controller.go ~1217 has `setState(run, v1.RunStateUnfunded, fmt.Sprintf(` inside the OwnerOf==\\\"\\\" branch; (2) run_controller.go ~400 has `setState(run, v1.RunStateUnfunded, coverErr.Error())` in the inventory.Plan error handling; (3) kube/reconcilers.go ~368 has `if res.Status.State != \\\"Pending\\\" && res.Status.State != \\\"\\\" {`; (4) tenancy_reservation_test.go ~96 has `if !strings.Contains(run.Status.Message, \\\"no funding principal\\\") {`; (5) funding/evaluate.go ~245 has the comment `// Lexicographically smallest colliding owner wins, deterministically.`; (6) funding/evaluate.go ~268 has `for owner := range owners {`; (7) resolver/resolver.go ~501 has `return \\\"\\\\x00unbound-namespace/\\\" + run.Namespace`; (8) resolver/resolver.go ~312 has `sortTokensByOwner(tokensByOwner)`. No fabrications detected; all quotes matched the file content at the specified commit within the allowed line tolerance."
+  },
+  {
+   "allQuotesFound": true,
+   "detail": "I checked each of the 12 citations against the exact snapshot `git show ec5cb64:&lt;path&gt;` for the given file. All 12 quotes were found verbatim (modulo whitespace) within +/-15 lines of the stated line number: (1) gang.go:755 'derived := funding.OwnerOfNamespace(...)' found at line 755; (2) settle.go:133 'if !terminal[key] {' found matching; (3) settle.go:103 'SettleLeases retires every TERMINAL run...' found at line 103; (4) run_controller.go:1216 'if ev.OwnerOf(run.Namespace) == \\\"\\\" {' found at line 1216; (5) conditions.go:133 RunStateUnfunded definition found; (6) run_controller.go:2811 'if lease.Status.Closed || lease.Spec.Slice.Role == binder.RoleSpare {' found; (7) run_controller.go:400 'setState(run, v1.RunStateUnfunded, coverErr.Error())' found; (8) tenancy_reservation_test.go:136 'if strings.Contains(run.Status.Message, \\\"no funding principal\\\") {' found; (9) run_controller.go:1107 'reservation.Status.State = \\\"Failed\\\"' found; (10) run_controller.go:1521 'func (c *RunController) failReservationTerminally(...)' found; (11) evaluate.go:304 'func OwnerOfNamespace(budgets []v1.Budget, namespace string) string {' found; (12) resolver.go:501 'return \\\"\\\\x00unbound-namespace/\\\" + run.Namespace' found. No fabrications detected; all citations accurately reflect the ec5cb64 snapshot content at or near the stated locations.",
+   "missing": []
+  },
+  {
+   "allQuotesFound": true,
+   "detail": "I checked all 13 citations against commit ec5cb64 using `git show ec5cb64:<path> | sed -n '<range>p'` for each file. Every quoted line was found verbatim (modulo whitespace/tab rendering) at or very near the stated line number: (1) run_controller.go:1216 'if ev.OwnerOf(run.Namespace) == \\\"\\\" {' found exactly at 1216; (2) run_controller.go:1122 'if allocated := baseGangGPUsForRun...' found at 1122; (3) run_controller.go:1168 'if runHasActivePods(c.State.Pods, run) {' found at 1168; (4) run_controller.go:400 'setState(run, v1.RunStateUnfunded, coverErr.Error())' found at 400; (5) run_controller.go:2811 'if lease.Status.Closed || lease.Spec.Slice.Role == binder.RoleSpare {' found at 2811; (6) run_controller.go:1441 'if p.Namespace == run.Namespace && ...' found at 1441; (7) tenancy_reservation_test.go:78 'if strings.Contains(err.Error(), \\\"owner and flavor must be set\\\") {' found at 78; (8)-(9) gang.go:755-756 'derived := funding.OwnerOfNamespace(...)' and 'if derived == \\\"\\\" {' found at 755 and 756 respectively; (10) evaluate.go:239 'if _, isInterior := interior[owner]; isInterior {' found at 239; (11) budget_types.go:188 'if b.Spec.Owner == \\\"\\\" {' found at 188; (12) reconcilers.go:383 'requeueAfter = pendingRunResync' found at 383; (13) resolver.go:493 'reintroduces the pooling it exists to prevent. The key never escapes this' found at 493. No moved or fabricated quotes were found; all citations are accurate against the specified commit snapshot."
+  },
+  {
+   "allQuotesFound": true,
+   "detail": "I checked all 9 citations against the exact snapshot at commit ec5cb64 using 'git show ec5cb64:&lt;path&gt;' (never the working tree). All 9 quotes were found verbatim (whitespace aside) at or within a few lines of the stated line numbers: run_controller.go lines ~1216 ('if ev.OwnerOf(run.Namespace) == \\\"\\\" {'), ~1121 (baseGangGPUsForRun), ~1168 (runHasActivePods), ~400 (setState Unfunded), ~228 (CheckpointDeadline check), ~2874 (LeaseReasonPromise/payer return); tenancy_reservation_test.go lines 134 and 137 (the two t.Fatalf REAPER/conflict messages); and gang.go line 756 (if derived == \\\"\\\" {). No fabricated or drifted-beyond-tolerance quotes were found."
+  },
+  {
+   "allQuotesFound": true,
+   "detail": "I verified all 14 citations against the exact commit ec5cb64 snapshot using `git show ec5cb64:<path>` for each of the seven files involved (controllers/tenancy_reservation_test.go, controllers/run_controller.go, pkg/resolver/tenancy_buckets_test.go, cmd/scheduler/plugin/tenancy_conflict_test.go, api/v1/budget_types.go, pkg/invariant/invariant.go, controllers/kube/reconcilers.go). Every quoted string was found verbatim (modulo whitespace) at or within 15 lines of the stated line number, e.g. the ClearReservationBacklog call at run_controller.go line ~1524, the \"selector must contain at least one label\" error in budget_types.go line ~266, and the \"World is a complete engine state, projected.\" comment in invariant.go line ~229. No quote was fabricated or found only after a line drift beyond tolerance; none required falling back to the working tree since all paths/commit resolved successfully via git show.",
+   "missing": []
+  }
+ ],
+ "leads": {
+  "summary": "I read docs/project/adversarial-review-playbook.md in full, then ran the required diff commands (git show ec5cb64 --stat, git diff 0b77fbe..HEAD --stat and full, git log --oneline 0b77fbe..HEAD) covering the 22 changed files (+1096/-55). I scanned the changed hunks in controllers/run_controller.go (new failReservationTerminally/failReservationNoEnvelope refactor and the OwnerOf(namespace) guard in activateReservation), cmd/scheduler/plugin/gang.go (promiseProvenanceValid derived-owner refusal and the removed seg.Owner pin) and its test, pkg/funding/evaluate.go (sorted-key deriveOwners, new OwnerOfNamespace), pkg/funding/funding.go (generic sortedKeys), pkg/resolver/resolver.go (NUL-prefixed unbound-namespace fallback key), and the new test files plus hack/e2e and test/e2e smoke changes. I confirmed the new terminal-failure guard in activateReservation is reached only after the allocated>0 branch already returned, so no open lease exists at that call site; the second call site of failReservationNoEnvelope (right after applyResolution runs) is less clearly covered and is flagged below. I found several class-2 comment-as-enforcement hits and class-8 test-coverage gaps; no class-1/3/4/5/6/7/9 mechanical hits were found elsewhere in the touched lines, which I treat as scope-limited rather than proven clean per the playbook's refutation rules.",
+  "leads": [
+   {
+    "taxonomyClass": "class 8 (test asserts the bug)",
+    "file": "controllers/tenancy_reservation_test.go",
+    "line": 146,
+    "why": "TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired only asserts Phase is not Failed and the message no longer mentions the old conflict after five ticks; it never asserts the run reaches Running or that a new lease/reservation formed, so a run stuck in permanent limbo would also pass."
+   },
+   {
+    "taxonomyClass": "class 1 (immortal lease) / class 9 (half-plane action)",
+    "file": "controllers/run_controller.go",
+    "line": 1357,
+    "why": "failReservationNoEnvelope is called right after applyResolution has already run and possibly closed or freed other runs' leases; this call site's interaction with a resolver pass on third-party leases is not exercised by the new single-Budget, no-contention test fixtures."
+   },
+   {
+    "taxonomyClass": "class 2 (comment-as-enforcement)",
+    "file": "cmd/scheduler/plugin/gang.go",
+    "line": 765,
+    "why": "The comment asserts 'pkg/funding.Evaluate never reads Lease.Spec.Owner' as a permanent guarantee justifying skipping the seg.Owner check, but nothing enforces this against a future change to Evaluate; it is prose about all future callers, the pattern class 2 flags."
+   },
+   {
+    "taxonomyClass": "class 2 (comment-as-enforcement)",
+    "file": "pkg/resolver/resolver.go",
+    "line": 1285,
+    "why": "The comment 'the key never escapes this package ... never a message or an Action field' is an assertion about every future caller of ownerOf; only the two current call sites were checked, nothing prevents a future caller from surfacing the NUL-prefixed key in an operator-visible field."
+   },
+   {
+    "taxonomyClass": "class 2 (comment-as-enforcement)",
+    "file": "pkg/funding/evaluate.go",
+    "line": 304,
+    "why": "OwnerOfNamespace's doc comment claims the two derivation paths 'can never drift into disagreeing about who pays' -- true today only because it calls the same deriveOwners, a structural fact described in prose rather than enforced by any test that would fail if the paths were later split."
+   },
+   {
+    "taxonomyClass": "class 8 (test asserts the bug) / stale citation",
+    "file": "cmd/scheduler/plugin/gang.go",
+    "line": 771,
+    "why": "The comment cites gangProvenance's location as 'run_controller.go ~2774-2819' to justify removing the seg.Owner pin; in the current tree gangProvenance is actually at line 2833 with its caller at 2888, so the comment's own citation has already drifted and should be re-verified against the live function rather than trusted."
+   },
+   {
+    "taxonomyClass": "class 8 (test asserts the bug)",
+    "file": "cmd/scheduler/plugin/gang_test.go",
+    "line": 528,
+    "why": "The restored assertion only proves a forged seg.Owner is accepted in a same-namespace, well-funded scenario; it does not test the specific 'IT REAPS' scenario the removal's own justification names -- a forged/legacy owner combined with gangProvenance rebuilding a segment from an existing lease for a live RUNNING gang -- so that half of the ruling has no regression test."
+   },
+   {
+    "taxonomyClass": "class 1 (immortal lease) - partially cleared, flagged for confirmation",
+    "file": "controllers/run_controller.go",
+    "line": 1216,
+    "why": "The new terminal-failure branch is reached only when baseGangGPUsForRun==0 since the allocated>0 branch above already returns, so this specific call site cannot leave an open lease for the run; confirmed by reading control flow but not by an executed test with an open lease present, which the playbook recommends over code-reading alone."
+   },
+   {
+    "taxonomyClass": "class 6 (guard before predicate) - order check requested, no confirmed hit",
+    "file": "cmd/scheduler/plugin/gang.go",
+    "line": 756,
+    "why": "The derived-owner refusal in promiseProvenanceValid runs after namespace-equality but before the budget/envelope walk; a reviewer should confirm OwnerOfNamespace is computed from ALL budgets in the run's namespace (correct) and not accidentally scoped to only the matched budget, since that would silently reopen the gap this fix closes."
+   }
+  ]
+ },
+ "raisedCount": 50,
+ "sites": 20,
+ "bySite": {
+  "cmd/scheduler/plugin/gang.go:756": [
+   {
+    "severity": "critical",
+    "title": "New PreBind refusal for CONFLICTED namespaces strands a partial Promise gang's already-minted leases open forever"
+   },
+   {
+    "severity": "medium",
+    "title": "The seg.Owner removal does not remove the reaping the veto cited; the refusal that stayed wedges the same live gang through a different field, and nothing tests that case"
+   },
+   {
+    "severity": "critical",
+    "title": "New PreBind refusal for CONFLICTED namespaces strands a partial Promise gang's already-minted leases open forever"
+   },
+   {
+    "severity": "medium",
+    "title": "The seg.Owner removal does not remove the reaping the veto cited; the refusal that stayed wedges the same live gang through a different field, and nothing tests that case"
+   }
+  ],
+  "cmd/scheduler/plugin/tenancy_conflict_test.go:55": [
+   {
+    "severity": "low",
+    "title": "TestPromiseProvenanceRefusedWhenNamespaceUnbound proves nothing about the guard it names"
+   },
+   {
+    "severity": "low",
+    "title": "TestPromiseProvenanceRefusedWhenNamespaceUnbound proves nothing about the guard it names \u2014 it survives deletion of the derived-owner refusal"
+   }
+  ],
+  "controllers/run_controller.go:1107": [
+   {
+    "severity": "low",
+    "title": "failReservationTerminally has an un-refactored clone in the same function, while its doc claims to be the only such transition"
+   },
+   {
+    "severity": "low",
+    "title": "failReservationTerminally has an un-refactored clone in the same function, while its doc claims to be the only such transition"
+   }
+  ],
+  "controllers/run_controller.go:1122": [
+   {
+    "severity": "low",
+    "title": "Informational, adjudicated non-defect: the assembling-hold door keeps a due reservation Pending with a frozen backlog gauge for the life of a permanent namespace conflict"
+   },
+   {
+    "severity": "low",
+    "title": "Informational: the assembling-hold door keeps a due reservation Pending with a frozen backlog gauge for the life of a permanent namespace conflict"
+   }
+  ],
+  "controllers/run_controller.go:1216": [
+   {
+    "severity": "high",
+    "title": "The new terminal guard sits behind two earlier returns; the immortal reservation and the lying gauge both survive"
+   },
+   {
+    "severity": "high",
+    "title": "Object-absence is read as a permanent fact and acted on terminally within one poll tick: a delete-then-apply window destroys every due reservation"
+   },
+   {
+    "severity": "high",
+    "title": "The new terminal guard sits behind two earlier returns; the immortal reservation and the lying gauge both survive"
+   },
+   {
+    "severity": "high",
+    "title": "Object-absence is read as a permanent fact and acted on terminally within one poll tick: a delete-then-apply window destroys every due reservation"
+   }
+  ],
+  "controllers/run_controller.go:1217": [
+   {
+    "severity": "high",
+    "title": "run.Status.Message for an unbound/conflicted namespace has two disagreeing writers; durable winner is forbidden by the fix's own test"
+   },
+   {
+    "severity": "high",
+    "title": "run.Status.Message for an unbound/conflicted namespace has two disagreeing writers; durable winner is forbidden string"
+   }
+  ],
+  "controllers/run_controller.go:1357": [
+   {
+    "severity": "high",
+    "title": "failReservationNoEnvelope call site at run_controller.go:1357 has no test; neutering it to return nil leaves the suite green"
+   },
+   {
+    "severity": "high",
+    "title": "The post-applyResolution failReservationNoEnvelope call site has no test; neutering it to `return nil` leaves the suite green"
+   }
+  ],
+  "controllers/run_controller.go:1524": [
+   {
+    "severity": "high",
+    "title": "Both backlog-gauge assertions are vacuous: deleting ClearReservationBacklog leaves ./controllers green"
+   },
+   {
+    "severity": "high",
+    "title": "Both backlog-gauge assertions are vacuous: deleting ClearReservationBacklog from failReservationTerminally leaves ./controllers green"
+   }
+  ],
+  "controllers/run_controller.go:2811": [
+   {
+    "severity": "medium",
+    "title": "baseGangGPUsForRun is a coarser key than 'this run holds an open lease', so the guard is reachable with a lease still open"
+   },
+   {
+    "severity": "medium",
+    "title": "baseGangGPUsForRun is a coarser key than 'this run holds an open lease', so the guard is reachable with a lease still open"
+   }
+  ],
+  "controllers/run_controller.go:400": [
+   {
+    "severity": "medium",
+    "title": "The operator message the terminal-reservation fix installs is overwritten one Reconcile later by the exact text the fix says operators must not see"
+   },
+   {
+    "severity": "high",
+    "title": "The fix's stated purpose is defeated at the sibling call site: the operator IS told 'owner and flavor must be set', and the new test only passes because it never calls Reconcile"
+   },
+   {
+    "severity": "low",
+    "title": "The 'owner and flavor must be set' operator message the fix claims to remove still surfaces via Reconcile's admission path"
+   },
+   {
+    "severity": "medium",
+    "title": "The operator message the terminal-reservation fix installs is overwritten one Reconcile later by the exact text the fix says operators must not see"
+   },
+   {
+    "severity": "high",
+    "title": "The fix's stated purpose is defeated at the sibling call site: the operator IS told 'owner and flavor must be set', and the new test only passes because it never calls Reconcile"
+   },
+   {
+    "severity": "low",
+    "title": "The 'owner and flavor must be set' operator message still surfaces and overwrites the fix's own message via Reconcile's admission path"
+   }
+  ],
+  "controllers/tenancy_reservation_test.go:120": [
+   {
+    "severity": "high",
+    "title": "TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired passes with the admin repair deleted -- no rail"
+   },
+   {
+    "severity": "high",
+    "title": "TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired passes with the admin repair deleted \u2014 the recovery ruling has no rail"
+   }
+  ],
+  "controllers/tenancy_reservation_test.go:134": [
+   {
+    "severity": "low",
+    "title": "TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired passes verbatim in a permanent-limbo world, so it does not pin the recovery it exists to prove"
+   },
+   {
+    "severity": "low",
+    "title": "TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired passes verbatim in a permanent-limbo world, so it does not pin the recovery it exists to prove"
+   }
+  ],
+  "controllers/tenancy_reservation_test.go:136": [
+   {
+    "severity": "medium",
+    "title": "TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired passes with the repair deleted \u2014 the mutant survives"
+   },
+   {
+    "severity": "medium",
+    "title": "TestRunRecoversAfterTerminalFailureWhenBindingIsRepaired passes with the repair deleted \u2014 the mutant survives"
+   }
+  ],
+  "controllers/tenancy_reservation_test.go:149": [
+   {
+    "severity": "low",
+    "title": "TestFailReservationNoEnvelope's comment misstates its condition"
+   },
+   {
+    "severity": "low",
+    "title": "TestFailReservationNoEnvelope's comment misstates its condition: the documented \"(budget removed)\" route now hits the new guard instead"
+   }
+  ],
+  "controllers/tenancy_reservation_test.go:78": [
+   {
+    "severity": "medium",
+    "title": "\"The operator must not be told about fields the Run does not have\" is falsified by the next ordinary Reconcile"
+   },
+   {
+    "severity": "medium",
+    "title": "\"The operator must not be told about fields the Run does not have\" is falsified by the next ordinary Reconcile"
+   }
+  ],
+  "controllers/tenancy_reservation_test.go:91": [
+   {
+    "severity": "medium",
+    "title": "Backlog assertions read the process-global metrics map: -shuffle=on fails 4 runs in 5 on the pristine tree"
+   },
+   {
+    "severity": "medium",
+    "title": "The two backlog assertions read the process-global metrics map, making the suite order-dependent: -shuffle=on fails 4 runs in 5 on the pristine tree"
+   }
+  ],
+  "pkg/funding/evaluate.go:239": [
+   {
+    "severity": "high",
+    "title": "Budget.Spec.Owner is an unauthenticated free-form string; a Budget in any namespace can terminally kill another namespace's reservations and wedge its PreBind"
+   },
+   {
+    "severity": "low",
+    "title": "The interior exemption is keyed on the owner string alone, so the injectivity fail-safe is self-serve to disable as well as to trigger"
+   },
+   {
+    "severity": "high",
+    "title": "Budget.Spec.Owner is unauthenticated free-form and a Budget in any namespace can terminally kill another namespace's reservations and wedge its PreBind"
+   },
+   {
+    "severity": "low",
+    "title": "The interior exemption is keyed on the owner string alone, so the injectivity fail-safe is self-serve to disable as well as to trigger"
+   }
+  ],
+  "pkg/funding/evaluate.go:245": [
+   {
+    "severity": "low",
+    "title": "deriveOwners' collision fold is deterministic but lossy: a namespace poisoned by two spanning leaf owners reports only the lexicographically smallest"
+   },
+   {
+    "severity": "low",
+    "title": "deriveOwners' collision fold is deterministic but lossy: only the lexicographically smallest of multiple colliding owners is reported"
+   }
+  ],
+  "pkg/funding/tenancy_r7_conflicts_test.go:60": [
+   {
+    "severity": "low",
+    "title": "TestOwnerDerivationIsInvariantUnderBudgetOrder is not a rail for the sorted-walk fix"
+   },
+   {
+    "severity": "low",
+    "title": "TestOwnerDerivationIsInvariantUnderBudgetOrder is not a rail for the sorted-walk fix"
+   }
+  ],
+  "pkg/resolver/tenancy_buckets_test.go:27": [
+   {
+    "severity": "medium",
+    "title": "Two NEW fixtures build Budgets the API server rejects, in the change whose own rule is that an illegal fixture is not evidence"
+   },
+   {
+    "severity": "medium",
+    "title": "Two NEW fixtures build Budgets the API server rejects, in the change whose own rule is that an illegal fixture is not evidence"
+   }
+  ]
+ }
+}

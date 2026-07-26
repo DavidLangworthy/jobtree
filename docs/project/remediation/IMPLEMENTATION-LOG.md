@@ -1650,3 +1650,41 @@ on one seat, plus external-subprocess latency. A bigger runner would have bought
 
 **Also carried the 2026-07-24 archive onto a main-based branch.** It existed only on the unmerged
 #127 branch and would have gone with it if that PR were ever closed.
+
+## 2026-07-26 — the fix-diff review: the repairs were the most defective code on the branch
+
+First review ever pointed at the *fixes* rather than the feature
+(`../reviews/2026-07-26-r7pt2-fixdiff-ec5cb64/`). It found more than the feature reviews did.
+
+**The judgment call that was wrong, and why.** The 2026-07-25 panel ruled `fixIsReaper=false` on
+terminating a reservation whose namespace has no funding principal, and I generalised that to
+"terminating is safe". It was established for an **admin typo**. The fix-diff panel executed two
+cases it does not cover: a Budget created in any namespace naming the victim's owner destroys the
+victim's reservation in one tick (`Budget.Spec.Owner` is free-form and the victim does not control
+it), and a plain `kubectl delete && apply` window does the same with no adversary at all. Closing a
+forgeable `Run.Spec.Owner` and then weaponising `Budget.Spec.Owner` is the same mistake twice.
+Parked as **P8**; the unsafe option is what is committed, by accident rather than decision, and the
+archive says so.
+
+**Three decorative tests, all written to answer earlier panels.** The recovery test passed with the
+repair deleted, printing the message the fix claims to remove. Both backlog-gauge assertions were
+vacuous — deleting `ClearReservationBacklog` outright left `./controllers` green, because the
+fixture's `EarliestStart` is in the past so the gauge was empty before and after. The second one is
+the sharper lesson: it guarded my own repeated claim that "the metric lied about it in the same
+breath", and proved nothing. Fixed in `37270af` and `9ed3193`, both mutation-verified in the
+direction that matters. A third — the `failReservationNoEnvelope` call site at `run_controller.go:1357`
+— has no test at all and is left OPEN rather than faked under time pressure.
+
+**Judgment call: freeze the reviewed branch, and treat comments as code.** Two commits landed on the
+branch mid-review before this rule was adopted, one of them a comment fix. A comment moves line
+numbers exactly as much as code does, and Attest is pinned to a sha. The later resume only worked
+because the tree was detached to `ec5cb64` first. Both halves are required: pass `commit` AND check
+the tree out at it.
+
+**Judgment call: push through a worktree rather than break the freeze.** Fixes were committed to
+side branches from `git worktree` checkouts and fast-forwarded into #127, so work was durable
+without the reviewed tree ever moving.
+
+**Codex, corrected again.** Not auth. The ChatGPT subscription serves `gpt-5.6-sol` and rejects every
+explicitly named model, so the harness's hardcoded `-m gpt-5.6` silently downgrades a working
+cross-vendor seat to the Opus fallback. Patch filed in the archive for the harness's PR.
