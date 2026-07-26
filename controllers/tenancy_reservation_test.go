@@ -68,6 +68,10 @@ func TestActivateReservationFailsTerminallyWhenNamespaceHasNoOwner(t *testing.T)
 	now := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	state := conflictedNamespaceState(now)
 
+	// Seed the gauge so its clearing is OBSERVABLE. Without this the assertion
+	// below is vacuous — see its comment.
+	metrics.SetReservationBacklog("default/res", "H100-80GB", 1020)
+
 	err := NewRunController(state, runClock{now: now}).ActivateReservations(now)
 	if err == nil {
 		t.Fatalf("a namespace with no funding principal can never activate; the failure must be reported")
@@ -87,7 +91,12 @@ func TestActivateReservationFailsTerminallyWhenNamespaceHasNoOwner(t *testing.T)
 	if res.Status.CountdownSeconds != nil {
 		t.Errorf("a failed reservation must not keep counting down, got %v", *res.Status.CountdownSeconds)
 	}
-	// The gauge is the half of this defect that hides the other half.
+	// The gauge is the half of this defect that hides the other half — and this
+	// assertion was VACUOUS until the fix-diff panel mutated it: the fixture's
+	// EarliestStart is in the past, so refreshReservationBacklog never runs and the
+	// gauge was map[] both before and after. Deleting ClearReservationBacklog
+	// entirely left ./controllers green. It is seeded above now, so "cleared" is a
+	// real transition instead of a coincidence.
 	if backlog := metrics.Snapshot().ReservationBacklog; len(backlog) != 0 {
 		t.Errorf("the backlog gauge must be cleared on the terminal path, still reporting %v", backlog)
 	}
@@ -206,6 +215,10 @@ func TestFailReservationNoEnvelopeTerminatesAndClearsTheGauge(t *testing.T) {
 			"failReservationNoEnvelope, not the empty-owner guard", got)
 	}
 
+	// Seed the gauge so its clearing is OBSERVABLE. Without this the assertion
+	// below is vacuous — see its comment.
+	metrics.SetReservationBacklog("default/res", "H100-80GB", 1020)
+
 	err := NewRunController(state, runClock{now: now}).ActivateReservations(now)
 	if err == nil {
 		t.Fatalf("a reservation whose owner has no envelope of the run's flavor cannot be kept; "+
@@ -222,6 +235,8 @@ func TestFailReservationNoEnvelopeTerminatesAndClearsTheGauge(t *testing.T) {
 	if res.Status.CountdownSeconds != nil {
 		t.Errorf("a failed reservation must not keep counting down, got %v", *res.Status.CountdownSeconds)
 	}
+	// Seeded above, for the same reason: without a non-empty starting gauge this
+	// assertion passes even if ClearReservationBacklog is deleted outright.
 	if backlog := metrics.Snapshot().ReservationBacklog; len(backlog) != 0 {
 		t.Errorf("failReservationNoEnvelope must clear the backlog gauge, still reporting %v", backlog)
 	}
