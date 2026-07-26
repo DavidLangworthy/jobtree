@@ -211,3 +211,66 @@ legal admin action can make already-spent headroom reappear? (b) is the status q
 reading; (a) is safer for auditability and costs the release-on-renewal arithmetic that Decision 1
 relies on. Note this is exactly the P6 question asked on the *window* axis instead of the *owner*
 axis, so answering P6 without answering this leaves half the surface undecided.
+
+## Ruling 6 — spent quota cannot be taken back; spec changes are prospective on EVERY axis (2026-07-26)
+
+> "No one can take back quota that has been spent. Suppose a job started on some quota, ran for a
+> bit, then the start time of the quota was pushed back to some point in the future. The job is
+> effectively running unfunded and at high risk until the quota window starts back up."
+
+This answers the window-axis question ruling 5 left open, and it generalises: **one rule across all
+axes.** Accrued history is immutable; every spec change takes effect forward only.
+
+So for the pushed-forward `Start`, both halves hold at once and there is no tension between them:
+
+- **The hours already accrued stay charged.** They were spent under the window in effect at the time.
+  Nobody gets them back — not the tenant, not the envelope.
+- **The job is unfunded from the moment of the edit**, because there is no active window now. It
+  coasts, at risk, reclaimed only on demand — the ratified shortfall behaviour (`quota-semantics.md:27-34`).
+  When the window opens again it re-funds automatically (`:38-39`).
+
+This **unifies every axis onto one invariant** and removes the identity-vs-policy asymmetry Fable
+proposed in D §2 (forward-only for who paid, current-spec for what the budget affords). Under this
+ruling there is no policy exemption: owner binding, grant topology, concurrency, and window are all
+prospective. `INV-ACCRUAL-PREFIX-IMMUTABLE` becomes **total over spec mutations** rather than scoped
+to the identity axis.
+
+**Release-on-renewal survives, but its implementation changes.** The ratified arithmetic (`evaluate.go:104-108`)
+gets its behaviour from clamping to *the envelope's current window*: `ConsumedGPUHours` is "the
+replayed funded accrual **within the envelope's current window**". Under this ruling each hour is
+instead attributed to the window in effect during it. For an ordinary renewal the result is identical
+— old hours belong to the old window, the new window starts with a fresh integral — so
+"a reopened budget window re-funds" still falls out. What changes is that moving a window can no
+longer alter what an earlier hour cost.
+
+### The catch, and it is the important part
+
+**On the window axis, forward-only is not computable from the current snapshot.** Adding a Budget is
+a *creation*, and `CreationTimestamp` records when — which is why Fable's forward-only anchoring works
+on the identity axis with no new machinery. Changing `Start` is an *in-place edit of an existing
+object*, and nothing in the API records when a spec field changed or what it was before.
+`metadata.generation` increments without saying what moved.
+
+So this ruling cannot be enforced by a smarter scan. It requires the spent hours to be **recorded as
+facts** rather than recomputed from current inputs. Which has a direct and useful consequence:
+
+**P3 — the settlement store — stops being a feature deferral and becomes a correctness requirement.**
+`DECISIONS-NEEDED.md` currently classifies P3 as *"A feature deferral, not correctness"*. Under this
+ruling it is the mechanism that makes "spent is spent" enforceable, because persisted settled accrual
+is exactly a record a later spec edit cannot reach.
+
+That also resolves the exchange's second unresolved disagreement in a specific direction, without
+adopting either designer's position wholesale: Sol argued for immutable authority/topology epochs
+*now*; Fable refused to buy two history systems and wanted to wait for P3. This ruling says history is
+required — Sol's premise — but the mechanism is the one already parked, so no parallel epoch system is
+bought. **P3's status is now the live question, and it is upstream of P6.**
+
+### Consequences to fold in
+
+- The residue question ruling 5 posed (do already-accrued hours stay funded when `Start` moves) is
+  **answered: they stay charged.** Remove it from the owner's list.
+- **Add:** is P3 scheduled? Until it lands, "spent is spent" is a stated invariant with no enforcement
+  on the window axis, and an in-place window edit remains destructive to history. That is a
+  documented gap rather than a decision, but it should be documented rather than assumed.
+- The "unfunded and at high risk" phrasing is exactly the existing `ClassUnfunded` + reclaim-on-demand
+  path, so the mechanism needs nothing new — only the accrual anchoring does.
