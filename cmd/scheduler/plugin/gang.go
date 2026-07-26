@@ -689,6 +689,46 @@ func (m *gangManager) spareLeaseProvenanceValid(ctx context.Context, ns, runName
 	return false
 }
 
+// runMayCompleteWhileUnbound reports whether a run whose namespace currently has
+// no funding principal may still mint — i.e. whether this would be COMPLETION of
+// a commitment the cluster already authorized, rather than fresh acquisition.
+//
+// Two conditions, both necessary:
+//
+//   - the run already holds at least one OPEN lease. That lease could only have
+//     been minted while the namespace had a principal, so the commitment is
+//     already authorized. With zero open leases nothing was authorized and the
+//     R7 §4 fail-safe stands unchanged.
+//   - the currently held ACTIVE width is below the run's recorded width. This is
+//     the bound that makes the exception safe: it permits finishing and never
+//     growing. Without it a single lease would license unlimited minting in a
+//     namespace with no payer, which is worse than the stranding it fixes.
+//
+// Spares are excluded from the width count for the same reason Permit gates on
+// active width: a spare is not gang-active membership.
+func (m *gangManager) runMayCompleteWhileUnbound(ctx context.Context, run *v1.Run) bool {
+	recorded := int(run.Spec.Resources.TotalGPUs)
+	if recorded <= 0 {
+		return false
+	}
+	var leaseList v1.GPULeaseList
+	if err := m.reader.List(ctx, &leaseList); err != nil {
+		return false
+	}
+	held := 0
+	for i := range leaseList.Items {
+		l := &leaseList.Items[i]
+		if l.Status.Closed || l.Spec.Slice.Role == binder.RoleSpare {
+			continue
+		}
+		if l.Spec.RunRef.Namespace != run.Namespace || l.Spec.RunRef.Name != run.Name {
+			continue
+		}
+		held += len(l.Spec.Slice.Nodes)
+	}
+	return held > 0 && held < recorded
+}
+
 // promiseProvenanceValid reports whether a Promise pod's carried provenance may
 // charge the envelope it names, for its own Run. PreBind uses it as
 // defense-in-depth before minting a promised activation from pod-carried
@@ -754,7 +794,26 @@ func (m *gangManager) promiseProvenanceValid(ctx context.Context, ns, runName st
 	// not acquire, and the sole committer is the wrong place to discover that.
 	derived := funding.OwnerOfNamespace(budgetList.Items, run.Namespace)
 	if derived == "" {
-		return false
+		// FRESH ADMISSION is refused; COMPLETION of an already-authorized gang is
+		// not. The blanket refusal here stranded partial gangs, and the panel
+		// reproduced it: a 4-GPU Promise gang with 2 ranks minted, an admin adds a
+		// second-owner Budget, and 20 hours later the leases are still open,
+		// Unfunded hours are still climbing, pods are re-emitted forever, and a
+		// rank lost to node failure can never be replaced. The gang holds real
+		// GPUs while doing no runnable work — the worst of both endpoints.
+		//
+		// The discriminator is whether this run already holds an open lease. If it
+		// does, the cluster already authorized this commitment while the namespace
+		// HAD a principal, and finishing it is continuation, not acquisition. If it
+		// does not, nothing was authorized and the fail-safe stands.
+		//
+		// Bounded by the run's recorded width, so this permits completion and never
+		// growth: an unbound namespace can finish what it started and acquire
+		// nothing new. That bound is what keeps this from being a hole — without it,
+		// one lease would license unlimited minting in a namespace with no payer.
+		if !m.runMayCompleteWhileUnbound(ctx, run) {
+			return false
+		}
 	}
 	// seg.Owner IS DELIBERATELY NOT CHECKED, and this comment is the receipt.
 	//

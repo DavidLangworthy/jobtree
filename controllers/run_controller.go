@@ -1063,7 +1063,20 @@ func (c *RunController) ActivateReservations(now time.Time) error {
 			// Superseded or rescheduled by an earlier activation this pass.
 			continue
 		}
-		if reservation.Status.State != "Pending" && reservation.Status.State != "" {
+		// BlockedFunding is re-considered, and that is what makes "Recovery is
+		// automatic ... Nothing to resubmit" (quota-semantics.md:38-39) true
+		// rather than aspirational. Excluding it would leave a blocked
+		// reservation excluded forever — inert, yes, but also unrecoverable,
+		// which is a worse defect than the terminal path it replaced.
+		//
+		// Re-considering costs an OwnerOf map lookup per pass and holds nothing:
+		// if the namespace still has no principal, blockReservationOnFunding is
+		// idempotent (it preserves the original onset); if the binding was
+		// repaired, this activates normally. Inertness is about holding no
+		// leases, pods, capacity or gauge — not about being unreachable.
+		if reservation.Status.State != "Pending" &&
+			reservation.Status.State != "BlockedFunding" &&
+			reservation.Status.State != "" {
 			continue
 		}
 		if reservation.Spec.EarliestStart.Time.After(now) {
@@ -1214,14 +1227,21 @@ func (c *RunController) activateReservation(key string, reservation *v1.Reservat
 	// process. The state was wrong and the metric lied about it in the same
 	// breath, which is why nothing looked broken.
 	if ev.OwnerOf(run.Namespace) == "" {
-		setState(run, v1.RunStateUnfunded, fmt.Sprintf(
+		// NOTE the message says nothing about resubmitting. It used to, and that
+		// single word contradicted quota-semantics.md:38-39 — "Recovery is
+		// automatic ... Nothing to resubmit, nothing to approve" — in a
+		// tenant-facing string, while the comment above this function claimed
+		// recovery was autonomous. The reservation is held, not cancelled, so
+		// there is nothing for a human to resubmit; an administrator repairs the
+		// binding and the next pass activates it.
+		msg := fmt.Sprintf(
 			"namespace %q has no funding principal: it has no Budget, or its Budgets name more than one owner. "+
-				"An administrator must fix the namespace→owner binding and resubmit.",
-			run.Namespace))
+				"The reservation is held, not cancelled — an administrator repairs the namespace→owner binding "+
+				"and it activates automatically.",
+			run.Namespace)
+		setState(run, v1.RunStateUnfunded, msg)
 		run.Status.Funding = summarizeRunFunding(run, ev)
-		return c.failReservationTerminally(reservation, fmt.Errorf(
-			"namespace %q has no funding principal (no Budget, or Budgets naming more than one owner), "+
-				"so reservation %s can never activate", run.Namespace, reservation.Name))
+		return c.blockReservationOnFunding(reservation, msg, now)
 	}
 
 	// opportunistic tracks whether funding fell back to the promised-but-
@@ -1523,6 +1543,51 @@ func (c *RunController) failReservationTerminally(reservation *v1.Reservation, c
 	reservation.Status.CountdownSeconds = nil
 	metrics.ClearReservationBacklog(keys.NamespacedKey(reservation.Namespace, reservation.Name))
 	return cause
+}
+
+// blockReservationOnFunding is the NON-terminal counterpart: the reservation is
+// unfundable *right now* and holds nothing, so it waits instead of dying.
+//
+// Why not failReservationTerminally, when this path used to call it: terminality
+// here protects nothing. A due reservation that has minted no lease holds no
+// GPUs, no pods and no capacity promise — that is what makes it this cell — so
+// failing it frees nothing and destroys a promise. And the transition was
+// FOREIGN-INDUCIBLE: a Budget created in any namespace naming this namespace's
+// owner flips OwnerOf to "" and, with a terminal path here, destroys reservations
+// in a namespace whose own contents never changed. That is a cross-tenant denial
+// of service, reproduced by execution on 2026-07-26.
+//
+// It also contradicted the binding decision. quota-semantics.md:27 ("exhaustion
+// demotes ... Destroying healthy work on an idle cluster because a ledger hit
+// zero is pure waste") and :128 ("budget shortfall now manifests as opportunistic
+// classification, never as a lottery over funded runs") outrank
+// R7-tenancy-amendment.md:126-127 under AGENTS.md:176, which names
+// quota-semantics.md as binding and the remediation docs as not.
+//
+// What the 2026-07-25 panel actually caught was INVISIBILITY, not waiting: the
+// reservation sat Pending claiming progress while the backlog gauge froze at its
+// last value, because ClearReservationBacklog was reached only from terminal
+// paths. So this state is honest instead of terminal — durable cause, durable
+// onset, and the gauge CLEARED, because no activation forecast exists while the
+// namespace has no principal. Publishing a countdown here would be the same lie
+// in a new state.
+//
+// Returns nil, not an error: this is an expected steady state, not a failure to
+// report every tick. Recovery is automatic (quota-semantics.md:38-39) because the
+// activation pass re-considers BlockedFunding reservations — see the state gate
+// in activateDueReservations. Re-blocking is idempotent; binding repair activates.
+func (c *RunController) blockReservationOnFunding(reservation *v1.Reservation, reason string, now time.Time) error {
+	if reservation.Status.State != "BlockedFunding" {
+		reservation.Status.State = "BlockedFunding"
+		// Preserve the ORIGINAL onset across re-blocks. Restamping every tick
+		// would make blocked-age always read zero, which is the frozen-gauge
+		// defect wearing a timestamp.
+		reservation.Status.BlockedSince = &metav1.Time{Time: now}
+	}
+	reservation.Status.Reason = reason
+	reservation.Status.CountdownSeconds = nil
+	metrics.ClearReservationBacklog(keys.NamespacedKey(reservation.Namespace, reservation.Name))
+	return nil
 }
 
 // SAFETY-CRITICAL SEMANTICS.

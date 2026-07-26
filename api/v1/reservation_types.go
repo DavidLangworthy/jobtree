@@ -65,6 +65,10 @@ type ReservationStatus struct {
 	ActivatedAt      *metav1.Time         `json:"activatedAt,omitempty"`
 	ReleasedAt       *metav1.Time         `json:"releasedAt,omitempty"`
 	CanceledAt       *metav1.Time         `json:"canceledAt,omitempty"`
+	// Onset of BlockedFunding. See RunController.blockReservationOnFunding for
+	// why it is durable: a blocked reservation waits indefinitely and that is
+	// correct, but waiting invisibly is the defect this replaced.
+	BlockedSince *metav1.Time `json:"blockedSince,omitempty"`
 	CountdownSeconds *int64               `json:"countdownSeconds,omitempty"`
 	Forecast         *ReservationForecast `json:"forecast,omitempty"`
 }
