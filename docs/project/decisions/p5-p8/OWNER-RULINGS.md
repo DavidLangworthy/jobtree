@@ -73,3 +73,51 @@ frozen at 1020 — not about waiting as such. A reservation that waits indefinit
 `BlockedFunding` state, with onset recorded and the gauge cleared, may be both honest and correct,
 making terminality unnecessary rather than merely delayed. Neither designer proposed this; it follows
 from Ruling 2 and should be attacked, not adopted on my say-so.
+
+## Ruling 3 — the choice is a weighted random draw; the human lever is re-granting (2026-07-26)
+
+Answers both questions ruling 2 left open.
+
+> "If the scheduler is forced to choose, it does so probabilistically. We can figure out a weighting,
+> but it is random and aspires to be fair. If the reduced manager is proactive, she can reduce the
+> quota to one of her leads and leave another lead whole. That is the way a human can chose."
+
+> "We should have a you're over by counter and ideally per job odds of being descheduled according to
+> what ever rule we figure out."
+
+**Most of this mechanism already exists**, which is the main finding here:
+
+- `ActionLottery` (`pkg/resolver/resolver.go:34`) with a **seeded, reproducible** draw — candidates are
+  sorted by run key then group index specifically so the seeded draw is deterministic (`:345`).
+- Buckets are **keyed by the run's funding principal** (`ownerOf`, `:471`), so the fairness axis is
+  already the quota principal rather than the namespace or the run.
+- **Shrink happens before lottery** (`TestResolveShrinksBeforeLottery`, resolver_test.go:64), so
+  malleable runs surrender width before anything is descheduled. Descheduling is the second resort.
+
+Two consequences worth stating:
+
+- **No priority API is needed.** The manager's lever is re-granting — reduce one lead, leave another
+  whole — so there is no per-job or per-lead priority field to design, validate, or abuse. Human
+  choice is expressed in the quota tree, which is already the authorization surface. This is a real
+  simplification and it is the owner's, not a designer's.
+- **Per-job odds are computable and auditable** precisely because the draw is seeded and the weights
+  derive from bucket composition. That is what makes the requested per-job odds honest rather than
+  decorative, and it yields an invariant: **the odds published on a Run must be the odds the draw
+  actually uses.** A displayed probability that does not match the draw is the frozen-backlog-gauge
+  defect in a new place — state wrong and the metric lying about it in the same breath.
+
+### Still open — deliberately deferred by the owner
+
+- **The weighting.** "We can figure out a weighting" — not decided. Candidates, with their bias:
+  uniform per job (simplest, but a 1-GPU job and a 512-GPU job are equally likely while freeing
+  wildly different capacity); proportional to width (fewer victims needed to close a deficit, but
+  systematically targets large runs); inverse to elapsed progress (protects nearly-finished work,
+  needs a progress signal the engine may not have); proportional to the owner's share of the
+  over-allocation (fair between owners, ignores per-job cost).
+- **A trap that must not be missed: repeated independent draws compound.** If the draw re-runs every
+  reconcile tick, then per-tick fairness becomes near-certain eventual descheduling for everything in
+  the reduced subtree — a 1-in-20 chance every 30 seconds is not a 1-in-20 chance. So the draw needs
+  either one-shot semantics until the deficit changes (survivors are immune), or explicit hysteresis,
+  or the published odds must be cumulative rather than per-tick and say so. This is the same
+  durability class of error as the grace window: the endpoints look fine and the repetition is what
+  bites. Whichever is chosen, the published odds must match it.
