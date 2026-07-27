@@ -21,7 +21,7 @@ if (( node_major < 22 )); then
   echo "ERROR: current Claude Code requires Node >=22; found $(node --version)" >&2
   exit 1
 fi
-npm install -g @openai/codex@latest @anthropic-ai/claude-code@latest
+sudo env "PATH=$PATH" npm install -g @openai/codex@latest @anthropic-ai/claude-code@latest
 codex --version
 claude --version
 
