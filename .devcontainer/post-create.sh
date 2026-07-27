@@ -15,6 +15,12 @@ step "Installing the current Codex and Claude CLIs"
 # The devcontainer features provide Node and an initial Claude install. Upgrade
 # both agent CLIs at creation time so a long-lived prebuild does not silently
 # pin the formal-verification campaign to an old agent.
+node --version
+node_major="$(node -p 'Number(process.versions.node.split(".")[0])')"
+if (( node_major < 22 )); then
+  echo "ERROR: current Claude Code requires Node >=22; found $(node --version)" >&2
+  exit 1
+fi
 sudo npm install -g @openai/codex@latest @anthropic-ai/claude-code@latest
 codex --version
 claude --version
@@ -25,7 +31,8 @@ step "Installing and validating the formal-verification toolchain"
 java -version
 make specs/.cache/tla2tools.jar
 make specs/.cache/apalache/bin/apalache-mc
-java -cp specs/.cache/tla2tools.jar tlc2.TLC -help >/dev/null
+tlc_help="$(java -cp specs/.cache/tla2tools.jar tlc2.TLC -help 2>&1 || true)"
+grep -q "TLC - provides model checking" <<<"$tlc_help"
 specs/.cache/apalache/bin/apalache-mc version
 
 step "Cloning the sibling Kubernetes lifecycle model"
