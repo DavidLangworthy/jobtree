@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # One-time setup after the devcontainer is created: Tier 3 tooling and a warm
-# build cache. Everything here is best-effort; a failure should not brick the
-# codespace, so each step reports rather than aborts.
-set -uo pipefail
+# build cache. Solver and agent prerequisites fail closed. Optional cluster
+# helpers are explicitly guarded so their failure does not brick the Codespace.
+set -euo pipefail
 
 step() {
   echo "==> $*"
@@ -10,6 +10,30 @@ step() {
 
 step "Installing tmux (persistent sessions over ssh)"
 sudo apt-get update -qq && sudo apt-get install -y -qq tmux || echo "WARN: tmux install failed"
+
+step "Installing the current Codex and Claude CLIs"
+# The devcontainer features provide Node and an initial Claude install. Upgrade
+# both agent CLIs at creation time so a long-lived prebuild does not silently
+# pin the formal-verification campaign to an old agent.
+sudo npm install -g @openai/codex@latest @anthropic-ai/claude-code@latest
+codex --version
+claude --version
+
+step "Installing and validating the formal-verification toolchain"
+# Makefile pins Apalache and owns both cache layouts. Use its targets instead of
+# teaching the devcontainer a second set of solver download/version rules.
+java -version
+make specs/.cache/tla2tools.jar
+make specs/.cache/apalache/bin/apalache-mc
+java -cp specs/.cache/tla2tools.jar tlc2.TLC -help >/dev/null
+specs/.cache/apalache/bin/apalache-mc version
+
+step "Cloning the sibling Kubernetes lifecycle model"
+if [ ! -d /workspaces/tla-k8s/.git ]; then
+  git clone --branch codex/codespaces-ci-security --single-branch \
+    https://github.com/DavidLangworthy/tla-k8s.git /workspaces/tla-k8s \
+    || echo "WARN: could not clone tla-k8s; clone it manually before model-gap analysis"
+fi
 
 step "Installing kind (Kubernetes-in-Docker)"
 go install sigs.k8s.io/kind@latest || echo "WARN: kind install failed"
@@ -52,6 +76,9 @@ fi
 
 step "Done. Quick reference:"
 echo "  go test ./...                      # unit tests (~20s)"
+echo "  make spec-check                    # baseline TLC models"
+echo "  make ledger-compaction-apalache-check  # ordinary bounded SMT rail"
+echo "  codex --version && claude --version"
 echo "  kind create cluster                # local real cluster"
 echo "  kwokctl create cluster --wait 60s  # fake-node scale cluster"
 echo "  make disk-hygiene                  # reclaim disk (Go/docker caches) if it fills"
