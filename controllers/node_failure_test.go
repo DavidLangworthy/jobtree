@@ -9,6 +9,7 @@ import (
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	"github.com/davidlangworthy/jobtree/pkg/binder"
+	"github.com/davidlangworthy/jobtree/pkg/funding"
 	"github.com/davidlangworthy/jobtree/pkg/topology"
 )
 
@@ -461,6 +462,97 @@ func TestSwapReclaimsAnUnfundedSquatterOnTheSpareSlots(t *testing.T) {
 	}
 	if run := state.Runs["default/run"]; run.Status.Phase != RunPhaseRunning {
 		t.Errorf("the swap must keep the run Running, got %s (%s)", run.Status.Phase, run.Status.Message)
+	}
+}
+
+// HandleNodeFailure deliberately freezes funding once after its spare-casualty
+// pass. This specimen pins the consequence Fable identified without silently
+// choosing the tempting per-iteration "fix", which would make the answer depend
+// on lease order and can sacrifice the entry-funded swap victim.
+//
+// The first co-tenant dies on node-a and frees the shared envelope. A later
+// squatter on the swap target therefore changes Unfunded -> Owned in a fresh
+// post-closure evaluation. Production still reclaims it using the single
+// post-pass-1 snapshot. That is the documented task-#54 policy: no transient
+// same-failure reprieve, demote and re-admit when capacity returns.
+func TestNodeFailureUsesOneFundingSnapshotAcrossCoTenantDeath(t *testing.T) {
+	now := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
+
+	build := func() *ClusterState {
+		shared := nfBudget("shared", "org:ai:team")
+		shared.Spec.Envelopes[0].Concurrency = 2
+
+		hog := nfLeaseGroup("00-hog", "hog", "org:ai:team", "shared", "0",
+			[]string{"node-a#0", "node-a#1"}, binder.RoleActive, now)
+		hog.Spec.Interval.Start = v1.NewTime(now.Add(-2 * time.Minute))
+		swapper := nfLeaseGroup("10-swapper", "swapper", "org:ai:other", "other", "0",
+			[]string{"node-a#2", "node-a#3"}, binder.RoleActive, now)
+		spare := nfLeaseGroup("11-spare", "swapper", "org:ai:other", "other", "0",
+			[]string{"node-b#0", "node-b#1"}, binder.RoleSpare, now)
+		squatter := nfLeaseGroup("20-squatter", "squatter", "org:ai:team", "shared", "0",
+			[]string{"node-b#0", "node-b#1"}, binder.RoleActive, now)
+		squatter.Spec.Interval.Start = v1.NewTime(now.Add(-time.Minute))
+
+		state := &ClusterState{
+			Nodes:   nodeFailureNodes(),
+			Budgets: []v1.Budget{shared, nfBudget("other", "org:ai:other")},
+			Runs: map[string]*v1.Run{
+				"default/hog":          nfRun("hog", "org:ai:team", 2, now),
+				"default/squatter":     nfRun("squatter", "org:ai:team", 2, now),
+				"org-ai-other/swapper": nfRun("swapper", "org:ai:other", 2, now),
+			},
+			// The order is part of the witness: hog's pass-2 death precedes the
+			// swapper's reclaim decision. Eligibility itself is order-free because
+			// both decisions read the snapshot taken before this slice is walked.
+			Leases: []v1.GPULease{hog, swapper, spare, squatter},
+		}
+		mirrorPods(state)
+		return state
+	}
+
+	classOfLease := func(t *testing.T, c *RunController, name string) funding.Class {
+		t.Helper()
+		ev := c.evaluate(now)
+		for i := range c.State.Leases {
+			if c.State.Leases[i].Name != name {
+				continue
+			}
+			class, ok := ev.Class(&c.State.Leases[i])
+			if !ok {
+				t.Fatalf("open lease %q was absent from funding evaluation", name)
+			}
+			return class
+		}
+		t.Fatalf("lease %q is missing", name)
+		return ""
+	}
+
+	counterfactual := build()
+	counterfactualController := NewRunController(counterfactual, runClock{now: now})
+	if got := classOfLease(t, counterfactualController, "20-squatter"); got != funding.ClassUnfunded {
+		t.Fatalf("setup: squatter class before its co-tenant dies = %s, want Unfunded", got)
+	}
+	CloseLease(&counterfactual.Leases[0], "NodeFailure", now)
+	if got := classOfLease(t, counterfactualController, "20-squatter"); got != funding.ClassOwned {
+		t.Fatalf("fresh post-co-tenant-death class = %s, want Owned", got)
+	}
+
+	state := build()
+	controller := NewRunController(state, runClock{now: now})
+	if err := controller.HandleNodeFailure("node-a", now); err != nil {
+		t.Fatalf("handle node failure: %v", err)
+	}
+	if closed, reason := closureOf(state, "20-squatter"); !closed || reason != "ReclaimedBySpare" {
+		t.Fatalf("frozen snapshot must reclaim entry-Unfunded squatter: closed=%v reason=%q", closed, reason)
+	}
+	if got := state.Runs["default/squatter"].Status.Phase; got != RunPhasePending {
+		t.Fatalf("reclaimed squatter must demote for re-admission, got %s", got)
+	}
+	if closed, reason := closureOf(state, "11-spare"); !closed || reason != "Swap" {
+		t.Fatalf("entry-funded victim must complete its swap: spare closed=%v reason=%q", closed, reason)
+	}
+	if got := state.Runs["org-ai-other/swapper"].Status.Phase; got != RunPhaseRunning {
+		t.Fatalf("entry-funded swap victim must keep running, got %s", got)
 	}
 }
 

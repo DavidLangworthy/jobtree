@@ -42,6 +42,7 @@
 (* - `NodeFailureHalfPlane.cfg`    -> `PlaneAgreement`                      *)
 (* - `NodeFailureCountTopUp.cfg`   -> `NoDuplicateSpareName`                *)
 (* - `NodeFailureConsumedCount.cfg`-> `ConsumedSpareStaysConsumed`          *)
+(* - `NodeFailureStaleFunding.cfg` -> `PostClosureFundedWorkSurvives`       *)
 (*                                                                          *)
 (* Spare top-up extension (#91 / fuzzer deletePod)                          *)
 (* ----------------------------------------------                          *)
@@ -61,12 +62,15 @@
 (* - `ConsumedSpareByName = TRUE` -> the intended design: skip indices      *)
 (*   whose lease closed with reason "Swap", by name.                        *)
 (*                                                                          *)
-(* TLC did reproduce the historical bug classes.  It did not, by itself,    *)
-(* prove a new implementation bug in Go.  The main open modeling question   *)
-(* left on purpose is the "stale class evaluation" issue: the Go code       *)
-(* computes funding once before pass 2, while this model re-derives on the  *)
-(* current state.  That deserves a separate exploratory knob if we want to  *)
-(* answer it mechanically.                                                  *)
+(* `FreezeFundingForPass2` now makes the production snapshot choice         *)
+(* explicit.  The snapshot is refreshed as pass-1 spare casualties close,  *)
+(* then frozen before any active item can run.  The stale-funding config     *)
+(* demonstrates the known consequence: a later closure can promote a       *)
+(* squatter in the current world, while the fixed entry snapshot still      *)
+(* permits reclaim.  That is an expected counterexample to a stronger       *)
+(* current-world property, not a proposed per-iteration re-evaluation       *)
+(* policy: fresh decisions would make the failed workload's outcome depend  *)
+(* on iteration order and can sacrifice the funded swap victim.             *)
 (*                                                                          *)
 (* Why this is useful                                                       *)
 (* -----------------                                                        *)
@@ -126,7 +130,8 @@ CONSTANTS
   TopUpSpares,
   CountBasedTopUp,
   ConsumedSpareByName,
-  ExternalDeletes
+  ExternalDeletes,
+  FreezeFundingForPass2
 
 ASSUME
   /\ Capacity \in Nat
@@ -140,6 +145,7 @@ ASSUME
   /\ CountBasedTopUp \in BOOLEAN
   /\ ConsumedSpareByName \in BOOLEAN
   /\ ExternalDeletes \in BOOLEAN
+  /\ FreezeFundingForPass2 \in BOOLEAN
 
 NoNode == "NoNode"
 NoSlot == <<NoNode, 99>>
@@ -257,6 +263,10 @@ VARIABLES
   podSlot,
   machinePods,
   closeClass,
+  \* Records the class in the mutable world immediately before reclaim.
+  \* It differs from closeClass exactly when the frozen pass-2 snapshot has
+  \* become stale because an earlier active item closed.
+  closeCurrentClass,
   closeAgainst,
   busy,
   failedNode,
@@ -264,6 +274,8 @@ VARIABLES
   phaseWrites,
   expectedPhase,
   handledNodes,
+  \* funding.Evaluation captured once after pass 1 in HandleNodeFailure.
+  fundingSnapshot,
   \* A SECOND pod object / lease claiming a spare name a survivor still owns —
   \* what the #91 count-based top-up manufactures.  podState/leaseOpen are
   \* keyed by identity and cannot express two live objects of one name, so the
@@ -274,9 +286,9 @@ VARIABLES
 
 vars ==
   << nodeState, runPhase, graceLeft, leaseOpen, leaseSlot, leaseReason,
-     podState, podSlot, machinePods, closeClass, closeAgainst,
+     podState, podSlot, machinePods, closeClass, closeCurrentClass, closeAgainst,
      busy, failedNode, todo, phaseWrites, expectedPhase, handledNodes,
-     dupPodState, dupLeaseOpen >>
+     fundingSnapshot, dupPodState, dupLeaseOpen >>
 
 Init ==
   /\ nodeState = [n \in Nodes |-> "Ready"]
@@ -305,6 +317,7 @@ Init ==
            [] OTHER -> NoSlot]
   /\ machinePods = {p \in Ids : podState[p] = "Bound"}
   /\ closeClass = [l \in Ids |-> UnknownClass]
+  /\ closeCurrentClass = [l \in Ids |-> UnknownClass]
   /\ closeAgainst = [l \in Ids |-> NoSlot]
   /\ busy = FALSE
   /\ failedNode = NoNode
@@ -312,6 +325,7 @@ Init ==
   /\ phaseWrites = [r \in Runs |-> {}]
   /\ expectedPhase = [r \in Runs |-> UnknownPhase]
   /\ handledNodes = {}
+  /\ fundingSnapshot = [l \in Ids |-> FALSE]
   /\ dupPodState = [p \in Ids |-> "Gone"]
   /\ dupLeaseOpen = [p \in Ids |-> FALSE]
 
@@ -339,9 +353,19 @@ ExactSlotConflicts(slot, owner) ==
 OpenActiveWidthWithout(r, l) ==
   Cardinality({k \in Ids : leaseOpen[k] /\ RunOf(k) = r /\ RoleOf(k) = "Active" /\ k # l})
 
-IsFunded(l) ==
-  /\ leaseOpen[l]
-  /\ Cardinality({k \in Ids : leaseOpen[k] /\ LeaseIndex(k) < LeaseIndex(l)}) < Capacity
+IsFundedIn(open, l) ==
+  /\ open[l]
+  /\ Cardinality({k \in Ids : open[k] /\ LeaseIndex(k) < LeaseIndex(l)}) < Capacity
+
+FundingMap(open) == [l \in Ids |-> IsFundedIn(open, l)]
+
+IsFunded(l) == IsFundedIn(leaseOpen, l)
+
+DecisionFunded(l) ==
+  IF FreezeFundingForPass2 THEN fundingSnapshot[l] ELSE IsFunded(l)
+
+SparePassComplete ==
+  ~\E s \in todo : leaseOpen[s] /\ KindOf(s) = "Spare"
 
 \* Abstracts the entry into HandleNodeFailure after the reconciler has already
 \* decided that the node is failed: controllers/kube/reconcilers.go:345-371
@@ -355,8 +379,12 @@ StartFailureSweep(n) ==
   /\ todo' = MatchingLeases(n)
   /\ phaseWrites' = [r \in Runs |-> {}]
   /\ expectedPhase' = [r \in Runs |-> UnknownPhase]
+  \* Pass 1 has not closed anything yet. ProcessSpare refreshes this map after
+  \* every modeled spare casualty, and active actions wait until pass 1 drains.
+  /\ fundingSnapshot' = FundingMap(leaseOpen)
   /\ UNCHANGED << nodeState, runPhase, graceLeft, leaseOpen, leaseSlot, leaseReason,
-                  podState, podSlot, machinePods, closeClass, closeAgainst, handledNodes, dupPodState, dupLeaseOpen >>
+                  podState, podSlot, machinePods, closeClass, closeCurrentClass,
+                  closeAgainst, handledNodes, dupPodState, dupLeaseOpen >>
 
 \* Pass 1 over spare leases on the failed node:
 \* controllers/run_controller.go:1193-1222.
@@ -371,9 +399,11 @@ ProcessSpare(l) ==
           /\ leaseReason' = [leaseReason EXCEPT ![l] = "NodeFailure"]
           /\ podState' = [podState EXCEPT ![l] = "Gone"]
           /\ machinePods' = machinePods \ {l}
+          /\ fundingSnapshot' = FundingMap(leaseOpen')
      ELSE /\ UNCHANGED << leaseOpen, leaseReason, podState, machinePods >>
+          /\ UNCHANGED fundingSnapshot
   /\ UNCHANGED << nodeState, runPhase, graceLeft, leaseSlot, podSlot,
-                  closeClass, closeAgainst, busy, failedNode, phaseWrites,
+                  closeClass, closeCurrentClass, closeAgainst, busy, failedNode, phaseWrites,
                   expectedPhase, handledNodes, dupPodState, dupLeaseOpen >>
 
 \* Active lease with a usable spare and no funded exact-slot blocker.
@@ -400,9 +430,10 @@ ProcessActiveSwap(l) ==
   /\ l \in todo
   /\ leaseOpen[l]
   /\ RoleOf(l) = "Active"
+  /\ SparePassComplete
   /\ leaseOpen[s]
   /\ target # NoSlot
-  /\ IF SlotGranularReclaim THEN \A v \in victims : ~IsFunded(v) ELSE TRUE
+  /\ IF SlotGranularReclaim THEN \A v \in victims : ~DecisionFunded(v) ELSE TRUE
   /\ todo' = todo \ {l}
   /\ leaseOpen' = [x \in Ids |-> IF x = l \/ x = s \/ x \in victims THEN FALSE ELSE leaseOpen[x]]
   /\ leaseSlot' = [x \in Ids |-> IF x = w THEN target ELSE leaseSlot[x]]
@@ -422,8 +453,13 @@ ProcessActiveSwap(l) ==
   /\ closeClass' =
        [x \in Ids |->
          IF x \in victims
-         THEN IF IsFunded(x) THEN "Funded" ELSE "Unfunded"
+         THEN IF DecisionFunded(x) THEN "Funded" ELSE "Unfunded"
          ELSE closeClass[x]]
+  /\ closeCurrentClass' =
+       [x \in Ids |->
+         IF x \in victims
+         THEN IF IsFunded(x) THEN "Funded" ELSE "Unfunded"
+         ELSE closeCurrentClass[x]]
   /\ closeAgainst' = [x \in Ids |-> IF x \in victims THEN target ELSE closeAgainst[x]]
   /\ phaseWrites' =
        [rr \in Runs |->
@@ -437,7 +473,8 @@ ProcessActiveSwap(l) ==
               IF rr = r THEN "Running"
               ELSE IF rr \in victimRuns THEN "Pending"
               ELSE runPhase[rr]]
-  /\ UNCHANGED << nodeState, graceLeft, busy, failedNode, expectedPhase, handledNodes, dupPodState, dupLeaseOpen >>
+  /\ UNCHANGED << nodeState, graceLeft, busy, failedNode, expectedPhase,
+                  handledNodes, fundingSnapshot, dupPodState, dupLeaseOpen >>
 
 \* Active lease whose spare's exact target slot is held by funded work, so the
 \* swap declines and the group falls back to the no-spare verdict path:
@@ -458,10 +495,11 @@ ProcessActiveDecline(l) ==
   /\ l \in todo
   /\ leaseOpen[l]
   /\ RoleOf(l) = "Active"
+  /\ SparePassComplete
   /\ leaseOpen[s]
   /\ target # NoSlot
   /\ SlotGranularReclaim
-  /\ \E v \in exactVictims : IsFunded(v)
+  /\ \E v \in exactVictims : DecisionFunded(v)
   /\ todo' = todo \ {l}
   /\ leaseOpen' = [x \in Ids |-> IF x = l \/ (ReleaseSpareOnDecline /\ x = s) THEN FALSE ELSE leaseOpen[x]]
   /\ leaseReason' =
@@ -482,7 +520,8 @@ ProcessActiveDecline(l) ==
      THEN UNCHANGED runPhase
      ELSE runPhase' = [rr \in Runs |-> IF rr = r THEN verdict ELSE runPhase[rr]]
   /\ UNCHANGED << nodeState, graceLeft, leaseSlot, podSlot, closeClass,
-                  closeAgainst, busy, failedNode, expectedPhase, handledNodes, dupPodState, dupLeaseOpen >>
+                  closeCurrentClass, closeAgainst, busy, failedNode, expectedPhase,
+                  handledNodes, fundingSnapshot, dupPodState, dupLeaseOpen >>
 
 \* Active lease with no held spare at all, or a swap lease revisited after its
 \* source active was already closed.  This abstracts the direct
@@ -499,6 +538,7 @@ ProcessActiveNoSpare(l) ==
   /\ l \in todo
   /\ leaseOpen[l]
   /\ RoleOf(l) = "Active"
+  /\ SparePassComplete
   /\ (KindOf(l) = "Swap" \/ ~leaseOpen[<<r, GroupOf(l), "Spare">>])
   /\ todo' = todo \ {l}
   /\ leaseOpen' = [leaseOpen EXCEPT ![l] = FALSE]
@@ -511,7 +551,8 @@ ProcessActiveNoSpare(l) ==
      THEN UNCHANGED runPhase
      ELSE runPhase' = [rr \in Runs |-> IF rr = r THEN verdict ELSE runPhase[rr]]
   /\ UNCHANGED << nodeState, graceLeft, leaseSlot, podSlot, closeClass,
-                  closeAgainst, busy, failedNode, expectedPhase, handledNodes, dupPodState, dupLeaseOpen >>
+                  closeCurrentClass, closeAgainst, busy, failedNode, expectedPhase,
+                  handledNodes, fundingSnapshot, dupPodState, dupLeaseOpen >>
 
 DropClosedWorkItem(l) ==
   /\ busy
@@ -519,8 +560,9 @@ DropClosedWorkItem(l) ==
   /\ ~leaseOpen[l]
   /\ todo' = todo \ {l}
   /\ UNCHANGED << nodeState, runPhase, graceLeft, leaseOpen, leaseSlot, leaseReason,
-                  podState, podSlot, machinePods, closeClass, closeAgainst,
-                  busy, failedNode, phaseWrites, expectedPhase, handledNodes, dupPodState, dupLeaseOpen >>
+                  podState, podSlot, machinePods, closeClass, closeCurrentClass,
+                  closeAgainst, busy, failedNode, phaseWrites, expectedPhase,
+                  handledNodes, fundingSnapshot, dupPodState, dupLeaseOpen >>
 
 \* Post-pass fold and failed-run sweep:
 \* controllers/run_controller.go:1330-1452.
@@ -563,7 +605,8 @@ FinishFailureSweep ==
          THEN "Gone"
          ELSE podState[p]]
   /\ machinePods' = machinePods \ stopped
-  /\ UNCHANGED << nodeState, graceLeft, leaseSlot, podSlot, closeClass, closeAgainst,
+  /\ UNCHANGED << nodeState, graceLeft, leaseSlot, podSlot, closeClass,
+                  closeCurrentClass, closeAgainst, fundingSnapshot,
                   dupPodState, dupLeaseOpen >>
 
 \* The controller emits a swap pod but does not mint the replacement lease.
@@ -580,8 +623,9 @@ MintSwap(l) ==
   /\ podState' = [podState EXCEPT ![l] = "Bound"]
   /\ machinePods' = machinePods \cup {l}
   /\ UNCHANGED << nodeState, runPhase, graceLeft, leaseSlot, podSlot,
-                  closeClass, closeAgainst, busy, failedNode, todo,
-                  phaseWrites, expectedPhase, handledNodes, dupPodState, dupLeaseOpen >>
+                  closeClass, closeCurrentClass, closeAgainst, busy, failedNode, todo,
+                  phaseWrites, expectedPhase, handledNodes, fundingSnapshot,
+                  dupPodState, dupLeaseOpen >>
 
 \* emitSparePods' re-provisioning loop (controllers/run_controller.go:2423-2489),
 \* the missing action this extension exists for.  One atomic step per reconcile
@@ -623,8 +667,9 @@ TopUpSpare(r) ==
   /\ podSlot' = [p \in Ids |-> IF p \in refills THEN SparePlacement(<<r, GroupOf(p)>>) ELSE podSlot[p]]
   /\ dupPodState' = [p \in Ids |-> IF p \in dupTargets THEN "Intent" ELSE dupPodState[p]]
   /\ UNCHANGED << nodeState, runPhase, graceLeft, leaseOpen, leaseSlot, leaseReason,
-                  machinePods, closeClass, closeAgainst, busy, failedNode, todo,
-                  phaseWrites, expectedPhase, handledNodes, dupLeaseOpen >>
+                  machinePods, closeClass, closeCurrentClass, closeAgainst,
+                  busy, failedNode, todo, phaseWrites, expectedPhase, handledNodes,
+                  fundingSnapshot, dupLeaseOpen >>
 
 \* The plugin binds a re-emitted spare intent pod and mints its RoleSpare lease
 \* at PreBind, the same mint window MintSwap models.  Re-binding a name whose
@@ -642,8 +687,9 @@ MintSpare(s) ==
   /\ leaseReason' = [leaseReason EXCEPT ![s] = "None"]
   /\ podState' = [podState EXCEPT ![s] = "Bound"]
   /\ machinePods' = machinePods \cup {s}
-  /\ UNCHANGED << nodeState, runPhase, graceLeft, podSlot, closeClass, closeAgainst,
-                  busy, failedNode, todo, phaseWrites, expectedPhase, handledNodes,
+  /\ UNCHANGED << nodeState, runPhase, graceLeft, podSlot, closeClass,
+                  closeCurrentClass, closeAgainst, busy, failedNode, todo,
+                  phaseWrites, expectedPhase, handledNodes, fundingSnapshot,
                   dupPodState, dupLeaseOpen >>
 
 \* The duplicate pod binds too: nothing at PreBind knows the name is already
@@ -658,8 +704,9 @@ MintDupSpare(s) ==
   /\ dupPodState' = [dupPodState EXCEPT ![s] = "Bound"]
   /\ dupLeaseOpen' = [dupLeaseOpen EXCEPT ![s] = TRUE]
   /\ UNCHANGED << nodeState, runPhase, graceLeft, leaseOpen, leaseSlot, leaseReason,
-                  podState, podSlot, machinePods, closeClass, closeAgainst,
-                  busy, failedNode, todo, phaseWrites, expectedPhase, handledNodes >>
+                  podState, podSlot, machinePods, closeClass, closeCurrentClass,
+                  closeAgainst, busy, failedNode, todo, phaseWrites, expectedPhase,
+                  handledNodes, fundingSnapshot >>
 
 \* The quiescence fuzzer's deletePod: a spare or swap pod lost out of order,
 \* outside any failure sweep.  Nothing closes the lease — that is the real
@@ -672,24 +719,27 @@ ExternalDeletePod(p) ==
   /\ podState' = [podState EXCEPT ![p] = "Gone"]
   /\ machinePods' = machinePods \ {p}
   /\ UNCHANGED << nodeState, runPhase, graceLeft, leaseOpen, leaseSlot, leaseReason,
-                  podSlot, closeClass, closeAgainst, busy, failedNode, todo,
-                  phaseWrites, expectedPhase, handledNodes, dupPodState, dupLeaseOpen >>
+                  podSlot, closeClass, closeCurrentClass, closeAgainst, busy,
+                  failedNode, todo, phaseWrites, expectedPhase, handledNodes,
+                  fundingSnapshot, dupPodState, dupLeaseOpen >>
 
 Cordon(n) ==
   /\ ~busy
   /\ nodeState[n] = "Ready"
   /\ nodeState' = [nodeState EXCEPT ![n] = "Cordoned"]
   /\ UNCHANGED << runPhase, graceLeft, leaseOpen, leaseSlot, leaseReason,
-                  podState, podSlot, machinePods, closeClass, closeAgainst,
-                  busy, failedNode, todo, phaseWrites, expectedPhase, handledNodes, dupPodState, dupLeaseOpen >>
+                  podState, podSlot, machinePods, closeClass, closeCurrentClass,
+                  closeAgainst, busy, failedNode, todo, phaseWrites, expectedPhase,
+                  handledNodes, fundingSnapshot, dupPodState, dupLeaseOpen >>
 
 MarkNotReady(n) ==
   /\ ~busy
   /\ nodeState[n] \in {"Ready", "Cordoned"}
   /\ nodeState' = [nodeState EXCEPT ![n] = "NotReady"]
   /\ UNCHANGED << runPhase, graceLeft, leaseOpen, leaseSlot, leaseReason,
-                  podState, podSlot, machinePods, closeClass, closeAgainst,
-                  busy, failedNode, todo, phaseWrites, expectedPhase, handledNodes, dupPodState, dupLeaseOpen >>
+                  podState, podSlot, machinePods, closeClass, closeCurrentClass,
+                  closeAgainst, busy, failedNode, todo, phaseWrites, expectedPhase,
+                  handledNodes, fundingSnapshot, dupPodState, dupLeaseOpen >>
 
 FenceNode(n) ==
   /\ ~busy
@@ -697,8 +747,9 @@ FenceNode(n) ==
   /\ nodeState' = [nodeState EXCEPT ![n] = "Fenced"]
   /\ machinePods' = {p \in machinePods : podSlot[p] = NoSlot \/ SlotNode(podSlot[p]) # n}
   /\ UNCHANGED << runPhase, graceLeft, leaseOpen, leaseSlot, leaseReason,
-                  podState, podSlot, closeClass, closeAgainst,
-                  busy, failedNode, todo, phaseWrites, expectedPhase, handledNodes, dupPodState, dupLeaseOpen >>
+                  podState, podSlot, closeClass, closeCurrentClass, closeAgainst,
+                  busy, failedNode, todo, phaseWrites, expectedPhase, handledNodes,
+                  fundingSnapshot, dupPodState, dupLeaseOpen >>
 
 DeleteNode(n) ==
   /\ ~busy
@@ -706,8 +757,9 @@ DeleteNode(n) ==
   /\ nodeState' = [nodeState EXCEPT ![n] = "Deleted"]
   /\ machinePods' = {p \in machinePods : podSlot[p] = NoSlot \/ SlotNode(podSlot[p]) # n}
   /\ UNCHANGED << runPhase, graceLeft, leaseOpen, leaseSlot, leaseReason,
-                  podState, podSlot, closeClass, closeAgainst,
-                  busy, failedNode, todo, phaseWrites, expectedPhase, handledNodes, dupPodState, dupLeaseOpen >>
+                  podState, podSlot, closeClass, closeCurrentClass, closeAgainst,
+                  busy, failedNode, todo, phaseWrites, expectedPhase, handledNodes,
+                  fundingSnapshot, dupPodState, dupLeaseOpen >>
 
 Next ==
   \/ \E n \in Nodes: Cordon(n) \/ MarkNotReady(n) \/ FenceNode(n) \/ DeleteNode(n)
@@ -731,6 +783,7 @@ TypeOK ==
   /\ podSlot \in [Ids -> SlotOrNone]
   /\ machinePods \subseteq Ids
   /\ closeClass \in [Ids -> CloseClasses]
+  /\ closeCurrentClass \in [Ids -> CloseClasses]
   /\ closeAgainst \in [Ids -> SlotOrNone]
   /\ busy \in BOOLEAN
   /\ failedNode \in Nodes \cup {NoNode}
@@ -738,6 +791,7 @@ TypeOK ==
   /\ phaseWrites \in [Runs -> SUBSET RunPhases]
   /\ expectedPhase \in [Runs -> ExpectedPhases]
   /\ handledNodes \subseteq Nodes
+  /\ fundingSnapshot \in [Ids -> BOOLEAN]
   /\ dupPodState \in [Ids -> PodStates]
   /\ dupLeaseOpen \in [Ids -> BOOLEAN]
 
@@ -758,6 +812,16 @@ ReclaimIsSlotExactAndUnfunded ==
     leaseReason[l] = "ReclaimedBySpare"
       => /\ closeClass[l] = "Unfunded"
          /\ closeAgainst[l] = leaseSlot[l]
+
+\* Stronger current-world safety question. Production intentionally fixes
+\* pass-2 eligibility at the post-pass-1 snapshot, so
+\* NodeFailureStaleFunding.cfg MUST violate this when an earlier pass-2 closure
+\* promotes a later exact-slot squatter. Do not add this to the clean config:
+\* doing so would silently choose fresh, iteration-order-sensitive semantics.
+PostClosureFundedWorkSurvives ==
+  \A l \in Ids:
+    leaseReason[l] = "ReclaimedBySpare"
+      => closeCurrentClass[l] = "Unfunded"
 
 \* R25 / spare-only node leak bug class.
 FailedNodeFullyHandled ==
