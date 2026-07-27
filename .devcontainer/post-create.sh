@@ -74,7 +74,11 @@ HYGIENE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/disk-hygiene.sh"
 if sudo apt-get install -y -qq cron 2>/dev/null; then
   sudo service cron start || echo "  WARN: could not start cron now (postStartCommand will)"
   cron_line="0 */6 * * * $HYGIENE --if-above 70 >> \$HOME/.disk-hygiene.log 2>&1"
-  ( crontab -l 2>/dev/null | grep -vF 'disk-hygiene.sh'; echo "$cron_line" ) | crontab -
+  existing_cron="$(crontab -l 2>/dev/null || true)"
+  {
+    printf '%s\n' "$existing_cron" | grep -vF 'disk-hygiene.sh' || true
+    echo "$cron_line"
+  } | crontab -
   echo "  installed: $cron_line"
   echo "  on-demand: make disk-hygiene   (log: ~/.disk-hygiene.log)"
 else
