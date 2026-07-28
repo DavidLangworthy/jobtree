@@ -618,3 +618,39 @@ contains no `grants` resource and no lead Role; the controller holds full create
 on Budgets. The split is proposed policy, not a shipped boundary — the same error as the dead §6c
 argument, made again. Either the chart ships real grantor/grantee RBAC, or the design says the
 property is aspirational. There is no third option.
+
+## Ruling 18 — one document, no sharding; `U`'s floor is 5 minutes (2026-07-28)
+
+> "Shard sizing is not a wall we're likely to hit per your analysis above. What decision is needed."
+> "Let's go with hundreds."
+
+Closes both remaining open questions.
+
+### Sharding is not built
+
+At a rough 600 bytes per principal, an etcd object holds ~2,600 principals. An org of **hundreds** —
+director, managers, leads, researchers — is an order of magnitude clear and likely to stay there.
+
+So the decision is not *what the shard boundary is* but **whether to build sharding at all**, and it is
+no. One document; consumers read one object; no assembly logic, no cross-shard version skew, no
+per-shard validation, and no "is a lineage intact within one shard" constraint — which was the
+load-bearing part of Ruling 11's shard key and is now simply absent.
+
+**Ruling 11's shard-by-root-subtree stands as the strategy if it is ever needed**, not as something
+built. The only thing carried forward is free: the document keeps no cross-subtree data in its header,
+so a future split along subtree boundaries stays mechanical rather than a redesign. **Revisit above
+~2,000 principals**, and verify the 600-byte estimate by serializing a real tree before relying on it.
+
+### `U`'s floor is 5 minutes
+
+Derived from the code rather than chosen. A gang below minimum runnable width is a *waiting* run, and
+`controllers/kube/reconcilers.go:65` sets `waitingRunResync = 30 * time.Second` — so it re-evaluates
+every 30 seconds. A floor of **5 minutes is 10 evaluation ticks**: many chances to reach minimum width,
+and safely clear of the destroy-at-one-tick failure the deadline exists to prevent.
+
+With Ruling 15's 1-hour default that is 120 ticks of headroom. Sanity check: `run_controller.go:59`
+already carries `defaultUpstreamFailureGrace = 30 * time.Minute`, so a 1-hour `U` is the same order as
+an existing grace in the system rather than an outlier.
+
+**Settled: `U` defaults to 1 hour, floor 5 minutes, cluster policy.** Operators may raise it; nothing
+may lower it past the floor.

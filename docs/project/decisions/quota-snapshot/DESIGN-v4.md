@@ -215,12 +215,18 @@ destroyed."* Every descheduling names an arriving claim (Ruling 4).
 9. **Ruling 3's surfaces** (§9) and the "resubmit" message (§10).
 10. **Specimen successors** — producer-authorization, loader-quarantine, conservation, ledger.
 
-## 12. Open questions
+## 12. Open questions — none
 
-- **Q1 — Shard sizing.** A measurement against a real org tree (~2,600 principals per object at a
-  rough 600 bytes each; verify by serializing).
-- **Q2 — `U`'s floor.** Default is 1 hour (Ruling 15); the floor should be a small multiple of the
-  activation interval, which needs measuring.
+Both closed by Ruling 18.
+
+- **Sharding is not built.** One document. At ~600 bytes per principal an object holds ~2,600, and the
+  target org is hundreds — an order of magnitude clear. Ruling 11's shard-by-root-subtree stands as the
+  strategy *if* it is ever needed; the only thing carried now is that the document keeps no
+  cross-subtree data in its header, so a later split stays mechanical. Revisit above ~2,000 principals.
+- **`U` = 1 hour default, 5 minute floor**, cluster policy. The floor is derived, not chosen: a gang
+  below minimum width is a *waiting* run and re-evaluates every 30s
+  (`controllers/kube/reconcilers.go:65`), so 5 minutes is 10 evaluation ticks — clear of
+  destroy-at-one-tick, and the 1h default leaves 120 ticks of headroom.
 
 ## 13. Amendments to binding text
 
