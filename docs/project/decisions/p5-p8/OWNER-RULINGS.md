@@ -538,3 +538,50 @@ to zero.
 **Still open:** the enforced **floor**. Operators may raise `U`; the floor is what stops a
 misconfiguration lowering it toward destroy-at-one-tick. It should be a small multiple of the
 activation interval, and that multiple needs the interval measured rather than guessed.
+
+## Ruling 16 — grants are a separate object, namespaced in the GRANTOR's namespace (2026-07-28)
+
+> "I prefer the separate binding object. Can it just borrow the RBAC from a?"
+
+Closes design question Q1. Yes — by making it **namespaced in the grantor's namespace** rather than
+cluster-scoped, it borrows option (a)'s authorization exactly: *"you may write grants in your own
+namespace"* is namespaced RBAC that already exists, and it is naturally subtree-bounded because a
+principal's namespace **is** its position in the tree.
+
+Grantor's namespace, never the grantee's — a grant living in the grantee's namespace would be
+self-asserted, which is the defect being fixed.
+
+### The reason for the choice, which is not the one either designer gave
+
+**A separate object separates "may delegate" from "may change my own allocation." A field on the
+Budget cannot.**
+
+Kubernetes RBAC is per-resource, not per-field. Under option (a), `Grants` was a field on
+`Budget.Spec`, so anyone permitted to add a grant was also permitted to raise their own
+`concurrency` — the API conflates delegating what you hold with giving yourself more. With a separate
+object the two are independently grantable:
+
+```
+lead:  create/update/delete  grants   in their namespace
+lead:  get/list              budgets  in their namespace
+```
+
+A lead may sub-divide what they were given and **may not enlarge their own allocation.** That is
+Ruling 1's *"contained to what they were granted"* made enforceable by the API server rather than by
+the producer's good behaviour, and it is the strongest containment property available without new
+policy machinery. Neither designer proposed it: Fable argued for the field, Sol for a cluster-scoped
+registry, and this is the third shape.
+
+Three smaller consequences, all favourable: each grant has its own lifecycle and status, so a
+colliding grant is quarantined individually instead of poisoning a whole Budget; revocation is
+deleting an object rather than editing a list; and GitOps diffs are one file per grant.
+
+### What is given up, and why it is consistent
+
+**Transactional injectivity.** A cluster-scoped object keyed by owner name would get uniqueness from
+etcd for free; namespaced means two namespaces can each claim the same owner, so injectivity returns
+to a producer check plus quarantine. That is the trade **Ruling 8 already made deliberately** — reject
+was replaced by quarantine — so this is consistent rather than a new concession.
+
+Also given up: a single audit surface. Grants are scattered across namespaces, exactly as Budgets are
+today, and the compiled snapshot is the aggregated view.
