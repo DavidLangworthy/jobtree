@@ -2,8 +2,8 @@
 
 ## Verdict
 
-The focused campaign found and pinned four production-level violations of the
-desired P5/P7/Ruling-6 design:
+The focused campaign confirmed and pinned four production consequences of
+already-planned P5/P7/Ruling-6 gaps:
 
 1. current-snapshot replay rewrites elapsed accrual after delayed `Start` and
    reduced `MaxGPUHours`;
@@ -14,7 +14,8 @@ desired P5/P7/Ruling-6 design:
 4. local envelope admission funds 120 descendant GPUs through a manager with a
    100-GPU incoming allocation.
 
-These are executable known-bad specimens, not newly selected product semantics.
+These are executable known-bad specimens, not newly discovered requirements or
+newly selected product semantics.
 The corresponding desired abstractions hold at the finite bounds below, and
 every load-bearing condition has an expected counterexample. Production fixes
 are not part of this change: Ruling 6 requires the still-unimplemented persisted
@@ -34,6 +35,33 @@ sweep and still be reclaimed, while the entry-funded swap victim progresses.
 The stronger fresh-world safety property is an expected counterexample, not a
 new desired invariant.
 
+The physical-capacity follow-up adds a bounded composed model for ordinary and
+reservation emission, scheduler-cache assumption, PreBind/bind, and
+node-failure swap. Its intended CI claim is **exhaustive over the explicitly
+bounded `MaxSteps = 14` graph**, not unbounded. The final positive run was
+interrupted by a container restart and is **not green**; no partial state count
+is used as evidence. The current seven negative configs and four legal-state
+witness configs also require a sequential outer rerun after the final model
+edits.
+
+Targeted compiled correspondence did confirm two distinct outcomes. Same-node
+bind-error `Unreserve` plus retry retains exactly one open lease and the auditor
+intentionally does not reap its Pending pod: a **new confirmation of the known
+recovery/deadline gap**. More seriously, retrying that same pod on another node
+also succeeds while the immutable lease keeps the first node's slots. If the
+first node disappears, `AuditLedger` marks the stale lease repairable even
+though the pod is healthy on the second node, and the real auditor closes a
+matured repairable violation. Repository plans cover generic R2 retry/restart
+recovery but never require placement equality, so this is classified as a
+**genuinely new production bug**. No production fix is included.
+
+Two model defects were corrected without claiming solver success: the first
+draft's policy-guarded quiescence predicate assumed the recovery it purported
+to prove, and its idempotent retry rewrote the lease slot instead of preserving
+the immutable first mint. The positive set now uses a desired retry-placement
+guard; `PhysicalCapacityCrossNodeRetry.cfg` disables it to represent current
+production, but that named trace is pending TLC validation.
+
 This is a bounded result, not an unbounded proof. The coverage matrix is
 `docs/project/formal-verification-coverage.md`.
 
@@ -42,12 +70,12 @@ This is a bounded result, not an unbounded proof. The coverage matrix is
 | Item | Exact value |
 |---|---|
 | Production behavior/code baseline | `d736ea469ea470f774820ccd288c56bfcce37bc1` |
-| Campaign/configuration branch head before uncommitted artifacts | `4497f62bf9f4c0b4225c0de7993b6fe19aff0362` |
+| Campaign branch head before physical-capacity artifacts | `b220d9b7c927360e3fced185d0933c0c1034b870` |
 | Formal/test artifact state | uncommitted worktree; no result SHA |
 | Branch | `codex/tla-smt-codespace` |
 | `origin/main` | `d736ea469ea470f774820ccd288c56bfcce37bc1` |
 | Merge base | `d736ea469ea470f774820ccd288c56bfcce37bc1` |
-| Remote comparison before work | branch ahead 5, behind 0 |
+| Comparison to `origin/main` before physical-capacity work | branch ahead 6, behind 0 |
 | Machine | 4 cores, 16,379,756 kB RAM |
 
 The requested `git fetch origin main` could not write
@@ -56,12 +84,12 @@ remote query also could not open a DNS socket. The connected GitHub comparison
 confirmed the remote `main`, branch head, and merge base above; `origin/main`
 had not advanced.
 
-The five commits between `origin/main` and `4497f62` are Codespace/campaign
-configuration only. Production behavior assessed here is the code inherited
-from `d736ea4`; the formal/test artifacts are an uncommitted layer on top of
-configuration head `4497f62`. No result SHA is manufactured for that worktree
-state. The sandbox's read-only `.git` is called out again under verification
-and handoff.
+The five commits through `4497f62` are Codespace configuration only.
+`b220d9b` is the committed formal-campaign artifact on top of them. Production
+behavior assessed here is still the code inherited from `d736ea4`; the
+physical-capacity model, test, harness, CI, and report edits are an uncommitted
+layer on `b220d9b`. No result SHA is manufactured for that worktree state. The
+sandbox's read-only `.git` is called out again under verification and handoff.
 
 ## Attributed consequence review
 
@@ -87,6 +115,22 @@ Those verified limits are now explicit in the coverage matrix and residual
 gaps. The stale-snapshot lead additionally produced a TLC trace and compiled Go
 specimen below.
 
+For this physical-capacity follow-up, Codex first attempted the separately
+authorized read-only Fable pass with model `claude-fable-5`, high effort, and
+only `Read`, `Grep`, and `Glob` tools. That sandbox invocation changed no files
+and ran no tests, but failed with
+`API Error: Unable to connect to API (ENOTIMP)`.
+
+A later outer read-only Fable review completed and raised one concrete lead:
+same-incarnation retry may move from node A to node B while PreBind accepts the
+existing node-A lease, after which loss of A can make the auditor close the
+lease behind healthy work on B. That statement is attributed review input, not
+proof. Codex independently verified every link in `PreBind`,
+`PodLeaseWithRole`, `AuditLedger`, and `LedgerAuditor.repair`, then reproduced
+the state with the real PreBind/Unreserve path in
+`TestPreBindCrossNodeRetryLeavesStaleLeaseAndAuditorWouldCloseIt`. No other
+conclusion is attributed to the outer review.
+
 ## Tools
 
 | Tool | Version |
@@ -107,8 +151,8 @@ ledger-accounting encoding that previously exhausted 10 GB was not rerun.
 | `make ledger-compaction-conformance-check` | all 9,261 canonical three-lease histories | pass | 11.660 s (Go reported 5.511 s) | 162,348 kB |
 | `make ledger-compaction-apalache-check` | representative model, length 1 | `NoError` | 35.187 s | 1,041,212 kB |
 | `make spec-check` in this sandbox | existing TLC design configs | **environment blocked before exploration** | N/A | N/A |
-| `make spec-check` in the outer Codespace shell, after all follow-up edits | `ReservationLifecycle`: 6 distinct; `BudgetConservation`: 31; `QuotaEvaluation`: 1,555 | **PASS reported by orchestrator under TLC 2.19** | not supplied | not supplied |
-| `make verify` in the outer Codespace shell, after all follow-up edits | complete repository gate, including race and real envtest | **PASS reported by orchestrator** | not supplied | not supplied |
+| `make spec-check` in the outer Codespace shell for the prior `b220d9b` campaign artifact | `ReservationLifecycle`: 6 distinct; `BudgetConservation`: 31; `QuotaEvaluation`: 1,555 | **PASS reported by orchestrator under TLC 2.19; does not cover current physical files** | not supplied | not supplied |
+| `make verify` in the outer Codespace shell for the prior `b220d9b` campaign artifact | complete repository gate, including race and real envtest | **PASS reported by orchestrator; does not cover current physical files** | not supplied | not supplied |
 
 TLC could not create its local RMI listener, even with one worker:
 `java.rmi.server.ExportException: Listen failed on port: 0`, caused by
@@ -198,6 +242,40 @@ event; fairness does not force the bounded result.
 - TLC exploration is finite and exhaustive for the clean configuration (the
   graph ended at depth 18); no fairness assumption forces the result.
 
+### Physical capacity
+
+- Nodes: `{"n1", "n2"}`; allocatable GPU requests per node: 2.
+- Role-reduced pods: direct and reserved materializations of one rank, an
+  independent peer admission, old and replacement identities for one swap
+  rank, one held spare, and one exact-slot blocker.
+- Explicit bound: `MaxSteps = 14`. This is a finite bounded check, not an
+  unbounded proof.
+- Distinct planes: bound/terminating `machineLive` pods, scheduler
+  observed/assumed capacity, open-lease count and non-authoritative slot
+  string, Reservation state, run phase, node usability/fencing, and writer
+  provenance.
+- Positive safety: physical requests never exceed allocatable capacity; one
+  machine-live pod per rank; direct and reservation materialize once; closing
+  a lease does not release a terminating pod's capacity; bound work has one
+  open lease after PreBind; same-pod/same-incarnation retry mints once and may
+  reuse it only on the same node; mint and close writer locality.
+- Seven expected traces: non-atomic stale capacity commit,
+  closed-lease-as-release, direct/reservation double materialization, swap
+  before terminating blockers are gone, duplicate PreBind, cross-node retry
+  against the first node's immutable lease, and a charging post-PreBind lease
+  abandoned at declared quiescence.
+- Four legal initial witnesses deliberately violate lease-slot uniqueness,
+  open-lease-node-in-usable-view, spare-implies-active, and
+  Running-implies-active-lease. `TypeOK`, machine-plane consistency, physical
+  capacity, and rank uniqueness are checked before each rejected invariant.
+- Recovery nonclaim: `QuiescentHasNoChargingOrphan` is negative-only. Production
+  has retry and auditor grace behavior but no selected finite deadline `U`, so
+  fairness or a caller-selected finish guard is not used to manufacture a
+  positive theorem.
+- Execution status: the current positive config, seven negative configs, and
+  four witnesses have not completed after the final step-bound and
+  cross-node-retry edits. The interrupted positive search is not a result.
+
 ## Measured focused checks
 
 Peak RSS below is the maximum aggregate RSS of the command process tree sampled
@@ -220,26 +298,69 @@ invariant, an invariant-0 violation, and a trace path. It was also run against a
 positive configuration and correctly rejected `NoError`; arbitrary nonzero
 solver failures do not satisfy the rail.
 
+### Physical-capacity execution status
+
+The current `PhysicalCapacity` artifact has no green solver result. An outer
+exhaustive run and an inner bounded run overlapped other work and were
+interrupted by the Codespace restart. Their partial logs and counts are
+discarded. Earlier completed runs applied to a superseded draft without the
+explicit step variable and cross-node retry property; they are calibration
+only and do not prove the current files.
+
+The CI positive command uses ordinary TLC over a finite state graph whose
+`step` variable stops real actions after `MaxSteps = 14`. It is therefore
+**exhaustive within an explicit bound**, not an unbounded proof and not merely
+a sampled run. This semantic claim follows from the model/config; successful
+execution remains pending. The seven negative wrappers require exit 12, the
+exact selected invariant, and a behavior trace. The four initial-state wrappers
+require exit 12, the exact named initial invariant, and printed pod,
+`machineLive`, and lease planes. None accepts an arbitrary nonzero exit.
+
+One focused compiled command was run after the restart:
+
+`GOCACHE=/tmp/jobtree-go-cache go test ./cmd/scheduler/plugin -run 'TestPreBind(FailureUnreserveRetryKeepsOneLease|CrossNodeRetryLeavesStaleLeaseAndAuditorWouldCloseIt)$' -count=1 -v`
+
+Both tests passed; Go reported package time `0.099s`. No broad Go test, TLC,
+Apalache, `make verify`, or additional Fable invocation was run in that pass.
+
 ## Production correspondence
 
 The compiled tests exercise production behavior inherited unchanged from
-baseline `d736ea4`; the tests themselves are in the uncommitted artifact layer
-based on configuration head `4497f62`:
+baseline `d736ea4`. The earlier campaign specimens are committed in `b220d9b`;
+the physical-capacity conformance specimen is in the current uncommitted
+artifact layer:
 
 | Test | Observed production result | Classification |
 |---|---|---|
-| `TestCurrentSnapshotDelayedStartRewritesAccrualPrefix` | 32 spent GPU-hours become 0; 32 become Unfunded | known-bad Ruling-6 counterexample |
-| `TestCurrentSnapshotReducedCapRewritesAccrualPrefix` | 32 spent GPU-hours become 10 Owned + 22 Unfunded | known-bad Ruling-6 counterexample |
-| `TestUnrootedSquatterChangesVictimBinding` | victim owner changes from `org:victim` to empty | known-bad grant-locality counterexample |
-| `TestInteriorExemptionAllowsOwnedChargeAcrossNamespaces` | class is Owned with payer `tenant-b`, run `tenant-a` | known-bad Owned-is-local counterexample |
-| `TestLocalEnvelopeCapsDoNotConserveAncestorAllocation` | manager cap 100; two descendants remain 120 Owned | known-bad instantaneous-conservation counterexample |
-| `TestNodeFailureUsesOneFundingSnapshotAcrossCoTenantDeath` | squatter changes `Unfunded → Owned` after co-tenant closure, but production snapshot reclaims/demotes it and completes the funded swap | executable pin of deliberate task-#54 policy |
+| `TestCurrentSnapshotDelayedStartRewritesAccrualPrefix` | 32 spent GPU-hours become 0; 32 become Unfunded | new confirmation of known gap |
+| `TestCurrentSnapshotReducedCapRewritesAccrualPrefix` | 32 spent GPU-hours become 10 Owned + 22 Unfunded | new confirmation of known gap |
+| `TestUnrootedSquatterChangesVictimBinding` | victim owner changes from `org:victim` to empty | new confirmation of known gap |
+| `TestInteriorExemptionAllowsOwnedChargeAcrossNamespaces` | class is Owned with payer `tenant-b`, run `tenant-a` | new confirmation of known gap |
+| `TestLocalEnvelopeCapsDoNotConserveAncestorAllocation` | manager cap 100; two descendants remain 120 Owned | new confirmation of known gap |
+| `TestNodeFailureUsesOneFundingSnapshotAcrossCoTenantDeath` | squatter changes `Unfunded → Owned` after co-tenant closure, but production snapshot reclaims/demotes it and completes the funded swap | intentional policy |
+| `TestPreBindFailureUnreserveRetryKeepsOneLease` | actual PreBind creates one nonce-stable lease; bind-error Unreserve preserves the payer; retry sees AlreadyExists and succeeds without a second lease; `AuditLedger` reports no violation for the Pending pod | new confirmation of known gap |
+| `TestPreBindCrossNodeRetryLeavesStaleLeaseAndAuditorWouldCloseIt` | PreBind mints `node-a#0..3`; Unreserve then PreBind on node B returns success; the sole lease remains on A; with the pod Running on B and only A deleted, `AuditLedger` returns repairable `lease_dead_node` | genuinely new production bug |
 
 Existing compiled specimens supply the namespace-conflict `32 → 0` history,
 interior injectivity exemption, blocked reservation lifecycle, scheduler/plugin
 mint boundary, and ledger-compaction correspondence. No test claims conformance
 to a persisted history or authenticated grant implementation that does not
 exist.
+
+The new specimens do not execute Kubernetes' scheduler cache or Bind plugin.
+Inspection of Kubernetes v1.36.2 `schedule_one.go` and cache code establishes
+the production ordering used by the abstraction: `AssumePod` commits the real
+GPU request before jobtree's no-op Reserve, Permit and PreBind follow, and a
+binding-cycle error runs Unreserve plus `ForgetPod`. This source correspondence
+is decisive for the action ordering but is not a refinement proof of concurrent
+cache behavior.
+
+Static inspection completes the destructive consequence: a sustained
+repairable `lease_dead_node` enters `LedgerAuditor.repair`, which calls the sole
+closer and updates status after grace. The unit specimen models the successful
+framework bind by setting the Kubernetes pod's `Spec.NodeName` and phase after
+the real node-B PreBind returns success; it does not claim an envtest scheduler
+performed the bind.
 
 ## Findings and consequences
 
@@ -315,6 +436,33 @@ silent return to re-derived model semantics and an accidental production-policy
 change. It does not endorse fresh per-iteration evaluation or claim task #54 is
 an unresolved bug.
 
+### F7 — cross-node PreBind retry authenticates identity but not placement
+
+`PreBind` derives a nonce-stable lease name from the pod. After a bind-cycle
+failure, Kubernetes runs Unreserve and forgets the assumed pod, so a later
+scheduling cycle may choose another node. On `AlreadyExists`, jobtree reads the
+old lease and checks only that it is open and has the same `RunRef`; it does not
+compare the old immutable `Spec.Slice.Nodes` with the new `nodeName`.
+
+The focused specimen mints on A, unreserves, retries on B, and observes a
+successful PreBind with one lease still naming A. It then represents the
+successful bind as the same pod Running on B. Once A is absent,
+`AuditLedger` returns repairable `lease_dead_node`; after grace,
+`LedgerAuditor.repair` closes that lease even though the named pod is healthy
+on B. The workload then has no open accounting/capacity record and can trip the
+report-only pod-without-lease path.
+
+R2 explicitly planned transient bind-failure recovery, same-pod idempotency,
+restart reconstruction, and ABA protection. Its existing-lease rule says
+“open and owned by this gang,” and its verification list never varies the retry
+node. L16 planned investigation of the broader physical-capacity seam, but no
+repo task or remediation item specifies this placement check. The exact defect
+is therefore a **genuinely new production bug**, discovered within a planned
+investigation rather than a new product rule. The desired behavior is
+unambiguous—an immutable A lease cannot authorize a B bind—so no design stop is
+needed. This campaign adds the reproduction and model rail only; production is
+unchanged.
+
 ## Design decisions required
 
 ### Authority-record location
@@ -368,9 +516,10 @@ encode a deadline or pretend that partial-gang progress is proved.
 
 ## Verification
 
-The orchestrator reports the following final outer-shell results against the
-uncommitted worktree after all follow-up edits. This worker did not run these
-commands inside the sandbox. No wall time or peak RSS was supplied.
+The orchestrator reported the following outer-shell results for the prior
+campaign artifact that became `b220d9b`. They predate the current uncommitted
+physical-capacity files and do **not** verify them. No wall time or peak RSS was
+supplied.
 
 | Command | Final outer-shell result |
 |---|---|
@@ -380,7 +529,7 @@ commands inside the sandbox. No wall time or peak RSS was supplied.
 | `make node-failure-spec-counterexamples` | PASS: all nine intended negative traces validated, including `PostClosureFundedWorkSurvives` |
 | Six Apalache campaign targets | PASS: 3 positive models and 15 intended counterexamples |
 
-Sandbox-observed focused follow-up checks:
+Earlier sandbox-observed focused checks now committed in `b220d9b`:
 
 - `TestNodeFailureUsesOneFundingSnapshotAcrossCoTenantDeath`: PASS;
 - production mutation `ev = c.evaluate(now)` immediately before the conflict
@@ -400,6 +549,20 @@ Sandbox-observed focused follow-up checks:
   build cache;
 - `controllers/run_controller.go` has no residual diff after the Go mutation.
 
+Current uncommitted physical-capacity status:
+
+- targeted same-node and cross-node PreBind/Unreserve/AuditLedger specimens:
+  PASS (`go test` package time `0.099s`);
+- temporary mutation of PreBind's existing-lease acceptance made the original
+  same-node retry specimen fail at the intended assertion; the line was
+  restored before the cross-node investigation;
+- final positive `PhysicalCapacity.cfg`: **INTERRUPTED, NOT GREEN**;
+- final seven expected-counterexample configs: **PENDING sequential outer
+  validation** after the slot-freeze/cross-node edits;
+- final four legal-state witnesses: **PENDING sequential outer validation**;
+- `make verify`: **NOT RERUN** for the current worktree;
+- production files: no residual diff.
+
 ## Residual blind spots
 
 - arbitrary delegation DAGs, cycles, revocation interleavings, and authority
@@ -408,8 +571,9 @@ Sandbox-observed focused follow-up checks:
   epochs;
 - a production persisted settlement store and model-to-store correspondence;
 - partial-gang deadline/unwind and the non-atomic controller/plugin apply seam;
-- physical slot ownership spanning ordinary admission, reservation activation,
-  in-flight swap intent, and stale scheduler observations;
+- direct refinement from the bounded physical-capacity model to real
+  kube-scheduler cache and Bind interleavings;
+- the confirmed cross-node retry bug remains unfixed in production;
 - outsider grant-locality failure composed end to end with victim reservation
   blocking;
 - direct `AccrualPrefix` model-to-`Evaluate` differential correspondence and a
@@ -421,9 +585,10 @@ Sandbox-observed focused follow-up checks:
 - exact closure-writer discovery in TLA (the static AST anti-fake rail remains
   authoritative).
 
-The next highest-value executable experiment that does not require one of the
-three product decisions is a small composed physical-slot model spanning
-ordinary admission, reservation activation, and pod-before-lease swap intent,
-with a double-allocation mutation. A combined outsider-grant-to-reservation
-trace is the next production correspondence seam. Arbitrary grant DAG
-revocation remains valuable only after the authority record is selected.
+The immediate next action is sequential outer validation of the bounded
+positive graph, seven named counterexamples, and four legal witnesses. Once
+those rails are green, the orchestrator should authorize a production fix that
+rejects an existing lease whose node/slots do not match the retry placement,
+then mutation-verify the compiled cross-node specimen in its desired form. The
+combined outsider-grant-to-reservation trace remains the next unrelated
+production correspondence seam.
