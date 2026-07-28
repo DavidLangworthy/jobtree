@@ -517,3 +517,24 @@ Neither changes the conclusion; both change the migration, and both were asserte
    protection** of `quota-semantics.md:23-26`. Plus the accrue clamps (`:993-997`, `:1024-1027`) and
    `pkg/funding/admission.go:89-136`. Deleting hours therefore removes a real admission protection,
    not just three gates — that loss must be replaced or accepted explicitly.
+
+## Ruling 15 — `U` defaults to 1 hour (2026-07-28)
+
+> "Make Us default 1 hr."
+
+Settles the shipped default for the below-minimum unwind deadline. A gang still below
+`minRunnableGPUs` after **1 hour** is unwound: leases closed by normal release, pods deleted,
+reservation released, run requeued.
+
+Why the number is defensible: it covers a GitOps window, a controller restart, and most human repair,
+while bounding how long a never-runnable assembly can hold GPUs on an idle cluster. A shorter default
+would unwind work that a routine deploy would have recovered; a longer one makes the stuck case
+expensive for whoever queues behind it.
+
+Cluster policy, per Ruling 13 — **not** tenant-declared, and specifically not
+`spec.runtime.checkpoint` (`controllers/run_controller.go:944-949`), which is tenant-set and defaults
+to zero.
+
+**Still open:** the enforced **floor**. Operators may raise `U`; the floor is what stops a
+misconfiguration lowering it toward destroy-at-one-tick. It should be a small multiple of the
+activation interval, and that multiple needs the interval measured rather than guessed.
