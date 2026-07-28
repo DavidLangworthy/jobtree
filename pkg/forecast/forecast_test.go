@@ -454,11 +454,15 @@ func TestPlanDeficitRespectsClaimRanking(t *testing.T) {
 // envelope GPU-hours (Decision 1 — nothing is admitted born-opportunistic),
 // and an envelope whose window has not opened admits nothing without
 // preActivation.allowAdmission.
-func TestPlanHeadroomMeteredAndWindowGated(t *testing.T) {
+//
+// The metered half of this test died with maxGPUHours (Ruling 10): the deficit
+// used to come from east's integral funding floor(48h/24h)=2 despite a
+// concurrency of 8. Concurrency now carries it directly, so east is sized to 2
+// and the WINDOW gate on `later` is what the deficit still proves.
+func TestPlanHeadroomWindowGated(t *testing.T) {
 	now := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
 	run := runOf("train", "org:ai:team", 8)
 
-	maxHours := int64(48) // two GPUs' worth of the default 24h period
 	start := v1.NewTime(now.Add(2 * time.Hour))
 	budgets := []v1.Budget{{
 		ObjectMeta: v1.ObjectMeta{Name: "team-budget", Namespace: "default"},
@@ -469,8 +473,7 @@ func TestPlanHeadroomMeteredAndWindowGated(t *testing.T) {
 					Name:        "east",
 					Flavor:      testFlavor,
 					Selector:    map[string]string{topology.LabelRegion: "us-east"},
-					Concurrency: 8,
-					MaxGPUHours: &maxHours,
+					Concurrency: 2,
 				},
 				{
 					Name:        "later",
@@ -494,8 +497,8 @@ func TestPlanHeadroomMeteredAndWindowGated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
-	// east's integral funds floor(48h / 24h) = 2 GPUs despite concurrency 8;
-	// later's window is closed to admission. 8 requested - 2 = 6.
+	// east funds its concurrency of 2; later's window is not open, so it
+	// admits nothing at all. 8 requested - 2 = 6.
 	if result.Forecast.DeficitGPUs != 6 {
 		t.Fatalf("expected deficit of 6 GPUs, got %d", result.Forecast.DeficitGPUs)
 	}

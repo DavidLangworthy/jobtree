@@ -122,20 +122,32 @@ func qsReconcileNS(t *testing.T, state *ClusterState, clock *qsClock, ns, name s
 	return state.Runs[keys.NamespacedKey(ns, name)]
 }
 
-func qsInt64(v int64) *int64 { return &v }
-
-// Decision 1, admission lookahead: an envelope whose remaining integral
-// cannot cover width x period admits nothing new — work is never born
-// opportunistic. The run parks with a reservation instead of binding.
-func TestScenarioZeroHourEnvelopeAdmitsNothing(t *testing.T) {
-	env := qsEnvelope("zero-hours", 8)
-	env.MaxGPUHours = qsInt64(0)
+// Decision 1, born-opportunistic protection (DESIGN-v5 build item 9): an
+// envelope whose CONCURRENCY is already fully committed admits nothing new, so
+// work is never born opportunistic. The run parks with a reservation instead of
+// binding.
+//
+// This replaces the GPU-hour form of the same guarantee. Ruling 10 makes hours
+// metered and never enforced, so "would this admission be born opportunistic?"
+// is now answerable from concurrency alone: if every GPU of the envelope is
+// already held by an equal or senior claim, funding.AvailableWidth returns 0 and
+// admission must refuse rather than admit work that is unfunded at birth.
+func TestScenarioCommittedConcurrencyAdmitsNothing(t *testing.T) {
+	// The node deliberately has SPARE GPUs (16) while the envelope's
+	// concurrency (8) is fully committed by an incumbent. Without the slack the
+	// run would park on physical capacity and the test would pass even with the
+	// funding gate removed — quota, not hardware, must be what refuses it.
+	env := qsEnvelope("committed", 8)
 	state := qsState(
-		[]topology.SourceNode{qsNode("n1", 8)},
+		[]topology.SourceNode{qsNode("n1", 16)},
 		[]v1.Budget{qsBudget("team-budget", "team", env)},
-		qsRun("starved", "team", 4, qsBase),
+		qsRun("incumbent", "team", 8, qsBase),
+		qsRun("starved", "team", 4, qsBase.Add(time.Minute)),
 	)
 	clock := &qsClock{now: qsBase}
+
+	// The incumbent holds the whole envelope.
+	seedRunning(t, state, keys.NamespacedKey(keys.DefaultNamespace, "incumbent"), qsBase)
 
 	run := qsReconcile(t, state, clock, "starved")
 
@@ -145,65 +157,12 @@ func TestScenarioZeroHourEnvelopeAdmitsNothing(t *testing.T) {
 	if run.Status.PendingReservation == nil {
 		t.Fatalf("expected a reservation for the parked run, got none (message: %s)", run.Status.Message)
 	}
-	if n := len(state.Leases); n != 0 {
-		t.Fatalf("expected no leases, got %d", n)
-	}
-}
-
-// Decision 1, exhaustion demotes: a running job whose envelope integral
-// runs out keeps its GPUs and keeps running — it reclassifies to unfunded
-// (visible in status), and the envelope never overdrafts.
-func TestScenarioExhaustionDemotesWithoutKilling(t *testing.T) {
-	// Admission needs width x period (4 x 24h = 96) of remaining integral,
-	// so the envelope is sized to fund the run at exactly one period; it
-	// exhausts after 24h of running.
-	env := qsEnvelope("metered", 8)
-	env.MaxGPUHours = qsInt64(96)
-	state := qsState(
-		[]topology.SourceNode{qsNode("n1", 8)},
-		[]v1.Budget{qsBudget("team-budget", "team", env)},
-		qsRun("coaster", "team", 4, qsBase),
-	)
-	clock := &qsClock{now: qsBase}
-
-	// Single-committer cutover: the scheduler plugin schedules and funds the
-	// run (4x24h at start). seedRunning stands in for its mint, and the
-	// reconcile derives the funding status the lifecycle assertions read.
-	seedRunning(t, state, keys.NamespacedKey(keys.DefaultNamespace, "coaster"), qsBase)
-	run := qsReconcile(t, state, clock, "coaster")
-	if run.Status.Phase != RunPhaseRunning {
-		t.Fatalf("seeded run should be Running and funded at start, got %s: %s", run.Status.Phase, run.Status.Message)
-	}
-	if run.Status.Funding == nil || run.Status.Funding.OwnedGPUs != 4 {
-		t.Fatalf("expected 4 owned GPUs at start, got %+v", run.Status.Funding)
-	}
-
-	// Coast past the integral: 4 GPUs drain 96 GPU-hours in 24h.
-	clock.now = qsBase.Add(25 * time.Hour)
-	run = qsReconcile(t, state, clock, "coaster")
-
-	if run.Status.Phase != RunPhaseRunning {
-		t.Fatalf("exhaustion must demote, not kill: got %s: %s", run.Status.Phase, run.Status.Message)
-	}
+	// The incumbent's lease is the only one: nothing was minted for the
+	// starved run, which is what "never born opportunistic" means.
 	for i := range state.Leases {
-		if state.Leases[i].Status.Closed {
-			t.Fatalf("lease %s closed by exhaustion", state.Leases[i].Name)
+		if state.Leases[i].Spec.RunRef.Name == "starved" {
+			t.Fatalf("minted a lease for a run with no concurrency headroom: %+v", state.Leases[i])
 		}
-	}
-	if run.Status.Funding == nil || run.Status.Funding.UnfundedGPUs != 4 || run.Status.Funding.OwnedGPUs != 0 {
-		t.Fatalf("expected all 4 GPUs unfunded after exhaustion, got %+v", run.Status.Funding)
-	}
-
-	// No overdraft: the envelope's consumed hours are clamped at its cap.
-	bc := NewBudgetController(&qsClock{now: clock.now}, NewBudgetMetrics())
-	status := bc.ReconcileBudget(&state.Budgets[0], funding.Evaluate(funding.Input{
-		Budgets: state.Budgets, Leases: state.Leases, Runs: state.Runs, Now: clock.now,
-	}))
-	if len(status.Usage) != 1 || status.Usage[0].ConsumedGPUHours > 96+1e-6 {
-		t.Fatalf("overdraft must be unrepresentable: %+v", status.Usage)
-	}
-	if head := status.Headroom[0].GPUHours; head == nil || *head != 0 {
-		t.Fatalf("expected zero GPU-hour headroom, got %v", head)
 	}
 }
 

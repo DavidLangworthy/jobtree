@@ -88,7 +88,6 @@ fi
 step "Done. Quick reference:"
 echo "  go test ./...                      # unit tests (~20s)"
 echo "  make spec-check                    # baseline TLC models"
-echo "  make ledger-compaction-apalache-check  # ordinary bounded SMT rail"
 echo "  codex --version && claude --version"
 echo "  kind create cluster                # local real cluster"
 echo "  kwokctl create cluster --wait 60s  # fake-node scale cluster"

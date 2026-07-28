@@ -30,10 +30,6 @@ func env(name string, concurrency int32, mods ...func(*v1.BudgetEnvelope)) v1.Bu
 	return e
 }
 
-func withMaxHours(hours int64) func(*v1.BudgetEnvelope) {
-	return func(e *v1.BudgetEnvelope) { e.MaxGPUHours = &hours }
-}
-
 func withWindow(start, end time.Time) func(*v1.BudgetEnvelope) {
 	return func(e *v1.BudgetEnvelope) {
 		s, en := v1.NewTime(start), v1.NewTime(end)
@@ -209,154 +205,6 @@ func TestOwnerClaimFunded(t *testing.T) {
 	}
 }
 
-// R4 pt2: the ledger-compaction primitive. Settling closed leases before the
-// earliest retained start and feeding SettleAccrual back must reproduce the full
-// replay's funding decision EXACTLY — including a MaxGPUHours cap whose depletion
-// the settled hours drive — while dropping the settled leases from the replay.
-// The golden oracle does not capture GPU-hours, so this round-trip is the rail.
-func TestLedgerCompactionRoundTrip(t *testing.T) {
-	horizon := base.Add(5 * time.Hour)
-	now := base.Add(10 * time.Hour)
-	westKey := EnvelopeKey{Namespace: "team", Budget: "team-budget", Envelope: "west"}
-	budgets := []v1.Budget{budgetOf("team", "team-budget", nil, env("west", 8, withMaxHours(30)))}
-	runs := runsMap(runOf("old", "team", base, false), runOf("new", "team", horizon, false))
-	// Settled: 4 GPUs, base→horizon = 20 GPU-hours. Retained: 4 GPUs open from the
-	// horizon. The 30 GPU-hour cap is exhausted mid-way through the retained lease,
-	// so the settled hours must be carried forward for the demotion to match.
-	settled := leaseOf("settled", "old", "team", "team-budget", "west", 4, base, closedAt(horizon))
-	retained := leaseOf("retained", "new", "team", "team-budget", "west", 4, horizon)
-	leases := []v1.GPULease{settled, retained}
-	mkInput := func() Input { return Input{Budgets: budgets, Leases: leases, Runs: runs, Now: now} }
-
-	full := Evaluate(mkInput())
-
-	prior := SettleAccrual(mkInput(), horizon)
-	if len(prior) == 0 {
-		t.Fatalf("SettleAccrual produced no summary for a settled lease")
-	}
-	ci := mkInput()
-	ci.SettlementHorizon = horizon
-	ci.PriorAccrual = prior
-	compact := Evaluate(ci)
-
-	// Dropping the settled lease WITHOUT the seed changes the result — proof that
-	// the drop is real and the summary is load-bearing: unseeded, the retained
-	// lease no longer inherits the exhausted cap (20 GPU-hours vs the full 30).
-	di := mkInput()
-	di.SettlementHorizon = horizon
-	if noSeed := Evaluate(di); math.Abs(noSeed.Envelope(westKey).ConsumedGPUHours-full.Envelope(westKey).ConsumedGPUHours) < 1e-6 {
-		t.Errorf("expected dropping settled leases without the seed to change consumed hours; both = %v", full.Envelope(westKey).ConsumedGPUHours)
-	}
-
-	if fc, cc := classOf(t, full, leases, "retained"), classOf(t, compact, leases, "retained"); fc != cc {
-		t.Errorf("retained lease class differs: full=%s compact=%s", fc, cc)
-	}
-
-	fe, ce := full.Envelope(westKey), compact.Envelope(westKey)
-	if math.Abs(fe.ConsumedGPUHours-ce.ConsumedGPUHours) > 1e-9 {
-		t.Errorf("ConsumedGPUHours: full=%v compact=%v", fe.ConsumedGPUHours, ce.ConsumedGPUHours)
-	}
-	for _, cl := range []Class{ClassOwned, ClassShared, ClassBorrowed, ClassUnfunded} {
-		if math.Abs(fe.HoursByClass[cl]-ce.HoursByClass[cl]) > 1e-9 {
-			t.Errorf("HoursByClass[%s]: full=%v compact=%v", cl, fe.HoursByClass[cl], ce.HoursByClass[cl])
-		}
-		if fe.WidthByClass[cl] != ce.WidthByClass[cl] {
-			t.Errorf("WidthByClass[%s]: full=%d compact=%d", cl, fe.WidthByClass[cl], ce.WidthByClass[cl])
-		}
-	}
-	// The cap actually bound (otherwise the round-trip proves nothing about
-	// depletion): 30 GPU-hours consumed, and the retained 4-GPU lease demoted to
-	// Unfunded once the settled hours exhausted the envelope.
-	if math.Abs(fe.ConsumedGPUHours-30) > 1e-6 {
-		t.Errorf("expected the 30 GPU-hour cap to bind, consumed=%v", fe.ConsumedGPUHours)
-	}
-	if fe.WidthByClass[ClassUnfunded] != 4 {
-		t.Errorf("expected the retained 4-GPU lease demoted to Unfunded at Now, got unfunded width %d", fe.WidthByClass[ClassUnfunded])
-	}
-}
-
-// R4 pt2: compaction is only applied when provably safe. A retained lease that
-// STARTED before the horizon straddles the settled epoch, so Evaluate must ignore
-// the settlement (poison PriorAccrual and all) and do a full replay — correct,
-// just uncompacted.
-func TestLedgerCompactionFallsBackOnStraddle(t *testing.T) {
-	horizon := base.Add(5 * time.Hour)
-	now := base.Add(10 * time.Hour)
-	westKey := EnvelopeKey{Namespace: "team", Budget: "team-budget", Envelope: "west"}
-	budgets := []v1.Budget{budgetOf("team", "team-budget", nil, env("west", 8))}
-	runs := runsMap(runOf("a", "team", base, false))
-	settled := leaseOf("settled", "a", "team", "team-budget", "west", 4, base, closedAt(horizon))
-	// Open, started before the horizon → straddles it.
-	straddle := leaseOf("straddle", "a", "team", "team-budget", "west", 4, base.Add(2*time.Hour))
-	leases := []v1.GPULease{settled, straddle}
-	mkInput := func() Input { return Input{Budgets: budgets, Leases: leases, Runs: runs, Now: now} }
-
-	full := Evaluate(mkInput())
-	ci := mkInput()
-	ci.SettlementHorizon = horizon
-	ci.PriorAccrual = map[EnvelopeKey]SettledAccrual{westKey: {ConsumedGPUHours: 999}} // must be ignored
-	compact := Evaluate(ci)
-
-	if math.Abs(full.Envelope(westKey).ConsumedGPUHours-compact.Envelope(westKey).ConsumedGPUHours) > 1e-9 {
-		t.Errorf("straddle must force a full replay (poison PriorAccrual ignored): full=%v compact=%v",
-			full.Envelope(westKey).ConsumedGPUHours, compact.Envelope(westKey).ConsumedGPUHours)
-	}
-}
-
-// R4 pt2 (adversarial-review catch): a horizon ahead of Now would settle a lease
-// that is still LIVE — an Interval.End in (Now, horizon] puts effectiveEnd at or
-// before the horizon while the lease still holds width at Now. settlementSafe's
-// no-straddle loop skips settled leases, so only an explicit horizon <= Now guard
-// catches this one. Unguarded, compaction dropped the live lease's width (Owned 4
-// -> 0) and SettleAccrual integrated it past the clock (16 -> 24 GPU-hours): both
-// are gating outputs, and both would fail silently because the golden oracle
-// captures widths and lenders, not GPU-hours.
-func TestLedgerCompactionRefusesFutureHorizon(t *testing.T) {
-	now := base.Add(5 * time.Hour)
-	horizon := base.Add(8 * time.Hour)
-	westKey := EnvelopeKey{Namespace: "team", Budget: "team-budget", Envelope: "west"}
-	budgets := []v1.Budget{budgetOf("team", "team-budget", nil, env("west", 8))}
-	runs := runsMap(runOf("ghost", "team", base, false))
-	// Live at Now (5h < 7h), yet effectiveEnd (7h) is at or before the horizon (8h).
-	ghost := leaseOf("ghost", "ghost", "team", "team-budget", "west", 4, base.Add(time.Hour), endingAt(base.Add(7*time.Hour)))
-	leases := []v1.GPULease{ghost}
-	mkInput := func() Input { return Input{Budgets: budgets, Leases: leases, Runs: runs, Now: now} }
-
-	if prior := SettleAccrual(mkInput(), horizon); prior != nil {
-		t.Errorf("SettleAccrual must refuse a horizon past Now rather than integrate a live lease to it, got %v", prior)
-	}
-
-	full := Evaluate(mkInput())
-	fe := full.Envelope(westKey)
-	if math.Abs(fe.ConsumedGPUHours-16) > 1e-6 {
-		t.Fatalf("setup: expected 4 GPUs x 4h = 16 GPU-hours accrued by Now, got %v", fe.ConsumedGPUHours)
-	}
-	if fe.WidthByClass[ClassOwned] != 4 {
-		t.Fatalf("setup: expected the lease live and Owned at Now, got owned width %d", fe.WidthByClass[ClassOwned])
-	}
-
-	ci := mkInput()
-	ci.SettlementHorizon = horizon
-	// The summary a caller would have computed for this horizon; it must be ignored.
-	ci.PriorAccrual = map[EnvelopeKey]SettledAccrual{westKey: {
-		ConsumedGPUHours: 24,
-		HoursByClass:     map[Class]float64{ClassOwned: 24},
-	}}
-	ce := Evaluate(ci).Envelope(westKey)
-
-	if math.Abs(ce.ConsumedGPUHours-fe.ConsumedGPUHours) > 1e-9 {
-		t.Errorf("a horizon past Now must force a full replay: full=%v compact=%v GPU-hours", fe.ConsumedGPUHours, ce.ConsumedGPUHours)
-	}
-	if ce.WidthByClass[ClassOwned] != fe.WidthByClass[ClassOwned] {
-		t.Errorf("a horizon past Now must not drop a live lease's width: full=%d compact=%d", fe.WidthByClass[ClassOwned], ce.WidthByClass[ClassOwned])
-	}
-	if fc, cc := classOf(t, full, leases, "ghost"), classOf(t, Evaluate(ci), leases, "ghost"); fc != cc {
-		t.Errorf("live lease class differs: full=%s compact=%s", fc, cc)
-	}
-}
-
-// The fill has skip semantics (specs/QuotaEvaluation.tla): an oversized
-// claim goes unfunded without blocking smaller claims ranked below it.
 func TestSkipSemantics(t *testing.T) {
 	budgets := []v1.Budget{budgetOf("team", "team-budget", nil, env("west", 8))}
 	big := runOf("big", "team", base, false)
@@ -492,50 +340,27 @@ func TestLendingCapsAndACL(t *testing.T) {
 // Exhaustion demotes without killing: the integral drains to zero, the
 // claim keeps its leases but evaluates Unfunded, and the envelope is never
 // overdrawn.
-func TestIntegralExhaustionDemotes(t *testing.T) {
-	budgets := []v1.Budget{budgetOf("team", "team-budget", nil, env("west", 8, withMaxHours(8)))}
-	run := runOf("train", "team", base, false)
-	leases := []v1.GPULease{leaseOf("l1", "train", "team", "team-budget", "west", 4, base)}
-	ev := Evaluate(Input{Budgets: budgets, Leases: leases, Runs: runsMap(run), Now: base.Add(3 * time.Hour)})
-
-	if got := classOf(t, ev, leases, "l1"); got != ClassUnfunded {
-		t.Errorf("exhausted envelope should demote its claim, got %s", got)
-	}
-	acct := ev.Envelope(EnvelopeKey{Namespace: "team", Budget: "team-budget", Envelope: "west"})
-	if acct.ConsumedGPUHours > 8+1e-6 {
-		t.Errorf("no overdraft: consumed %v > cap 8", acct.ConsumedGPUHours)
-	}
-	runAcct := ev.Run("team/train")
-	if math.Abs(runAcct.GPUHours[ClassOwned]-8) > 1e-3 || math.Abs(runAcct.GPUHours[ClassUnfunded]-4) > 1e-3 {
-		t.Errorf("expected 8 funded / 4 unfunded GPU-hours, got %v / %v",
-			runAcct.GPUHours[ClassOwned], runAcct.GPUHours[ClassUnfunded])
-	}
-}
-
-// A window that moves forward stops charging hours spent in the old
-// window, so the same claim re-funds by pure arithmetic — nothing to
-// resubmit.
+// A claim outside its envelope's window is Unfunded; moving the window forward
+// re-funds it by pure arithmetic — nothing to resubmit. The integral half of
+// this doctrine died with maxGPUHours (Ruling 10); the WINDOW half is the whole
+// rule now (INV-WINDOW-REQUIRED, DESIGN-v5 §1).
 func TestWindowReopenRefunds(t *testing.T) {
 	run := runOf("train", "team", base, false)
 	leases := []v1.GPULease{leaseOf("l1", "train", "team", "team-budget", "west", 4, base)}
 	now := base.Add(4 * time.Hour)
 
-	exhausted := []v1.Budget{budgetOf("team", "team-budget", nil,
-		env("west", 8, withMaxHours(8), withWindow(base, base.Add(6*time.Hour))))}
-	ev := Evaluate(Input{Budgets: exhausted, Leases: leases, Runs: runsMap(run), Now: now})
+	closed := []v1.Budget{budgetOf("team", "team-budget", nil,
+		env("west", 8, withWindow(base.Add(-2*time.Hour), base.Add(time.Hour))))}
+	ev := Evaluate(Input{Budgets: closed, Leases: leases, Runs: runsMap(run), Now: now})
 	if got := classOf(t, ev, leases, "l1"); got != ClassUnfunded {
-		t.Fatalf("integral exhausted, expected Unfunded, got %s", got)
+		t.Fatalf("window closed, expected Unfunded, got %s", got)
 	}
 
 	renewed := []v1.Budget{budgetOf("team", "team-budget", nil,
-		env("west", 8, withMaxHours(8), withWindow(base.Add(3*time.Hour), base.Add(9*time.Hour))))}
+		env("west", 8, withWindow(base.Add(3*time.Hour), base.Add(9*time.Hour))))}
 	ev = Evaluate(Input{Budgets: renewed, Leases: leases, Runs: runsMap(run), Now: now})
 	if got := classOf(t, ev, leases, "l1"); got != ClassOwned {
 		t.Errorf("renewed window should re-fund the claim, got %s", got)
-	}
-	acct := ev.Envelope(EnvelopeKey{Namespace: "team", Budget: "team-budget", Envelope: "west"})
-	if math.Abs(acct.ConsumedGPUHours-4) > 1e-6 {
-		t.Errorf("only in-window hours charge the integral: expected 4, got %v", acct.ConsumedGPUHours)
 	}
 }
 
@@ -747,23 +572,6 @@ func TestAvailableWidthNameTiebreak(t *testing.T) {
 	}
 }
 
-func TestAvailableWidthIntegralLookahead(t *testing.T) {
-	budgets := []v1.Budget{budgetOf("team", "team-budget", nil, env("west", 8, withMaxHours(4)))}
-	ev := Evaluate(Input{Budgets: budgets, Now: base, Period: time.Hour})
-	key := EnvelopeKey{Namespace: "team", Budget: "team-budget", Envelope: "west"}
-	// 4 GPU-hours remaining at a 1h period funds at most 4 GPUs of new work.
-	if got := ev.AvailableWidth(key, "team", base, "", false); got != 4 {
-		t.Errorf("admission lookahead should cap width at remaining/period = 4, got %d", got)
-	}
-
-	zero := []v1.Budget{budgetOf("team", "team-budget", nil, env("west", 8, withMaxHours(0)))}
-	ev = Evaluate(Input{Budgets: zero, Now: base, Period: time.Hour})
-	// R14 done-when: a zero-hour envelope cannot fund an admission.
-	if got := ev.AvailableWidth(key, "team", base, "", false); got != 0 {
-		t.Errorf("zero-hour envelope must not fund admissions, got %d", got)
-	}
-}
-
 // --- property tests -------------------------------------------------------
 //
 // Hand-rolled generators in the style of the binder property tests: a
@@ -792,10 +600,6 @@ func genWorld(rng *rand.Rand) world {
 		envs := make([]v1.BudgetEnvelope, 0, n)
 		for i := 0; i < n; i++ {
 			e := env(fmt.Sprintf("env-%d", i), int32(1+rng.Intn(16)))
-			if rng.Intn(2) == 0 {
-				hours := int64(rng.Intn(64))
-				e.MaxGPUHours = &hours
-			}
 			if rng.Intn(4) == 0 {
 				s := v1.NewTime(base.Add(time.Duration(rng.Intn(5)-2) * time.Hour))
 				en := v1.NewTime(s.Add(time.Duration(1+rng.Intn(8)) * time.Hour))
@@ -809,10 +613,6 @@ func genWorld(rng *rand.Rand) world {
 				if rng.Intn(2) == 0 {
 					c := int32(1 + rng.Intn(8))
 					policy.MaxConcurrency = &c
-				}
-				if rng.Intn(2) == 0 {
-					h := int64(rng.Intn(32))
-					policy.MaxGPUHours = &h
 				}
 				e.Lending = &policy
 			}
@@ -884,32 +684,10 @@ func evaluateWorld(w world) *Evaluation {
 	return Evaluate(Input{Budgets: w.budgets, Leases: w.leases, Runs: w.runs, Now: w.now, Period: w.period})
 }
 
-// concurrencyOnly strips every integral cap from the world. The ranking
-// properties below (owner independence, removal monotonicity) are exact on
-// the concurrency dimension — the one specs/QuotaEvaluation.tla models. The
-// integral dimension is deliberately not independent: family consumption
-// really does drain a shared envelope's GPU-hours ("counts against lender's
-// envelope usage"), so accrual history couples claims across tiers there.
-func concurrencyOnly(w world) world {
-	budgets := make([]v1.Budget, len(w.budgets))
-	for i := range w.budgets {
-		b := *w.budgets[i].DeepCopy()
-		for j := range b.Spec.Envelopes {
-			b.Spec.Envelopes[j].MaxGPUHours = nil
-			if b.Spec.Envelopes[j].Lending != nil {
-				b.Spec.Envelopes[j].Lending.MaxGPUHours = nil
-			}
-		}
-		for j := range b.Spec.AggregateCaps {
-			b.Spec.AggregateCaps[j].MaxGPUHours = nil
-		}
-		budgets[i] = b
-	}
-	w.budgets = budgets
-	return w
-}
-
-// NoOverdraft: funded width and funded accrual never exceed any cap.
+// NoOverdraft: funded width never exceeds any concurrency cap. The GPU-hour
+// half of this property died with maxGPUHours — there is no integral to
+// overdraw (Ruling 10), and DESIGN-v5 §5 records observed hours without
+// clamping them.
 func TestPropertyNoOverdraft(t *testing.T) {
 	for seed := int64(0); seed < 150; seed++ {
 		w := genWorld(rand.New(rand.NewSource(seed)))
@@ -919,21 +697,10 @@ func TestPropertyNoOverdraft(t *testing.T) {
 				t.Fatalf("seed %d: envelope %v funded width %d exceeds concurrency %d",
 					seed, acct.Key, acct.FundedWidth(), acct.Spec.Concurrency)
 			}
-			if acct.Spec.MaxGPUHours != nil && acct.ConsumedGPUHours > float64(*acct.Spec.MaxGPUHours)+1e-6 {
-				t.Fatalf("seed %d: envelope %v consumed %v exceeds maxGPUHours %d",
-					seed, acct.Key, acct.ConsumedGPUHours, *acct.Spec.MaxGPUHours)
-			}
 			if policy := acct.Spec.Lending; policy != nil {
 				if policy.MaxConcurrency != nil && acct.WidthByClass[ClassBorrowed] > *policy.MaxConcurrency {
 					t.Fatalf("seed %d: envelope %v borrowed width %d exceeds lending cap %d",
 						seed, acct.Key, acct.WidthByClass[ClassBorrowed], *policy.MaxConcurrency)
-				}
-				// Depletion crossings land on millisecond boundaries, so the
-				// borrowed-hours attribution may exceed the lending cap by
-				// the sliver accrued past the exact crossing (width × 1ms).
-				if policy.MaxGPUHours != nil && acct.HoursByClass[ClassBorrowed] > float64(*policy.MaxGPUHours)+1e-3 {
-					t.Fatalf("seed %d: envelope %v borrowed hours %v exceed lending cap %d",
-						seed, acct.Key, acct.HoursByClass[ClassBorrowed], *policy.MaxGPUHours)
 				}
 			}
 		}
@@ -977,11 +744,16 @@ func TestPropertyConservation(t *testing.T) {
 
 // Owner recall, structurally: removing every family borrower's leases never
 // changes the classification of the owner's own claims (sponsor carve-outs
-// are contractual and deliberately excluded). Exact on concurrency-only
-// worlds — see concurrencyOnly for why the integral dimension is excluded.
+// are contractual and deliberately excluded).
+//
+// This is now exact on EVERY generated world. It used to hold only after
+// stripping the integral caps, because family consumption really did drain a
+// shared envelope's GPU-hours and so coupled claims across tiers. With hours
+// metered rather than enforced (Ruling 10) that coupling is gone and the
+// property holds unconditionally.
 func TestPropertyOwnerIndependentOfFamilyBorrowers(t *testing.T) {
 	for seed := int64(0); seed < 150; seed++ {
-		w := concurrencyOnly(genWorld(rand.New(rand.NewSource(seed))))
+		w := genWorld(rand.New(rand.NewSource(seed)))
 		ev := evaluateWorld(w)
 
 		ownerClasses := make(map[string]Class)
@@ -1032,7 +804,7 @@ func TestPropertyOwnerIndependentOfFamilyBorrowers(t *testing.T) {
 func TestPropertyRemovalNeverDemotes(t *testing.T) {
 	for seed := int64(0); seed < 100; seed++ {
 		rng := rand.New(rand.NewSource(seed))
-		w := concurrencyOnly(genWorld(rng))
+		w := genWorld(rng)
 		if len(w.runs) == 0 {
 			continue
 		}

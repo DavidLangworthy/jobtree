@@ -27,14 +27,12 @@ func TestReconcileBudgetComputesHeadroomAndMetrics(t *testing.T) {
 				Flavor:      "H100",
 				Selector:    map[string]string{"region": "us-west"},
 				Concurrency: 10,
-				MaxGPUHours: ptrInt64Test(100),
 			}},
 			AggregateCaps: []v1.AggregateCap{{
 				Name:           "cap",
 				Flavor:         "H100",
 				Envelopes:      []string{"env-a"},
 				MaxConcurrency: ptrInt32Test(8),
-				MaxGPUHours:    ptrInt64Test(90),
 			}},
 		},
 	}
@@ -80,9 +78,6 @@ func TestReconcileBudgetComputesHeadroomAndMetrics(t *testing.T) {
 	head := status.Headroom[0]
 	if head.Concurrency != 7 {
 		t.Fatalf("expected concurrency headroom 7, got %d", head.Concurrency)
-	}
-	if head.GPUHours == nil || *head.GPUHours != 92 {
-		t.Fatalf("expected gpu hours headroom 92, got %v", valueOrNil(head.GPUHours))
 	}
 	if len(status.AggregateHeadroom) != 1 {
 		t.Fatalf("expected aggregate headroom entry")

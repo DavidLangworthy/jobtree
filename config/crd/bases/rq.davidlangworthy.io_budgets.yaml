@@ -66,10 +66,6 @@ spec:
                       format: int32
                       minimum: 0
                       type: integer
-                    maxGPUHours:
-                      format: int64
-                      minimum: 0
-                      type: integer
                     name:
                       minLength: 1
                       type: string
@@ -98,6 +94,10 @@ spec:
                   description: BudgetEnvelope defines a location/time scoped limit.
                   properties:
                     concurrency:
+                      description: |-
+                        Concurrency is the whole allocation. GPU-hours are metered and reported,
+                        never enforced (Ruling 10, DESIGN-v5 §1), so an envelope grants
+                        `concurrency` GPUs of `flavor` over `[start, end)` and nothing else.
                       format: int32
                       minimum: 0
                       type: integer
@@ -116,10 +116,6 @@ spec:
                           format: int32
                           minimum: 0
                           type: integer
-                        maxGPUHours:
-                          format: int64
-                          minimum: 0
-                          type: integer
                         to:
                           items:
                             type: string
@@ -127,10 +123,6 @@ spec:
                       required:
                       - allow
                       type: object
-                    maxGPUHours:
-                      format: int64
-                      minimum: 0
-                      type: integer
                     name:
                       minLength: 1
                       type: string
@@ -194,9 +186,6 @@ spec:
                       type: integer
                     flavor:
                       type: string
-                    gpuHours:
-                      format: int64
-                      type: integer
                     name:
                       type: string
                   required:
@@ -268,17 +257,17 @@ spec:
                 x-kubernetes-list-type: map
               headroom:
                 items:
-                  description: EnvelopeHeadroom reports remaining capacity for an
-                    envelope.
+                  description: |-
+                    EnvelopeHeadroom reports remaining capacity for an envelope. Concurrency is
+                    the only dimension: headroom is remaining-against-a-cap, and GPU-hours no
+                    longer have a cap to remain against (Ruling 10). Consumption is still
+                    reported, on EnvelopeUsage.
                   properties:
                     concurrency:
                       format: int32
                       type: integer
                     flavor:
                       type: string
-                    gpuHours:
-                      format: int64
-                      type: integer
                     name:
                       type: string
                   required:

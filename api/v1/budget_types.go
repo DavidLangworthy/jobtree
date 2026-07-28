@@ -2,7 +2,6 @@ package v1
 
 import (
 	"fmt"
-	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -59,10 +58,11 @@ type BudgetEnvelope struct {
 	// +kubebuilder:validation:MinLength=1
 	Flavor   string            `json:"flavor"`
 	Selector map[string]string `json:"selector"`
+	// Concurrency is the whole allocation. GPU-hours are metered and reported,
+	// never enforced (Ruling 10, DESIGN-v5 §1), so an envelope grants
+	// `concurrency` GPUs of `flavor` over `[start, end)` and nothing else.
 	// +kubebuilder:validation:Minimum=0
-	Concurrency int32 `json:"concurrency"`
-	// +kubebuilder:validation:Minimum=0
-	MaxGPUHours *int64       `json:"maxGPUHours,omitempty"`
+	Concurrency int32        `json:"concurrency"`
 	Start       *metav1.Time `json:"start,omitempty"`
 	End         *metav1.Time `json:"end,omitempty"`
 	// Sharing controls family access to this envelope's excess: "" or
@@ -85,8 +85,6 @@ type LendingPolicy struct {
 	To    []string `json:"to,omitempty"`
 	// +kubebuilder:validation:Minimum=0
 	MaxConcurrency *int32 `json:"maxConcurrency,omitempty"`
-	// +kubebuilder:validation:Minimum=0
-	MaxGPUHours *int64 `json:"maxGPUHours,omitempty"`
 }
 
 // AggregateCap bounds the sum across envelopes.
@@ -99,8 +97,6 @@ type AggregateCap struct {
 	Envelopes []string `json:"envelopes"`
 	// +kubebuilder:validation:Minimum=0
 	MaxConcurrency *int32 `json:"maxConcurrency,omitempty"`
-	// +kubebuilder:validation:Minimum=0
-	MaxGPUHours *int64 `json:"maxGPUHours,omitempty"`
 }
 
 // BudgetStatus surfaces derived accounting data.
@@ -145,12 +141,14 @@ type EnvelopeUsage struct {
 	ConsumedGPUHours float64 `json:"consumedGPUHours,omitempty"`
 }
 
-// EnvelopeHeadroom reports remaining capacity for an envelope.
+// EnvelopeHeadroom reports remaining capacity for an envelope. Concurrency is
+// the only dimension: headroom is remaining-against-a-cap, and GPU-hours no
+// longer have a cap to remain against (Ruling 10). Consumption is still
+// reported, on EnvelopeUsage.
 type EnvelopeHeadroom struct {
 	Name        string `json:"name"`
 	Flavor      string `json:"flavor"`
 	Concurrency int32  `json:"concurrency"`
-	GPUHours    *int64 `json:"gpuHours,omitempty"`
 }
 
 // AggregateHeadroom reports remaining capacity for an aggregate cap.
@@ -158,7 +156,6 @@ type AggregateHeadroom struct {
 	Name        string `json:"name"`
 	Flavor      string `json:"flavor"`
 	Concurrency *int32 `json:"concurrency,omitempty"`
-	GPUHours    *int64 `json:"gpuHours,omitempty"`
 }
 
 // BudgetList contains a list of Budgets.
@@ -248,9 +245,6 @@ func (a *AggregateCap) validate(declared map[string]string) error {
 	if a.MaxConcurrency != nil && *a.MaxConcurrency <= 0 {
 		return fmt.Errorf("maxConcurrency must be positive when set")
 	}
-	if a.MaxGPUHours != nil && *a.MaxGPUHours < 0 {
-		return fmt.Errorf("maxGPUHours must be non-negative")
-	}
 	return nil
 }
 
@@ -275,18 +269,6 @@ func (e *BudgetEnvelope) Validate() error {
 		if !e.End.Time.After(e.Start.Time) {
 			return fmt.Errorf("end must be after start")
 		}
-		if e.MaxGPUHours != nil {
-			dur := e.End.Time.Sub(e.Start.Time)
-			max := float64(e.Concurrency) * dur.Hours()
-			if float64(*e.MaxGPUHours) > max+1e-6 {
-				return fmt.Errorf("maxGPUHours exceeds concurrency×window")
-			}
-		}
-	}
-	if e.MaxGPUHours != nil && e.Start == nil && e.End == nil {
-		if *e.MaxGPUHours < 0 {
-			return fmt.Errorf("maxGPUHours must be non-negative")
-		}
 	}
 	if e.Lending != nil {
 		if err := e.Lending.Validate(); err != nil {
@@ -303,24 +285,6 @@ func (l *LendingPolicy) Validate() error {
 	}
 	if l.MaxConcurrency != nil && *l.MaxConcurrency <= 0 {
 		return fmt.Errorf("lending.maxConcurrency must be positive when set")
-	}
-	if l.MaxGPUHours != nil && *l.MaxGPUHours < 0 {
-		return fmt.Errorf("lending.maxGPUHours must be non-negative")
-	}
-	return nil
-}
-
-// ValidateMaxHoursWindow validates integral limit for given window.
-func ValidateMaxHoursWindow(concurrency int32, window time.Duration, hours *int64) error {
-	if hours == nil {
-		return nil
-	}
-	if *hours < 0 {
-		return fmt.Errorf("maxGPUHours must be non-negative")
-	}
-	limit := float64(concurrency) * window.Hours()
-	if float64(*hours) > limit+1e-6 {
-		return fmt.Errorf("maxGPUHours exceeds concurrency×window")
 	}
 	return nil
 }

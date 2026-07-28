@@ -72,14 +72,12 @@ func TestPlanRespectsAggregateCap(t *testing.T) {
 		flavor:      "H100",
 		concurrency: 10,
 		selector:    map[string]string{"region": "us-west"},
-		maxGPUHours: ptrInt64(100),
 	})
 	b.Spec.AggregateCaps = []v1.AggregateCap{{
 		Name:           "cap",
 		Flavor:         "H100",
 		Envelopes:      []string{"env-a"},
 		MaxConcurrency: ptrInt32(3),
-		MaxGPUHours:    ptrInt64(30),
 	}}
 	inv := NewInventory(evalOf(now, b))
 
@@ -222,7 +220,6 @@ type envSpec struct {
 	flavor      string
 	concurrency int32
 	selector    map[string]string
-	maxGPUHours *int64
 	lending     *v1.LendingPolicy
 	sharing     string
 	start       *time.Time
@@ -238,7 +235,6 @@ func budgetOf(name, owner string, parents []string, envelopes ...envSpec) v1.Bud
 			Flavor:      env.flavor,
 			Selector:    env.selector,
 			Concurrency: env.concurrency,
-			MaxGPUHours: env.maxGPUHours,
 			Lending:     env.lending,
 			Sharing:     env.sharing,
 		}

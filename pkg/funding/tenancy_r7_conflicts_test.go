@@ -171,7 +171,7 @@ func TestConflictRetroactivelyErasesAccruedHours(t *testing.T) {
 	now := base.Add(4 * time.Hour)
 	aBudget := v1.Budget{
 		ObjectMeta: v1.ObjectMeta{Name: "a-budget", Namespace: "tenant-a"},
-		Spec:       v1.BudgetSpec{Owner: "org:ai", Envelopes: []v1.BudgetEnvelope{env("west", 8, withMaxHours(40))}},
+		Spec:       v1.BudgetSpec{Owner: "org:ai", Envelopes: []v1.BudgetEnvelope{env("west", 8)}},
 	}
 	run := &v1.Run{
 		ObjectMeta: v1.ObjectMeta{Name: "train", Namespace: "tenant-a", CreationTimestamp: v1.NewTime(base)},
@@ -194,35 +194,29 @@ func TestConflictRetroactivelyErasesAccruedHours(t *testing.T) {
 	runs := map[string]*v1.Run{"tenant-a/train": run}
 	leases := []v1.GPULease{lease}
 
-	stats := func(ev *Evaluation) (consumed float64, remaining float64) {
-		remaining = -1
+	stats := func(ev *Evaluation) (consumed float64) {
 		for _, acct := range ev.Envelopes() {
 			consumed += acct.ConsumedGPUHours
-			if r := acct.RemainingGPUHours(); r != nil {
-				remaining = *r
-			}
 		}
 		return
 	}
 
-	consumedBefore, remainingBefore := stats(Evaluate(Input{Budgets: []v1.Budget{aBudget}, Leases: leases, Runs: runs, Now: now}))
-	if consumedBefore != 32 || remainingBefore != 8 {
-		t.Fatalf("fixture: expected 32 accrued / 8 remaining GPU-hours before the conflict, got %.1f / %.1f",
-			consumedBefore, remainingBefore)
+	consumedBefore := stats(Evaluate(Input{Budgets: []v1.Budget{aBudget}, Leases: leases, Runs: runs, Now: now}))
+	if consumedBefore != 32 {
+		t.Fatalf("fixture: expected 32 accrued GPU-hours before the conflict, got %.1f", consumedBefore)
 	}
 
 	other := v1.Budget{
 		ObjectMeta: v1.ObjectMeta{Name: "b-budget", Namespace: "tenant-a"},
 		Spec:       v1.BudgetSpec{Owner: "org:other", Envelopes: []v1.BudgetEnvelope{env("east", 8)}},
 	}
-	consumedAfter, remainingAfter := stats(Evaluate(Input{Budgets: []v1.Budget{aBudget, other}, Leases: leases, Runs: runs, Now: now}))
-	if consumedAfter != 0 || remainingAfter != 40 {
-		t.Fatalf("PINNED BEHAVIOUR CHANGED: after the conflict the envelope reads %.1f consumed / %.1f remaining, "+
-			"not 0 / 40. If this is the P6 decision landing, replace this test with an assertion of the new semantics.",
-			consumedAfter, remainingAfter)
+	consumedAfter := stats(Evaluate(Input{Budgets: []v1.Budget{aBudget, other}, Leases: leases, Runs: runs, Now: now}))
+	if consumedAfter != 0 {
+		t.Fatalf("PINNED BEHAVIOUR CHANGED: after the conflict the envelope reads %.1f consumed, not 0. "+
+			"If this is the P6 decision landing, replace this test with an assertion of the new semantics.",
+			consumedAfter)
 	}
-	t.Logf("pinned: 32 GPU-hours really burned read as %.1f consumed, and %.1f of already-spent headroom is handed back",
-		consumedAfter, remainingAfter)
+	t.Logf("pinned: 32 GPU-hours really burned read as %.1f consumed", consumedAfter)
 
 	// And the other direction, which is the sharper statement of the same thing:
 	// once the admin removes the conflicting Budget, the hours accrued DURING the
@@ -262,9 +256,8 @@ func TestConflictRetroactivelyErasesAccruedHours(t *testing.T) {
 	aliceRuns := map[string]*v1.Run{"alice/train": aliceRun}
 	aliceLeases := []v1.GPULease{aliceLease}
 	at := func(budgets []v1.Budget, h int) float64 {
-		c, _ := stats(Evaluate(Input{Budgets: budgets, Leases: aliceLeases, Runs: aliceRuns,
+		return stats(Evaluate(Input{Budgets: budgets, Leases: aliceLeases, Runs: aliceRuns,
 			Now: base.Add(time.Duration(h) * time.Hour)}))
-		return c
 	}
 	bound, conflicted, resolved := at([]v1.Budget{small}, 1), at([]v1.Budget{small, rival}, 2), at([]v1.Budget{small}, 3)
 	if bound != 4 || conflicted != 0 || resolved != 12 {
