@@ -274,3 +274,29 @@ bought. **P3's status is now the live question, and it is upstream of P6.**
   documented gap rather than a decision, but it should be documented rather than assumed.
 - The "unfunded and at high risk" phrasing is exactly the existing `ClassUnfunded` + reclaim-on-demand
   path, so the mechanism needs nothing new — only the accrual anchoring does.
+
+## Ruling 9 — management cannot take back spent quota, and Kubernetes is not where that gets sorted out (2026-07-28)
+
+> "Management cannot take back quota that is already spent. They might wish they could and often do,
+> but kubernetes is not the right place to sort that problem out."
+
+Restates Ruling 6's core with a scope clause that is new and does independent work. Ruling 6 said
+accrued history is immutable; this says the **recourse** for wishing it were otherwise is
+organisational, not technical — the scheduler must stop trying to model it, and a proposal whose
+justification is "but the manager needs to claw that back" is out of scope by construction rather
+than merely unimplemented.
+
+**What it settles outright.** `accrue` clamps the *reading* of consumed hours to the current cap
+(`pkg/funding/evaluate.go:993-997`), so 500 spent GPU-hours display as 250 once the cap drops to 500.
+That is the ledger reporting that spent quota was taken back. It is not a semantics choice between
+candidate models — every model must report 500 — so it is a **bug**, not an open question. It is the
+same defect class as the frozen backlog gauge: state right, metric lying about it.
+
+**What it does NOT settle**, and the owner said so when stating it: how much remains going forward
+after a re-grant. Zero, a proportional remainder, or the full new number all leave spent hours spent
+and charged. The principle scopes the question to *forward entitlement only*; it does not choose
+within it.
+
+**Where it will weigh later.** Any proposal that reaches backwards — recomputing an old interval,
+repairing a summary under a new window, clamping a historical reading — is refused by this ruling
+without further argument. It is the standing answer to F1, F5, and the window-axis half of P6.
