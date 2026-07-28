@@ -431,3 +431,40 @@ lost atomicity harmless:
 
 **Sizing is a measurement, not a guess.** Size a real org tree first, pick a shard boundary with
 generous headroom, and record the number. "Well clear" needs a figure attached or it is a hope.
+
+## Ruling 12 — versions are never skipped, only observed late; late versions do not matter (2026-07-28)
+
+> "Ok, so skipped versions are not really skipped, they are late. Late versions don't matter."
+
+Closes design question Q4 and dissolves Sol's gap-detection concern rather than building for it.
+
+A watch that misses an intermediate version has not lost an *effect*; it has seen the world later. The
+scheduler always acts on the most recent state it holds, converges to the correct one, and never acts
+wrongly relative to what it knew. Gap detection would buy nothing a consumer could use.
+
+The one thing genuinely given up, stated plainly so nobody discovers it later: **a revocation that is
+reverted before anyone observes it never takes effect.** That is correct rather than regrettable — a
+grant change reverted within a watch interval is a flapping edit, not a decision, and a manager who
+needs a revocation to bite holds it long enough to be seen. Ruling 9's spirit applies: the recourse for
+"I meant that briefly" is organisational.
+
+Consequence: **no gap detection, no version-continuity requirement, no `firstSeen` bookkeeping for
+continuity.** `INV-SNAP-MONOTONE` still rejects a version that moves *backwards*, which is a different
+defect — that is republication rewriting the present, not lateness.
+
+## Ruling 13 — `U` is settable cluster policy (2026-07-28)
+
+> "U should be settable."
+
+`U` is the deadline after which a gang still below `minRunnableGPUs` is unwound: leases closed, pods
+deleted, reservation released, run requeued. It is the only number left in the design.
+
+**Settable, and specifically cluster policy — not tenant-declared.** That distinction is the whole
+point. The obvious reuse is `spec.runtime.checkpoint` (`controllers/run_controller.go:944-949`), and it
+is wrong twice over: tenant-declared means a tenant can hold GPUs indefinitely by declaring a large
+value, and its zero default means immediate destruction for everyone who does not set it. Both are
+failure modes the deadline exists to prevent.
+
+So: a cluster-level setting, with a **default** (most operators will never set it) and an **enforced
+floor** of at least a few activation intervals, so a misconfiguration cannot reintroduce
+destroy-at-one-tick. Operators may raise it; nothing may lower it past the floor.
