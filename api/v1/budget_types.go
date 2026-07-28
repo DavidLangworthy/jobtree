@@ -36,7 +36,13 @@ type BudgetSpec struct {
 	AutoRenew     *AutoRenewSchedule `json:"autoRenew,omitempty"`
 }
 
-// AutoRenewSchedule defines reporting rotation for open-ended envelopes.
+// AutoRenewSchedule defines reporting rotation for expiring envelopes.
+//
+// It matters MORE now, not less: INV-WINDOW-REQUIRED means every envelope has an
+// end, so every envelope eventually stops funding work. There are no open-ended
+// envelopes for it to rotate any more — it is the notice that an expiry is
+// coming. It still does NOT auto-extend anything; window rotation stays an
+// explicit operator action.
 type AutoRenewSchedule struct {
 	Period       metav1.Duration `json:"period"`
 	NotifyBefore metav1.Duration `json:"notifyBefore"`
@@ -52,6 +58,8 @@ const (
 )
 
 // BudgetEnvelope defines a location/time scoped limit.
+//
+// +kubebuilder:validation:XValidation:rule="self.end > self.start",message="end must be after start"
 type BudgetEnvelope struct {
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
@@ -62,9 +70,15 @@ type BudgetEnvelope struct {
 	// never enforced (Ruling 10, DESIGN-v5 §1), so an envelope grants
 	// `concurrency` GPUs of `flavor` over `[start, end)` and nothing else.
 	// +kubebuilder:validation:Minimum=0
-	Concurrency int32        `json:"concurrency"`
-	Start       *metav1.Time `json:"start,omitempty"`
-	End         *metav1.Time `json:"end,omitempty"`
+	Concurrency int32 `json:"concurrency"`
+	// Start and End are REQUIRED (INV-WINDOW-REQUIRED, DESIGN-v5 §1). They are
+	// pointers rather than values so that an omitted bound is a validation error
+	// rather than a silent zero time, which would read as "the epoch" and fund
+	// nothing without saying why.
+	// +kubebuilder:validation:Required
+	Start *metav1.Time `json:"start"`
+	// +kubebuilder:validation:Required
+	End *metav1.Time `json:"end"`
 	// Sharing controls family access to this envelope's excess: "" or
 	// "family" allows it, "none" opts out.
 	// +kubebuilder:validation:Enum="";family;none
@@ -265,10 +279,17 @@ func (e *BudgetEnvelope) Validate() error {
 	if e.Sharing != "" && e.Sharing != SharingFamily && e.Sharing != SharingNone {
 		return fmt.Errorf("sharing must be %q or %q when set", SharingFamily, SharingNone)
 	}
-	if e.Start != nil && e.End != nil {
-		if !e.End.Time.After(e.Start.Time) {
-			return fmt.Errorf("end must be after start")
-		}
+	// INV-WINDOW-REQUIRED (DESIGN-v5 §1, §7). An envelope grants concurrency over
+	// [start, end) and BOTH bounds are required. This is what makes expiry the
+	// default rather than a convention: an envelope with no end never expires, so
+	// the only way to stop it is to remember to, and nobody does. A HALF-windowed
+	// envelope violates the invariant too — that is now the whole rule, since the
+	// old half-windowed hours-validation gap died with maxGPUHours (Ruling 10).
+	if e.Start == nil || e.End == nil {
+		return fmt.Errorf("start and end are both required: an envelope grants concurrency over a window, and one without an end never expires (INV-WINDOW-REQUIRED)")
+	}
+	if !e.End.Time.After(e.Start.Time) {
+		return fmt.Errorf("end must be after start")
 	}
 	if e.Lending != nil {
 		if err := e.Lending.Validate(); err != nil {

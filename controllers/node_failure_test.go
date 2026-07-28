@@ -79,7 +79,7 @@ func nfBudget(name, owner string) v1.Budget {
 		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: nfNS(owner)},
 		Spec: v1.BudgetSpec{Owner: owner, Envelopes: []v1.BudgetEnvelope{{
 			Name: "west", Flavor: "H100-80GB", Concurrency: 16,
-			Selector: map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
+			Selector: map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"}, Start: &testWindowStart, End: &testWindowEnd,
 		}}},
 	}
 }

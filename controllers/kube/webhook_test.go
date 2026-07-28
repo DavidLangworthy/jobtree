@@ -48,6 +48,15 @@ var schemaRejectedCases = map[string]bool{
 	"aggregate cap missing flavor":              true,
 	"aggregate cap missing name":                true,
 
+	// INV-WINDOW-REQUIRED (DESIGN-v5 §1): `start` and `end` are structurally
+	// Required on the CRD, so the apiserver refuses a missing bound before the
+	// webhook can phrase it. That is the invariant holding in the STRONGER place
+	// — it survives the webhook being off. The webhook's own wording for these
+	// three stays pinned in api/v1/validation_corpus_test.go.
+	"envelope with no window at all":            true,
+	"half-windowed envelope: start with no end": true,
+	"half-windowed envelope: end with no start": true,
+
 	// R14 CEL: min/max and the step grid. `malleable non-positive step` lands here
 	// too — Minimum=1 catches the zero step, and the modulus rules report a
 	// divide-by-zero alongside it, which is the schema speaking either way.
@@ -165,7 +174,7 @@ func TestTheWebhookStillCarriesWhatOnlyItCan(t *testing.T) {
 				Owner: "org:team",
 				Envelopes: []v1.BudgetEnvelope{{
 					Name: "west", Flavor: "H100-80GB",
-					Selector: map[string]string{"zone": "west"}, Concurrency: 8,
+					Selector: map[string]string{"zone": "west"}, Concurrency: 8, Start: &testWindowStart, End: &testWindowEnd,
 				}},
 				AggregateCaps: []v1.AggregateCap{{
 					Name: "all", Flavor: "H100-80GB", Envelopes: []string{"east"},

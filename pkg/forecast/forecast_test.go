@@ -83,7 +83,7 @@ func TestPlanFromCapacityDeficit(t *testing.T) {
 				Name:        "west",
 				Flavor:      testFlavor,
 				Selector:    map[string]string{topology.LabelRegion: "us-west"},
-				Concurrency: 16,
+				Concurrency: 16, Start: &testWindowStart, End: &testWindowEnd,
 			}},
 		},
 	}}
@@ -163,12 +163,14 @@ func TestComputeRemediesVariesWithRealSignals(t *testing.T) {
 				Name:        "west",
 				Flavor:      testFlavor,
 				Selector:    map[string]string{topology.LabelRegion: "us-west"},
-				Concurrency: 32,
+				Concurrency: 32, Start: &testWindowStart,
+
+				// Case 1: no unfunded/spare/malleable signal at all.
+				End: &testWindowEnd,
 			}},
 		},
 	}}
 
-	// Case 1: no unfunded/spare/malleable signal at all.
 	ev := funding.Evaluate(funding.Input{Budgets: budgets, Now: now})
 	plan, err := Plan(Input{
 		Run:          run,
@@ -243,7 +245,7 @@ func TestPlanFutureWindow(t *testing.T) {
 				Selector:      map[string]string{topology.LabelRegion: "us-west"},
 				Concurrency:   32,
 				Start:         &start,
-				PreActivation: &v1.PreActivationPolicy{AllowReservations: true, AllowAdmission: false},
+				PreActivation: &v1.PreActivationPolicy{AllowReservations: true, AllowAdmission: false}, End: &testWindowEnd,
 			}},
 		},
 	}}
@@ -285,7 +287,7 @@ func TestPlanBorrowLimitReason(t *testing.T) {
 				Name:        "west",
 				Flavor:      testFlavor,
 				Selector:    map[string]string{topology.LabelRegion: "us-west"},
-				Concurrency: 8,
+				Concurrency: 8, Start: &testWindowStart, End: &testWindowEnd,
 			}},
 		},
 	}}
@@ -330,7 +332,7 @@ func TestPlanHeadroomExcludesFamilyEnvelopes(t *testing.T) {
 					Name:        "shared-pool",
 					Flavor:      testFlavor,
 					Selector:    map[string]string{topology.LabelRegion: "us-west"},
-					Concurrency: 32,
+					Concurrency: 32, Start: &testWindowStart, End: &testWindowEnd,
 				}},
 			},
 		},
@@ -343,7 +345,7 @@ func TestPlanHeadroomExcludesFamilyEnvelopes(t *testing.T) {
 					Name:        "west",
 					Flavor:      testFlavor,
 					Selector:    map[string]string{topology.LabelRegion: "us-west"},
-					Concurrency: 4,
+					Concurrency: 4, Start: &testWindowStart, End: &testWindowEnd,
 				}},
 			},
 		},
@@ -388,13 +390,16 @@ func TestPlanDeficitRespectsClaimRanking(t *testing.T) {
 					Name:        "west",
 					Flavor:      testFlavor,
 					Selector:    map[string]string{topology.LabelRegion: "us-west"},
-					Concurrency: 8,
+					Concurrency: 8, Start: &testWindowStart,
+
+					// The sibling needs a budget only to appear in the family graph. R7: a
+					// distinct owner lives in a distinct namespace (org-ai-peer), so its runs
+					// derive the peer tier rather than colliding with team in "default".
+					End: &testWindowEnd,
 				}},
 			},
 		},
-		// The sibling needs a budget only to appear in the family graph. R7: a
-		// distinct owner lives in a distinct namespace (org-ai-peer), so its runs
-		// derive the peer tier rather than colliding with team in "default".
+
 		{
 			ObjectMeta: v1.ObjectMeta{Name: "peer-budget", Namespace: "org-ai-peer"},
 			// A legal Budget must carry an envelope with positive concurrency, so a
@@ -404,12 +409,15 @@ func TestPlanDeficitRespectsClaimRanking(t *testing.T) {
 			Spec: v1.BudgetSpec{Owner: "org:ai:peer", Parents: []string{"org:ai"},
 				Envelopes: []v1.BudgetEnvelope{{
 					Name: "idle", Flavor: "A100-40GB",
-					Selector: map[string]string{"region": "us-west"}, Concurrency: 1,
+					Selector: map[string]string{"region": "us-west"}, Concurrency: 1, Start: &testWindowStart,
+
+					// guest is the sibling: it lives in the peer's namespace and SHARES the
+					// team's envelope (RunRef in org-ai-peer, paid by team-budget in default).
+					End: &testWindowEnd,
 				}}},
 		},
 	}
-	// guest is the sibling: it lives in the peer's namespace and SHARES the
-	// team's envelope (RunRef in org-ai-peer, paid by team-budget in default).
+
 	guest := trackedRunOf("guest", "org:ai:peer", now.Add(-2*time.Hour))
 	guest.Namespace = "org-ai-peer"
 	runs := runsMap(
@@ -473,14 +481,14 @@ func TestPlanHeadroomWindowGated(t *testing.T) {
 					Name:        "east",
 					Flavor:      testFlavor,
 					Selector:    map[string]string{topology.LabelRegion: "us-east"},
-					Concurrency: 2,
+					Concurrency: 2, Start: &testWindowStart, End: &testWindowEnd,
 				},
 				{
 					Name:        "later",
 					Flavor:      testFlavor,
 					Selector:    map[string]string{topology.LabelRegion: "us-east"},
 					Concurrency: 8,
-					Start:       &start,
+					Start:       &start, End: &testWindowEnd,
 				},
 			},
 		},

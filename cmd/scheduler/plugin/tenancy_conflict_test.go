@@ -35,7 +35,7 @@ func TestPromiseProvenanceRefusedWhenNamespaceConflicted(t *testing.T) {
 	second := &v1.Budget{
 		ObjectMeta: v1.ObjectMeta{Name: "other", Namespace: "default"},
 		Spec: v1.BudgetSpec{Owner: "org:ai:other", Envelopes: []v1.BudgetEnvelope{{
-			Name: "east", Flavor: "H100-80GB", Concurrency: 8,
+			Name: "east", Flavor: "H100-80GB", Concurrency: 8, Start: &testWindowStart, End: &testWindowEnd,
 		}}},
 	}
 	conflicted := newManager(t, trainRun(), teamBudget(8), second)

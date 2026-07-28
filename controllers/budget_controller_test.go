@@ -26,7 +26,7 @@ func TestReconcileBudgetComputesHeadroomAndMetrics(t *testing.T) {
 				Name:        "env-a",
 				Flavor:      "H100",
 				Selector:    map[string]string{"region": "us-west"},
-				Concurrency: 10,
+				Concurrency: 10, Start: &testWindowStart, End: &testWindowEnd,
 			}},
 			AggregateCaps: []v1.AggregateCap{{
 				Name:           "cap",
@@ -147,8 +147,8 @@ func TestReconcileBudgetPendingRenewals(t *testing.T) {
 	baseSpec := v1.BudgetSpec{
 		Owner: "org:a",
 		Envelopes: []v1.BudgetEnvelope{
-			{Name: "closing-soon", Flavor: "H100", Selector: map[string]string{"region": "us-west"}, Concurrency: 4, End: &closingSoon},
-			{Name: "far-out", Flavor: "H100", Selector: map[string]string{"region": "us-west"}, Concurrency: 4, End: &farOut},
+			{Name: "closing-soon", Flavor: "H100", Selector: map[string]string{"region": "us-west"}, Concurrency: 4, End: &closingSoon, Start: &testWindowStart},
+			{Name: "far-out", Flavor: "H100", Selector: map[string]string{"region": "us-west"}, Concurrency: 4, End: &farOut, Start: &testWindowStart},
 		},
 	}
 

@@ -45,7 +45,7 @@ func h100Budget(budgetName, owner string, concurrency int32) v1.Budget {
 				Name:        "west",
 				Flavor:      "H100-80GB",
 				Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
-				Concurrency: concurrency,
+				Concurrency: concurrency, Start: &testWindowStart, End: &testWindowEnd,
 			}},
 		},
 	}

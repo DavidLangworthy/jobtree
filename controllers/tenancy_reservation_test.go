@@ -26,7 +26,7 @@ func conflictedNamespaceState(now time.Time) *ClusterState {
 				Selector: map[string]string{
 					topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a",
 					topology.LabelFabricDomain: "island-a",
-				},
+				}, Start: &testWindowStart, End: &testWindowEnd,
 			}},
 		},
 	}
@@ -381,7 +381,7 @@ func TestFailReservationNoEnvelopeTerminatesAndClearsTheGauge(t *testing.T) {
 				Selector: map[string]string{
 					topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a",
 					topology.LabelFabricDomain: "island-a",
-				},
+				}, Start: &testWindowStart, End: &testWindowEnd,
 			}},
 		},
 	}

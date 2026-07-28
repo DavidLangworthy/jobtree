@@ -53,7 +53,7 @@ func teamBudget(concurrency int32) *v1.Budget {
 		ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
 		Spec: v1.BudgetSpec{Owner: "org:ai:team", Envelopes: []v1.BudgetEnvelope{{
 			Name: "west", Flavor: "H100-80GB", Concurrency: concurrency,
-			Selector: map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
+			Selector: map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"}, Start: &testWindowStart, End: &testWindowEnd,
 		}}},
 	}
 }
@@ -486,7 +486,7 @@ func TestPromiseProvenanceValid(t *testing.T) {
 	victim := &v1.Budget{
 		ObjectMeta: v1.ObjectMeta{Name: "victim", Namespace: "victim"},
 		Spec: v1.BudgetSpec{Owner: "org:ai:victim", Envelopes: []v1.BudgetEnvelope{{
-			Name: "victim-west", Flavor: "H100-80GB", Concurrency: 8,
+			Name: "victim-west", Flavor: "H100-80GB", Concurrency: 8, Start: &testWindowStart, End: &testWindowEnd,
 		}}},
 	}
 	m := newManager(t, trainRun(), teamBudget(8), victim)

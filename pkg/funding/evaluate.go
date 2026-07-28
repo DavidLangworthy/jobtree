@@ -458,11 +458,27 @@ func leaseLiveAt(f *leaseFact, t time.Time) bool {
 // windowActive reports whether the envelope can be charged at t. Work
 // admitted before the window (preActivation.allowAdmission) evaluates
 // unfunded until the window opens and re-funds by arithmetic.
+//
+// INV-WINDOW-REQUIRED (DESIGN-v5 §1 and §7): an envelope grants concurrency over
+// `[start, end)` and BOTH bounds are required. A missing bound funds NOTHING here
+// rather than running forever — this is what makes expiry the default rather than
+// a convention, and it is the direction that fails closed.
+//
+// Validation rejects a half- or un-windowed envelope at admission
+// (BudgetEnvelope.Validate plus the CRD's CEL rule), so in a healthy cluster this
+// branch is unreachable. It is not decoration: the engine is a pure function over
+// whatever specs it is handed, including objects that predate the rule or arrive
+// from a test, and the old behaviour for exactly those objects was "active
+// forever" — an envelope that never expires and cannot be cut. Answering "funds
+// nothing" makes the invariant true of the engine and not merely of the webhook.
 func windowActive(env *v1.BudgetEnvelope, t time.Time) bool {
-	if env.Start != nil && t.Before(env.Start.Time) {
+	if env.Start == nil || env.End == nil {
 		return false
 	}
-	if env.End != nil && !t.Before(env.End.Time) {
+	if t.Before(env.Start.Time) {
+		return false
+	}
+	if !t.Before(env.End.Time) {
 		return false
 	}
 	return true

@@ -106,7 +106,7 @@ var Budgets = []Case{
 		Manifest: `{
 			"metadata": {"name": "rai"},
 			"spec": {"owner": "org:ai:rai", "envelopes": [
-				{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16}
+				{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16, "start": "2000-01-01T00:00:00Z", "end": "2100-01-01T00:00:00Z"}
 			]}
 		}`,
 	},
@@ -116,10 +116,10 @@ var Budgets = []Case{
 			"metadata": {"name": "rai"},
 			"spec": {"owner": "org:ai:rai",
 				"envelopes": [
-					{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16,
+					{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16, "start": "2000-01-01T00:00:00Z", "end": "2100-01-01T00:00:00Z",
 					 "start": "2026-01-01T00:00:00Z", "end": "2026-02-01T00:00:00Z",
 					 "lending": {"allow": true, "to": ["org:ai:mm"], "maxConcurrency": 4}},
-					{"name": "east", "flavor": "H100-80GB", "selector": {"region": "us-east"}, "concurrency": 8}
+					{"name": "east", "flavor": "H100-80GB", "selector": {"region": "us-east"}, "concurrency": 8, "start": "2000-01-01T00:00:00Z", "end": "2100-01-01T00:00:00Z"}
 				],
 				"aggregateCaps": [
 					{"name": "all", "flavor": "H100-80GB", "envelopes": ["west", "east"], "maxConcurrency": 20}
@@ -131,21 +131,21 @@ var Budgets = []Case{
 		Manifest: `{
 			"metadata": {"name": "rai"},
 			"spec": {"owner": "org:ai:rai", "envelopes": [
-				{"name": "shared", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16, "sharing": "family"},
-				{"name": "sealed", "flavor": "H100-80GB", "selector": {"region": "us-east"}, "concurrency": 8, "sharing": "none"}
+				{"name": "shared", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16, "start": "2000-01-01T00:00:00Z", "end": "2100-01-01T00:00:00Z", "sharing": "family"},
+				{"name": "sealed", "flavor": "H100-80GB", "selector": {"region": "us-east"}, "concurrency": 8, "start": "2000-01-01T00:00:00Z", "end": "2100-01-01T00:00:00Z", "sharing": "none"}
 			]}
 		}`,
 	},
 	{
 		Name: "envelope invalid sharing mode",
 		Manifest: `{"spec": {"owner": "org:ai:rai", "envelopes": [
-			{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16, "sharing": "everyone"}
+			{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16, "start": "2000-01-01T00:00:00Z", "end": "2100-01-01T00:00:00Z", "sharing": "everyone"}
 		]}}`,
 		WantErr: `sharing must be "family" or "none" when set`,
 	},
 	{
 		Name:     "missing owner",
-		Manifest: `{"spec": {"envelopes": [{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16}]}}`,
+		Manifest: `{"spec": {"envelopes": [{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16, "start": "2000-01-01T00:00:00Z", "end": "2100-01-01T00:00:00Z"}]}}`,
 		WantErr:  "spec.owner is required",
 	},
 	{
@@ -156,44 +156,70 @@ var Budgets = []Case{
 	{
 		Name: "duplicate envelope names",
 		Manifest: `{"spec": {"owner": "org:ai:rai", "envelopes": [
-			{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16},
-			{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west-2"}, "concurrency": 8}
+			{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16, "start": "2000-01-01T00:00:00Z", "end": "2100-01-01T00:00:00Z"},
+			{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west-2"}, "concurrency": 8, "start": "2000-01-01T00:00:00Z", "end": "2100-01-01T00:00:00Z"}
 		]}}`,
 		WantErr: `duplicate envelope name "west"`,
 	},
 	{
 		Name: "envelope missing name",
 		Manifest: `{"spec": {"owner": "org:ai:rai", "envelopes": [
-			{"flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16}
+			{"flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16, "start": "2000-01-01T00:00:00Z", "end": "2100-01-01T00:00:00Z"}
 		]}}`,
 		WantErr: "name is required",
 	},
 	{
 		Name: "envelope missing selector",
 		Manifest: `{"spec": {"owner": "org:ai:rai", "envelopes": [
-			{"name": "west", "flavor": "H100-80GB", "concurrency": 16}
+			{"name": "west", "flavor": "H100-80GB", "concurrency": 16, "start": "2000-01-01T00:00:00Z", "end": "2100-01-01T00:00:00Z"}
 		]}}`,
 		WantErr: "selector must contain at least one label",
 	},
 	{
 		Name: "envelope non-positive concurrency",
 		Manifest: `{"spec": {"owner": "org:ai:rai", "envelopes": [
-			{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 0}
+			{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 0, "start": "2000-01-01T00:00:00Z", "end": "2100-01-01T00:00:00Z"}
 		]}}`,
 		WantErr: "concurrency must be positive",
 	},
 	{
 		Name: "envelope window inverted",
 		Manifest: `{"spec": {"owner": "org:ai:rai", "envelopes": [
-			{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16,
+			{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16, "start": "2000-01-01T00:00:00Z", "end": "2100-01-01T00:00:00Z",
 			 "start": "2026-02-01T00:00:00Z", "end": "2026-01-01T00:00:00Z"}
 		]}}`,
 		WantErr: "end must be after start",
 	},
 	{
-		Name: "lending non-positive maxConcurrency",
+		Name: "envelope with no window at all",
+		Manifest: `{"spec": {"owner": "org:ai:rai", "envelopes": [
+			{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16}
+		]}}`,
+		WantErr: "start and end are both required",
+	},
+	{
+		// A half-windowed envelope violates INV-WINDOW-REQUIRED. That is now the
+		// WHOLE rule: the old half-windowed gap was about maxGPUHours validation,
+		// which died with the integral (Ruling 10).
+		Name: "half-windowed envelope: start with no end",
 		Manifest: `{"spec": {"owner": "org:ai:rai", "envelopes": [
 			{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16,
+			 "start": "2026-01-01T00:00:00Z"}
+		]}}`,
+		WantErr: "start and end are both required",
+	},
+	{
+		Name: "half-windowed envelope: end with no start",
+		Manifest: `{"spec": {"owner": "org:ai:rai", "envelopes": [
+			{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16,
+			 "end": "2026-02-01T00:00:00Z"}
+		]}}`,
+		WantErr: "start and end are both required",
+	},
+	{
+		Name: "lending non-positive maxConcurrency",
+		Manifest: `{"spec": {"owner": "org:ai:rai", "envelopes": [
+			{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16, "start": "2000-01-01T00:00:00Z", "end": "2100-01-01T00:00:00Z",
 			 "lending": {"allow": true, "maxConcurrency": 0}}
 		]}}`,
 		WantErr: "lending.maxConcurrency must be positive",
@@ -201,42 +227,42 @@ var Budgets = []Case{
 	{
 		Name: "aggregate cap references unknown envelope",
 		Manifest: `{"spec": {"owner": "org:ai:rai",
-			"envelopes": [{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16}],
+			"envelopes": [{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16, "start": "2000-01-01T00:00:00Z", "end": "2100-01-01T00:00:00Z"}],
 			"aggregateCaps": [{"name": "all", "flavor": "H100-80GB", "envelopes": ["west", "east"]}]}}`,
 		WantErr: `references unknown envelope "east"`,
 	},
 	{
 		Name: "aggregate cap with no envelope references",
 		Manifest: `{"spec": {"owner": "org:ai:rai",
-			"envelopes": [{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16}],
+			"envelopes": [{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16, "start": "2000-01-01T00:00:00Z", "end": "2100-01-01T00:00:00Z"}],
 			"aggregateCaps": [{"name": "all", "flavor": "H100-80GB", "envelopes": []}]}}`,
 		WantErr: "envelopes must reference at least one envelope",
 	},
 	{
 		Name: "aggregate cap missing flavor",
 		Manifest: `{"spec": {"owner": "org:ai:rai",
-			"envelopes": [{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16}],
+			"envelopes": [{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16, "start": "2000-01-01T00:00:00Z", "end": "2100-01-01T00:00:00Z"}],
 			"aggregateCaps": [{"name": "all", "envelopes": ["west"]}]}}`,
 		WantErr: "flavor is required",
 	},
 	{
 		Name: "aggregate cap missing name",
 		Manifest: `{"spec": {"owner": "org:ai:rai",
-			"envelopes": [{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16}],
+			"envelopes": [{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16, "start": "2000-01-01T00:00:00Z", "end": "2100-01-01T00:00:00Z"}],
 			"aggregateCaps": [{"flavor": "H100-80GB", "envelopes": ["west"]}]}}`,
 		WantErr: "name is required",
 	},
 	{
 		Name: "aggregate cap duplicate reference",
 		Manifest: `{"spec": {"owner": "org:ai:rai",
-			"envelopes": [{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16}],
+			"envelopes": [{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16, "start": "2000-01-01T00:00:00Z", "end": "2100-01-01T00:00:00Z"}],
 			"aggregateCaps": [{"name": "all", "flavor": "H100-80GB", "envelopes": ["west", "west"]}]}}`,
 		WantErr: `references envelope "west" more than once`,
 	},
 	{
 		Name: "duplicate aggregate cap names",
 		Manifest: `{"spec": {"owner": "org:ai:rai",
-			"envelopes": [{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16}],
+			"envelopes": [{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16, "start": "2000-01-01T00:00:00Z", "end": "2100-01-01T00:00:00Z"}],
 			"aggregateCaps": [
 				{"name": "all", "flavor": "H100-80GB", "envelopes": ["west"]},
 				{"name": "all", "flavor": "H100-80GB", "envelopes": ["west"]}
@@ -246,7 +272,7 @@ var Budgets = []Case{
 	{
 		Name: "aggregate cap non-positive maxConcurrency",
 		Manifest: `{"spec": {"owner": "org:ai:rai",
-			"envelopes": [{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16}],
+			"envelopes": [{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16, "start": "2000-01-01T00:00:00Z", "end": "2100-01-01T00:00:00Z"}],
 			"aggregateCaps": [{"name": "all", "flavor": "H100-80GB", "envelopes": ["west"], "maxConcurrency": 0}]}}`,
 		WantErr: "maxConcurrency must be positive",
 	},

@@ -283,7 +283,7 @@ func TestTenancyFixturesAreLegalBudgets(t *testing.T) {
 		"multi-owner conflict participant": {
 			ObjectMeta: v1.ObjectMeta{Name: "one", Namespace: "shared"},
 			Spec: v1.BudgetSpec{Owner: "org:x", Envelopes: []v1.BudgetEnvelope{
-				{Name: "west", Flavor: testFlavor, Selector: map[string]string{"region": "us-west"}, Concurrency: 8},
+				{Name: "west", Flavor: testFlavor, Selector: map[string]string{"region": "us-west"}, Concurrency: 8, Start: &testWindowStart, End: &testWindowEnd},
 			}},
 		},
 	}

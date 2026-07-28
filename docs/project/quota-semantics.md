@@ -57,6 +57,33 @@ arithmetic. With no enforced integral and an append-only observation ledger ther
 recomputation for that rule to govern: a renewed window re-funds because the *window* gates
 funding, and the hours it spent are a permanent record, not a balance to release.
 
+## INV-WINDOW-REQUIRED: every envelope has a window (DESIGN-v5 §1)
+
+**Added 2026-07-28.** An envelope grants `concurrency` GPUs of `flavor` over `[start, end)`, and
+**both bounds are required**. A half-windowed envelope violates the invariant just as an unwindowed
+one does — that is now the whole rule, since the old half-windowed gap was about `maxGPUHours`
+validation and died with the integral (Ruling 10).
+
+**Why:** an envelope with no end never expires, so the only way to stop it is for somebody to
+remember to. Requiring the bound makes **expiry the default rather than a convention**, which is what
+lets "cut now = lower the concurrency and work above the line demotes and coasts" be a complete story
+about how allocations end.
+
+It holds in three places, deliberately:
+
+- `BudgetEnvelope.Validate()` rejects it, so the webhook refuses the object;
+- a CEL rule on the CRD (`self.end > self.start`) plus `required: [start, end]`, so the **apiserver**
+  holds it without the webhook (R14's discipline: the check must survive the webhook being off);
+- `funding.windowActive` treats a missing bound as **not active**, so the engine funds nothing rather
+  than forever. The engine is a pure function over whatever specs it is handed, and the old behaviour
+  for exactly those objects was the dangerous one.
+
+**Migration.** Existing open-ended envelopes need an end date before they will validate. There is no
+compatibility path and no defaulting — per the clean-break rule, a breaking change is scheduled, not
+accommodated. A defaulted end would be worse than a rejection: it would silently pick an expiry
+nobody chose, and the whole point of the invariant is that somebody chose one. `Budget.Spec.AutoRenew`
+is the notice that an expiry is approaching; it still does not extend anything.
+
 ## Decision 2 (R15): family shares excess in proximity order; owners can always recall
 
 - **Within the family, no gates.** A run may draw on family envelopes' excess capacity without

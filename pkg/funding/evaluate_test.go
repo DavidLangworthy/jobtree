@@ -17,12 +17,19 @@ var base = time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 
 const testFlavor = "H100-80GB"
 
+// env builds a legal envelope. INV-WINDOW-REQUIRED makes both bounds mandatory,
+// so the default is a window WIDE enough not to interfere with tests that are
+// about something else — open well before `base` and closing well after. Tests
+// that care about window behaviour pass withWindow to narrow it.
 func env(name string, concurrency int32, mods ...func(*v1.BudgetEnvelope)) v1.BudgetEnvelope {
+	start, end := v1.NewTime(base.Add(-365*24*time.Hour)), v1.NewTime(base.Add(365*24*time.Hour))
 	e := v1.BudgetEnvelope{
 		Name:        name,
 		Flavor:      testFlavor,
 		Selector:    map[string]string{"region": "us-west"},
 		Concurrency: concurrency,
+		Start:       &start,
+		End:         &end,
 	}
 	for _, mod := range mods {
 		mod(&e)
@@ -65,11 +72,14 @@ func nsForOwner(owner string) string {
 // way to say it: the tier owns something, but nothing the run under test can use,
 // so it must still borrow from its parent exactly as the scenario intends.
 func idleEnvelope() v1.BudgetEnvelope {
+	start, end := v1.NewTime(base.Add(-365*24*time.Hour)), v1.NewTime(base.Add(365*24*time.Hour))
 	return v1.BudgetEnvelope{
 		Name:        "idle",
 		Flavor:      "A100-40GB",
 		Selector:    map[string]string{"region": "us-west"},
 		Concurrency: 1,
+		Start:       &start,
+		End:         &end,
 	}
 }
 
@@ -909,5 +919,50 @@ func TestSameNamedBudgetsInDifferentNamespacesDoNotCollide(t *testing.T) {
 	}
 	if a.FundedWidth() != 4 || b.FundedWidth() != 4 {
 		t.Errorf("each envelope funds its own tenant's 4 GPUs; got ns-a=%d ns-b=%d", a.FundedWidth(), b.FundedWidth())
+	}
+}
+
+// INV-WINDOW-REQUIRED holds in the ENGINE, not only in the webhook (DESIGN-v5
+// §1, §7). Validation rejects a half- or un-windowed envelope at admission, but
+// funding.Evaluate is a pure function over whatever specs it is handed —
+// including objects written before the rule existed. The old behaviour for
+// exactly those was the dangerous one: no bounds meant active FOREVER, an
+// envelope that never expires and cannot be cut.
+//
+// Each of these funds nothing. Expiry is the default, and a missing bound fails
+// closed rather than open.
+func TestUnwindowedEnvelopeFundsNothing(t *testing.T) {
+	run := runOf("train", "team", base, false)
+	leases := []v1.GPULease{leaseOf("l1", "train", "team", "team-budget", "west", 4, base)}
+
+	noWindow := func(e *v1.BudgetEnvelope) { e.Start, e.End = nil, nil }
+	startOnly := func(e *v1.BudgetEnvelope) {
+		s := v1.NewTime(base.Add(-time.Hour))
+		e.Start, e.End = &s, nil
+	}
+	endOnly := func(e *v1.BudgetEnvelope) {
+		en := v1.NewTime(base.Add(time.Hour))
+		e.Start, e.End = nil, &en
+	}
+
+	for _, tc := range []struct {
+		name string
+		mod  func(*v1.BudgetEnvelope)
+	}{
+		{"no bounds at all", noWindow},
+		{"half-windowed: start, no end", startOnly},
+		{"half-windowed: end, no start", endOnly},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			budgets := []v1.Budget{budgetOf("team", "team-budget", nil, env("west", 8, tc.mod))}
+			ev := Evaluate(Input{Budgets: budgets, Leases: leases, Runs: runsMap(run), Now: base})
+			if got := classOf(t, ev, leases, "l1"); got != ClassUnfunded {
+				t.Errorf("an envelope without both bounds must fund nothing, got %s", got)
+			}
+			acct := ev.Envelope(EnvelopeKey{Namespace: "team", Budget: "team-budget", Envelope: "west"})
+			if acct != nil && acct.FundedWidth() != 0 {
+				t.Errorf("funded width = %d, want 0", acct.FundedWidth())
+			}
+		})
 	}
 }
