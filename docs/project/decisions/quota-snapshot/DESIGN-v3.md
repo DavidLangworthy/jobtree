@@ -1,7 +1,7 @@
 # Quota design v3 — identity by snapshot, allocation by concurrency × window
 
 **Status: draft.** Supersedes `DESIGN-v2.md`. Incorporates both critics' second pass
-(`CRITIQUE-v2-fable.md`, `CRITIQUE-v2-sol.md`) and Owner Rulings 7–14.
+(`CRITIQUE-v2-fable.md`, `CRITIQUE-v2-sol.md`) and Owner Rulings 7–16.
 
 ## The design in three sentences
 
@@ -61,7 +61,44 @@ A half-windowed envelope — `Start` set, `End` nil — matches neither the wind
 validated against nothing at all**. `INV-WINDOW-REQUIRED` closes it as a side effect; note it in the
 migration so it is fixed deliberately rather than incidentally.
 
-## 2. The snapshot document
+## 2. Authoring — Budgets and Grants (Ruling 16)
+
+Two objects, both namespaced, both written by ordinary users under RBAC that already exists.
+
+- **`Budget`** — what a principal *holds*: its envelopes (concurrency, flavour, window, sharing,
+  lending). Lives in the principal's own namespace.
+- **`Grant`** — what a principal *gives away*: `(grantee owner, grantee namespace, per-flavour caps)`.
+  Lives in the **grantor's** namespace, never the grantee's. A grant in the grantee's namespace would
+  be self-asserted, which is precisely the defect being fixed.
+
+### Why two objects and not a `Spec.Grants` field
+
+**Kubernetes RBAC is per-resource, not per-field.** With grants as a Budget field, anyone permitted to
+delegate is also permitted to raise their own `concurrency` — the API would conflate *giving away what
+you hold* with *giving yourself more*. Split, they are independently grantable:
+
+```
+lead:  create/update/delete  grants   in their namespace
+lead:  get/list              budgets  in their namespace
+```
+
+A lead may sub-divide what they were given and **may not enlarge their own allocation.** That is
+Ruling 1's *"contained to what they were granted"* enforced by the API server rather than by the
+producer behaving well — see §13, where it is what makes the producer's containment obligation
+expressible at all.
+
+Also: per-grant lifecycle and status, so a colliding grant is quarantined individually rather than
+poisoning a whole Budget; revocation is deleting an object; GitOps diffs are one file per grant.
+
+**`Spec.Parents` becomes derived** from grants, or validated against them. The authoring direction
+reverses — grantor asserts grantee — which is the pointer flip, and it lands here rather than in the
+scheduler.
+
+**Trade-off, accepted:** a namespaced object cannot use etcd name uniqueness to enforce owner
+injectivity across namespaces, so two namespaces can each claim one owner. The producer detects it and
+quarantines both (Ruling 8), which is the rejection-versus-quarantine trade already made.
+
+## 3. The snapshot document
 
 As v2 (`schemaVersion`, `snapshotVersion`, `effectiveFrom`, `contentHash`, `roots`, `principals[]`
 with `status`, `boundNamespace.uid`, `children`, `envelopes[]`) — **without `maxGPUHours`**, and with
@@ -71,7 +108,7 @@ these additions from the critiques:
   surface for "how long has this been stale", and the input to the fuse rule below.
 - **`windowFrozenAt`** on a quarantined principal's envelopes — see §3.
 
-## 3. The quarantine fuse — Fable's compound finding, and the fix
+## 4. The quarantine fuse — Fable's compound finding, and the fix
 
 Ruling 8 says a quarantined subtree holds **last-good** so a neighbour's authoring error is not an
 innocent tenant's funding loss. Ruling 10 makes windows **mandatory**, so grants expire. Together:
@@ -90,7 +127,7 @@ how long an operator leaves a quarantine unrepaired, and quarantine must therefo
 escalating** — which is why §6 makes alarm wiring a prerequisite rather than a follow-on. **No
 timeout that destroys**: a fuse that eventually denies is the defect this section exists to remove.
 
-## 4. Metering, and the bounded history that survives
+## 5. Metering, and the bounded history that survives
 
 v2 claimed the snapshot need not be a series. Sol found two surviving dependencies on past state:
 
@@ -119,7 +156,7 @@ floor bounded by the longest-running job, and needs *every* version spanning a l
 mint one, because class changes over a lease's life); and deleting classed chargeback to report raw
 GPU-hours only (cheapest, but discards the Owned/Shared/Borrowed distinction operators use).
 
-## 5. Runtime invariants
+## 6. Runtime invariants
 
 - **`INV-SUBTREE-CONSERVE`** — for every principal `P` and flavour `f`: funded **concurrency** whose
   payer's lineage traverses `P` never exceeds `P`'s window-active allocation for `f`. Keyed on the
@@ -131,7 +168,7 @@ GPU-hours only (cheapest, but discards the Owned/Shared/Borrowed distinction ope
   **UID**.
 - **`INV-ODDS-PUBLISHED-MATCH-DRAWN`** — restored from Ruling 3; see §7.
 
-## 6. Structural invariants and the fail-closed contract
+## 7. Structural invariants and the fail-closed contract
 
 As v2 §3 and §5, with quarantine per Ruling 8 and the window freeze per §3 above.
 
@@ -140,7 +177,7 @@ consumer (`evaluate.go:176-182`). Quarantine is only safe if it is loud: the fus
 expiry for an escalating alarm, so shipping quarantine without R26 wired converts a bounded failure
 into a silent indefinite one.
 
-## 7. Ruling 3's surfaces — restored
+## 8. Ruling 3's surfaces — restored
 
 v2 dropped these without flagging it, which is the failure mode this whole process exists to prevent.
 An explicit owner requirement disappeared in a redraft.
@@ -155,7 +192,7 @@ An explicit owner requirement disappeared in a redraft.
 - **`lastDraw`** — the seed and the named arriving claim, so the tenant sentence in §8 is generated
   rather than composed by a human at 3am. The seed is already persisted (`resolver.go:599`).
 
-## 8. The human test — v1 and v2 both omitted it
+## 9. The human test — v1 and v2 both omitted it
 
 **A tenant asks why their job is Unfunded.** `kubectl describe run` names the cause: no funding
 principal, or the subtree is over its allocation and this work is the excess. If the namespace's
@@ -175,7 +212,7 @@ non-positive deficit (`resolver.go:74-75`).
 *"An administrator must fix the namespace→owner binding and resubmit"* — and "resubmit" contradicts
 `quota-semantics.md:38-39` in a tenant-facing string.
 
-## 9. What must be built
+## 10. What must be built
 
 1. **The producer** — in-tree controller: read, validate, compile, publish, quarantine per subtree.
 2. **`INV-WINDOW-REQUIRED`** plus migration for open-ended envelopes, and the half-windowed gap (§1).
@@ -190,15 +227,16 @@ non-positive deficit (`resolver.go:74-75`).
    compiling; needed are loader-quarantine conformance tests, a producer-authorization specimen, and a
    concurrency-conservation specimen.
 
-## 10. Open questions
+## 11. Open questions
 
-- **Q1 — Where do grants live?** Grantor-side `Budget.Spec.Grants` versus a separate binding object.
-  Authoring ergonomics and RBAC shape only. The pointer flip touches this.
-- **Q2 — Shard sizing.** A measurement against a real org tree.
-- **Q3 — `U`'s default and floor.** Settable cluster policy per Ruling 13; the shipped default and the
-  enforced floor remain.
+- **Q1 — Shard sizing.** A measurement against a real org tree.
+- **Q2 — `U`'s floor.** Ruling 15 sets the default to **1 hour**. The enforced floor — what stops a
+  misconfiguration lowering `U` toward destroy-at-one-tick — should be a small multiple of the
+  activation interval, and needs that interval measured.
 
-## 11. The producer is the whole trust boundary
+**Closed since v2:** where grants live (Ruling 16, §2).
+
+## 12. The producer is the whole trust boundary
 
 Ruling 7 moved the producer in-cluster, which answered availability and verification but **not**
 containment. No document invariant can express *"this changeset was authored by a principal entitled
@@ -211,7 +249,7 @@ this is expressible — namespaced RBAC on the grantor's Budget — which is pre
 won Ruling 7. It must be stated as a producer obligation with its own specimen (§9), or F2 is
 relocated rather than closed.
 
-## 12. Amendments to binding text
+## 13. Amendments to binding text
 
 - `quota-semantics.md:64-69` — Decision 3's input tuple becomes `(snapshot, leases, clock)`.
 - `quota-semantics.md:71-81` — the normative ranking core, if conservation makes fill run against a
