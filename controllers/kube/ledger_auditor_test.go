@@ -15,6 +15,7 @@ import (
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	"github.com/davidlangworthy/jobtree/controllers"
 	"github.com/davidlangworthy/jobtree/pkg/binder"
+	"github.com/davidlangworthy/jobtree/pkg/funding"
 	"github.com/davidlangworthy/jobtree/pkg/metrics"
 )
 
@@ -295,3 +296,78 @@ var errNotClosed = &auditErr{"orphan not yet visible through the real apiserver"
 type auditErr struct{ s string }
 
 func (e *auditErr) Error() string { return e.s }
+
+// TestAuditorAlarmsOnAConflictedOwnerBinding is the R26 wiring specimen
+// (DESIGN-v5 §4, build item 2). Before this, funding.Evaluation.Conflicts() had
+// no production caller: two Budgets naming different owners in one namespace
+// made that namespace unbound, its work stopped funding, and NOTHING said so.
+//
+// The auditor is now that consumer. Two owners in one namespace must produce a
+// nonzero jobtree_binding_conflicts gauge and a Warning on the runs that are
+// losing their funding — report-only, since the repair is editing Budgets and
+// that is not the auditor's to do.
+func TestAuditorAlarmsOnAConflictedOwnerBinding(t *testing.T) {
+	requireEnv(t)
+	resetWorld(t)
+	metrics.Reset()
+
+	run := &v1.Run{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "conflicted-run"},
+		Spec: v1.RunSpec{
+			Resources: v1.RunResources{GPUType: "H100-80GB", TotalGPUs: 4},
+		},
+	}
+	if err := kubeClient.Create(suiteCtx, run); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	// The admin error: one namespace, two owners. Owner derivation fails safe to
+	// unbound and the namespace funds nothing.
+	createBudget(t, "owner-a-budget", "org:a", 8)
+	createBudget(t, "owner-b-budget", "org:b", 8)
+
+	rec := record.NewFakeRecorder(32)
+	a := newAuditor(kubeClient, &testClock{now: baseTime}, rec)
+
+	eventually(t, 15*time.Second, func() error {
+		metrics.Reset()
+		if err := a.Sweep(suiteCtx); err != nil {
+			return err
+		}
+		got := metrics.Snapshot().BindingConflicts
+		if got[string(funding.ConflictMultipleOwners)] < 1 {
+			return errNotClosed
+		}
+		return nil
+	})
+
+	// Both reasons are enumerated, so the one that did NOT fire reads as an
+	// explicit zero rather than being absent.
+	snap := metrics.Snapshot().BindingConflicts
+	if _, ok := snap[string(funding.ConflictLeafOwnerSpansNamespaces)]; !ok {
+		t.Errorf("the un-fired reason must publish as 0, not be absent: %+v", snap)
+	}
+
+	// The run in the affected namespace is told why its work stopped funding.
+	var sawEvent bool
+	for len(rec.Events) > 0 {
+		e := <-rec.Events
+		if strings.Contains(e, "OwnerBindingConflict") && strings.Contains(e, "more than one owner") {
+			sawEvent = true
+		}
+	}
+	if !sawEvent {
+		t.Error("no OwnerBindingConflict Warning reached the run losing its funding")
+	}
+
+	// Report-only: the auditor must not have closed or deleted anything.
+	var leases v1.GPULeaseList
+	if err := kubeClient.List(suiteCtx, &leases); err != nil {
+		t.Fatalf("list leases: %v", err)
+	}
+	for i := range leases.Items {
+		if leases.Items[i].Status.Closed {
+			t.Errorf("binding conflict closed lease %s; the pass is report-only", leases.Items[i].Name)
+		}
+	}
+}

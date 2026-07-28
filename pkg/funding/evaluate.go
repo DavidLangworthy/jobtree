@@ -173,13 +173,16 @@ const (
 // BindingConflict names a namespace whose owner derivation failed safe to
 // unbound, and why.
 //
-// NOTHING CONSUMES THESE YET. R26's ledger auditor is the intended consumer and
-// is NOT wired to them (DECISIONS-NEEDED F7, sub-question 4); `Conflicts()` has
-// no production caller today. An earlier version of this comment said the
-// auditor "consumes these to alarm", which is a claim nothing runs — precisely
-// the comment-as-enforcement class the review playbook names. Until the auditor
-// is wired, an admin who mis-binds a namespace gets a correct fail-safe and NO
-// operator-visible signal: the namespace simply stops funding work.
+// WIRED as of DESIGN-v5 build item 2: `controllers/kube.LedgerAuditor.auditBindings`
+// consumes these every sweep, publishing jobtree_binding_conflicts and a Warning
+// on the runs in the affected namespace. Before that, `Conflicts()` had no
+// production caller at all — an admin who mis-bound a namespace got a correct
+// fail-safe and NO operator-visible signal, and the namespace simply stopped
+// funding work. DESIGN-v5 §4 makes this consumer a PRECONDITION of quarantine
+// rather than a follow-on: a silent quarantine is a silent loss of authority.
+// If you remove that caller, this comment becomes a lie of the exact kind the
+// review playbook names — the specimen is
+// TestAuditorAlarmsOnAConflictedOwnerBinding.
 type BindingConflict struct {
 	Namespace string
 	Owner     string // the colliding leaf owner, for LeafOwnerSpansNamespaces

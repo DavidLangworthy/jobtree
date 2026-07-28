@@ -17,6 +17,7 @@ import (
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
 	"github.com/davidlangworthy/jobtree/controllers"
 	"github.com/davidlangworthy/jobtree/pkg/binder"
+	"github.com/davidlangworthy/jobtree/pkg/funding"
 	"github.com/davidlangworthy/jobtree/pkg/keys"
 	"github.com/davidlangworthy/jobtree/pkg/metrics"
 )
@@ -156,6 +157,8 @@ func (a *LedgerAuditor) Sweep(ctx context.Context) error {
 	}
 	metrics.SetLedgerViolations(counts)
 
+	a.auditBindings(ctx, world, runs)
+
 	// Act on the matured violations.
 	for _, v := range matured {
 		if v.Repairable {
@@ -168,6 +171,77 @@ func (a *LedgerAuditor) Sweep(ctx context.Context) error {
 		a.alarm(v, runs[v.RunKey])
 	}
 	return nil
+}
+
+// auditBindings is the R26 wiring for funding.Evaluation.Conflicts() (DESIGN-v5
+// §4, build item 2). Owner derivation fails SAFE when a namespace's Budgets
+// carry two owners, or when one leaf owner's Budgets span two namespaces: the
+// namespace becomes unbound, fresh runs are refused, and pre-existing leases
+// coast Unfunded. That is the correct outcome and, until now, a completely
+// SILENT one — `Conflicts()` had no production caller at all, so an admin who
+// mis-bound a namespace got no signal and simply watched work stop funding.
+//
+// DESIGN-v5 §4 makes this a PRECONDITION of quarantine rather than a follow-on,
+// for the reason that generalises past bindings: a silent quarantine is a silent
+// loss of authority. Every alarm in the design is a no-op until something
+// consumes the record.
+//
+// It is REPORT-ONLY and always will be. The auditor's destructive direction is
+// budget-safe (it closes leases, never deletes pods); a binding conflict is an
+// admin error whose repair is editing Budgets, which is not the auditor's to do.
+// It reports on the RUNS in the affected namespace because they are the parties
+// actually losing funding, and they are the objects an operator is looking at
+// when they ask why work stopped.
+func (a *LedgerAuditor) auditBindings(ctx context.Context, world controllers.LedgerWorld, runs map[string]*v1.Run) {
+	ev := funding.Evaluate(funding.Input{
+		Budgets: world.Budgets,
+		Leases:  world.Leases,
+		Runs:    runs,
+		Now:     a.Clock.Now(),
+	})
+	conflicts := ev.Conflicts()
+
+	// Enumerate both reasons so one that clears publishes as 0 rather than
+	// staying at its last value — the same discipline as the violation gauge.
+	counts := map[string]float64{
+		string(funding.ConflictMultipleOwners):           0,
+		string(funding.ConflictLeafOwnerSpansNamespaces): 0,
+	}
+	for _, c := range conflicts {
+		counts[string(c.Reason)]++
+	}
+	metrics.SetBindingConflicts(counts)
+
+	for _, c := range conflicts {
+		detail := bindingConflictDetail(c)
+		log.FromContext(ctx).Error(nil, "namespace owner binding failed safe to unbound; work there funds nothing",
+			"namespace", c.Namespace, "reason", string(c.Reason), "owner", c.Owner)
+		if a.Recorder == nil {
+			continue
+		}
+		for _, run := range runs {
+			if run == nil || run.Namespace != c.Namespace {
+				continue
+			}
+			a.Recorder.Eventf(run, corev1.EventTypeWarning, "OwnerBindingConflict",
+				"ledger auditor: %s", detail)
+		}
+	}
+}
+
+// bindingConflictDetail says what an operator has to FIX, not just what is wrong.
+func bindingConflictDetail(c funding.BindingConflict) string {
+	switch c.Reason {
+	case funding.ConflictMultipleOwners:
+		return fmt.Sprintf("namespace %q has Budgets naming more than one owner, so who pays is ambiguous; "+
+			"it is treated as unbound and funds nothing. Leave exactly one owner's Budgets in it.", c.Namespace)
+	case funding.ConflictLeafOwnerSpansNamespaces:
+		return fmt.Sprintf("leaf owner %q has Budgets in more than one namespace, which would let a run in one "+
+			"mint a senior Owned charge across the boundary; namespace %q is treated as unbound and funds nothing. "+
+			"Give the owner a single namespace.", c.Owner, c.Namespace)
+	default:
+		return fmt.Sprintf("namespace %q has a conflicted owner binding (%s) and funds nothing", c.Namespace, c.Reason)
+	}
 }
 
 // repair closes an orphaned lease through the sole closer and records it as both a
@@ -236,6 +310,12 @@ func (a *LedgerAuditor) loadWorld(ctx context.Context) (controllers.LedgerWorld,
 	if err := a.APIReader.List(ctx, &runList); err != nil {
 		return controllers.LedgerWorld{}, nil, fmt.Errorf("list runs: %w", err)
 	}
+	// Budgets are read for the BINDING check, not the lease check: owner
+	// derivation is a pure function of the admin-placed Budgets (R7 §4).
+	var budgetList v1.BudgetList
+	if err := a.APIReader.List(ctx, &budgetList); err != nil {
+		return controllers.LedgerWorld{}, nil, fmt.Errorf("list budgets: %w", err)
+	}
 
 	nodeNames := make(map[string]bool, len(nodeList.Items))
 	for i := range nodeList.Items {
@@ -262,6 +342,7 @@ func (a *LedgerAuditor) loadWorld(ctx context.Context) (controllers.LedgerWorld,
 		Leases:    leaseList.Items,
 		Pods:      pods,
 		NodeNames: nodeNames,
+		Budgets:   budgetList.Items,
 	}, runs, nil
 }
 

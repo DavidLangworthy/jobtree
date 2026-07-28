@@ -228,6 +228,31 @@ for needle in \
   fi
 done
 
+# DESIGN-v5 build item 1 (Ruling 17): the grantor split is only worth anything
+# because of what the grantor role CANNOT do. If it ever gains a write verb on
+# budgets, a lead who can sub-divide can also enlarge their own allocation, and
+# the entire reason Grant is a separate resource evaporates — silently, because
+# everything would still work. Assert the absence.
+grantor_rules="$(helm template ci "$CHART" --namespace "$NS" \
+  | awk '/kind: ClusterRole$/ { inrole = 0 } /name: .*-grantor$/ { inrole = 1 } inrole')"
+if [ -z "$grantor_rules" ]; then
+  echo "::error::the chart no longer renders a grantor ClusterRole (DESIGN-v5 build item 1)" >&2
+  exit 1
+fi
+if awk '
+    /resources:/ && /budgets/ { inbudgets = 1; next }
+    /resources:/              { inbudgets = 0 }
+    inbudgets && /verbs:/ && /(create|update|patch|delete)/ { found = 1 }
+    END { exit !found }
+  ' <<<"$grantor_rules"; then
+  echo "::error::the grantor ClusterRole can WRITE budgets; a lead who can sub-divide could then enlarge their own allocation (DESIGN-v5 build item 1 / Ruling 17)" >&2
+  exit 1
+fi
+if ! grep -qF 'resources: ["grants"]' <<<"$grantor_rules"; then
+  echo "::error::the grantor ClusterRole does not grant the grants resource; delegation is impossible" >&2
+  exit 1
+fi
+
 if ! grep -qF 'apiGroups: ["coordination.k8s.io"]' <<<"$rbac_rendered"; then
   echo "::error::the controller lost its coordination.k8s.io leases grant — leader election cannot acquire its lock" >&2
   exit 1
