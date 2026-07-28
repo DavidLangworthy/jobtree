@@ -385,3 +385,49 @@ the enforcement paths go dead before anyone deletes them. Two follow-ons: make w
 an end date for existing open-ended envelopes), and decide what `maxGPUHours` becomes — removed,
 deprecated, or reinterpreted as a reporting threshold. It must not survive as a field that looks
 enforcing and is not.
+
+## Ruling 11 — delete `maxGPUHours`; shard the snapshot rather than approach etcd's limit (2026-07-28)
+
+> "Re: Max gpu hours, if we're not using it, it's gone, right?"
+> "The etcd thing is a real issue to sort out. We want to steer well clear of those boundaries. If
+> something is getting that big, I'd break it up, and tolerate losing atomic update."
+
+### `maxGPUHours` is deleted, not deprecated
+
+Answers open question Q2, and the house rule already decided it: *"Never introduce a side-by-side
+compatibility path. If a change breaks, we schedule it"* (`AGENTS.md:178`). `hack/antifake/crdfields.go`
+exists to catch exactly this shape — a CRD field that looks like it does something and does not.
+
+So under Ruling 10 the field goes, along with its three enforcement sites (`evaluate.go:125`, `:858`,
+`:866`), `nextDepletion` (`:926-960`), the `ValidateMaxHoursWindow` rail
+(`api/v1/budget_types.go:282,313-323`), and `AggregateCap.MaxGPUHours`. Schedule the break; do not
+leave a tolerated no-op.
+
+Metering is unaffected: consumed GPU-hours are still computed from lease history and still reported.
+What disappears is the *cap*, not the *number*.
+
+### Shard the snapshot; do not engineer up to the object limit
+
+Kubernetes objects cap near 1.5 MiB. The ruling is to stay well clear rather than compress, chunk, or
+optimise toward it — and if the document gets large, **break it up and accept that cross-shard updates
+are not atomic**.
+
+**Shard by root subtree, so a whole lineage lives in one shard.** That is the choice that makes the
+lost atomicity harmless:
+
+- **Ancestor walks never cross a shard.** Subtree conservation (`INV-SUBTREE-CONSERVE`) walks from a
+  payer up to its root; if the lineage is intact within one shard, the check is always performed
+  against one consistent version. This is the property that would break under any other sharding key,
+  so it is not an implementation detail.
+- **It gives Ruling 8 for free.** Per-subtree quarantine and per-subtree sharding are the same
+  boundary. A shard that fails validation holds last-good while others advance — which is exactly the
+  localization already ruled for, now falling out of the storage layout instead of needing separate
+  machinery.
+- **What is genuinely lost is cross-subtree simultaneity**, and Ruling 8 already declined to buy it.
+  Two orgs' quota can be at different versions for a moment. The only edge that spans subtrees is
+  **lending**, where a revoked loan may take effect late — bounded staleness of the same kind the
+  replay already has, since lending eligibility is re-evaluated on every fill
+  (`pkg/funding/evaluate.go:797-798`).
+
+**Sizing is a measurement, not a guess.** Size a real org tree first, pick a shard boundary with
+generous headroom, and record the number. "Well clear" needs a figure attached or it is a hope.
