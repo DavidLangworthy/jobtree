@@ -468,3 +468,52 @@ failure modes the deadline exists to prevent.
 So: a cluster-level setting, with a **default** (most operators will never set it) and an **enforced
 floor** of at least a few activation intervals, so a misconfiguration cannot reintroduce
 destroy-at-one-tick. Operators may raise it; nothing may lower it past the floor.
+
+## Ruling 14 — Ruling 10 is a PRODUCT EXCLUSION, not an equivalence (2026-07-28)
+
+> "Ruling 10. Yes. It's a product decision. Not a direct equivalence."
+
+Both critics attacked Ruling 10's coverage claim independently and reached the same verdict by
+different routes. Sol gave it mathematical form; Fable reached it from consequence. That convergence
+is the strongest evidence this process produces, and the ruling is amended rather than reversed.
+
+**The pattern jobtree deliberately does not support**, stated so it is never re-derived as a surprise:
+
+> *"10,000 GPU-hours during Q3, may burst up to 128 GPUs, tenant chooses when to spend them."*
+
+Formally the feasible set `0 ≤ u(t) ≤ 128` with `∫ u(t) dt ≤ 10,000`. **No concurrency × window
+rectangle represents it**: 128 across Q3 permits far more than 10,000 hours; lowering concurrency to
+`10,000 / quarter` destroys the burst; shortening the window preserves both only by choosing the
+tenant's burst timing in advance. The three burst mechanisms do not substitute — opportunistic work is
+not an entitlement, lending needs a peer and moves concurrency rather than a fungible time budget, and
+repeated temporary grants make the manager an online allocator.
+
+**My argument for Ruling 10 was wrong and is withdrawn.** I claimed hours were redundant because
+validation enforces `maxGPUHours ≤ concurrency × window`, so hours could only ever describe a smaller
+rectangle. Sol: that proves the integral entitlement is a *subset*; it does not prove the subset is
+representable by another rectangle. **A rectangle cannot express a non-rectangular feasible region.**
+
+**What stands.** jobtree allocates *capability over a period*, not *fungible compute credits*. A
+tenant who wants credit-style spending gets it through the burst mechanisms, at the cost of choosing
+timing with their manager rather than unilaterally. That is a legitimate product boundary and every
+simplification Ruling 10 bought — no balance, no epochs, idempotent grants, no retroactive rewrite —
+still follows from it.
+
+**What changes.** The design must state the exclusion rather than claim equivalence, and any future
+request for compute credits is answered by pointing here, not by re-deriving the argument.
+
+### Two factual errors in Ruling 10, corrected
+
+Neither changes the conclusion; both change the migration, and both were asserted rather than verified.
+
+1. *"Setting hours already requires a window (`budget_types.go:286`)"* is **backwards**. That branch
+   *tolerates* windowless hours, checking only non-negativity when `Start` and `End` are both nil. And
+   a half-windowed envelope (`Start` set, `End` nil) matches neither it nor the concurrency×window rail
+   at `:274-285`, so **its hours are validated against nothing at all** — a pre-existing gap this
+   ruling accidentally discovered.
+2. *"Exactly three enforcement sites"* undercounts badly. Beyond `evaluate.go:125`, `:858`, `:866` and
+   `nextDepletion`: the admission lookahead in `AvailableWidth` gates on hours at four more sites
+   (`:1167`, `:1171`, `:1194-1196`, `:1215-1217`), and those implement the **born-opportunistic
+   protection** of `quota-semantics.md:23-26`. Plus the accrue clamps (`:993-997`, `:1024-1027`) and
+   `pkg/funding/admission.go:89-136`. Deleting hours therefore removes a real admission protection,
+   not just three gates — that loss must be replaced or accepted explicitly.
