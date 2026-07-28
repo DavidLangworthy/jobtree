@@ -160,3 +160,29 @@ authoring and multi-parent model change if `INV-ACYCLIC`'s single-parent rule st
 Now clearly safe, and clearly *last*. It touches the authoring layer and the producer only — the
 scheduler reads compiled edges and never learns how they were written. That was the draft's own
 acceptance test and it survives the ruling intact.
+
+---
+
+## Ruling 8 — localize the effect of local problems (2026-07-28)
+
+> "2 is easy, let's localize the effect of local problems."
+
+Answers revised-question Q4. A validation failure affecting one subtree must **not** freeze quota
+updates for every other tenant. The producer publishes what is good and marks the offending subtree
+invalid; it does not withhold the whole document.
+
+Consequences:
+
+- Whole-document atomic swap stays as the **consistency** mechanism (readers never see a mix), but
+  whole-document *rejection* is replaced by per-subtree quarantine.
+- A quarantined subtree holds its **last good** state — it does not go unbound, because that would
+  turn a neighbour's authoring error into a funding loss for an innocent tenant.
+- The snapshot must therefore carry per-principal validity, not just a document-level verdict: each
+  principal needs a status (`valid` / `quarantined` + reason + the version it is pinned at).
+- `INV-BINDING-INJECTIVE` and friends become **per-subtree** checks whose failure quarantines the
+  colliding principals rather than rejecting the publish.
+- This preserves today's containment property (`evaluate.go:253-271` fails the touched namespaces
+  safe and lets the rest of the cluster proceed) instead of trading it for global consistency.
+
+Still true: a *structurally* broken document — bad hash, non-monotonic version, unparseable — is
+rejected whole, because there is no subtree to localize to.
