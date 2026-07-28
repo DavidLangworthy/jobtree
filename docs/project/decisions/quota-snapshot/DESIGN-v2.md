@@ -166,21 +166,38 @@ real validation and imaginary observability. Wiring R26 is a prerequisite, not a
 8. **`effectiveFrom` sanity** *(Fable §1e)* — anchor at `max(effectiveFrom, firstSeen)` or reject an
    `effectiveFrom` earlier than the predecessor's receipt.
 
-## 7. Open questions
+## 7. Sharding (Ruling 11)
+
+The document is **sharded by root subtree**, one object per shard, each independently versioned. This
+is a storage decision with one load-bearing constraint: **a whole lineage lives in one shard.**
+
+- **Ancestor walks never cross a shard**, so `INV-SUBTREE-CONSERVE` always evaluates against one
+  consistent version. Any other sharding key breaks this and lets conservation decide against
+  half-stale data.
+- **Sharding and quarantine are the same boundary**, so Ruling 8's localization falls out of the
+  layout rather than needing separate machinery.
+- **Cross-shard updates are not atomic, deliberately.** Two subtrees may sit at different versions
+  momentarily. The only edge spanning subtrees is lending, where a revoked loan taking effect late is
+  the same bounded staleness the replay already has (`evaluate.go:797-798`).
+
+Objects cap near 1.5 MiB. The rule is to stay **well clear** rather than compress or optimise toward
+it. Size a real org tree, pick the boundary with generous headroom, and record the number.
+
+## 8. Open questions — three left
 
 - **Q1 — Where do grants live?** Grantor-side `Budget.Spec.Grants` versus a separate binding object.
-  Now authoring ergonomics and RBAC shape only, since the compiled snapshot insulates the scheduler.
-  This is the one the pointer flip touches.
-- **Q2 — What becomes of `maxGPUHours`?** Removed, deprecated, or reinterpreted as a reporting
-  threshold. It may not survive as a field that looks enforcing and is not.
-- **Q3 — Does the document fit in etcd?** ~1.5 MiB object limit. Measure against a real org tree
-  before designing around it.
-- **Q4 — Skipped versions** *(Sol)*. A watch can miss intermediate versions. With no accrual anchoring
-  this is much weaker than in v1 — it now only affects audit fidelity, not funding. Gap-detect, or
-  accept and say so.
-- **`U`**, the below-minimum unwind deadline, is unaffected and still open.
+  Authoring ergonomics and RBAC shape only, since the compiled snapshot insulates the scheduler. This
+  is the one the pointer flip touches.
+- **Q2 — Shard sizing.** A measurement against a real org tree, not a design choice.
+- **Q3 — `U`'s default and floor.** Ruling 13 settled that `U` is settable **cluster** policy, not
+  tenant-declared. What remains is the shipped default and the enforced floor.
 
-## 8. Amendments to binding text
+**Closed since the first v2 draft:** `maxGPUHours` is deleted outright, not deprecated (Ruling 11 —
+`AGENTS.md:178` forbids side-by-side compatibility paths). Skipped versions are not a case (Ruling 12
+— versions are never skipped, only observed late; the scheduler acts on the most recent state it holds
+and converges correctly, so no gap detection, no continuity requirement, no `firstSeen` bookkeeping).
+
+## 9. Amendments to binding text
 
 v1 carried none, which is the process defect that produced the P8 oscillation. Required before
 ratification:
