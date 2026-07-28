@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -u
+set -eu
 
 if [ "$#" -lt 2 ]; then
   echo "usage: $0 <invariant> <tlc-command...>" >&2

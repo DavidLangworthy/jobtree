@@ -1,0 +1,60 @@
+name: Physical Capacity Spec
+
+# This bounded TLC rail is separate from make verify: it needs Java and explores
+# controller emission, scheduler-cache commitment, PreBind mint, bind retry,
+# and node-failure swap as one physical-capacity seam.
+on:
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - 'specs/PhysicalCapacity*'
+      - 'specs/README.md'
+      - 'hack/specs/expect-tlc-counterexample.sh'
+      - 'hack/specs/expect-tlc-initial-witness.sh'
+      - 'cmd/scheduler/plugin/plugin.go'
+      - 'cmd/scheduler/plugin/gang.go'
+      - 'cmd/scheduler/plugin/prebind_failure_conformance_test.go'
+      - 'controllers/run_controller.go'
+      - 'controllers/ledger_audit.go'
+      - 'controllers/reservation_semantics_test.go'
+      - 'controllers/node_failure_test.go'
+      - '.github/workflows/physical-capacity-spec.yaml'
+      - 'Makefile'
+  push:
+    branches: [ main ]
+    paths:
+      - 'specs/PhysicalCapacity*'
+      - 'specs/README.md'
+      - 'hack/specs/expect-tlc-counterexample.sh'
+      - 'hack/specs/expect-tlc-initial-witness.sh'
+      - 'cmd/scheduler/plugin/plugin.go'
+      - 'cmd/scheduler/plugin/gang.go'
+      - 'cmd/scheduler/plugin/prebind_failure_conformance_test.go'
+      - 'controllers/run_controller.go'
+      - 'controllers/ledger_audit.go'
+      - 'controllers/reservation_semantics_test.go'
+      - 'controllers/node_failure_test.go'
+      - '.github/workflows/physical-capacity-spec.yaml'
+      - 'Makefile'
+
+jobs:
+  tlc:
+    name: exhaustive bounded physical capacity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Exhaust the explicitly bounded positive model
+        run: make physical-capacity-spec-check
+      - name: Validate the named guard mutations
+        run: make physical-capacity-spec-counterexamples
+      - name: Validate legal-state anti-reaper witnesses
+        run: make physical-capacity-spec-witnesses
+      - name: Run compiled PreBind failure correspondence
+        run: make physical-capacity-conformance-check

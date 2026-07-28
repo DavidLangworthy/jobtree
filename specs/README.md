@@ -18,6 +18,7 @@ to the design that it cannot drift far from reality.
 | `AccrualPrefix` | owner Ruling 6's prospective-history rule versus the production-baseline current-snapshot replay | elapsed payer/class/window/charge tuples are immutable; renewed windows start with a fresh integral |
 | `GrantAuthority` | an authority-store-neutral rooted grant abstraction at depths 1–4 | outsider locality, universal owner injectivity, Owned-is-local, instantaneous payer-lineage conservation, and sponsored consumption charged only to the lender lineage |
 | `BlockedReservation` | the durable `BlockedFunding` lifecycle and controller/plugin boundary | visible inert blocking, stable onset, automatic repair, supersession, one gang emission, pod-before-lease, and scheduler-only minting |
+| `PhysicalCapacity` | ordinary and reservation emission, scheduler observe/assume/Permit/PreBind/Bind, and node-failure swap with physical pods distinct from leases | bounded physical capacity, one machine-live pod per rank, single direct/reservation materialization, terminating-pod capacity retention, one mint per pod/incarnation, bound-pod/lease-node agreement, and writer locality |
 
 `AccrualPrefix` is a two-evaluator, zero-step design model. `Init` selects one
 mutation and `Next` stutters; the model compares pure before/after functions. It
@@ -53,6 +54,33 @@ make node-failure-spec-counterexamples
 
 That seam has its own path-filtered CI workflow because the relevant Go files
 change on a different cadence from the rest of the design-level specs.
+
+`PhysicalCapacity` also has a dedicated exhaustive-bounded TLC and
+compiled-correspondence workflow:
+
+```bash
+make physical-capacity-spec-check
+make physical-capacity-spec-counterexamples
+make physical-capacity-spec-witnesses
+make physical-capacity-conformance-check
+```
+
+Its finite bound is explicit in every config: two nodes of capacity two, seven
+role-reduced pod identities across direct, reservation, independent admission,
+old/swap, spare, and blocker roles, and `MaxSteps = 14`. An open Lease is
+accounting evidence, not a physical device; a Reservation is a promise; and a
+bound or terminating GPU pod is the physical holder. The four witness configs
+must reject false lease-shaped invariants for duplicate lease slot strings,
+cordoned-node omission, spare-before-active, and Running/AwaitingMint. The
+bind-failure config demonstrates the absence of a bounded cleanup guarantee; it
+is not part of the positive safety claim. `PhysicalCapacityCrossNodeRetry.cfg`
+represents current production's missing placement check: idempotent retry keeps
+the first immutable lease slot while the pod binds on another node, violating
+`BoundLeaseMatchesPodNode`.
+
+The ordinary positive target explores the whole finite graph permitted by
+`MaxSteps`; “exhaustive” therefore means exhaustive within that explicit bound,
+never unbounded. See the results report for the current execution status.
 
 The primary equivalence rails for `LedgerCompaction`,
 `LedgerCompactionStore`, and `LedgerCompactionAccounting` are checked with
@@ -215,6 +243,15 @@ design review:
   permits reclaim. This violates the stronger
   `PostClosureFundedWorkSurvives` property by design; it is not authorization
   for iteration-order-sensitive fresh evaluation.
+- The seven `PhysicalCapacity*` negative configs bypass the scheduler cache's
+  atomic capacity commit, count a closed lease as physical release, permit
+  direct/reservation double materialization, let a hard-pinned swap commit
+  before terminating blockers are gone, duplicate a same-incarnation PreBind
+  mint, accept a cross-node retry against the first node's lease, or abandon a
+  post-PreBind lease at quiescence. Each target validates the exact named
+  invariant and a behavior trace. The cross-node config represents a confirmed
+  current production bug; the last is an expected confirmation of the planned
+  recovery/deadline gap, not a positive production recovery theorem.
 - `LedgerCompactionStraddle.cfg` forces a retained lease to start before the
   horizon, and Apalache finds that dropping settled competitors changes the
   replay result.

@@ -158,6 +158,9 @@ measuring whether the models earn their seats rather than assuming it. One revie
 
 ## Working rules
 
+- **Always commit and push work in progress before pausing, stopping a Codespace, or ending a work
+  session.** Use an explicitly labeled WIP commit when verification is incomplete; preserving remote
+  work takes precedence over waiting for a polished commit.
 - After completing and verifying repository changes, commit them and push the current working branch
   unless the user explicitly requests otherwise.
 - **Never `git checkout -- <file>` to undo a scratch edit.** It restores to `HEAD`, not to what you had a

@@ -300,6 +300,32 @@ node-failure-spec-counterexamples: $(TLA2TOOLS)
 	cd specs && ! $(TLC) -config NodeFailureConsumedCount.cfg NodeFailure.tla
 	cd specs && ../hack/specs/expect-tlc-counterexample.sh PostClosureFundedWorkSurvives $(TLC) -config NodeFailureStaleFunding.cfg NodeFailure.tla
 
+.PHONY: physical-capacity-spec-check physical-capacity-spec-counterexamples physical-capacity-spec-witnesses physical-capacity-conformance-check
+
+# Bounded composed physical-GPU ownership across controller emission,
+# kube-scheduler Assume/PreBind/Bind, and node-failure swap. MaxSteps is part of
+# every config, so the ordinary TLC run exhausts the stated finite bound.
+physical-capacity-spec-check: $(TLA2TOOLS)
+	cd specs && $(TLC) -config PhysicalCapacity.cfg PhysicalCapacity.tla
+
+physical-capacity-spec-counterexamples: $(TLA2TOOLS)
+	cd specs && ../hack/specs/expect-tlc-counterexample.sh PhysicalCapacitySafe $(TLC) -config PhysicalCapacityNoAtomicCommit.cfg PhysicalCapacity.tla
+	cd specs && ../hack/specs/expect-tlc-counterexample.sh PhysicalCapacitySafe $(TLC) -config PhysicalCapacityClosedLeaseRelease.cfg PhysicalCapacity.tla
+	cd specs && ../hack/specs/expect-tlc-counterexample.sh SingleAdmissionMaterialization $(TLC) -config PhysicalCapacityDoubleMaterialization.cfg PhysicalCapacity.tla
+	cd specs && ../hack/specs/expect-tlc-counterexample.sh PhysicalCapacitySafe $(TLC) -config PhysicalCapacitySwapBeforeRelease.cfg PhysicalCapacity.tla
+	cd specs && ../hack/specs/expect-tlc-counterexample.sh OneMintPerPodAndNonce $(TLC) -config PhysicalCapacityDuplicatePreBind.cfg PhysicalCapacity.tla
+	cd specs && ../hack/specs/expect-tlc-counterexample.sh BoundLeaseMatchesPodNode $(TLC) -config PhysicalCapacityCrossNodeRetry.cfg PhysicalCapacity.tla
+	cd specs && ../hack/specs/expect-tlc-counterexample.sh QuiescentHasNoChargingOrphan $(TLC) -config PhysicalCapacityAbandonedBind.cfg PhysicalCapacity.tla
+
+physical-capacity-spec-witnesses: $(TLA2TOOLS)
+	cd specs && ../hack/specs/expect-tlc-initial-witness.sh NoDuplicateOpenLeaseSlots $(TLC) -config PhysicalCapacityLedgerOversubscription.cfg PhysicalCapacity.tla
+	cd specs && ../hack/specs/expect-tlc-initial-witness.sh OpenLeaseNodeIsInCapacityView $(TLC) -config PhysicalCapacityCordonedNode.cfg PhysicalCapacity.tla
+	cd specs && ../hack/specs/expect-tlc-initial-witness.sh SpareImpliesOpenActiveLease $(TLC) -config PhysicalCapacitySpareBeforeActive.cfg PhysicalCapacity.tla
+	cd specs && ../hack/specs/expect-tlc-initial-witness.sh RunningImpliesOpenActiveLease $(TLC) -config PhysicalCapacityRunningAwaitingMint.cfg PhysicalCapacity.tla
+
+physical-capacity-conformance-check:
+	go test ./cmd/scheduler/plugin -run 'TestPreBind(FailureUnreserveRetryKeepsOneLease|CrossNodeRetryLeavesStaleLeaseAndAuditorWouldCloseIt)$$' -count=1
+
 node-failure-spec-pdf:
 	python3 -c 'import reportlab' >/dev/null 2>&1 || \
 		( echo "::error::python package reportlab is required for node-failure-spec-pdf"; exit 1 )
