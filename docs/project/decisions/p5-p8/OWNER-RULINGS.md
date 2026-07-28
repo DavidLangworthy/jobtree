@@ -300,3 +300,88 @@ within it.
 **Where it will weigh later.** Any proposal that reaches backwards — recomputing an old interval,
 repairing a summary under a new window, clamping a historical reading — is refused by this ruling
 without further argument. It is the standing answer to F1, F5, and the window-axis half of P6.
+
+## Ruling 10 — allocation is CONCURRENCY × a mandatory window; GPU-hours are metered, never enforced (2026-07-28)
+
+Reached over several turns. The owner's observation that started it:
+
+> "I'm not sure the hours cap makes sense. I think the problem is that there are two ways of
+> specifying how much quota a team gets and they kind of fight with each other."
+
+### The finding
+
+Every hard problem in the P5-P8 and quota-snapshot work traces to the **hours** cap. None traces to
+concurrency:
+
+| | Concurrency | GPU-hours |
+|---|---|---|
+| Memory | none — set 32, it is 32 | accumulates |
+| Spending depletes it | no | yes |
+| Idempotent under GitOps | **yes** | no — the resync refund |
+| Needs a window to reset | no | yes |
+| Re-grant ambiguity | none | zero / 250 / 500 |
+| Retroactive-rewrite exposure | none | F1, F5, P6, the clamp |
+
+Two-epochs, partial settlement, release-on-renewal, the GitOps refund, the clamping bug and the
+windowed-hours conservation question the formal campaign parked are **all** hours problems.
+
+### The code already leans this way
+
+- `MaxGPUHours` is already optional (`*int64`) and the no-cap path already exists
+  (`pkg/funding/evaluate.go:125`). Concurrency-only envelopes are legal and work **today**.
+- Validation already enforces `maxGPUHours <= concurrency × window` (`api/v1/budget_types.go:282`,
+  `:323`), so hours can only ever make a grant **smaller** than `concurrency × window` already implies.
+- Setting hours already *requires* a window (`budget_types.go:286`) — the code knows hours are
+  meaningless without one.
+- Exactly three enforcement sites, all nil-guarded: `evaluate.go:125` (envelope integral), `:858`
+  (lending hours), `:866` (aggregate-cap hours). `nextDepletion` (`:926-960`) goes inert with no cap.
+
+So hours exist only to say *"less than this window would permit"* — which is said more simply by
+lowering the concurrency or shortening the window, neither of which accumulates anything.
+
+### The ruling
+
+1. **The unit of allocation is concurrency over a window.** Both are required.
+2. **Windows become MANDATORY.** They are optional today — `windowActive` returns true when `Start`
+   and `End` are both nil (`evaluate.go`), so an envelope with no window is active forever. That is a
+   gap, not an intent: *"I thought the whole point is that every quota grant had a duration."*
+   Requiring a window is what makes the model bounded rather than merely conventional, and it removes
+   the "a team allocated 64 GPUs runs 64 GPUs forever" hole without any hours cap.
+3. **GPU-hours are metered, never enforced.** They are reported for chargeback and for the human
+   conversation about consumption. They do not gate admission, do not demote work, and do not
+   accumulate against a cap.
+
+### Why this is consistent with Ruling 9
+
+Ruling 9 says management wanting spent quota back is an organisational problem, not a Kubernetes one.
+*"You are burning more than your share"* is the same kind of problem. Metering gives that conversation
+its facts; enforcement tries to have the conversation on management's behalf and produces every
+retroactivity hazard in the record while doing it.
+
+### How the three burst patterns are served — all concurrency-shaped
+
+The owner named them, and none needs an hours balance:
+
+1. **Run and hope** — opportunistic/Unfunded. Coast, reclaimed only on demand and unluckily. Built.
+2. **Temporary quota from your manager** — a windowed concurrency envelope that expires. Windows
+   already exist.
+3. **Horse-trade with a neighbour** — lending. `LendingPolicy.MaxConcurrency` already exists.
+
+### What this settles
+
+Dead: the two-epoch problem; zero/250/500; the GitOps resync refund; release-on-renewal; windowed
+-hours subtree conservation (the campaign's parked decision); partial settlement as a *correctness*
+requirement. The clamping bug survives as a **reporting** defect rather than a funding one.
+
+Alive and unchanged: identity via the snapshot (P5); **concurrency conservation** (F4), still the
+largest unbuilt piece and now the only dimension that needs it; the grandparent tier; the PreBind
+placement bug. Rulings 6 and 9 still govern the metered record, demoted from funding correctness to
+reporting honesty.
+
+### Migration
+
+Concurrency-only is adoptable as **policy today** with no code change — stop setting `maxGPUHours` and
+the enforcement paths go dead before anyone deletes them. Two follow-ons: make windows required (with
+an end date for existing open-ended envelopes), and decide what `maxGPUHours` becomes — removed,
+deprecated, or reinterpreted as a reporting threshold. It must not survive as a field that looks
+enforcing and is not.
