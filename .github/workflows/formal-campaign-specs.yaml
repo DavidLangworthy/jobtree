@@ -1,0 +1,78 @@
+name: Formal Campaign Specs
+
+# Small Apalache rails stay out of make verify because they require Java and a
+# downloaded solver distribution. Their compiled Go specimens still run in the
+# ordinary test gate. This workflow is path-filtered to the formal surfaces and
+# the production inputs each abstraction corresponds to.
+on:
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - 'specs/AccrualPrefix*'
+      - 'specs/GrantAuthority*'
+      - 'specs/BlockedReservation*'
+      - 'specs/README.md'
+      - 'hack/specs/expect-apalache-counterexample.sh'
+      - 'pkg/funding/evaluate.go'
+      - 'pkg/funding/funding.go'
+      - 'pkg/funding/*counterexample_test.go'
+      - 'api/v1/budget_types.go'
+      - 'api/v1/reservation_types.go'
+      - 'controllers/run_controller.go'
+      - 'controllers/tenancy_reservation_test.go'
+      - '.github/workflows/formal-campaign-specs.yaml'
+      - 'Makefile'
+  push:
+    branches: [ main ]
+    paths:
+      - 'specs/AccrualPrefix*'
+      - 'specs/GrantAuthority*'
+      - 'specs/BlockedReservation*'
+      - 'specs/README.md'
+      - 'hack/specs/expect-apalache-counterexample.sh'
+      - 'pkg/funding/evaluate.go'
+      - 'pkg/funding/funding.go'
+      - 'pkg/funding/*counterexample_test.go'
+      - 'api/v1/budget_types.go'
+      - 'api/v1/reservation_types.go'
+      - 'controllers/run_controller.go'
+      - 'controllers/tenancy_reservation_test.go'
+      - '.github/workflows/formal-campaign-specs.yaml'
+      - 'Makefile'
+
+jobs:
+  accrual-prefix:
+    name: accrual prefix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: make accrual-prefix-apalache-check
+      - run: make accrual-prefix-apalache-counterexamples
+
+  grant-authority:
+    name: grant authority
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: make grant-authority-apalache-check
+      - run: make grant-authority-apalache-counterexamples
+
+  blocked-reservation:
+    name: blocked reservation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: make blocked-reservation-apalache-check
+      - run: make blocked-reservation-apalache-counterexamples

@@ -11,6 +11,7 @@ This spec exists to catch the bug classes that kept recurring in production on e
 - leaking a spare on a declined swap
 - order-dependent phase writes during one failure sweep
 - fixing only the ledger plane while the workload keeps running
+- silently drifting from the controller's fixed pass-2 funding snapshot
 
 ## Match to implementation
 
@@ -29,6 +30,10 @@ The main abstractions are intentional:
 - a collapsed funding class (`Funded` / `Unfunded`) instead of the full owned/shared/borrowed/unfunded derivation
 - a collapsed pod lifecycle (`Intent`, `Bound`, `Gone`) instead of the full API-level lifecycle
 
+Pod and lease identity share the same finite `Ids` type. That coarsening cannot
+express one machine-level pod projection backing several leases, so the funded
+multi-lease eviction case remains a compiled-Go rail and a named model gap.
+
 ## What TLC proves here
 
 The clean config checks the intended current design:
@@ -43,10 +48,23 @@ The bug configs reintroduce one defect class at a time and must fail:
 - `NodeFailureDeclinedSwap.cfg` -> `TerminalHoldsNothing`
 - `NodeFailureLastWriter.cfg` -> `PhaseIsJoin`
 - `NodeFailureHalfPlane.cfg` -> `PlaneAgreement`
+- `NodeFailureCountTopUp.cfg` -> `NoDuplicateSpareName`
+- `NodeFailureConsumedCount.cfg` -> `ConsumedSpareStaysConsumed`
+- `NodeFailureStaleFunding.cfg` -> `PostClosureFundedWorkSurvives`
 
 TLC does reproduce the historical bug classes. It does not, by itself, prove a new implementation bug in Go.
 
-The main open modeling question left on purpose is the "stale class evaluation" issue: the Go code computes funding once before pass 2, while this model re-derives on the current state. That deserves a separate exploratory knob if we want to answer it mechanically.
+`FreezeFundingForPass2` now represents the production choice directly.
+`fundingSnapshot` is refreshed while pass-1 spare casualties close and then
+held fixed while active items interleave. `closeCurrentClass` separately records
+what the mutable world would derive immediately before reclaim.
+
+The stale-funding config is an expected consequence trace, not a newly desired
+property: an earlier active closure promotes a later squatter in the mutable
+world, while the fixed entry snapshot still permits reclaim. Fresh
+per-iteration evaluation removes that trace but makes the answer depend on
+iteration order and may decline the entry-funded swap. The model therefore does
+not strengthen the current-world property into a reaper.
 
 ## Why this is useful
 
@@ -59,7 +77,7 @@ It is not a substitute for envtest, e2e, or the antifake rails. API wiring, info
 This model covers a narrow but safety-critical part of the product promise:
 
 - node-failure swaps do not duplicate ranks
-- swaps do not steal funded neighbors
+- swaps do not steal neighbors funded in the fixed post-pass-1 snapshot
 - failed runs do not strand immortal leases
 - the ledger/workload planes stay consistent enough for the lease trail to stay auditable
 
@@ -71,6 +89,8 @@ It does not model:
 - follow/completion
 - full GPU-hour arithmetic
 - multi-cluster behavior
+- physical slot ownership composed across ordinary admission, reservation
+  activation, and an in-flight swap intent
 
 ## Kubernetes semantics imported
 

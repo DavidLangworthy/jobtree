@@ -1,6 +1,6 @@
 # Design-level specs (TLA+)
 
-Three deliberately tiny TLA+ specifications, per the scoping in
+Focused TLA+ specifications, per the scoping in
 `docs/project/testing-and-simulation.md` ("Design-level model checking — a gate
 for the Kubernetes port") and the decided semantics in
 `docs/project/quota-semantics.md`. Each is tens of lines of state, close enough
@@ -11,10 +11,27 @@ to the design that it cannot drift far from reality.
 | `ReservationLifecycle` | plan / direct-bind / activate racing for one run | pods materialize at most once; no Pending reservation for a Running run (invariant 8) |
 | `BudgetConservation` | reconcilers admitting against one envelope from possibly-stale lease snapshots | the concurrency cap is never overspent |
 | `QuotaEvaluation` | the ranked greedy fill from `quota-semantics.md` Decision 3 | no overdraft; an owner's funding never depends on borrower claims (owner recall) |
-| `NodeFailure` | the node-failure / spare-swap / reclaim seam | no duplicate rank; exact-slot-only unfunded reclaim; no failed-node leak; no terminal immortal lease; phase is the join; ledger/workload plane agreement |
+| `NodeFailure` | the node-failure / spare-swap / reclaim seam, including the fixed post-spare-pass funding snapshot | no duplicate rank; exact-slot-only snapshot-unfunded reclaim; no failed-node leak; no terminal immortal lease; phase is the join; ledger/workload plane agreement |
 | `LedgerCompaction` | the R4 pt2 settlement theorem for `pkg/funding/evaluate.go` | if `horizon <= now` and no retained lease starts before the horizon, replaying `summary + retained` matches full replay on funded lease-hours and the funded set at `Now` |
 | `LedgerCompactionStore` | the pt2b persisted-settlement store semantics | repeated settlement, time advance, and window movement preserve equivalence to full replay, provided window shifts invalidate or recompute the summary before reuse |
 | `LedgerCompactionAccounting` | the broader pt2b accounting surface: aggregate caps, full window identity, lender/class carry-forward, and dynamic lease admission/closure | persisted summary representation and full stateful round-trip equivalence across settlement, time advance, window shifts, summary repair, safe admission, and close-at-Now for both a representative SMT history and 625 canonical two-lease histories; exact finite seeded-fold equivalence |
+| `AccrualPrefix` | owner Ruling 6's prospective-history rule versus the production-baseline current-snapshot replay | elapsed payer/class/window/charge tuples are immutable; renewed windows start with a fresh integral |
+| `GrantAuthority` | an authority-store-neutral rooted grant abstraction at depths 1–4 | outsider locality, universal owner injectivity, Owned-is-local, instantaneous payer-lineage conservation, and sponsored consumption charged only to the lender lineage |
+| `BlockedReservation` | the durable `BlockedFunding` lifecycle and controller/plugin boundary | visible inert blocking, stable onset, automatic repair, supersession, one gang emission, pod-before-lease, and scheduler-only minting |
+
+`AccrualPrefix` is a two-evaluator, zero-step design model. `Init` selects one
+mutation and `Next` stutters; the model compares pure before/after functions. It
+does not execute `funding.Evaluate`, does not model a temporal
+settle-then-edit transition, and is not a refinement mapping to a production
+persisted store (none exists). The fixed Go specimens calibrate delayed-Start,
+reduced-cap, and namespace-conflict outputs only.
+
+`GrantAuthority` is likewise authority-store-neutral. Its `GlobalOwner` knob
+states the desired universal injectivity rule; it does not reproduce
+`deriveOwners`' production interior-versus-leaf exemption algorithm. The
+generic negative configs show why each desired predicate is load-bearing. The
+compiled production specimens are the decisive evidence that the current
+exemption permits cross-namespace ownership and `Owned` charging.
 
 ## Running
 
@@ -47,6 +64,23 @@ make ledger-compaction-apalache-counterexamples
 make ledger-compaction-accounting-apalache-check
 make ledger-compaction-accounting-apalache-counterexamples
 ```
+
+The campaign's small Apalache rails are intentionally separate from
+`make verify`. Their Go correspondence tests remain in the ordinary test gate;
+the model checks run in the path-filtered formal workflow:
+
+```bash
+make accrual-prefix-apalache-check
+make accrual-prefix-apalache-counterexamples
+make grant-authority-apalache-check
+make grant-authority-apalache-counterexamples
+make blocked-reservation-apalache-check
+make blocked-reservation-apalache-counterexamples
+```
+
+Every negative target validates Apalache exit 12, the sole selected invariant,
+and the presence of a generated counterexample trace. An arbitrary solver error
+does not satisfy an expected-failure rail.
 
 The accounting companion also has a TLC rail for the exact finite universal
 seeded-fold property and for cheap representative one-shot properties that do
@@ -175,6 +209,12 @@ design review:
   worst verdict, and TLC finds an order-dependent final phase.
 - `NodeFailureHalfPlane.cfg` fixes only the ledger plane during reclaim/swap,
   and TLC finds the victim still machine-running after its lease was closed.
+- `NodeFailureStaleFunding.cfg` keeps production's one post-spare-pass funding
+  snapshot. TLC finds the expected consequence: an earlier active closure
+  promotes a later squatter in the mutable world, but the frozen snapshot still
+  permits reclaim. This violates the stronger
+  `PostClosureFundedWorkSurvives` property by design; it is not authorization
+  for iteration-order-sensitive fresh evaluation.
 - `LedgerCompactionStraddle.cfg` forces a retained lease to start before the
   horizon, and Apalache finds that dropping settled competitors changes the
   replay result.
@@ -206,6 +246,24 @@ design review:
 - `LedgerCompactionAccountingHistoricalClosureRewrite.cfg` admits and closes a
   lease, settles it into horizon 1, then changes its end from 1 to 2; TLC finds
   the live summary still contains history that is no longer settled.
+- `AccrualPrefixConflict.cfg`, `AccrualPrefixDelayedStart.cfg`,
+  `AccrualPrefixReducedCap.cfg`, and `AccrualPrefixRenewedWindow.cfg` apply the
+  production-baseline snapshot evaluator to elapsed time and violate prefix
+  immutability.
+- `AccrualPrefixStaleWindowKey.cfg` drops the window epoch and carries old
+  charges into a renewed window.
+- `GrantAuthorityUnauthenticated.cfg` accepts an unrooted squatter claim and
+  lets it alter the victim namespace.
+- `GrantAuthorityInjectivityExemption.cfg` and
+  `GrantAuthorityOwnedNonlocal.cfg` exempt an interior owner from universal
+  injectivity, producing a cross-namespace Owned classification.
+- `GrantAuthorityLocalCapsOnly.cfg` funds two locally-valid descendant claims
+  beyond their shared ancestor's cap.
+- `GrantAuthoritySpenderKeyedLoan.cfg` charges a sponsored unit to the
+  borrower's ancestors instead of only the paying lender's lineage.
+- The five `BlockedReservation*` mutation configs preserve the frozen gauge,
+  restamp the onset, omit the `BlockedFunding` revisit/release mirrors, or let
+  the controller mint leases.
 
 ## What is deliberately out of scope
 
@@ -216,3 +274,14 @@ classification is a derived function, so staleness bugs in it are
 unrepresentable. The stability property ("equal claims never reshuffle") is
 structural: a claim's class depends only on claims ranked above it, and ranks
 are `(tier, admission index)`, which mutations never reorder for survivors.
+
+`GrantAuthority` abstracts the trusted-edge source on purpose. It does not
+choose between grantor-side `Budget.Spec.Grants` and a cluster authority
+registry, and it is representative over two branches rather than exhaustive
+over arbitrary DAGs. It checks instantaneous conservation only. Windowed-hours
+subtree conservation with misaligned ancestor/descendant windows remains a
+product decision, not a solver assumption.
+
+`BlockedReservation` does not model the controller/plugin apply transaction or
+the unresolved below-minimum assembly deadline `U`; partial-gang completion and
+bounded unwind therefore remain Go/static gaps rather than implied proof.

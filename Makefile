@@ -221,6 +221,46 @@ APALACHE := specs/.cache/apalache/bin/apalache-mc
 APALACHE_JVM_ARGS ?= -Xmx5500m
 APALACHE_STATEFUL_JVM_ARGS ?= -Xmx10000m
 
+.PHONY: accrual-prefix-apalache-check accrual-prefix-apalache-counterexamples grant-authority-apalache-check grant-authority-apalache-counterexamples blocked-reservation-apalache-check blocked-reservation-apalache-counterexamples
+
+# Ruling 6's prospective-history rail. The positive target checks the desired
+# persisted-prefix abstraction. The negative target validates each known-bad
+# current-snapshot witness and refuses to treat an arbitrary nonzero exit as a
+# counterexample.
+accrual-prefix-apalache-check: $(APALACHE)
+	cd specs && JVM_ARGS='$(APALACHE_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=AccrualPrefixPersisted.cfg --length=1 --no-deadlock AccrualPrefix.tla
+
+accrual-prefix-apalache-counterexamples: $(APALACHE)
+	cd specs && ../hack/specs/expect-apalache-counterexample.sh AccrualPrefix.tla AccrualPrefixConflict.cfg SnapshotPrefixImmutable
+	cd specs && ../hack/specs/expect-apalache-counterexample.sh AccrualPrefix.tla AccrualPrefixDelayedStart.cfg SnapshotPrefixImmutable
+	cd specs && ../hack/specs/expect-apalache-counterexample.sh AccrualPrefix.tla AccrualPrefixReducedCap.cfg SnapshotPrefixImmutable
+	cd specs && ../hack/specs/expect-apalache-counterexample.sh AccrualPrefix.tla AccrualPrefixRenewedWindow.cfg SnapshotPrefixImmutable
+	cd specs && ../hack/specs/expect-apalache-counterexample.sh AccrualPrefix.tla AccrualPrefixStaleWindowKey.cfg NewWindowFresh
+
+# Abstract P5/P7 authority rail. It checks both branches at delegation depths
+# 1..4 without selecting the still-unresolved production authority store.
+grant-authority-apalache-check: $(APALACHE)
+	cd specs && JVM_ARGS='$(APALACHE_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=GrantAuthority.cfg --length=1 --no-deadlock GrantAuthority.tla
+
+grant-authority-apalache-counterexamples: $(APALACHE)
+	cd specs && ../hack/specs/expect-apalache-counterexample.sh GrantAuthority.tla GrantAuthorityUnauthenticated.cfg GrantLocality
+	cd specs && ../hack/specs/expect-apalache-counterexample.sh GrantAuthority.tla GrantAuthorityInjectivityExemption.cfg OwnerInjective
+	cd specs && ../hack/specs/expect-apalache-counterexample.sh GrantAuthority.tla GrantAuthorityOwnedNonlocal.cfg OwnedIsLocal
+	cd specs && ../hack/specs/expect-apalache-counterexample.sh GrantAuthority.tla GrantAuthorityLocalCapsOnly.cfg SubtreeConservation
+	cd specs && ../hack/specs/expect-apalache-counterexample.sh GrantAuthority.tla GrantAuthoritySpenderKeyedLoan.cfg SponsoredConsumptionIsPayerLocal
+
+# Durable BlockedFunding lifecycle and the scheduler-only mint boundary. The
+# depth of four reaches Block, repeated re-scan, repair/supersession, and mint.
+blocked-reservation-apalache-check: $(APALACHE)
+	cd specs && JVM_ARGS='$(APALACHE_JVM_ARGS)' .cache/apalache/bin/apalache-mc check --config=BlockedReservation.cfg --length=4 --no-deadlock BlockedReservation.tla
+
+blocked-reservation-apalache-counterexamples: $(APALACHE)
+	cd specs && APALACHE_LENGTH=2 ../hack/specs/expect-apalache-counterexample.sh BlockedReservation.tla BlockedReservationFrozenGauge.cfg BlockedVisibleAndInert
+	cd specs && APALACHE_LENGTH=3 ../hack/specs/expect-apalache-counterexample.sh BlockedReservation.tla BlockedReservationRestampedOnset.cfg OriginalOnsetSurvives
+	cd specs && APALACHE_LENGTH=3 ../hack/specs/expect-apalache-counterexample.sh BlockedReservation.tla BlockedReservationNotRevisited.cfg RepairedDoesNotStayBlocked
+	cd specs && APALACHE_LENGTH=3 ../hack/specs/expect-apalache-counterexample.sh BlockedReservation.tla BlockedReservationNotReleased.cfg NoBlockedReservationForDoneRun
+	cd specs && APALACHE_LENGTH=3 ../hack/specs/expect-apalache-counterexample.sh BlockedReservation.tla BlockedReservationControllerMints.cfg OnlySchedulerMints
+
 $(TLA2TOOLS):
 	mkdir -p $(dir $(TLA2TOOLS))
 	curl -fsSL -o $(TLA2TOOLS) https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar
@@ -258,6 +298,7 @@ node-failure-spec-counterexamples: $(TLA2TOOLS)
 	cd specs && ! $(TLC) -config NodeFailureHalfPlane.cfg NodeFailure.tla
 	cd specs && ! $(TLC) -config NodeFailureCountTopUp.cfg NodeFailure.tla
 	cd specs && ! $(TLC) -config NodeFailureConsumedCount.cfg NodeFailure.tla
+	cd specs && ../hack/specs/expect-tlc-counterexample.sh PostClosureFundedWorkSurvives $(TLC) -config NodeFailureStaleFunding.cfg NodeFailure.tla
 
 node-failure-spec-pdf:
 	python3 -c 'import reportlab' >/dev/null 2>&1 || \
