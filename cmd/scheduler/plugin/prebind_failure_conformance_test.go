@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -89,17 +90,19 @@ func TestPreBindFailureUnreserveRetryKeepsOneLease(t *testing.T) {
 	}
 }
 
-// TestPreBindCrossNodeRetryLeavesStaleLeaseAndAuditorWouldCloseIt is a
-// known-bad production specimen. PreBind's AlreadyExists branch authenticates
-// the run and open bit but not the placement. A retry on another scheduler
-// node therefore succeeds against the first attempt's immutable lease.
+// TestPreBindCrossNodeRetryRefusesLeaseOnAnotherNode is the L19 regression
+// specimen. PreBind's AlreadyExists branch authenticates the run and the open
+// bit; until the placement guard it did not authenticate the NODE, so a retry on
+// another scheduler node succeeded against the first attempt's immutable lease.
+// The pod then bound on node-b while its lease still held GPUs on node-a, and
+// losing node-a made AuditLedger return a repairable lease_dead_node against a
+// perfectly healthy run — matured repair closes it, and the node-b work loses
+// its charging and capacity record.
 //
-// Once the retry binds on node-b, the pod is healthy there while its lease
-// still names node-a. If node-a disappears, AuditLedger sees positive
-// dead-node evidence and returns a repairable violation for that stale lease.
-// The real auditor would close it after grace, leaving the healthy node-b work
-// without its charging/capacity record.
-func TestPreBindCrossNodeRetryLeavesStaleLeaseAndAuditorWouldCloseIt(t *testing.T) {
+// A lease spec is immutable and this plugin is not the closer, so the guard
+// refuses the mint instead of repairing it. The lease stays on node-a, alone and
+// open, and the divergent state is unreachable rather than merely audited.
+func TestPreBindCrossNodeRetryRefusesLeaseOnAnotherNode(t *testing.T) {
 	ctx := context.Background()
 	run := trainRun()
 	pod := gangPod()
@@ -120,12 +123,17 @@ func TestPreBindCrossNodeRetryLeavesStaleLeaseAndAuditorWouldCloseIt(t *testing.
 		t.Fatalf("node-a PreBind failed: %s", status.Message())
 	}
 	j.Unreserve(ctx, nil, pod, "node-a")
-	if status := j.PreBind(ctx, nil, pod, "node-b"); status != nil && !status.IsSuccess() {
-		t.Fatalf("cross-node retry PreBind failed: %s", status.Message())
+
+	// The load-bearing assertion: the retry is on a different node than the lease
+	// this pod already minted, so PreBind must refuse rather than report a mint
+	// that would place the pod away from the GPUs it charges for.
+	status := j.PreBind(ctx, nil, pod, "node-b")
+	if status == nil || status.IsSuccess() {
+		t.Fatal("cross-node retry PreBind succeeded; the pod would bind on node-b holding a node-a lease")
 	}
-	// PreBind succeeded for node-b, so model the framework's subsequent bind.
-	pod.Spec.NodeName = "node-b"
-	pod.Status.Phase = corev1.PodRunning
+	if msg := status.Message(); !strings.Contains(msg, "node-a") || !strings.Contains(msg, "node-b") {
+		t.Errorf("refusal message %q should name both the lease's node and the attempted node", msg)
+	}
 
 	var leases v1.GPULeaseList
 	if err := c.List(ctx, &leases, client.InNamespace("default")); err != nil {
@@ -139,10 +147,25 @@ func TestPreBindCrossNodeRetryLeavesStaleLeaseAndAuditorWouldCloseIt(t *testing.
 	if !reflect.DeepEqual(lease.Spec.Slice.Nodes, wantSlots) {
 		t.Fatalf("lease slots = %v, want immutable first-PreBind slots %v", lease.Spec.Slice.Nodes, wantSlots)
 	}
-	if pod.Spec.NodeName != "node-b" {
-		t.Fatalf("bound pod node = %q, want node-b", pod.Spec.NodeName)
+	if lease.Status.Closed {
+		t.Fatal("refused cross-node retry closed the lease; PreBind is not a closer")
 	}
 
+	// The guard must not break the same-node retry it shares a branch with: the
+	// pod converges on the node its lease already froze.
+	if status := j.PreBind(ctx, nil, pod, "node-a"); status != nil && !status.IsSuccess() {
+		t.Fatalf("same-node retry after a refused cross-node retry failed: %s", status.Message())
+	}
+	if err := c.List(ctx, &leases, client.InNamespace("default")); err != nil {
+		t.Fatalf("re-list leases: %v", err)
+	}
+	if len(leases.Items) != 1 {
+		t.Fatalf("same-node retry minted a second lease (%d total)", len(leases.Items))
+	}
+
+	// Bound where its lease charges, the run is healthy and the auditor is quiet.
+	pod.Spec.NodeName = "node-a"
+	pod.Status.Phase = corev1.PodRunning
 	run.Status.Phase = v1.RunPhaseRunning
 	violations := controllers.AuditLedger(controllers.LedgerWorld{
 		Runs:   map[string]*v1.Run{"default/train": run},
@@ -153,14 +176,9 @@ func TestPreBindCrossNodeRetryLeavesStaleLeaseAndAuditorWouldCloseIt(t *testing.
 			RunName:   run.Name,
 			Phase:     string(pod.Status.Phase),
 		}},
-		// node-b and the healthy pod still exist; only stale lease node-a is gone.
-		NodeNames: map[string]bool{"node-b": true},
+		NodeNames: map[string]bool{"node-a": true, "node-b": true},
 	})
-	if len(violations) != 1 {
-		t.Fatalf("AuditLedger violations = %+v, want one stale-node violation", violations)
-	}
-	if got := violations[0]; got.Kind != controllers.ViolationLeaseDeadNode ||
-		!got.Repairable || got.LeaseName != lease.Name {
-		t.Fatalf("AuditLedger violation = %+v, want repairable lease_dead_node for %s", got, lease.Name)
+	if len(violations) != 0 {
+		t.Fatalf("auditor flagged a healthy run bound on its lease's own node: %+v", violations)
 	}
 }

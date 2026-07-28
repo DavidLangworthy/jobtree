@@ -131,6 +131,15 @@ the state with the real PreBind/Unreserve path in
 `TestPreBindCrossNodeRetryLeavesStaleLeaseAndAuditorWouldCloseIt`. No other
 conclusion is attributed to the outer review.
 
+**Disposition (2026-07-28): fixed.** `PreBind`'s `AlreadyExists` branch now
+authenticates placement alongside the run and the open bit, refusing the mint
+when the existing lease's slots do not sit on the node being bound — the
+`RetryPlacementGuard` of `specs/PhysicalCapacity.tla:336`. Refusal rather than
+repair because a lease spec is immutable (`self.spec == oldSelf.spec`) and the
+plugin is not the sole closer. The specimen above was inverted into the
+regression test `TestPreBindCrossNodeRetryRefusesLeaseOnAnotherNode`; the
+findings recorded in this document are left as they stood on 2026-07-27.
+
 ## Tools
 
 | Tool | Version |
