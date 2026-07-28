@@ -68,18 +68,18 @@ jobs:
     timeout-minutes: 355     # just under the 6h hard cap; the runner re-dispatches before this
     steps:
       - name: Checkout (PAT so pushes trigger CI)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           token: ${{ secrets.AUTOPILOT_PAT }}
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
       - name: Set up Helm            # make verify runs helm-lint / helm-assert
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@v5
 
       - name: Install Claude Code
         run: |
@@ -171,7 +171,7 @@ jobs:
       # it and picks up where this one stopped. The script exports AUTOPILOT_SID for the name.
       - name: Save session (black-box + resume state)
         if: ${{ always() && env.AUTOPILOT_SID != '' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: session-${{ env.AUTOPILOT_SID }}
           path: |
