@@ -27,6 +27,8 @@ func addKnownTypes(s *runtime.Scheme) error {
 		&Budget{}, &BudgetList{},
 		&GPULease{}, &GPULeaseList{},
 		&Reservation{}, &ReservationList{},
+		&Grant{}, &GrantList{},
+		&QuotaSnapshot{}, &QuotaSnapshotList{},
 	)
 	metav1.AddToGroupVersion(s, GroupVersion)
 	return nil

@@ -44,7 +44,13 @@ import (
 // ahead of the consumer is the point of batching a CRD outage; shipping it
 // SILENTLY is what this lint exists to stop, so both are individually reasoned
 // in the allowlist. Ratchet back to 2 as each gains its reader.
-const maxAllowedUnreadCRDFields = 4
+//
+// Now 3, not 4: build item 3 added QuotaSnapshotSpec.SnapshotVersion and
+// GrantStatus.SnapshotVersion, and because the reader scan matches on field NAME
+// the lease's SnapshotVersion reads as covered. It is not genuinely consumed yet
+// — see the note at the foot of the allowlist file, which exists precisely so the
+// removed entry is not mistaken for a wired field.
+const maxAllowedUnreadCRDFields = 3
 
 const crdFieldsAllowlistName = "crd-fields-allowlist.txt"
 
