@@ -274,3 +274,383 @@ bought. **P3's status is now the live question, and it is upstream of P6.**
   documented gap rather than a decision, but it should be documented rather than assumed.
 - The "unfunded and at high risk" phrasing is exactly the existing `ClassUnfunded` + reclaim-on-demand
   path, so the mechanism needs nothing new — only the accrual anchoring does.
+
+## Ruling 9 — management cannot take back spent quota, and Kubernetes is not where that gets sorted out (2026-07-28)
+
+> "Management cannot take back quota that is already spent. They might wish they could and often do,
+> but kubernetes is not the right place to sort that problem out."
+
+Restates Ruling 6's core with a scope clause that is new and does independent work. Ruling 6 said
+accrued history is immutable; this says the **recourse** for wishing it were otherwise is
+organisational, not technical — the scheduler must stop trying to model it, and a proposal whose
+justification is "but the manager needs to claw that back" is out of scope by construction rather
+than merely unimplemented.
+
+**What it settles outright.** `accrue` clamps the *reading* of consumed hours to the current cap
+(`pkg/funding/evaluate.go:993-997`), so 500 spent GPU-hours display as 250 once the cap drops to 500.
+That is the ledger reporting that spent quota was taken back. It is not a semantics choice between
+candidate models — every model must report 500 — so it is a **bug**, not an open question. It is the
+same defect class as the frozen backlog gauge: state right, metric lying about it.
+
+**What it does NOT settle**, and the owner said so when stating it: how much remains going forward
+after a re-grant. Zero, a proportional remainder, or the full new number all leave spent hours spent
+and charged. The principle scopes the question to *forward entitlement only*; it does not choose
+within it.
+
+**Where it will weigh later.** Any proposal that reaches backwards — recomputing an old interval,
+repairing a summary under a new window, clamping a historical reading — is refused by this ruling
+without further argument. It is the standing answer to F1, F5, and the window-axis half of P6.
+
+## Ruling 10 — allocation is CONCURRENCY × a mandatory window; GPU-hours are metered, never enforced (2026-07-28)
+
+Reached over several turns. The owner's observation that started it:
+
+> "I'm not sure the hours cap makes sense. I think the problem is that there are two ways of
+> specifying how much quota a team gets and they kind of fight with each other."
+
+### The finding
+
+Every hard problem in the P5-P8 and quota-snapshot work traces to the **hours** cap. None traces to
+concurrency:
+
+| | Concurrency | GPU-hours |
+|---|---|---|
+| Memory | none — set 32, it is 32 | accumulates |
+| Spending depletes it | no | yes |
+| Idempotent under GitOps | **yes** | no — the resync refund |
+| Needs a window to reset | no | yes |
+| Re-grant ambiguity | none | zero / 250 / 500 |
+| Retroactive-rewrite exposure | none | F1, F5, P6, the clamp |
+
+Two-epochs, partial settlement, release-on-renewal, the GitOps refund, the clamping bug and the
+windowed-hours conservation question the formal campaign parked are **all** hours problems.
+
+### The code already leans this way
+
+- `MaxGPUHours` is already optional (`*int64`) and the no-cap path already exists
+  (`pkg/funding/evaluate.go:125`). Concurrency-only envelopes are legal and work **today**.
+- Validation already enforces `maxGPUHours <= concurrency × window` (`api/v1/budget_types.go:282`,
+  `:323`), so hours can only ever make a grant **smaller** than `concurrency × window` already implies.
+- Setting hours already *requires* a window (`budget_types.go:286`) — the code knows hours are
+  meaningless without one.
+- Exactly three enforcement sites, all nil-guarded: `evaluate.go:125` (envelope integral), `:858`
+  (lending hours), `:866` (aggregate-cap hours). `nextDepletion` (`:926-960`) goes inert with no cap.
+
+So hours exist only to say *"less than this window would permit"* — which is said more simply by
+lowering the concurrency or shortening the window, neither of which accumulates anything.
+
+### The ruling
+
+1. **The unit of allocation is concurrency over a window.** Both are required.
+2. **Windows become MANDATORY.** They are optional today — `windowActive` returns true when `Start`
+   and `End` are both nil (`evaluate.go`), so an envelope with no window is active forever. That is a
+   gap, not an intent: *"I thought the whole point is that every quota grant had a duration."*
+   Requiring a window is what makes the model bounded rather than merely conventional, and it removes
+   the "a team allocated 64 GPUs runs 64 GPUs forever" hole without any hours cap.
+3. **GPU-hours are metered, never enforced.** They are reported for chargeback and for the human
+   conversation about consumption. They do not gate admission, do not demote work, and do not
+   accumulate against a cap.
+
+### Why this is consistent with Ruling 9
+
+Ruling 9 says management wanting spent quota back is an organisational problem, not a Kubernetes one.
+*"You are burning more than your share"* is the same kind of problem. Metering gives that conversation
+its facts; enforcement tries to have the conversation on management's behalf and produces every
+retroactivity hazard in the record while doing it.
+
+### How the three burst patterns are served — all concurrency-shaped
+
+The owner named them, and none needs an hours balance:
+
+1. **Run and hope** — opportunistic/Unfunded. Coast, reclaimed only on demand and unluckily. Built.
+2. **Temporary quota from your manager** — a windowed concurrency envelope that expires. Windows
+   already exist.
+3. **Horse-trade with a neighbour** — lending. `LendingPolicy.MaxConcurrency` already exists.
+
+### What this settles
+
+Dead: the two-epoch problem; zero/250/500; the GitOps resync refund; release-on-renewal; windowed
+-hours subtree conservation (the campaign's parked decision); partial settlement as a *correctness*
+requirement. The clamping bug survives as a **reporting** defect rather than a funding one.
+
+Alive and unchanged: identity via the snapshot (P5); **concurrency conservation** (F4), still the
+largest unbuilt piece and now the only dimension that needs it; the grandparent tier; the PreBind
+placement bug. Rulings 6 and 9 still govern the metered record, demoted from funding correctness to
+reporting honesty.
+
+### Migration
+
+Concurrency-only is adoptable as **policy today** with no code change — stop setting `maxGPUHours` and
+the enforcement paths go dead before anyone deletes them. Two follow-ons: make windows required (with
+an end date for existing open-ended envelopes), and decide what `maxGPUHours` becomes — removed,
+deprecated, or reinterpreted as a reporting threshold. It must not survive as a field that looks
+enforcing and is not.
+
+## Ruling 11 — delete `maxGPUHours`; shard the snapshot rather than approach etcd's limit (2026-07-28)
+
+> "Re: Max gpu hours, if we're not using it, it's gone, right?"
+> "The etcd thing is a real issue to sort out. We want to steer well clear of those boundaries. If
+> something is getting that big, I'd break it up, and tolerate losing atomic update."
+
+### `maxGPUHours` is deleted, not deprecated
+
+Answers open question Q2, and the house rule already decided it: *"Never introduce a side-by-side
+compatibility path. If a change breaks, we schedule it"* (`AGENTS.md:178`). `hack/antifake/crdfields.go`
+exists to catch exactly this shape — a CRD field that looks like it does something and does not.
+
+So under Ruling 10 the field goes, along with its three enforcement sites (`evaluate.go:125`, `:858`,
+`:866`), `nextDepletion` (`:926-960`), the `ValidateMaxHoursWindow` rail
+(`api/v1/budget_types.go:282,313-323`), and `AggregateCap.MaxGPUHours`. Schedule the break; do not
+leave a tolerated no-op.
+
+Metering is unaffected: consumed GPU-hours are still computed from lease history and still reported.
+What disappears is the *cap*, not the *number*.
+
+### Shard the snapshot; do not engineer up to the object limit
+
+Kubernetes objects cap near 1.5 MiB. The ruling is to stay well clear rather than compress, chunk, or
+optimise toward it — and if the document gets large, **break it up and accept that cross-shard updates
+are not atomic**.
+
+**Shard by root subtree, so a whole lineage lives in one shard.** That is the choice that makes the
+lost atomicity harmless:
+
+- **Ancestor walks never cross a shard.** Subtree conservation (`INV-SUBTREE-CONSERVE`) walks from a
+  payer up to its root; if the lineage is intact within one shard, the check is always performed
+  against one consistent version. This is the property that would break under any other sharding key,
+  so it is not an implementation detail.
+- **It gives Ruling 8 for free.** Per-subtree quarantine and per-subtree sharding are the same
+  boundary. A shard that fails validation holds last-good while others advance — which is exactly the
+  localization already ruled for, now falling out of the storage layout instead of needing separate
+  machinery.
+- **What is genuinely lost is cross-subtree simultaneity**, and Ruling 8 already declined to buy it.
+  Two orgs' quota can be at different versions for a moment. The only edge that spans subtrees is
+  **lending**, where a revoked loan may take effect late — bounded staleness of the same kind the
+  replay already has, since lending eligibility is re-evaluated on every fill
+  (`pkg/funding/evaluate.go:797-798`).
+
+**Sizing is a measurement, not a guess.** Size a real org tree first, pick a shard boundary with
+generous headroom, and record the number. "Well clear" needs a figure attached or it is a hope.
+
+## Ruling 12 — versions are never skipped, only observed late; late versions do not matter (2026-07-28)
+
+> "Ok, so skipped versions are not really skipped, they are late. Late versions don't matter."
+
+Closes design question Q4 and dissolves Sol's gap-detection concern rather than building for it.
+
+A watch that misses an intermediate version has not lost an *effect*; it has seen the world later. The
+scheduler always acts on the most recent state it holds, converges to the correct one, and never acts
+wrongly relative to what it knew. Gap detection would buy nothing a consumer could use.
+
+The one thing genuinely given up, stated plainly so nobody discovers it later: **a revocation that is
+reverted before anyone observes it never takes effect.** That is correct rather than regrettable — a
+grant change reverted within a watch interval is a flapping edit, not a decision, and a manager who
+needs a revocation to bite holds it long enough to be seen. Ruling 9's spirit applies: the recourse for
+"I meant that briefly" is organisational.
+
+Consequence: **no gap detection, no version-continuity requirement, no `firstSeen` bookkeeping for
+continuity.** `INV-SNAP-MONOTONE` still rejects a version that moves *backwards*, which is a different
+defect — that is republication rewriting the present, not lateness.
+
+## Ruling 13 — `U` is settable cluster policy (2026-07-28)
+
+> "U should be settable."
+
+`U` is the deadline after which a gang still below `minRunnableGPUs` is unwound: leases closed, pods
+deleted, reservation released, run requeued. It is the only number left in the design.
+
+**Settable, and specifically cluster policy — not tenant-declared.** That distinction is the whole
+point. The obvious reuse is `spec.runtime.checkpoint` (`controllers/run_controller.go:944-949`), and it
+is wrong twice over: tenant-declared means a tenant can hold GPUs indefinitely by declaring a large
+value, and its zero default means immediate destruction for everyone who does not set it. Both are
+failure modes the deadline exists to prevent.
+
+So: a cluster-level setting, with a **default** (most operators will never set it) and an **enforced
+floor** of at least a few activation intervals, so a misconfiguration cannot reintroduce
+destroy-at-one-tick. Operators may raise it; nothing may lower it past the floor.
+
+## Ruling 14 — Ruling 10 is a PRODUCT EXCLUSION, not an equivalence (2026-07-28)
+
+> "Ruling 10. Yes. It's a product decision. Not a direct equivalence."
+
+Both critics attacked Ruling 10's coverage claim independently and reached the same verdict by
+different routes. Sol gave it mathematical form; Fable reached it from consequence. That convergence
+is the strongest evidence this process produces, and the ruling is amended rather than reversed.
+
+**The pattern jobtree deliberately does not support**, stated so it is never re-derived as a surprise:
+
+> *"10,000 GPU-hours during Q3, may burst up to 128 GPUs, tenant chooses when to spend them."*
+
+Formally the feasible set `0 ≤ u(t) ≤ 128` with `∫ u(t) dt ≤ 10,000`. **No concurrency × window
+rectangle represents it**: 128 across Q3 permits far more than 10,000 hours; lowering concurrency to
+`10,000 / quarter` destroys the burst; shortening the window preserves both only by choosing the
+tenant's burst timing in advance. The three burst mechanisms do not substitute — opportunistic work is
+not an entitlement, lending needs a peer and moves concurrency rather than a fungible time budget, and
+repeated temporary grants make the manager an online allocator.
+
+**My argument for Ruling 10 was wrong and is withdrawn.** I claimed hours were redundant because
+validation enforces `maxGPUHours ≤ concurrency × window`, so hours could only ever describe a smaller
+rectangle. Sol: that proves the integral entitlement is a *subset*; it does not prove the subset is
+representable by another rectangle. **A rectangle cannot express a non-rectangular feasible region.**
+
+**What stands.** jobtree allocates *capability over a period*, not *fungible compute credits*. A
+tenant who wants credit-style spending gets it through the burst mechanisms, at the cost of choosing
+timing with their manager rather than unilaterally. That is a legitimate product boundary and every
+simplification Ruling 10 bought — no balance, no epochs, idempotent grants, no retroactive rewrite —
+still follows from it.
+
+**What changes.** The design must state the exclusion rather than claim equivalence, and any future
+request for compute credits is answered by pointing here, not by re-deriving the argument.
+
+### Two factual errors in Ruling 10, corrected
+
+Neither changes the conclusion; both change the migration, and both were asserted rather than verified.
+
+1. *"Setting hours already requires a window (`budget_types.go:286`)"* is **backwards**. That branch
+   *tolerates* windowless hours, checking only non-negativity when `Start` and `End` are both nil. And
+   a half-windowed envelope (`Start` set, `End` nil) matches neither it nor the concurrency×window rail
+   at `:274-285`, so **its hours are validated against nothing at all** — a pre-existing gap this
+   ruling accidentally discovered.
+2. *"Exactly three enforcement sites"* undercounts badly. Beyond `evaluate.go:125`, `:858`, `:866` and
+   `nextDepletion`: the admission lookahead in `AvailableWidth` gates on hours at four more sites
+   (`:1167`, `:1171`, `:1194-1196`, `:1215-1217`), and those implement the **born-opportunistic
+   protection** of `quota-semantics.md:23-26`. Plus the accrue clamps (`:993-997`, `:1024-1027`) and
+   `pkg/funding/admission.go:89-136`. Deleting hours therefore removes a real admission protection,
+   not just three gates — that loss must be replaced or accepted explicitly.
+
+## Ruling 15 — `U` defaults to 1 hour (2026-07-28)
+
+> "Make Us default 1 hr."
+
+Settles the shipped default for the below-minimum unwind deadline. A gang still below
+`minRunnableGPUs` after **1 hour** is unwound: leases closed by normal release, pods deleted,
+reservation released, run requeued.
+
+Why the number is defensible: it covers a GitOps window, a controller restart, and most human repair,
+while bounding how long a never-runnable assembly can hold GPUs on an idle cluster. A shorter default
+would unwind work that a routine deploy would have recovered; a longer one makes the stuck case
+expensive for whoever queues behind it.
+
+Cluster policy, per Ruling 13 — **not** tenant-declared, and specifically not
+`spec.runtime.checkpoint` (`controllers/run_controller.go:944-949`), which is tenant-set and defaults
+to zero.
+
+**Still open:** the enforced **floor**. Operators may raise `U`; the floor is what stops a
+misconfiguration lowering it toward destroy-at-one-tick. It should be a small multiple of the
+activation interval, and that multiple needs the interval measured rather than guessed.
+
+## Ruling 16 — grants are a separate object, namespaced in the GRANTOR's namespace (2026-07-28)
+
+> "I prefer the separate binding object. Can it just borrow the RBAC from a?"
+
+Closes design question Q1. Yes — by making it **namespaced in the grantor's namespace** rather than
+cluster-scoped, it borrows option (a)'s authorization exactly: *"you may write grants in your own
+namespace"* is namespaced RBAC that already exists, and it is naturally subtree-bounded because a
+principal's namespace **is** its position in the tree.
+
+Grantor's namespace, never the grantee's — a grant living in the grantee's namespace would be
+self-asserted, which is the defect being fixed.
+
+### The reason for the choice, which is not the one either designer gave
+
+**A separate object separates "may delegate" from "may change my own allocation." A field on the
+Budget cannot.**
+
+Kubernetes RBAC is per-resource, not per-field. Under option (a), `Grants` was a field on
+`Budget.Spec`, so anyone permitted to add a grant was also permitted to raise their own
+`concurrency` — the API conflates delegating what you hold with giving yourself more. With a separate
+object the two are independently grantable:
+
+```
+lead:  create/update/delete  grants   in their namespace
+lead:  get/list              budgets  in their namespace
+```
+
+A lead may sub-divide what they were given and **may not enlarge their own allocation.** That is
+Ruling 1's *"contained to what they were granted"* made enforceable by the API server rather than by
+the producer's good behaviour, and it is the strongest containment property available without new
+policy machinery. Neither designer proposed it: Fable argued for the field, Sol for a cluster-scoped
+registry, and this is the third shape.
+
+Three smaller consequences, all favourable: each grant has its own lifecycle and status, so a
+colliding grant is quarantined individually instead of poisoning a whole Budget; revocation is
+deleting an object rather than editing a list; and GitOps diffs are one file per grant.
+
+### What is given up, and why it is consistent
+
+**Transactional injectivity.** A cluster-scoped object keyed by owner name would get uniqueness from
+etcd for free; namespaced means two namespaces can each claim the same owner, so injectivity returns
+to a producer check plus quarantine. That is the trade **Ruling 8 already made deliberately** — reject
+was replaced by quarantine — so this is consistent rather than a new concession.
+
+Also given up: a single audit surface. Grants are scattered across namespaces, exactly as Budgets are
+today, and the compiled snapshot is the aggregated view.
+
+## Ruling 17 — the containment claim is narrowed to what the API server actually delivers (2026-07-28)
+
+> "Yes, accept the narrowed claim."
+
+Both critics reached this independently and phrased it differently, which is why it is a ruling rather
+than an edit. Sol: the promise must become *"no global quota is created."* Fable: narrow it to *"the
+location-forgery property"* the API server actually delivers.
+
+**What the two-object split DOES guarantee.** A Grant can only be written where its author holds
+namespace access, and the grantor is derived from `metadata.namespace`'s immutable UID rather than
+from any writable field. So a principal cannot forge a grant *from a namespace it does not control*,
+and **no global quota is created** — conservation holds across the whole tree.
+
+**What it does NOT guarantee, and must stop claiming.** That a lead cannot enlarge the allocation they
+control. **The system has no notion of one human or team controlling two principals** (Sol Q1-8, Fable
+Q1-2). An actor holding namespaces A and B writes a grant `B → A`, and every injectivity, rootedness
+and acyclicity check passes — the owners differ, the namespace UIDs differ, the document is valid.
+Preventing that needs admission-time rules keyed on authenticated `UserInfo` plus an
+actor-to-principal registry: new machinery, not free RBAC, and out of scope.
+
+**Consequence for how this is described.** "A lead may sub-divide what they were given and may not
+enlarge their own allocation" was my sentence and it is withdrawn. The correct sentence is: *a
+principal may only grant from where it has authority, and the total the tree can run is bounded by
+what the roots allocated.* Someone who controls two principals can move quota between them — which is
+also true of any organisation where one person holds two budgets, and is an organisational problem in
+the sense Ruling 9 established rather than a technical one.
+
+**And the RBAC that was claimed to already exist does not.** `deploy/helm/gpu-fleet/templates/rbac.yaml`
+contains no `grants` resource and no lead Role; the controller holds full create/update/patch/delete
+on Budgets. The split is proposed policy, not a shipped boundary — the same error as the dead §6c
+argument, made again. Either the chart ships real grantor/grantee RBAC, or the design says the
+property is aspirational. There is no third option.
+
+## Ruling 18 — one document, no sharding; `U`'s floor is 5 minutes (2026-07-28)
+
+> "Shard sizing is not a wall we're likely to hit per your analysis above. What decision is needed."
+> "Let's go with hundreds."
+
+Closes both remaining open questions.
+
+### Sharding is not built
+
+At a rough 600 bytes per principal, an etcd object holds ~2,600 principals. An org of **hundreds** —
+director, managers, leads, researchers — is an order of magnitude clear and likely to stay there.
+
+So the decision is not *what the shard boundary is* but **whether to build sharding at all**, and it is
+no. One document; consumers read one object; no assembly logic, no cross-shard version skew, no
+per-shard validation, and no "is a lineage intact within one shard" constraint — which was the
+load-bearing part of Ruling 11's shard key and is now simply absent.
+
+**Ruling 11's shard-by-root-subtree stands as the strategy if it is ever needed**, not as something
+built. The only thing carried forward is free: the document keeps no cross-subtree data in its header,
+so a future split along subtree boundaries stays mechanical rather than a redesign. **Revisit above
+~2,000 principals**, and verify the 600-byte estimate by serializing a real tree before relying on it.
+
+### `U`'s floor is 5 minutes
+
+Derived from the code rather than chosen. A gang below minimum runnable width is a *waiting* run, and
+`controllers/kube/reconcilers.go:65` sets `waitingRunResync = 30 * time.Second` — so it re-evaluates
+every 30 seconds. A floor of **5 minutes is 10 evaluation ticks**: many chances to reach minimum width,
+and safely clear of the destroy-at-one-tick failure the deadline exists to prevent.
+
+With Ruling 15's 1-hour default that is 120 ticks of headroom. Sanity check: `run_controller.go:59`
+already carries `defaultUpstreamFailureGrace = 30 * time.Minute`, so a 1-hour `U` is the same order as
+an existing grace in the system rather than an outlier.
+
+**Settled: `U` defaults to 1 hour, floor 5 minutes, cluster policy.** Operators may raise it; nothing
+may lower it past the floor.
