@@ -585,3 +585,36 @@ was replaced by quarantine — so this is consistent rather than a new concessio
 
 Also given up: a single audit surface. Grants are scattered across namespaces, exactly as Budgets are
 today, and the compiled snapshot is the aggregated view.
+
+## Ruling 17 — the containment claim is narrowed to what the API server actually delivers (2026-07-28)
+
+> "Yes, accept the narrowed claim."
+
+Both critics reached this independently and phrased it differently, which is why it is a ruling rather
+than an edit. Sol: the promise must become *"no global quota is created."* Fable: narrow it to *"the
+location-forgery property"* the API server actually delivers.
+
+**What the two-object split DOES guarantee.** A Grant can only be written where its author holds
+namespace access, and the grantor is derived from `metadata.namespace`'s immutable UID rather than
+from any writable field. So a principal cannot forge a grant *from a namespace it does not control*,
+and **no global quota is created** — conservation holds across the whole tree.
+
+**What it does NOT guarantee, and must stop claiming.** That a lead cannot enlarge the allocation they
+control. **The system has no notion of one human or team controlling two principals** (Sol Q1-8, Fable
+Q1-2). An actor holding namespaces A and B writes a grant `B → A`, and every injectivity, rootedness
+and acyclicity check passes — the owners differ, the namespace UIDs differ, the document is valid.
+Preventing that needs admission-time rules keyed on authenticated `UserInfo` plus an
+actor-to-principal registry: new machinery, not free RBAC, and out of scope.
+
+**Consequence for how this is described.** "A lead may sub-divide what they were given and may not
+enlarge their own allocation" was my sentence and it is withdrawn. The correct sentence is: *a
+principal may only grant from where it has authority, and the total the tree can run is bounded by
+what the roots allocated.* Someone who controls two principals can move quota between them — which is
+also true of any organisation where one person holds two budgets, and is an organisational problem in
+the sense Ruling 9 established rather than a technical one.
+
+**And the RBAC that was claimed to already exist does not.** `deploy/helm/gpu-fleet/templates/rbac.yaml`
+contains no `grants` resource and no lead Role; the controller holds full create/update/patch/delete
+on Budgets. The split is proposed policy, not a shipped boundary — the same error as the dead §6c
+argument, made again. Either the chart ships real grantor/grantee RBAC, or the design says the
+property is aspirational. There is no third option.
