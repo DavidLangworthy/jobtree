@@ -71,9 +71,12 @@ must reject false lease-shaped invariants for duplicate lease slot strings,
 cordoned-node omission, spare-before-active, and Running/AwaitingMint. The
 bind-failure config demonstrates the absence of a bounded cleanup guarantee; it
 is not part of the positive safety claim. `PhysicalCapacityCrossNodeRetry.cfg`
-represents current production's missing placement check: idempotent retry keeps
-the first immutable lease slot while the pod binds on another node, violating
-`BoundLeaseMatchesPodNode`.
+holds `RetryPlacementGuard = FALSE` to show why the guard is load-bearing:
+without it, idempotent retry keeps the first immutable lease slot while the pod
+binds on another node, violating `BoundLeaseMatchesPodNode`. Production shipped
+that guard (L19, `plugin.PreBind`'s `AlreadyExists` branch), so this config is
+now a counterexample witness rather than a model of current behaviour — the
+positive configs' `RetryPlacementGuard = TRUE` is the faithful one.
 
 The ordinary positive target explores the whole finite graph permitted by
 `MaxSteps`; “exhaustive” therefore means exhaustive within that explicit bound,

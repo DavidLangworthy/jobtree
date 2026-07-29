@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -364,6 +365,30 @@ func (j *JobTree) PreBind(ctx context.Context, _ fwk.CycleState, pod *corev1.Pod
 				"jobtree: lease %s already exists but is not this gang's open lease (closed=%v run=%s/%s); refusing to treat as minted",
 				leaseName, existing.Status.Closed, existing.Spec.RunRef.Namespace, existing.Spec.RunRef.Name))
 		}
+		// L19: authenticate PLACEMENT as well. The checks above establish that this
+		// is this gang's own open lease, but not that it names the node we are about
+		// to bind on. A bind failure calls Unreserve, which returns the pod to
+		// Pending WITHOUT touching the already-minted lease, and the retry is free to
+		// pick another node. Accepting the lease then binds the pod on B while the
+		// lease — the record of which GPUs are charged and held — still names A. That
+		// divergence is silent until A goes away, at which point the auditor sees
+		// dead-node evidence and returns a repairable violation for a HEALTHY run's
+		// lease, and matured repair closes it (docs/project/formal-verification-results-2026-07-27.md).
+		//
+		// A lease spec is immutable (lease_types.go XValidation "self.spec ==
+		// oldSelf.spec"), so the divergence cannot be repaired by rewriting the
+		// placement onto B, and this plugin may not close the lease — CloseLease is
+		// the sole closer. So refuse the mint, which is exactly RetryPlacementGuard
+		// in specs/PhysicalCapacity.tla:336: a retry is idempotent only on the node
+		// the first attempt froze. Refusing does not wedge the pod. Filter constrains
+		// flavor only, real GPU fit is the default NodeResourcesFit plugin counting
+		// PODS rather than leases, and the failed bind left A's capacity free — so A
+		// stays eligible and the pod converges there.
+		if node := leaseSliceNode(&existing); node != nodeName {
+			return fwk.NewStatus(fwk.Error, fmt.Sprintf(
+				"jobtree: lease %s already exists holding GPUs on node %q, but this PreBind is for node %q; refusing to bind a pod away from the GPUs its lease charges for",
+				leaseName, node, nodeName))
+		}
 	}
 	// The real lease now exists in the API (created here, or already present on a
 	// retry). Retire this pod's phantom pending lease so the gang stops folding it
@@ -379,6 +404,31 @@ func (j *JobTree) PreBind(ctx context.Context, _ fwk.CycleState, pod *corev1.Pod
 		leaseName, nodeName, gpusPerPod, seg.Owner, seg.BudgetName, seg.EnvelopeName,
 		leaseReasonOrDefault(pod))
 	return nil
+}
+
+// leaseSliceNode returns the one machine an existing lease's slots sit on, or ""
+// if it has no slots, a slot that does not parse, or slots spanning more than one
+// machine. Slots are "node#ordinal" and admission.PodLeaseWithRole always mints a
+// pod's whole slice on the single node the scheduler chose, so anything else did
+// not come from that path. Returning "" for those cases makes the PreBind
+// placement guard fail closed: an unplaceable lease never compares equal to a
+// real node name, so the mint is refused rather than accepted blind.
+func leaseSliceNode(lease *v1.GPULease) string {
+	node := ""
+	for _, slot := range lease.Spec.Slice.Nodes {
+		name, _, ok := strings.Cut(slot, "#")
+		if !ok || name == "" {
+			return ""
+		}
+		if node == "" {
+			node = name
+			continue
+		}
+		if name != node {
+			return ""
+		}
+	}
+	return node
 }
 
 // leaseReasonOrDefault names why a lease was minted, defaulting the same way
