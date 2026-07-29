@@ -37,7 +37,7 @@ func seedStateFile(t *testing.T) string {
 					Name:        "west-h100",
 					Flavor:      "H100-80GB",
 					Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "gpu-a"},
-					Concurrency: 8,
+					Concurrency: 8, Start: &testWindowStart, End: &testWindowEnd,
 				}},
 			},
 		}},

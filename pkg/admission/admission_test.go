@@ -49,7 +49,7 @@ func TestPlanSimpleFit(t *testing.T) {
 		Budgets: []v1.Budget{{
 			ObjectMeta: v1.ObjectMeta{Name: "rai", Namespace: "default"},
 			Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
-				Name: "west-h100", Flavor: "H100-80GB", Selector: sel(), Concurrency: 8,
+				Name: "west-h100", Flavor: "H100-80GB", Selector: sel(), Concurrency: 8, Start: &testWindowStart, End: &testWindowEnd,
 			}}},
 		}},
 		Nodes: []topology.SourceNode{node("node-a", 4)},
@@ -93,11 +93,11 @@ func TestPlanBorrowSponsorRuns(t *testing.T) {
 		Now: now,
 		Budgets: []v1.Budget{
 			{ObjectMeta: v1.ObjectMeta{Name: "rai", Namespace: "default"}, Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
-				Name: "west-h100", Flavor: "H100-80GB", Selector: sel(), Concurrency: 96,
+				Name: "west-h100", Flavor: "H100-80GB", Selector: sel(), Concurrency: 96, Start: &testWindowStart, End: &testWindowEnd,
 			}}}},
 			{ObjectMeta: v1.ObjectMeta{Name: "vision", Namespace: "vision"}, Spec: v1.BudgetSpec{Owner: "org:ai:mm:vision", Envelopes: []v1.BudgetEnvelope{{
 				Name: "west-h100", Flavor: "H100-80GB", Selector: sel(), Concurrency: 64,
-				Lending: &v1.LendingPolicy{Allow: true, To: []string{"org:ai:rai", "org:ai:rai:*"}, MaxConcurrency: i32(32)},
+				Lending: &v1.LendingPolicy{Allow: true, To: []string{"org:ai:rai", "org:ai:rai:*"}, MaxConcurrency: i32(32)}, Start: &testWindowStart, End: &testWindowEnd,
 			}}}},
 		},
 	}
@@ -142,11 +142,11 @@ func TestPerPodPayerAttributesOwnedBeforeBorrowed(t *testing.T) {
 		Now: now,
 		Budgets: []v1.Budget{
 			{ObjectMeta: v1.ObjectMeta{Name: "rai", Namespace: "default"}, Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
-				Name: "west-h100", Flavor: "H100-80GB", Selector: sel(), Concurrency: 96,
+				Name: "west-h100", Flavor: "H100-80GB", Selector: sel(), Concurrency: 96, Start: &testWindowStart, End: &testWindowEnd,
 			}}}},
 			{ObjectMeta: v1.ObjectMeta{Name: "vision", Namespace: "vision"}, Spec: v1.BudgetSpec{Owner: "org:ai:mm:vision", Envelopes: []v1.BudgetEnvelope{{
 				Name: "west-h100", Flavor: "H100-80GB", Selector: sel(), Concurrency: 64,
-				Lending: &v1.LendingPolicy{Allow: true, To: []string{"org:ai:rai", "org:ai:rai:*"}, MaxConcurrency: i32(32)},
+				Lending: &v1.LendingPolicy{Allow: true, To: []string{"org:ai:rai", "org:ai:rai:*"}, MaxConcurrency: i32(32)}, Start: &testWindowStart, End: &testWindowEnd,
 			}}}},
 		},
 	}
@@ -213,7 +213,7 @@ func TestFeasibleQuantityFundsDeltaOnly(t *testing.T) {
 			Budgets: []v1.Budget{{
 				ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
 				Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
-					Name: "west", Flavor: "H100-80GB", Selector: sel(), Concurrency: 128,
+					Name: "west", Flavor: "H100-80GB", Selector: sel(), Concurrency: 128, Start: &testWindowStart, End: &testWindowEnd,
 				}}},
 			}},
 			Run: &v1.Run{
@@ -267,7 +267,8 @@ func TestFeasibleQuantityDeltaRespectsBudget(t *testing.T) {
 		Budgets: []v1.Budget{{
 			ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
 			Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
-				Name: "west", Flavor: "H100-80GB", Selector: sel(), Concurrency: 96, // exactly the base
+				Name:                  "west", Flavor: "H100-80GB", Selector: sel(), Concurrency: 96, Start: // exactly the base
+				&testWindowStart, End: &testWindowEnd,
 			}}},
 		}},
 		Run: &v1.Run{
@@ -300,7 +301,7 @@ func TestPlanCapacityMissingErrors(t *testing.T) {
 		Budgets: []v1.Budget{{
 			ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
 			Spec: v1.BudgetSpec{Owner: "org:ai:team", Envelopes: []v1.BudgetEnvelope{{
-				Name: "west", Flavor: "H100-80GB", Selector: sel(), Concurrency: 16,
+				Name: "west", Flavor: "H100-80GB", Selector: sel(), Concurrency: 16, Start: &testWindowStart, End: &testWindowEnd,
 			}}},
 		}},
 		Nodes: []topology.SourceNode{node("node-a", 4)},
@@ -324,11 +325,11 @@ func TestPlanBorrowLimitedErrors(t *testing.T) {
 		Now: now,
 		Budgets: []v1.Budget{
 			{ObjectMeta: v1.ObjectMeta{Name: "rai", Namespace: "default"}, Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
-				Name: "west-h100", Flavor: "H100-80GB", Selector: sel(), Concurrency: 64,
+				Name: "west-h100", Flavor: "H100-80GB", Selector: sel(), Concurrency: 64, Start: &testWindowStart, End: &testWindowEnd,
 			}}}},
 			{ObjectMeta: v1.ObjectMeta{Name: "vision", Namespace: "vision"}, Spec: v1.BudgetSpec{Owner: "org:ai:mm:vision", Envelopes: []v1.BudgetEnvelope{{
 				Name: "west-h100", Flavor: "H100-80GB", Selector: sel(), Concurrency: 64,
-				Lending: &v1.LendingPolicy{Allow: true, To: []string{"org:ai:rai", "org:ai:rai:*"}},
+				Lending: &v1.LendingPolicy{Allow: true, To: []string{"org:ai:rai", "org:ai:rai:*"}}, Start: &testWindowStart, End: &testWindowEnd,
 			}}}},
 		},
 	}

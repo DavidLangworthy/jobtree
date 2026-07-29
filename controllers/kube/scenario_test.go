@@ -138,7 +138,7 @@ func createBudget(t *testing.T, name, owner string, concurrency int32) {
 				Name:        "west",
 				Flavor:      "H100-80GB",
 				Selector:    map[string]string{"region": "us-west", "cluster": "cluster-a", "fabric.domain": "island-a"},
-				Concurrency: concurrency,
+				Concurrency: concurrency, Start: &testWindowStart, End: &testWindowEnd,
 			}},
 		},
 	}

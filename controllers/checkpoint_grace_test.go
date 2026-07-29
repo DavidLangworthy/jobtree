@@ -29,7 +29,7 @@ func checkpointFixtureState(checkpoint time.Duration) (*ClusterState, *v1.Run) {
 					Name:        "west",
 					Flavor:      "H100-80GB",
 					Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
-					Concurrency: 8,
+					Concurrency: 8, Start: &testWindowStart, End: &testWindowEnd,
 				}},
 			},
 		}},

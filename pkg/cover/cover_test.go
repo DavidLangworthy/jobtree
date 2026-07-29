@@ -236,7 +236,7 @@ func budgetOf(name, owner string, parents []string, envelopes ...envSpec) v1.Bud
 			Selector:    env.selector,
 			Concurrency: env.concurrency,
 			Lending:     env.lending,
-			Sharing:     env.sharing,
+			Sharing:     env.sharing, Start: &testWindowStart, End: &testWindowEnd,
 		}
 		if env.start != nil {
 			t := v1.NewTime(*env.start)

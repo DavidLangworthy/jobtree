@@ -63,7 +63,7 @@ func scnSimpleFit() (*ClusterState, time.Time) {
 		Budgets: []v1.Budget{{
 			ObjectMeta: v1.ObjectMeta{Name: "rai", Namespace: "default"},
 			Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
-				Name: "west-h100", Flavor: "H100-80GB", Selector: goldenSel(), Concurrency: 8,
+				Name: "west-h100", Flavor: "H100-80GB", Selector: goldenSel(), Concurrency: 8, Start: &testWindowStart, End: &testWindowEnd,
 			}}},
 		}},
 		Nodes: []topology.SourceNode{goldenNode("node-a", 4)},
@@ -85,11 +85,11 @@ func scnBorrowSponsorRuns() (*ClusterState, time.Time) {
 	state := &ClusterState{
 		Budgets: []v1.Budget{
 			{ObjectMeta: v1.ObjectMeta{Name: "rai", Namespace: "default"}, Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
-				Name: "west-h100", Flavor: "H100-80GB", Selector: goldenSel(), Concurrency: 96,
+				Name: "west-h100", Flavor: "H100-80GB", Selector: goldenSel(), Concurrency: 96, Start: &testWindowStart, End: &testWindowEnd,
 			}}}},
 			{ObjectMeta: v1.ObjectMeta{Name: "vision", Namespace: "vision"}, Spec: v1.BudgetSpec{Owner: "org:ai:mm:vision", Envelopes: []v1.BudgetEnvelope{{
 				Name: "west-h100", Flavor: "H100-80GB", Selector: goldenSel(), Concurrency: 64,
-				Lending: &v1.LendingPolicy{Allow: true, To: []string{"org:ai:rai", "org:ai:rai:*"}, MaxConcurrency: &limit},
+				Lending: &v1.LendingPolicy{Allow: true, To: []string{"org:ai:rai", "org:ai:rai:*"}, MaxConcurrency: &limit}, Start: &testWindowStart, End: &testWindowEnd,
 			}}}},
 		},
 	}
@@ -115,11 +115,11 @@ func scnBorrowLimitedReservation() (*ClusterState, time.Time) {
 	state := &ClusterState{
 		Budgets: []v1.Budget{
 			{ObjectMeta: v1.ObjectMeta{Name: "rai", Namespace: "default"}, Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
-				Name: "west-h100", Flavor: "H100-80GB", Selector: goldenSel(), Concurrency: 64,
+				Name: "west-h100", Flavor: "H100-80GB", Selector: goldenSel(), Concurrency: 64, Start: &testWindowStart, End: &testWindowEnd,
 			}}}},
 			{ObjectMeta: v1.ObjectMeta{Name: "vision", Namespace: "vision"}, Spec: v1.BudgetSpec{Owner: "org:ai:mm:vision", Envelopes: []v1.BudgetEnvelope{{
 				Name: "west-h100", Flavor: "H100-80GB", Selector: goldenSel(), Concurrency: 64,
-				Lending: &v1.LendingPolicy{Allow: true, To: []string{"org:ai:rai", "org:ai:rai:*"}},
+				Lending: &v1.LendingPolicy{Allow: true, To: []string{"org:ai:rai", "org:ai:rai:*"}}, Start: &testWindowStart, End: &testWindowEnd,
 			}}}},
 		},
 	}
@@ -146,7 +146,7 @@ func scnCapacityMissingReservation() (*ClusterState, time.Time) {
 		Budgets: []v1.Budget{{
 			ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
 			Spec: v1.BudgetSpec{Owner: "org:ai:team", Envelopes: []v1.BudgetEnvelope{{
-				Name: "west", Flavor: "H100-80GB", Selector: goldenSel(), Concurrency: 16,
+				Name: "west", Flavor: "H100-80GB", Selector: goldenSel(), Concurrency: 16, Start: &testWindowStart, End: &testWindowEnd,
 			}}},
 		}},
 		Nodes: []topology.SourceNode{goldenNode("node-a", 4)},
@@ -167,7 +167,7 @@ func scnElasticGrow() (*ClusterState, time.Time) {
 		Budgets: []v1.Budget{{
 			ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
 			Spec: v1.BudgetSpec{Owner: "org:ai:rai", Envelopes: []v1.BudgetEnvelope{{
-				Name: "west", Flavor: "H100-80GB", Selector: goldenSel(), Concurrency: 256,
+				Name: "west", Flavor: "H100-80GB", Selector: goldenSel(), Concurrency: 256, Start: &testWindowStart, End: &testWindowEnd,
 			}}},
 		}},
 	}
@@ -196,7 +196,7 @@ func scnNodeFailureSwap() (*ClusterState, time.Time) {
 		Budgets: []v1.Budget{{
 			ObjectMeta: v1.ObjectMeta{Name: "team", Namespace: "default"},
 			Spec: v1.BudgetSpec{Owner: "org:ai:team", Envelopes: []v1.BudgetEnvelope{{
-				Name: "west", Flavor: "H100-80GB", Selector: goldenSel(), Concurrency: 8,
+				Name: "west", Flavor: "H100-80GB", Selector: goldenSel(), Concurrency: 8, Start: &testWindowStart, End: &testWindowEnd,
 			}}},
 		}},
 		Nodes: []topology.SourceNode{goldenNode("node-a", 4), goldenNode("node-b", 4)},

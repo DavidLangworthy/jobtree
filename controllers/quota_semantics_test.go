@@ -38,12 +38,18 @@ func qsNode(name string, gpus int) topology.SourceNode {
 	}
 }
 
+// qsEnvelope builds a legal envelope: INV-WINDOW-REQUIRED makes both bounds
+// mandatory, so the default window is wide enough not to interfere with
+// scenarios about something else. Window scenarios set Start/End themselves.
 func qsEnvelope(name string, concurrency int32) v1.BudgetEnvelope {
+	start, end := v1.NewTime(qsBase.Add(-365*24*time.Hour)), v1.NewTime(qsBase.Add(365*24*time.Hour))
 	return v1.BudgetEnvelope{
 		Name:        name,
 		Flavor:      qsFlavor,
 		Selector:    map[string]string{topology.LabelRegion: "r1"},
 		Concurrency: concurrency,
+		Start:       &start,
+		End:         &end,
 	}
 }
 

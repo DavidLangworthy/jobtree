@@ -76,8 +76,14 @@ spec:
                   type: object
                 type: array
               autoRenew:
-                description: AutoRenewSchedule defines reporting rotation for open-ended
-                  envelopes.
+                description: |-
+                  AutoRenewSchedule defines reporting rotation for expiring envelopes.
+
+                  It matters MORE now, not less: INV-WINDOW-REQUIRED means every envelope has an
+                  end, so every envelope eventually stops funding work. There are no open-ended
+                  envelopes for it to rotate any more — it is the notice that an expiry is
+                  coming. It still does NOT auto-extend anything; window rotation stays an
+                  explicit operator action.
                 properties:
                   notifyBefore:
                     type: string
@@ -152,14 +158,24 @@ spec:
                       - none
                       type: string
                     start:
+                      description: |-
+                        Start and End are REQUIRED (INV-WINDOW-REQUIRED, DESIGN-v5 §1). They are
+                        pointers rather than values so that an omitted bound is a validation error
+                        rather than a silent zero time, which would read as "the epoch" and fund
+                        nothing without saying why.
                       format: date-time
                       type: string
                   required:
                   - concurrency
+                  - end
                   - flavor
                   - name
                   - selector
+                  - start
                   type: object
+                  x-kubernetes-validations:
+                  - message: end must be after start
+                    rule: self.end > self.start
                 minItems: 1
                 type: array
               owner:
