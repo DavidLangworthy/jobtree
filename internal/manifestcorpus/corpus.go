@@ -117,7 +117,7 @@ var Budgets = []Case{
 			"spec": {"owner": "org:ai:rai",
 				"envelopes": [
 					{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 16,
-					 "start": "2026-01-01T00:00:00Z", "end": "2026-02-01T00:00:00Z", "maxGPUHours": 1000,
+					 "start": "2026-01-01T00:00:00Z", "end": "2026-02-01T00:00:00Z",
 					 "lending": {"allow": true, "to": ["org:ai:mm"], "maxConcurrency": 4}},
 					{"name": "east", "flavor": "H100-80GB", "selector": {"region": "us-east"}, "concurrency": 8}
 				],
@@ -189,14 +189,6 @@ var Budgets = []Case{
 			 "start": "2026-02-01T00:00:00Z", "end": "2026-01-01T00:00:00Z"}
 		]}}`,
 		WantErr: "end must be after start",
-	},
-	{
-		Name: "maxGPUHours exceeds window integral",
-		Manifest: `{"spec": {"owner": "org:ai:rai", "envelopes": [
-			{"name": "west", "flavor": "H100-80GB", "selector": {"region": "us-west"}, "concurrency": 1,
-			 "start": "2026-01-01T00:00:00Z", "end": "2026-01-01T10:00:00Z", "maxGPUHours": 100}
-		]}}`,
-		WantErr: "maxGPUHours exceeds concurrency×window",
 	},
 	{
 		Name: "lending non-positive maxConcurrency",

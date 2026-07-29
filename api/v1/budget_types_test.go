@@ -22,21 +22,7 @@ func TestBudgetEnvelopeValidate(t *testing.T) {
 				Concurrency: 10,
 				Start:       &now,
 				End:         &later,
-				MaxGPUHours: ptrInt64(10),
 			},
-		},
-		{
-			name: "invalid hours",
-			env: BudgetEnvelope{
-				Name:        "a",
-				Flavor:      "H100",
-				Selector:    map[string]string{"region": "us"},
-				Concurrency: 1,
-				Start:       &now,
-				End:         &later,
-				MaxGPUHours: ptrInt64(10000),
-			},
-			expectsErr: true,
 		},
 	}
 

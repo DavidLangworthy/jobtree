@@ -1,7 +1,6 @@
 package controllers
 
 import (
-	"math"
 	"time"
 
 	v1 "github.com/davidlangworthy/jobtree/api/v1"
@@ -102,16 +101,11 @@ func (c *BudgetController) ReconcileBudget(budgetObj *v1.Budget, ev *funding.Eva
 		if remaining < 0 {
 			remaining = 0
 		}
-		head := v1.EnvelopeHeadroom{
+		headroom = append(headroom, v1.EnvelopeHeadroom{
 			Name:        spec.Name,
 			Flavor:      spec.Flavor,
 			Concurrency: remaining,
-		}
-		if r := acct.RemainingGPUHours(); r != nil {
-			value := int64(math.Floor(*r + 1e-9))
-			head.GPUHours = &value
-		}
-		headroom = append(headroom, head)
+		})
 		usage = append(usage, v1.EnvelopeUsage{
 			Name:             spec.Name,
 			Flavor:           spec.Flavor,
@@ -138,14 +132,6 @@ func (c *BudgetController) ReconcileBudget(budgetObj *v1.Budget, ev *funding.Eva
 				remaining = 0
 			}
 			head.Concurrency = ptrInt32(remaining)
-		}
-		if agg.MaxGPUHours != nil {
-			remaining := float64(*agg.MaxGPUHours) - agg.ConsumedGPUHours
-			if remaining < 0 {
-				remaining = 0
-			}
-			value := int64(math.Floor(remaining + 1e-9))
-			head.GPUHours = &value
 		}
 		aggregateHeadroom = append(aggregateHeadroom, head)
 	}

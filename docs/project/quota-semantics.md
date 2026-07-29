@@ -16,32 +16,46 @@ capacity.
 
 Three decisions follow from it.
 
-## Decision 1 (R14): GPU-hours are enforced by evaluation, and exhaustion demotes rather than kills
+## Decision 1 (R14, amended by Ruling 10): GPU-hours are METERED, never enforced
 
-`MaxGPUHours` becomes a real, enforced limit — but running out of it does not kill work.
+**Amended 2026-07-28 (DESIGN-v5 §5a, Ruling 10).** This decision originally made `MaxGPUHours` a
+real, enforced limit. It is not. GPU-hours are observed and recorded, never revised and never
+enforced; `maxGPUHours` no longer exists on `BudgetEnvelope`, `AggregateCap` or `LendingPolicy`.
+Allocation is **concurrency over a mandatory window** and nothing else. What survives of this
+decision is everything that was really about *demotion*, which is now driven by concurrency alone.
 
-- **Admission lookahead.** A run is admitted as funded only if `width × period` GPU-hours fit
-  within the envelope's remaining integral (in addition to the concurrency check that exists
-  today). `period` is a cluster-configurable accounting horizon (default: 24h). This prevents
-  admitting work that would be born opportunistic.
-- **Exhaustion demotes.** When an envelope's integral (or concurrency, via a higher-ranked
-  claim) no longer covers a running job, the job becomes **opportunistic**: it keeps its GPUs
-  and keeps running. Destroying healthy work on an idle cluster because a ledger hit zero is
-  pure waste.
-- **Opportunistic work is reclaimed only on demand, and unluckily.** When funded work actually
-  needs the capacity, opportunistic leases are the first cut, selected by the attested lottery
-  within the class. A funded admission that fails packing reclaims opportunistic capacity
+- **Admission lookahead, in concurrency terms.** A run is admitted as funded only if the
+  envelope's **concurrency** has headroom its claim outranks. This still prevents admitting work
+  that would be born opportunistic — the question is now "is this run opportunistic the moment it
+  starts because the envelope's concurrency is already committed?", answered by
+  `funding.Evaluation.AvailableWidth`. The old `width × period` integral lookahead is gone with the
+  integral. There is no cluster accounting horizon in the decision any more.
+- **Exhaustion demotes.** Unchanged in spirit, but an envelope can no longer *drain*: a job becomes
+  **opportunistic** when a higher-ranked claim takes its concurrency, not when a ledger hits zero.
+  It keeps its GPUs and keeps running. Destroying healthy work on an idle cluster is still pure
+  waste.
+- **Opportunistic work is reclaimed only on demand, and unluckily.** Unchanged. When funded work
+  actually needs the capacity, opportunistic leases are the first cut, selected by the attested
+  lottery within the class. A funded admission that fails packing reclaims opportunistic capacity
   *before* falling back to a reservation.
-- **No overdraft.** Funded consumption against an envelope never exceeds its caps. Hours accrued
-  while opportunistic are metered in a separate, visible **unfunded** bucket ("this run consumed
-  400 unfunded GPU-hours"), never as a negative envelope balance.
+- **No overdraft is no longer a rule, because there is no balance.** Funded consumption cannot
+  exceed a cap that does not exist. Hours accrued while opportunistic are still metered in a
+  separate, visible **unfunded** bucket ("this run consumed 400 unfunded GPU-hours") — that bucket
+  is *reporting*, and it gates nothing.
 - **Recovery is automatic.** When quota exists again (new budget window, freed headroom), the
   job evaluates as funded again. Nothing to resubmit, nothing to approve.
 
 A pleasant consequence: budget-window expiry no longer implies death. A run whose envelope
 window closes coasts as opportunistic and is re-funded when a new window opens — or reclaimed if
 someone funded needs the space. This unifies with the existing "opportunistic fill" concept from
-M6: over-quota runs and filler workloads are the same class.
+M6: over-quota runs and filler workloads are the same class. With windows now mandatory
+(`INV-WINDOW-REQUIRED`), **expiry is the default rather than a convention.**
+
+**Release-on-renewal is deleted, not amended.** The old text said moving a window forward releases
+hours spent in the old window, so "a reopened budget window re-funds" fell out of the accrual
+arithmetic. With no enforced integral and an append-only observation ledger there is no
+recomputation for that rule to govern: a renewed window re-funds because the *window* gates
+funding, and the hours it spent are a permanent record, not a balance to release.
 
 ## Decision 2 (R15): family shares excess in proximity order; owners can always recall
 
@@ -65,7 +79,9 @@ M6: over-quota runs and filler workloads are the same class.
 
 Funded vs. opportunistic is **not a field on any CRD**. It is an artifact of the quota and the
 running jobs: a pure, deterministic function of `(budgets, leases, clock)`, recomputed by
-whoever needs it. Leases record immutable consumption *facts* (who, what, which envelope, what
+whoever needs it. (DESIGN-v5 §3 replaces the first element with a compiled, versioned
+**snapshot** — `(snapshot, leases, clock)` — once the producer lands; the scheduler then stops
+deriving owners by scanning.) Leases record immutable consumption *facts* (who, what, which envelope, what
 interval); classifications are *evaluations* of those facts against current quota.
 
 **The ranking function** (the normative core of this document): per envelope, order all claims —
@@ -74,7 +90,8 @@ interval); classifications are *evaluations* of those facts against current quot
 2. borrowers by proximity to the owner: children, then siblings, then cousins, then sponsors,
 3. within a tier: admission time, then name (deterministic tiebreak);
 
-then greedy-fill against the envelope's concurrency and remaining integral. Claims that fit are
+then greedy-fill against the envelope's **concurrency** — the only dimension; the "remaining
+integral" this line used to name was deleted by Ruling 10. Claims that fit are
 **funded** (owned / shared / borrowed per their relationship); the remainder — including all
 claims with no covering quota at all — are **opportunistic (unfunded)**. A new claim may
 displace the lowest-ranked funded claim (that is recall); equal claims never reshuffle, so
@@ -142,6 +159,6 @@ Two fake-features-audit findings (#22, #25) resolved as part of the control-plan
   reads it and populates `BudgetStatus.PendingRenewals` — the envelopes whose window closes within
   `notifyBefore` — when set; an unset `AutoRenew` always yields an empty list. It deliberately does
   **not** auto-extend any envelope's `end` — window rotation stays an explicit operator action (the
-  Budget's own concurrency/integral invariants are validated at admission time by the mutating/
+  Budget's own concurrency and window invariants are validated at admission time by the mutating/
   validating webhooks, not by a background rewrite of the spec). This closes finding #22
   (previously read by nothing) without introducing a second, harder-to-audit writer of Budget specs.

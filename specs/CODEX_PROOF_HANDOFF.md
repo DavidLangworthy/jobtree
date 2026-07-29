@@ -1,5 +1,11 @@
 # Codex Proof Handoff
 
+> **STALE for ledger compaction (2026-07-28).** Ruling 10 / DESIGN-v5 §5a deleted
+> the GPU-hour integral, and with it every `LedgerCompaction*` model, config and
+> `make` target referenced below. Those sections describe artifacts that no
+> longer exist. The rest of this handoff (`AccrualPrefix`, `GrantAuthority`,
+> `BlockedReservation`, `PhysicalCapacity`) is unaffected.
+
 This handoff preserves proof context recovered from the old `tla-k8s` Codespace
 on July 10, 2026.
 

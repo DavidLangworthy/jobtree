@@ -11,17 +11,15 @@ import (
 )
 
 // DefaultPeriod is the cluster accounting horizon when none is configured.
-// Admission lookahead measures width × period against the remaining
-// integral; continuation is deliberately more generous and coasts until the
-// integral actually exhausts (quota-semantics.md Decision 1 scopes the
-// lookahead to admission — "running out does not kill work", and demotion
-// at zero strands nothing).
+//
+// It NO LONGER GATES ANYTHING. Its only consumer was the width × period
+// admission lookahead, which Ruling 10 deleted along with the enforced
+// integral; Evaluate now merely carries it through to the Evaluation for
+// reporting. It is retained rather than removed because `--accounting-period`
+// is an operator-visible flag and the meter (DESIGN-v5 §5) may want a horizon —
+// see DECISIONS-NEEDED F-PERIOD. Do not reintroduce a decision that reads it
+// without saying so in the design first.
 const DefaultPeriod = 24 * time.Hour
-
-// integralEpsilon (GPU-hours) breaks float ties at depletion crossings: the
-// gate fails strictly once accrual passes the crossing point, so a
-// depletion step always demotes instead of re-fitting on float equality.
-const integralEpsilon = 1e-9
 
 // Input gathers the facts the evaluation derives from. All fields are facts
 // (CRD specs, lease intervals, the clock) — never a stored classification.
@@ -30,35 +28,7 @@ type Input struct {
 	Leases  []v1.GPULease
 	Runs    map[string]*v1.Run // keyed by keys.NamespacedKey
 	Now     time.Time
-	Period  time.Duration // accounting horizon; <= 0 uses DefaultPeriod
-
-	// R4 pt2 ledger compaction. When SettlementHorizon is non-zero, leases whose
-	// accrual ended at or before it are SETTLED: they are dropped from the replay
-	// and their per-envelope contribution is supplied instead by PriorAccrual
-	// (compute it with SettleAccrual). Evaluate only compacts when it is provably
-	// safe — the horizon is at or before Now (so nothing settled is still live),
-	// it precedes every retained lease's start (no straddle), and no budget in
-	// play uses aggregate caps (deferred to pt2b) — otherwise it falls back to a
-	// full replay, so a wrongly-chosen horizon degrades to correct-but-uncompacted,
-	// never to a wrong funding decision. A zero SettlementHorizon disables
-	// compaction entirely: Evaluate is then bit-identical to the pre-pt2 engine
-	// (the golden oracle's guarantee). If you change these semantics, update
-	// `specs/LedgerCompaction.tla`, `specs/LedgerCompactionStore.tla`,
-	// `specs/LedgerCompactionAccounting.tla`, and rerun
-	// `make ledger-compaction-apalache-check`.
-	SettlementHorizon time.Time
-	PriorAccrual      map[EnvelopeKey]SettledAccrual
-}
-
-// SettledAccrual is one envelope's GPU-hour accrual from the settled epoch
-// (leases that ended at or before a settlement horizon). Seeding it lets Evaluate
-// replay only the retained leases while still charging envelope and lending
-// MaxGPUHours caps against the full history and reporting the full consumed
-// hours. Aggregate-cap accrual is intentionally absent — pt2a does not compact
-// aggregate-capped budgets (see Input.SettlementHorizon); pt2b adds it.
-type SettledAccrual struct {
-	ConsumedGPUHours float64
-	HoursByClass     map[Class]float64
+	Period  time.Duration // accounting horizon; <= 0 uses DefaultPeriod (gates nothing — see DefaultPeriod)
 }
 
 // Evaluation is the derived classification at Input.Now plus the replayed
@@ -101,11 +71,11 @@ type EnvelopeAccount struct {
 	WidthByClass map[Class]int32
 	// SpareWidth is the subset of funded width held by Spare-role leases.
 	SpareWidth int32
-	// ConsumedGPUHours is the replayed funded accrual within the envelope's
-	// current window, structurally clamped to MaxGPUHours (no overdraft).
-	// History is evaluated under the current spec: moving the window forward
-	// (renewal) releases hours spent in the old window, which is exactly how
-	// "a reopened budget window re-funds" falls out of the arithmetic.
+	// ConsumedGPUHours is the funded accrual observed within the envelope's
+	// current window. It is REPORTING ONLY (Ruling 10, DESIGN-v5 §5a): it gates
+	// nothing, and with no cap to clamp against there is no overdraft concept to
+	// enforce. Phase 6 turns this into a projection of the append-only ledger;
+	// until then it stays derived here so the reporting surfaces keep working.
 	ConsumedGPUHours float64
 	// HoursByClass attributes all accrued hours, including the separate
 	// unfunded bucket.
@@ -117,19 +87,6 @@ type EnvelopeAccount struct {
 // FundedWidth is the total width charged against the envelope at Now.
 func (e *EnvelopeAccount) FundedWidth() int32 {
 	return e.WidthByClass[ClassOwned] + e.WidthByClass[ClassShared] + e.WidthByClass[ClassBorrowed]
-}
-
-// RemainingGPUHours returns the envelope's remaining integral, or nil when
-// it has no MaxGPUHours cap.
-func (e *EnvelopeAccount) RemainingGPUHours() *float64 {
-	if e.Spec.MaxGPUHours == nil {
-		return nil
-	}
-	remaining := float64(*e.Spec.MaxGPUHours) - e.ConsumedGPUHours
-	if remaining < 0 {
-		remaining = 0
-	}
-	return &remaining
 }
 
 // RunAccount reports one run's derived class breakdown.
@@ -380,30 +337,12 @@ func Evaluate(in Input) *Evaluation {
 	})
 	ev.envelopes = envIndex
 
-	// R4 pt2: seed the settled epoch's accrual and drop its leases from the
-	// replay, but only where provably safe (see settlementSafe). Seeding the
-	// per-envelope ConsumedGPUHours / HoursByClass carries forward exactly what the
-	// depletion math and the envelope+lending caps read, so the retained replay
-	// continues from the correct baseline.
-	compact := settlementSafe(in)
-	if compact {
-		for key, prior := range in.PriorAccrual {
-			acct := envIndex[key]
-			if acct == nil {
-				continue
-			}
-			acct.ConsumedGPUHours += prior.ConsumedGPUHours
-			for cl, h := range prior.HoursByClass {
-				acct.HoursByClass[cl] += h
-			}
-		}
-	}
-
-	facts := buildLeaseFacts(in, compact)
+	facts := buildLeaseFacts(in)
 
 	// Replay: step through the event timeline, holding the funded set
-	// constant between events, and split segments at integral-depletion
-	// crossings where an exhausted budget demotes its claims.
+	// constant between events. Segments are no longer sub-split: with
+	// GPU-hours metered rather than enforced there is no integral to deplete
+	// mid-segment (Ruling 10).
 	times := eventTimes(in, facts)
 	for idx := 0; idx < len(times); idx++ {
 		t0 := times[idx]
@@ -416,19 +355,12 @@ func Evaluate(in Input) *Evaluation {
 		if !t0.Before(t1) {
 			continue
 		}
-		// Each depletion crossing exhausts at least one budget dimension
-		// for the rest of the segment, so splits are bounded; the cap is a
-		// defensive backstop against float pathology, not a path correct
-		// inputs take.
-		for steps := len(facts) + 8; t0.Before(t1) && steps > 0; steps-- {
-			fill := ev.fill(in, facts, envOrder, t0)
-			step := t1
-			if crossing, ok := fill.nextDepletion(t0); ok && crossing.Before(step) {
-				step = crossing
-			}
-			fill.accrue(ev, t0, step)
-			t0 = step
-		}
+		// One fill per segment. Class is purely concurrency-determined
+		// (Ruling 10), and concurrency changes only at the event boundaries
+		// already in `times`, so nothing can change class strictly inside a
+		// segment. The sub-splitting loop this replaced existed solely to cut
+		// the segment at integral-depletion crossings, which no longer exist.
+		ev.fill(in, facts, envOrder, t0).accrue(ev, t0, t1)
 	}
 
 	// Final classification at Now.
@@ -437,17 +369,11 @@ func Evaluate(in Input) *Evaluation {
 	return ev
 }
 
-// buildLeaseFacts parses widths and group indices once. When compact is set it
-// drops settled leases (accrual ended at or before Input.SettlementHorizon) —
-// their contribution is supplied by Input.PriorAccrual, so replaying them again
-// would double-count.
-func buildLeaseFacts(in Input, compact bool) []*leaseFact {
+// buildLeaseFacts parses widths and group indices once.
+func buildLeaseFacts(in Input) []*leaseFact {
 	facts := make([]*leaseFact, 0, len(in.Leases))
 	for i := range in.Leases {
 		lease := &in.Leases[i]
-		if compact && leaseSettled(lease, in.SettlementHorizon) {
-			continue
-		}
 		width := int32(len(lease.Spec.Slice.Nodes))
 		if width == 0 {
 			width = 1
@@ -466,105 +392,6 @@ func buildLeaseFacts(in Input, compact bool) []*leaseFact {
 		})
 	}
 	return facts
-}
-
-// leaseSettled reports whether a lease's accrual ended at or before the horizon
-// (so it belongs to the settled epoch, not the retained replay). An open lease
-// (zero effectiveEnd) is never settled.
-func leaseSettled(lease *v1.GPULease, horizon time.Time) bool {
-	end := effectiveEnd(lease)
-	return !end.IsZero() && !end.After(horizon)
-}
-
-// settlementSafe reports whether Evaluate may compact this input. It requires
-// (1) a non-zero horizon that does not lead Now, (2) no budget in play using
-// aggregate caps — pt2a seeds only envelope-level accrual, so aggregate-capped
-// budgets are left to a full replay (pt2b), and (3) the no-straddle invariant:
-// every RETAINED lease starts at or after the horizon, so the settled and
-// retained epochs never co-occur in the fill and the settled accrual is
-// independent of anything retained. When any fails, Evaluate replays the full
-// ledger — correct, just uncompacted. The local one-shot theorem lives in
-// `specs/LedgerCompaction.tla`; the persisted-store / window-invalidation
-// theorem lives in `specs/LedgerCompactionStore.tla`; the broader aggregate /
-// lender / full-window carry-forward model lives in
-// `specs/LedgerCompactionAccounting.tla`.
-func settlementSafe(in Input) bool {
-	if in.SettlementHorizon.IsZero() {
-		return false
-	}
-	// A horizon ahead of Now would settle leases that are still LIVE at Now: a
-	// lease whose Interval.End lies in (Now, horizon] has an effectiveEnd at or
-	// before the horizon, so leaseSettled calls it settled while leaseLiveAt still
-	// funds it. The no-straddle loop below only inspects retained leases, so it
-	// cannot catch that one. Requiring horizon <= Now makes it impossible: a
-	// settled lease's end is then <= Now, and leaseLiveAt is half-open, so no
-	// settled lease can hold width at Now. Its accrual is also complete, which is
-	// what lets SettleAccrual integrate it as of the horizon rather than as of Now.
-	if in.SettlementHorizon.After(in.Now) {
-		return false
-	}
-	for i := range in.Budgets {
-		if len(in.Budgets[i].Spec.AggregateCaps) > 0 {
-			return false
-		}
-	}
-	for i := range in.Leases {
-		l := &in.Leases[i]
-		if leaseSettled(l, in.SettlementHorizon) {
-			continue
-		}
-		if l.Spec.Interval.Start.Time.Before(in.SettlementHorizon) {
-			return false
-		}
-	}
-	return true
-}
-
-// SettleAccrual computes the per-envelope settled-epoch summary for compaction:
-// it replays only the leases that end at or before horizon, evaluated as of
-// horizon (so each accrues its full settled life), and returns their envelope
-// accrual. Feed the result back as Input.PriorAccrual with the same
-// SettlementHorizon to drop those leases from later replays with no change to the
-// funding result (R4 pt2). Returns nil for an empty epoch, and for a horizon that
-// leads Now — a summary taken past the clock would integrate leases that are
-// still live, and persisting it (pt2b) would over-charge the envelope forever
-// after. Callers should only advance the horizon past leases that can no longer
-// be reclassified — i.e. below every retained lease's start and within the
-// current envelope window.
-func SettleAccrual(in Input, horizon time.Time) map[EnvelopeKey]SettledAccrual {
-	if horizon.IsZero() || horizon.After(in.Now) {
-		return nil
-	}
-	epoch := in
-	epoch.Now = horizon
-	epoch.SettlementHorizon = time.Time{}
-	epoch.PriorAccrual = nil
-	var settled []v1.GPULease
-	for i := range in.Leases {
-		if leaseSettled(&in.Leases[i], horizon) {
-			settled = append(settled, in.Leases[i])
-		}
-	}
-	if len(settled) == 0 {
-		return nil
-	}
-	epoch.Leases = settled
-	ev := Evaluate(epoch)
-	out := make(map[EnvelopeKey]SettledAccrual, len(ev.envelopes))
-	for key, acct := range ev.envelopes {
-		if acct.ConsumedGPUHours == 0 && len(acct.HoursByClass) == 0 {
-			continue
-		}
-		sa := SettledAccrual{
-			ConsumedGPUHours: acct.ConsumedGPUHours,
-			HoursByClass:     make(map[Class]float64, len(acct.HoursByClass)),
-		}
-		for cl, h := range acct.HoursByClass {
-			sa.HoursByClass[cl] = h
-		}
-		out[key] = sa
-	}
-	return out
 }
 
 // eventTimes collects the sorted, deduplicated timeline: lease starts and
@@ -781,9 +608,7 @@ func (ev *Evaluation) fill(in Input, facts []*leaseFact, envOrder []EnvelopeKey,
 		ef.st = &fillState{
 			res:        res,
 			env:        fe,
-			remaining:  acct.RemainingGPUHours(),
 			lendPolicy: acct.Spec.Lending,
-			lentHours:  acct.HoursByClass[ClassBorrowed],
 		}
 		fills = append(fills, ef)
 	}
@@ -834,36 +659,29 @@ func (ev *Evaluation) fill(in Input, facts []*leaseFact, envOrder []EnvelopeKey,
 type fillState struct {
 	res        *fillResult
 	env        *fillEnv
-	remaining  *float64 // envelope integral remaining, nil = uncapped
 	lendPolicy *v1.LendingPolicy
-	lentHours  float64
 }
 
 // admit reports whether width more GPUs fit under every cap at this point
-// of the walk, and charges them if so. Concurrency is the ranked dimension;
-// the integrals are exhaustion gates — a drained budget funds nothing, a
-// live one keeps covering its claims until it drains (demote-not-kill,
-// nothing stranded).
+// of the walk, and charges them if so.
+//
+// Concurrency is now the ONLY dimension. Ruling 10 makes GPU-hours metered and
+// never enforced, so the three integral gates that used to sit beside these
+// three concurrency gates are gone: a budget is no longer drainable, and class
+// is purely concurrency-determined (DESIGN-v5 §5a). What remains of
+// "demote-not-kill" is unchanged and now comes entirely from ranking — a claim
+// outranked on concurrency demotes and coasts; nothing is stranded.
 func (st *fillState) admit(width int32, acct *EnvelopeAccount, sponsored bool) bool {
 	if st.env.fundedWidth+width > acct.Spec.Concurrency {
-		return false
-	}
-	if st.remaining != nil && *st.remaining <= integralEpsilon {
 		return false
 	}
 	if sponsored && st.lendPolicy != nil {
 		if st.lendPolicy.MaxConcurrency != nil && st.env.lentWidth+width > *st.lendPolicy.MaxConcurrency {
 			return false
 		}
-		if st.lendPolicy.MaxGPUHours != nil && st.lentHours >= float64(*st.lendPolicy.MaxGPUHours)-integralEpsilon {
-			return false
-		}
 	}
 	for _, agg := range acct.aggregates {
 		if agg.spec.MaxConcurrency != nil && st.res.aggWidth[agg]+width > *agg.spec.MaxConcurrency {
-			return false
-		}
-		if agg.spec.MaxGPUHours != nil && agg.consumed >= float64(*agg.spec.MaxGPUHours)-integralEpsilon {
 			return false
 		}
 	}
@@ -923,52 +741,6 @@ func (res *fillResult) markLease(f *leaseFact, class Class, acct *EnvelopeAccoun
 	}
 }
 
-// nextDepletion returns the earliest instant after t at which a budget
-// integral (envelope, lending, or aggregate) exhausts under this fill's
-// accrual rates, demoting the claims it was covering.
-func (res *fillResult) nextDepletion(t time.Time) (time.Time, bool) {
-	best := time.Time{}
-	found := false
-	consider := func(remaining float64, rate int32) {
-		if rate <= 0 {
-			return
-		}
-		if remaining < 0 {
-			remaining = 0
-		}
-		dt := remaining / float64(rate) // hours until exhaustion
-		// Round up to the next millisecond: past the crossing the accrual
-		// exceeds the gate's epsilon by orders of magnitude, so the
-		// demotion provably fires and every step makes progress.
-		// Millisecond error on demotion timing is noise against the
-		// accounting period.
-		crossing := t.Add(time.Duration(math.Ceil(dt*float64(time.Hour)/float64(time.Millisecond))) * time.Millisecond)
-		if !crossing.After(t) {
-			crossing = t.Add(time.Millisecond)
-		}
-		if !found || crossing.Before(best) {
-			best = crossing
-			found = true
-		}
-	}
-	for _, fe := range res.envs {
-		if fe.acct.Spec.MaxGPUHours != nil && fe.fundedWidth > 0 {
-			if r := fe.acct.RemainingGPUHours(); r != nil {
-				consider(*r, fe.fundedWidth)
-			}
-		}
-		if policy := fe.acct.Spec.Lending; policy != nil && policy.MaxGPUHours != nil && fe.lentWidth > 0 {
-			consider(float64(*policy.MaxGPUHours)-fe.acct.HoursByClass[ClassBorrowed], fe.lentWidth)
-		}
-	}
-	for agg, rate := range res.aggWidth {
-		if agg.spec.MaxGPUHours != nil && rate > 0 {
-			consider(float64(*agg.spec.MaxGPUHours)-agg.consumed, rate)
-		}
-	}
-	return best, found
-}
-
 // accrue integrates the segment [t0, t1) under this fill: funded hours
 // charge the envelope (and its aggregates), unfunded hours flow to the
 // separate bucket. Per-lease and per-run attribution accumulate in ev.
@@ -986,22 +758,12 @@ func (res *fillResult) accrue(ev *Evaluation, t0, t1 time.Time) {
 		if acct != nil {
 			acct.HoursByClass[class] += leaseHours
 			if class != ClassUnfunded {
-				// The charge clamps at the cap: depletion crossings land on
-				// millisecond boundaries, and the sliver of accrual past the
-				// exact crossing must not overdraw the envelope.
-				charge := leaseHours
-				if acct.Spec.MaxGPUHours != nil {
-					if room := float64(*acct.Spec.MaxGPUHours) - acct.ConsumedGPUHours; charge > room {
-						charge = math.Max(0, room)
-					}
-				}
-				acct.ConsumedGPUHours += charge
-				// Aggregates accumulate the same envelope-clamped charge, not
-				// the raw leaseHours: the sliver past an envelope's own cap is
-				// not funded consumption, so it must not overstate aggregate
-				// usage either (the aggregate then applies its own cap below).
+				// Recorded as observed, never clamped. There is no cap to
+				// overdraw (Ruling 10) and jobtree does not revise its own
+				// usage record (DESIGN-v5 §5) — the number reports what ran.
+				acct.ConsumedGPUHours += leaseHours
 				for _, agg := range acct.aggregates {
-					aggDelta[agg] += charge
+					aggDelta[agg] += leaseHours
 				}
 			}
 		}
@@ -1021,11 +783,6 @@ func (res *fillResult) accrue(ev *Evaluation, t0, t1 time.Time) {
 	for _, fe := range res.envs {
 		for _, agg := range fe.acct.aggregates {
 			if delta, ok := aggDelta[agg]; ok {
-				if agg.spec.MaxGPUHours != nil {
-					if room := float64(*agg.spec.MaxGPUHours) - agg.consumed; delta > room {
-						delta = math.Max(0, room)
-					}
-				}
 				agg.consumed += delta
 				delete(aggDelta, agg)
 			}
@@ -1120,9 +877,20 @@ func lendingAllows(policy *v1.LendingPolicy, borrower string) bool {
 // ranked at its run's admission time, could get funded on this envelope
 // right now. This is the admission-side view of the same ranking: capacity
 // held by claims ranked below the prospective claim is available (they
-// would demote — that is recall), capacity ranked above it is not. The
-// integral uses the width × period admission lookahead so that work is
-// never admitted born-opportunistic (quota-semantics.md Decision 1).
+// would demote — that is recall), capacity ranked above it is not.
+//
+// THIS IS THE BORN-OPPORTUNISTIC PROTECTION (DESIGN-v5 build item 9,
+// quota-semantics.md Decision 1). It used to be asked on two axes: the
+// concurrency headroom below, and a `width × period` integral lookahead. With
+// GPU-hours metered and never enforced (Ruling 10), the question reduces to the
+// concurrency one — "is this run opportunistic the moment it starts because the
+// envelope's concurrency is already committed?" — and that is exactly what the
+// bounds below compute. A caller that admits no more than the width returned
+// here cannot admit work that is born opportunistic, because every remaining
+// bound is a live concurrency commitment rather than a forecast. Returning 0
+// means every GPU of headroom is already spoken for by an equal or senior
+// claim.
+//
 // Sponsor claims are junior to everything at admission and bounded by the
 // lending caps. The window gate stays with the cover planner
 // (preActivation may deliberately admit pre-window work, which evaluates
@@ -1136,7 +904,6 @@ func (ev *Evaluation) AvailableWidth(key EnvelopeKey, runOwner string, admitted 
 	if acct == nil {
 		return 0
 	}
-	period := ev.Period.Hours()
 	borrowedWidth := acct.WidthByClass[ClassBorrowed]
 	available := int32(math.MaxInt32)
 	bound := func(w int32) {
@@ -1144,31 +911,14 @@ func (ev *Evaluation) AvailableWidth(key EnvelopeKey, runOwner string, admitted 
 			available = w
 		}
 	}
-	boundHours := func(remaining float64) {
-		if period <= 0 {
-			return
-		}
-		if remaining < 0 {
-			remaining = 0
-		}
-		bound(int32(math.Floor(remaining / period)))
-	}
-
 	if sponsor {
 		policy := acct.Spec.Lending
 		if policy == nil || !policy.Allow || !lendingAllows(policy, runOwner) {
 			return 0
 		}
-		funded := acct.FundedWidth()
-		bound(acct.Spec.Concurrency - funded)
+		bound(acct.Spec.Concurrency - acct.FundedWidth())
 		if policy.MaxConcurrency != nil {
 			bound(*policy.MaxConcurrency - borrowedWidth)
-		}
-		if r := acct.RemainingGPUHours(); r != nil {
-			boundHours(*r - float64(funded)*period)
-		}
-		if policy.MaxGPUHours != nil {
-			boundHours(float64(*policy.MaxGPUHours) - acct.HoursByClass[ClassBorrowed] - float64(borrowedWidth)*period)
 		}
 	}
 
@@ -1191,9 +941,6 @@ func (ev *Evaluation) AvailableWidth(key EnvelopeKey, runOwner string, admitted 
 			}
 		}
 		bound(acct.Spec.Concurrency - counted)
-		if r := acct.RemainingGPUHours(); r != nil {
-			boundHours(*r - float64(counted)*period)
-		}
 	}
 
 	// Aggregate caps honor recall the same way a single envelope does: for a
@@ -1211,9 +958,6 @@ func (ev *Evaluation) AvailableWidth(key EnvelopeKey, runOwner string, admitted 
 		}
 		if agg.spec.MaxConcurrency != nil {
 			bound(*agg.spec.MaxConcurrency - width)
-		}
-		if agg.spec.MaxGPUHours != nil {
-			boundHours(float64(*agg.spec.MaxGPUHours) - agg.consumed - float64(width)*period)
 		}
 	}
 

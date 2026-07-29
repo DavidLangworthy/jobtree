@@ -26,7 +26,6 @@ borrower guardrails provided on each run.
            to:
              - org:example:*
            maxConcurrency: 64
-           maxGPUHours: 20480
    ```
 2. **Borrowing run** – the borrower opts-in to borrowing and declares limits:
    ```yaml

@@ -21,7 +21,7 @@ family-funded borrowing.
 ## 1. Required context
 
 * **Budgets** – Your team receives one or more envelopes with a concurrency cap and (optionally)
-  `maxGPUHours`. Every Lease is paid for by exactly one envelope.
+  a mandatory `[start, end)` window. Every Lease is paid for by exactly one envelope.
 * **Runs** – Describe the resources you want (`gpuType`, `totalGPUs`), the real workload that
   should run (`spec.roles[]`: a pod `template` carrying your container image/command, `width`
   in pods, and `gpusPerPod`), and optional advanced features: `groupGPUs`, `malleable`, and
