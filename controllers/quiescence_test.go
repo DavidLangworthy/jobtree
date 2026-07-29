@@ -106,13 +106,15 @@ func qBudget(name, owner string, concurrency int32) v1.Budget {
 			Selector: map[string]string{
 				topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a",
 				topology.LabelFabricDomain: "island-a",
-			},
+			}, Start: &testWindowStart,
+
+			// qWorld is one generated history: a cluster, a clock, and the log of what was
+			// done to it.
+			End: &testWindowEnd,
 		}}},
 	}
 }
 
-// qWorld is one generated history: a cluster, a clock, and the log of what was
-// done to it.
 type qWorld struct {
 	t     *testing.T
 	c     *RunController

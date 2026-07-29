@@ -76,3 +76,27 @@ decision on the record, so the run implemented it and logged the reasoning in
   *without* the webhook, which addition achieves, and deleting the Go copies would only
   remove validation from the pure-engine tests, which never reach an apiserver. The drift
   risk is pinned by an envtest asserting both layers reject the same objects.
+
+## Raised 2026-07-28 by the DESIGN-v5 Phase 1 hours deletion
+
+- **F-PERIOD: `Input.Period` / `--accounting-period` is now inert.** The cluster accounting
+  horizon's only consumer was the `width × period` admission lookahead that Ruling 10 deleted.
+  `Evaluate` still accepts it and copies it onto the `Evaluation`, but **nothing reads it to
+  make a decision**, so the operator-visible `--accounting-period` flag no longer changes any
+  behaviour. It was NOT deleted here because (a) DESIGN-v5 does not list it among the machinery
+  to remove, and (b) the meter in DESIGN-v5 §5 may want a horizon. Two options, both fine, but
+  it should be a decision rather than drift: delete the flag under the clean-break rule, or keep
+  it and give it a documented consumer when the meter lands. Until then the constant carries a
+  comment saying it gates nothing — if that comment is ever wrong, something reintroduced an
+  enforced integral without saying so.
+
+- **F-ACCRUALPREFIX: `specs/AccrualPrefix.tla` now models a partly-unreachable scenario.** It
+  models Ruling 6 / P3 ("elapsed GPU-hour facts do not change when funding inputs change later")
+  over four mutations, one of which is *reduced `MaxGPUHours`* — a field that no longer exists.
+  DESIGN-v5 §5b demotes P3 back to a performance and reporting question but does **not** list
+  this spec for deletion (it names only `LedgerCompaction*.tla`), so it was kept and still
+  model-checks. Its Go calibration specimen could not be kept: it was built entirely on
+  `withMaxHours`, so `pkg/funding/accrual_prefix_counterexample_test.go` was deleted and the
+  spec now has no executable specimen. Either retarget the spec at the surviving
+  conflict-erases-accrued-hours behaviour (which `TestConflictRetroactivelyErasesAccruedHours`
+  still pins) or retire it with the rest of the integral.

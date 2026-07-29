@@ -19,9 +19,25 @@ rules:
   - apiGroups: ["rq.davidlangworthy.io"]
     resources: ["budgets", "runs", "reservations", "gpuleases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # The snapshot producer (DESIGN-v5 build item 3) READS grants and both reads
+  # and writes the compiled document. It never writes a Grant: the producer
+  # compiles authority, it does not author it, and a producer that could edit
+  # grants could manufacture the authority it is supposed to be checking.
   - apiGroups: ["rq.davidlangworthy.io"]
-    resources: ["budgets/status", "runs/status", "reservations/status", "gpuleases/status"]
+    resources: ["grants"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["rq.davidlangworthy.io"]
+    resources: ["quotasnapshots"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["rq.davidlangworthy.io"]
+    resources: ["budgets/status", "runs/status", "reservations/status", "gpuleases/status", "grants/status", "quotasnapshots/status"]
     verbs: ["get", "update", "patch"]
+  # Namespace UIDs are the producer's identity key: a namespace deleted and
+  # recreated under the same name is a different principal, and only the UID
+  # says so (INV-NO-SELF-GRANT derives the grantor from it).
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get", "list", "watch"]

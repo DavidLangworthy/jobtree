@@ -83,7 +83,7 @@ func TestPlanFromCapacityDeficit(t *testing.T) {
 				Name:        "west",
 				Flavor:      testFlavor,
 				Selector:    map[string]string{topology.LabelRegion: "us-west"},
-				Concurrency: 16,
+				Concurrency: 16, Start: &testWindowStart, End: &testWindowEnd,
 			}},
 		},
 	}}
@@ -163,12 +163,14 @@ func TestComputeRemediesVariesWithRealSignals(t *testing.T) {
 				Name:        "west",
 				Flavor:      testFlavor,
 				Selector:    map[string]string{topology.LabelRegion: "us-west"},
-				Concurrency: 32,
+				Concurrency: 32, Start: &testWindowStart,
+
+				// Case 1: no unfunded/spare/malleable signal at all.
+				End: &testWindowEnd,
 			}},
 		},
 	}}
 
-	// Case 1: no unfunded/spare/malleable signal at all.
 	ev := funding.Evaluate(funding.Input{Budgets: budgets, Now: now})
 	plan, err := Plan(Input{
 		Run:          run,
@@ -243,7 +245,7 @@ func TestPlanFutureWindow(t *testing.T) {
 				Selector:      map[string]string{topology.LabelRegion: "us-west"},
 				Concurrency:   32,
 				Start:         &start,
-				PreActivation: &v1.PreActivationPolicy{AllowReservations: true, AllowAdmission: false},
+				PreActivation: &v1.PreActivationPolicy{AllowReservations: true, AllowAdmission: false}, End: &testWindowEnd,
 			}},
 		},
 	}}
@@ -285,7 +287,7 @@ func TestPlanBorrowLimitReason(t *testing.T) {
 				Name:        "west",
 				Flavor:      testFlavor,
 				Selector:    map[string]string{topology.LabelRegion: "us-west"},
-				Concurrency: 8,
+				Concurrency: 8, Start: &testWindowStart, End: &testWindowEnd,
 			}},
 		},
 	}}
@@ -330,7 +332,7 @@ func TestPlanHeadroomExcludesFamilyEnvelopes(t *testing.T) {
 					Name:        "shared-pool",
 					Flavor:      testFlavor,
 					Selector:    map[string]string{topology.LabelRegion: "us-west"},
-					Concurrency: 32,
+					Concurrency: 32, Start: &testWindowStart, End: &testWindowEnd,
 				}},
 			},
 		},
@@ -343,7 +345,7 @@ func TestPlanHeadroomExcludesFamilyEnvelopes(t *testing.T) {
 					Name:        "west",
 					Flavor:      testFlavor,
 					Selector:    map[string]string{topology.LabelRegion: "us-west"},
-					Concurrency: 4,
+					Concurrency: 4, Start: &testWindowStart, End: &testWindowEnd,
 				}},
 			},
 		},
@@ -388,13 +390,16 @@ func TestPlanDeficitRespectsClaimRanking(t *testing.T) {
 					Name:        "west",
 					Flavor:      testFlavor,
 					Selector:    map[string]string{topology.LabelRegion: "us-west"},
-					Concurrency: 8,
+					Concurrency: 8, Start: &testWindowStart,
+
+					// The sibling needs a budget only to appear in the family graph. R7: a
+					// distinct owner lives in a distinct namespace (org-ai-peer), so its runs
+					// derive the peer tier rather than colliding with team in "default".
+					End: &testWindowEnd,
 				}},
 			},
 		},
-		// The sibling needs a budget only to appear in the family graph. R7: a
-		// distinct owner lives in a distinct namespace (org-ai-peer), so its runs
-		// derive the peer tier rather than colliding with team in "default".
+
 		{
 			ObjectMeta: v1.ObjectMeta{Name: "peer-budget", Namespace: "org-ai-peer"},
 			// A legal Budget must carry an envelope with positive concurrency, so a
@@ -404,12 +409,15 @@ func TestPlanDeficitRespectsClaimRanking(t *testing.T) {
 			Spec: v1.BudgetSpec{Owner: "org:ai:peer", Parents: []string{"org:ai"},
 				Envelopes: []v1.BudgetEnvelope{{
 					Name: "idle", Flavor: "A100-40GB",
-					Selector: map[string]string{"region": "us-west"}, Concurrency: 1,
+					Selector: map[string]string{"region": "us-west"}, Concurrency: 1, Start: &testWindowStart,
+
+					// guest is the sibling: it lives in the peer's namespace and SHARES the
+					// team's envelope (RunRef in org-ai-peer, paid by team-budget in default).
+					End: &testWindowEnd,
 				}}},
 		},
 	}
-	// guest is the sibling: it lives in the peer's namespace and SHARES the
-	// team's envelope (RunRef in org-ai-peer, paid by team-budget in default).
+
 	guest := trackedRunOf("guest", "org:ai:peer", now.Add(-2*time.Hour))
 	guest.Namespace = "org-ai-peer"
 	runs := runsMap(
@@ -454,11 +462,15 @@ func TestPlanDeficitRespectsClaimRanking(t *testing.T) {
 // envelope GPU-hours (Decision 1 — nothing is admitted born-opportunistic),
 // and an envelope whose window has not opened admits nothing without
 // preActivation.allowAdmission.
-func TestPlanHeadroomMeteredAndWindowGated(t *testing.T) {
+//
+// The metered half of this test died with maxGPUHours (Ruling 10): the deficit
+// used to come from east's integral funding floor(48h/24h)=2 despite a
+// concurrency of 8. Concurrency now carries it directly, so east is sized to 2
+// and the WINDOW gate on `later` is what the deficit still proves.
+func TestPlanHeadroomWindowGated(t *testing.T) {
 	now := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
 	run := runOf("train", "org:ai:team", 8)
 
-	maxHours := int64(48) // two GPUs' worth of the default 24h period
 	start := v1.NewTime(now.Add(2 * time.Hour))
 	budgets := []v1.Budget{{
 		ObjectMeta: v1.ObjectMeta{Name: "team-budget", Namespace: "default"},
@@ -469,15 +481,14 @@ func TestPlanHeadroomMeteredAndWindowGated(t *testing.T) {
 					Name:        "east",
 					Flavor:      testFlavor,
 					Selector:    map[string]string{topology.LabelRegion: "us-east"},
-					Concurrency: 8,
-					MaxGPUHours: &maxHours,
+					Concurrency: 2, Start: &testWindowStart, End: &testWindowEnd,
 				},
 				{
 					Name:        "later",
 					Flavor:      testFlavor,
 					Selector:    map[string]string{topology.LabelRegion: "us-east"},
 					Concurrency: 8,
-					Start:       &start,
+					Start:       &start, End: &testWindowEnd,
 				},
 			},
 		},
@@ -494,8 +505,8 @@ func TestPlanHeadroomMeteredAndWindowGated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
-	// east's integral funds floor(48h / 24h) = 2 GPUs despite concurrency 8;
-	// later's window is closed to admission. 8 requested - 2 = 6.
+	// east funds its concurrency of 2; later's window is not open, so it
+	// admits nothing at all. 8 requested - 2 = 6.
 	if result.Forecast.DeficitGPUs != 6 {
 		t.Fatalf("expected deficit of 6 GPUs, got %d", result.Forecast.DeficitGPUs)
 	}

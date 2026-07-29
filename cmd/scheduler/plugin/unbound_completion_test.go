@@ -23,13 +23,15 @@ func rivalBudget() *v1.Budget {
 	return &v1.Budget{
 		ObjectMeta: v1.ObjectMeta{Name: "other", Namespace: "default"},
 		Spec: v1.BudgetSpec{Owner: "org:ai:other", Envelopes: []v1.BudgetEnvelope{{
-			Name: "east", Flavor: "H100-80GB", Concurrency: 8,
+			Name: "east", Flavor: "H100-80GB", Concurrency: 8, Start: &testWindowStart,
+
+			// heldLease mints an OPEN lease for default/train holding one GPU slot per entry
+			// in nodes, in the given role.
+			End: &testWindowEnd,
 		}}},
 	}
 }
 
-// heldLease mints an OPEN lease for default/train holding one GPU slot per entry
-// in nodes, in the given role.
 func heldLease(name, role string, nodes ...string) *v1.GPULease {
 	return &v1.GPULease{
 		ObjectMeta: v1.ObjectMeta{Name: name, Namespace: "default"},

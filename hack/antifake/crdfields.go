@@ -36,7 +36,21 @@ import (
 // real workload pod) and RunRole.GPUsPerPod by run_controller.go's
 // intentPodShape (the per-pod GPU count the controller emits). Back to the
 // original baseline — nothing to shrink before merging to main.
-const maxAllowedUnreadCRDFields = 2
+// DESIGN-v5 build item 5 raises this 2 -> 4, deliberately and temporarily.
+// GPULeaseSpec.PaidByPrincipal and GPULeaseSpec.SnapshotVersion are a batched
+// CRD/schema change (§6, batched with the R7:473-475 lease-schema outage) whose
+// consumers are LATER build items: subtree conservation (item 8) for the first,
+// the snapshot producer and loader (item 3) for the second. Shipping the schema
+// ahead of the consumer is the point of batching a CRD outage; shipping it
+// SILENTLY is what this lint exists to stop, so both are individually reasoned
+// in the allowlist. Ratchet back to 2 as each gains its reader.
+//
+// Now 3, not 4: build item 3 added QuotaSnapshotSpec.SnapshotVersion and
+// GrantStatus.SnapshotVersion, and because the reader scan matches on field NAME
+// the lease's SnapshotVersion reads as covered. It is not genuinely consumed yet
+// — see the note at the foot of the allowlist file, which exists precisely so the
+// removed entry is not mistaken for a wired field.
+const maxAllowedUnreadCRDFields = 3
 
 const crdFieldsAllowlistName = "crd-fields-allowlist.txt"
 

@@ -61,17 +61,17 @@ func TestEngineEmitsEventsIncludingAttestedSeed(t *testing.T) {
 		{ObjectMeta: v1.ObjectMeta{Name: "owner-a", Namespace: "default"}, Spec: v1.BudgetSpec{Owner: "org:owner:a", Envelopes: []v1.BudgetEnvelope{{
 			Name: "west", Flavor: "H100-80GB",
 			Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
-			Concurrency: 16,
+			Concurrency: 16, Start: &testWindowStart, End: &testWindowEnd,
 		}}}},
 		{ObjectMeta: v1.ObjectMeta{Name: "owner-b", Namespace: "org-owner-b"}, Spec: v1.BudgetSpec{Owner: "org:owner:b", Envelopes: []v1.BudgetEnvelope{{
 			Name: "west", Flavor: "H100-80GB",
 			Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
-			Concurrency: 16,
+			Concurrency: 16, Start: &testWindowStart, End: &testWindowEnd,
 		}}}},
 		{ObjectMeta: v1.ObjectMeta{Name: "owner-c", Namespace: "org-owner-c"}, Spec: v1.BudgetSpec{Owner: "org:owner:c", Envelopes: []v1.BudgetEnvelope{{
 			Name: "west", Flavor: "H100-80GB",
 			Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
-			Concurrency: 16,
+			Concurrency: 16, Start: &testWindowStart, End: &testWindowEnd,
 		}}}},
 	}
 

@@ -1,0 +1,310 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: quotasnapshots.rq.davidlangworthy.io
+spec:
+  group: rq.davidlangworthy.io
+  names:
+    kind: QuotaSnapshot
+    listKind: QuotaSnapshotList
+    plural: quotasnapshots
+    shortNames:
+    - qsnap
+    singular: quotasnapshot
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.snapshotVersion
+      name: Version
+      type: string
+    - jsonPath: .spec.effectiveFrom
+      name: Effective
+      type: string
+    - jsonPath: .status.principalCount
+      name: Principals
+      type: integer
+    - jsonPath: .status.quarantinedCount
+      name: Quarantined
+      type: integer
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: QuotaSnapshot is the published identity document.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              QuotaSnapshotSpec is the compiled, versioned identity document (DESIGN-v5 §3).
+
+              This is what replaces "the scheduler derives owners by scanning". Identity
+              stops being a function every reader recomputes from Budgets and becomes a
+              document one in-tree producer publishes, so every reader agrees by
+              construction rather than by everyone implementing the same walk correctly.
+
+              One document. Sharding is not built (Ruling 18); revisit above ~2,000
+              principals.
+            properties:
+              contentHash:
+                description: |-
+                  ContentHash covers the compiled content (not the version or timestamp), so
+                  a recompile that changes nothing is recognisable as a no-op.
+                type: string
+              effectiveFrom:
+                description: |-
+                  EffectiveFrom is the instant this snapshot's classifications take effect.
+
+                  RETAINED, WITH ITS REASON CORRECTED (§3). v4 justified this by accrual
+                  anchoring, and Ruling 10 deleted the accrual. Its actual consumer is the
+                  METER's interval-split boundary: when a snapshot changes a principal's
+                  class, the meter seals the old interval at that instant, and two meters
+                  using wall-clock observation time would disagree about where the seam is.
+                  Persisted effective time is required; observation time is insufficient.
+                  INV-SNAP-IMMUTABLE survives for the same reason.
+                format: date-time
+                type: string
+              principals:
+                description: Principals is the compiled graph.
+                items:
+                  description: SnapshotPrincipal is one compiled principal.
+                  properties:
+                    boundNamespace:
+                      description: |-
+                        BoundNamespace binds this principal to exactly one namespace, by NAME for
+                        humans and by UID for identity. The UID is the half that matters: a
+                        namespace deleted and recreated under the same name is a DIFFERENT
+                        principal, and only the UID can say so.
+                      properties:
+                        name:
+                          type: string
+                        uid:
+                          type: string
+                      required:
+                      - name
+                      - uid
+                      type: object
+                    children:
+                      description: Children are the principals this one grants to,
+                        by owner.
+                      items:
+                        type: string
+                      type: array
+                    envelopes:
+                      description: |-
+                        Envelopes are the principal's effective envelopes: its own Budget's
+                        envelopes CLAMPED on every dimension by the grant that authorised them.
+                      items:
+                        description: "SnapshotEnvelope is one effective envelope after
+                          clamping.\n\nEVERYTHING CLAMPS — NO DIMENSION REJECTS (§2a).
+                          v4 clamped concurrency and\nleft time as a rejection invariant,
+                          which recreated the self-defeating-cut\ndefect on the time
+                          axis: with grant and envelope both [0,100), a grantor\naccelerating
+                          the end to 50 made every outcome wrong. So:\n\n\teffectiveConcurrency
+                          = min(envelope.concurrency, grant.cap)\n\teffectiveWindow
+                          \     = envelope.window ∩ grant.window\n\nAuthored overhang
+                          is LEGAL, VISIBLE over-allocation — not invalid state."
+                        properties:
+                          concurrency:
+                            description: Concurrency is the EFFECTIVE concurrency
+                              after clamping.
+                            format: int32
+                            type: integer
+                          end:
+                            format: date-time
+                            type: string
+                          flavor:
+                            type: string
+                          name:
+                            type: string
+                          overAllocatedBy:
+                            description: |-
+                              OverAllocatedBy is how much authored concurrency exceeded the grant, per
+                              flavour. ABSENT, NOT ZERO, when there is no over-allocation (Ruling 3 /
+                              §9) — a zero would be indistinguishable from "conservation is not built
+                              yet", and the difference is exactly what an operator is asking about.
+                            format: int32
+                            type: integer
+                          overAllocatedUntil:
+                            description: |-
+                              OverAllocatedUntil is the TEMPORAL diagnostic §2a requires. Per-flavour
+                              overAllocatedBy cannot say "your envelope extends 12 days past its
+                              authority", and that is a different repair from lowering a number.
+                            format: date-time
+                            type: string
+                          start:
+                            description: |-
+                              Start and End are the EFFECTIVE window: the intersection of the envelope's
+                              window and its authorising grant's.
+                            format: date-time
+                            type: string
+                        required:
+                        - concurrency
+                        - end
+                        - flavor
+                        - name
+                        - start
+                        type: object
+                      type: array
+                    inboundGrant:
+                      description: |-
+                        InboundGrant is the per-edge provenance: which Grant object authorised this
+                        principal, at which revision. Absent means no inbound authority, which
+                        means ZERO — never a fallback to this principal's own Budget.
+                      properties:
+                        grantor:
+                          description: |-
+                            Grantor is the granting principal's owner, derived from the Grant's
+                            namespace UID and never from a writable field (INV-NO-SELF-GRANT).
+                          type: string
+                        name:
+                          type: string
+                        namespace:
+                          description: Namespace and Name locate the Grant object;
+                            the grantor is the namespace.
+                          type: string
+                        revision:
+                          description: |-
+                            Revision is the resourceVersion that compiled in. Quarantine is
+                            revision-granular, so this says WHICH revision is authoritative — an
+                            invalid update leaves this pointing at the accepted one (§4.3).
+                          type: string
+                      required:
+                      - name
+                      - namespace
+                      type: object
+                    owner:
+                      description: Owner is the principal's identity within the tree.
+                      type: string
+                    quarantineTrigger:
+                      description: |-
+                        QuarantineTrigger names the object whose write was quarantined and why —
+                        "and since when" is what `kubectl describe run` needs to answer *"why is my
+                        job Unfunded?"* (§10).
+                      type: string
+                    status:
+                      description: Status is Accepted or Quarantined.
+                      type: string
+                  required:
+                  - boundNamespace
+                  - owner
+                  - status
+                  type: object
+                type: array
+              roots:
+                description: |-
+                  Roots are the principals with no inbound authority that are nonetheless
+                  authoritative — the top of each tree. A principal absent from here with no
+                  inbound Grant has ZERO, never an implicit root (§2b).
+                items:
+                  type: string
+                type: array
+              schemaVersion:
+                description: SchemaVersion is the document format (QuotaSnapshotSchemaVersion).
+                type: string
+              snapshotVersion:
+                description: |-
+                  SnapshotVersion identifies this compiled instance. Monotone
+                  (INV-SNAP-MONOTONE) and immutable once published (INV-SNAP-IMMUTABLE).
+                type: string
+            required:
+            - contentHash
+            - effectiveFrom
+            - schemaVersion
+            - snapshotVersion
+            type: object
+          status:
+            description: QuotaSnapshotStatus reports publication.
+            properties:
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              principalCount:
+                description: |-
+                  PrincipalCount and QuarantinedCount are the at-a-glance numbers. A nonzero
+                  quarantine count is an authority loss somebody should look at — §4's whole
+                  point is that it must never be silent.
+                format: int32
+                type: integer
+              quarantinedCount:
+                format: int32
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -66,10 +66,6 @@ spec:
                       format: int32
                       minimum: 0
                       type: integer
-                    maxGPUHours:
-                      format: int64
-                      minimum: 0
-                      type: integer
                     name:
                       minLength: 1
                       type: string
@@ -80,8 +76,14 @@ spec:
                   type: object
                 type: array
               autoRenew:
-                description: AutoRenewSchedule defines reporting rotation for open-ended
-                  envelopes.
+                description: |-
+                  AutoRenewSchedule defines reporting rotation for expiring envelopes.
+
+                  It matters MORE now, not less: INV-WINDOW-REQUIRED means every envelope has an
+                  end, so every envelope eventually stops funding work. There are no open-ended
+                  envelopes for it to rotate any more — it is the notice that an expiry is
+                  coming. It still does NOT auto-extend anything; window rotation stays an
+                  explicit operator action.
                 properties:
                   notifyBefore:
                     type: string
@@ -98,6 +100,10 @@ spec:
                   description: BudgetEnvelope defines a location/time scoped limit.
                   properties:
                     concurrency:
+                      description: |-
+                        Concurrency is the whole allocation. GPU-hours are metered and reported,
+                        never enforced (Ruling 10, DESIGN-v5 §1), so an envelope grants
+                        `concurrency` GPUs of `flavor` over `[start, end)` and nothing else.
                       format: int32
                       minimum: 0
                       type: integer
@@ -116,10 +122,6 @@ spec:
                           format: int32
                           minimum: 0
                           type: integer
-                        maxGPUHours:
-                          format: int64
-                          minimum: 0
-                          type: integer
                         to:
                           items:
                             type: string
@@ -127,10 +129,6 @@ spec:
                       required:
                       - allow
                       type: object
-                    maxGPUHours:
-                      format: int64
-                      minimum: 0
-                      type: integer
                     name:
                       minLength: 1
                       type: string
@@ -160,14 +158,24 @@ spec:
                       - none
                       type: string
                     start:
+                      description: |-
+                        Start and End are REQUIRED (INV-WINDOW-REQUIRED, DESIGN-v5 §1). They are
+                        pointers rather than values so that an omitted bound is a validation error
+                        rather than a silent zero time, which would read as "the epoch" and fund
+                        nothing without saying why.
                       format: date-time
                       type: string
                   required:
                   - concurrency
+                  - end
                   - flavor
                   - name
                   - selector
+                  - start
                   type: object
+                  x-kubernetes-validations:
+                  - message: end must be after start
+                    rule: self.end > self.start
                 minItems: 1
                 type: array
               owner:
@@ -194,9 +202,6 @@ spec:
                       type: integer
                     flavor:
                       type: string
-                    gpuHours:
-                      format: int64
-                      type: integer
                     name:
                       type: string
                   required:
@@ -268,17 +273,17 @@ spec:
                 x-kubernetes-list-type: map
               headroom:
                 items:
-                  description: EnvelopeHeadroom reports remaining capacity for an
-                    envelope.
+                  description: |-
+                    EnvelopeHeadroom reports remaining capacity for an envelope. Concurrency is
+                    the only dimension: headroom is remaining-against-a-cap, and GPU-hours no
+                    longer have a cap to remain against (Ruling 10). Consumption is still
+                    reported, on EnvelopeUsage.
                   properties:
                     concurrency:
                       format: int32
                       type: integer
                     flavor:
                       type: string
-                    gpuHours:
-                      format: int64
-                      type: integer
                     name:
                       type: string
                   required:

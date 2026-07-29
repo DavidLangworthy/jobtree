@@ -1,5 +1,17 @@
 # R4 pt2 — ledger compaction (design)
 
+> **SUPERSEDED 2026-07-28 — implementation deleted (DESIGN-v5 §5a, Ruling 10).**
+> Ledger compaction existed to bound a replay whose purpose was charging the
+> `MaxGPUHours` integrals named below. Ruling 10 makes GPU-hours metered and never
+> enforced, so those integrals no longer exist, and `Input.SettlementHorizon`,
+> `Input.PriorAccrual`, `SettledAccrual`, `SettleAccrual`, `settlementSafe`,
+> `leaseSettled`, the `specs/LedgerCompaction*.tla` family and their Apalache rails
+> have all been removed. Note that the machinery was **never wired up in
+> production** — nothing ever set `SettlementHorizon`, so the engine always did a
+> full replay regardless. DESIGN-v5 §5b demotes P3 back to a performance and
+> reporting question. This document is retained as the record of the analysis, not
+> as a description of the code.
+
 **Priority:** P0 (perf/scale) · **Design:** this doc (sharpens the R4 spec's option a) · **Depends on:** R4 pt1 (metrics, merged #52)
 
 The R4 spec's option (a) — "precompute a per-envelope rolling accrual so

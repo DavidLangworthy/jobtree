@@ -77,7 +77,8 @@ func (a *Admission) Take(key EnvelopeKey, width int32) {
 }
 
 // aggregateAvailable is the aggregate's remaining width for new claims:
-// conservative (no recall through aggregates), both dimensions.
+// conservative (no recall through aggregates). Concurrency is the only
+// dimension an aggregate caps (Ruling 10).
 func (ev *Evaluation) aggregateAvailable(agg *aggregateAccount) int32 {
 	available := int32(1 << 30)
 	width := ev.aggWidth[agg]
@@ -86,32 +87,22 @@ func (ev *Evaluation) aggregateAvailable(agg *aggregateAccount) int32 {
 			available = room
 		}
 	}
-	if agg.spec.MaxGPUHours != nil {
-		period := ev.Period.Hours()
-		if period > 0 {
-			remaining := float64(*agg.spec.MaxGPUHours) - agg.consumed - float64(width)*period
-			if remaining < 0 {
-				remaining = 0
-			}
-			if room := int32(remaining / period); room < available {
-				available = room
-			}
-		}
-	}
 	if available < 0 {
 		return 0
 	}
 	return available
 }
 
-// AggregateUsage is a reporting view of one aggregate cap.
+// AggregateUsage is a reporting view of one aggregate cap. ConsumedGPUHours
+// survives the Ruling 10 deletion deliberately: it is an observation, not a
+// gate, and DESIGN-v5 §5a keeps it until Phase 6 turns it into a projection of
+// the append-only ledger. There is no MaxGPUHours to report against.
 type AggregateUsage struct {
 	Name             string
 	Flavor           string
 	FundedWidth      int32
 	ConsumedGPUHours float64
 	MaxConcurrency   *int32
-	MaxGPUHours      *int64
 }
 
 // Aggregates reports the budget's aggregate caps in declaration order.
@@ -133,7 +124,6 @@ func (ev *Evaluation) Aggregates(budget string) []AggregateUsage {
 				FundedWidth:      ev.aggWidth[agg],
 				ConsumedGPUHours: agg.consumed,
 				MaxConcurrency:   agg.spec.MaxConcurrency,
-				MaxGPUHours:      agg.spec.MaxGPUHours,
 			})
 		}
 	}

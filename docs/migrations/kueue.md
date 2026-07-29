@@ -102,7 +102,7 @@ packs group-by-group within a fast-fabric domain (`pack-to-empty`):
 
 1. Convert ResourceFlavors into node labels if not already present (Jobtree reuses them).
 2. Translate ClusterQueues into Budgets. Each queue becomes one or more envelopes with selectors,
-   concurrency, `maxGPUHours`, and optional aggregate caps.
+   concurrency, a mandatory window, and optional aggregate caps.
 3. Update workloads to Run CRDs. Most data (GPU type/count, checkpoint, elasticity) maps 1:1.
 4. Roll out the `kubectl runs` plugin to your users—they can inspect Reservations and lotteries.
 5. Mirror your existing Prometheus/Grafana integration to Jobtree’s `/metrics` and dashboards.

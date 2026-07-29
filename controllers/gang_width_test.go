@@ -29,7 +29,7 @@ func gangWidthState() *ClusterState {
 					Name:        "west",
 					Flavor:      "H100-80GB",
 					Selector:    map[string]string{topology.LabelRegion: "us-west", topology.LabelCluster: "cluster-a", topology.LabelFabricDomain: "island-a"},
-					Concurrency: 16,
+					Concurrency: 16, Start: &testWindowStart, End: &testWindowEnd,
 				}},
 			},
 		}},

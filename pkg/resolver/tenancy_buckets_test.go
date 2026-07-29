@@ -24,7 +24,7 @@ func conflictedNamespaceEvaluation(t *testing.T, namespaces ...string) *funding.
 	// never have stored -- and a fixture that constructs an illegal state is not
 	// evidence about a legal system. (The R7 pt2 review caught exactly this in an
 	// earlier version of this helper, and in two older fixtures elsewhere.)
-	envelope := []v1.BudgetEnvelope{{Name: "west", Flavor: "H100", Concurrency: 8}}
+	envelope := []v1.BudgetEnvelope{{Name: "west", Flavor: "H100", Concurrency: 8, Start: &testWindowStart, End: &testWindowEnd}}
 	var budgets []v1.Budget
 	for _, ns := range namespaces {
 		// Two owners in one namespace: ConflictMultipleOwners, fail-safe to "".

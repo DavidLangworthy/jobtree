@@ -1,0 +1,202 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: grants.rq.davidlangworthy.io
+spec:
+  group: rq.davidlangworthy.io
+  names:
+    kind: Grant
+    listKind: GrantList
+    plural: grants
+    singular: grant
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.granteeOwner
+      name: Grantee
+      type: string
+    - jsonPath: .spec.granteeNamespace
+      name: Namespace
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Accepted")].status
+      name: Status
+      type: string
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Grant delegates a slice of a principal's allocation to another
+          principal.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              GrantSpec is what a principal GIVES AWAY (DESIGN-v5 §2).
+
+              Grant is a separate resource from Budget, and that split is the whole security
+              model: RBAC is per-resource, not per-field. As a field on Budget, "what I
+              delegate" would need the same `update` verb as "how much I hold", so anyone who
+              could sub-divide could also enlarge themselves. Splitting it means a lead holds
+              write on grants and only READ on budgets (see the grantor ClusterRole in
+              deploy/helm/gpu-fleet/templates/rbac.yaml).
+
+              A Grant lives in the GRANTOR's namespace. There is deliberately no grantor
+              field: INV-NO-SELF-GRANT derives the grantor from `metadata.namespace`'s
+              immutable UID, never from anything writable, so "can you write here" IS the
+              authority check and forging a grantor is not expressible.
+            properties:
+              caps:
+                description: |-
+                  Caps bound the delegated authority per flavour. A flavour absent here is
+                  not granted at all — absent inbound authority means ZERO (§2b), never a
+                  fallback to the grantee's own Budget and never an implicit root.
+                items:
+                  description: GrantCap is one flavour's delegated concurrency ceiling.
+                  properties:
+                    flavor:
+                      minLength: 1
+                      type: string
+                    maxConcurrency:
+                      format: int32
+                      minimum: 0
+                      type: integer
+                  required:
+                  - flavor
+                  - maxConcurrency
+                  type: object
+                minItems: 1
+                type: array
+              end:
+                format: date-time
+                type: string
+              granteeNamespace:
+                description: |-
+                  GranteeNamespace is the grantee's namespace NAME, resolved to a UID by the
+                  producer. The name is the human-writable half; the UID recorded in the
+                  compiled snapshot is what identity actually keys on, because a namespace
+                  deleted and recreated under the same name is a different principal.
+                minLength: 1
+                type: string
+              granteeOwner:
+                description: GranteeOwner names the principal receiving the authority.
+                minLength: 1
+                type: string
+              start:
+                description: |-
+                  Start and End are required, exactly as an envelope's are
+                  (INV-WINDOW-REQUIRED): a delegation that never expires is a delegation
+                  nobody has to think about again.
+                format: date-time
+                type: string
+            required:
+            - caps
+            - end
+            - granteeNamespace
+            - granteeOwner
+            - start
+            type: object
+          status:
+            description: GrantStatus reports how the producer compiled this Grant.
+            properties:
+              acceptedRevision:
+                description: |-
+                  AcceptedRevision is the resourceVersion of the last revision that compiled
+                  in. Quarantine is REVISION-GRANULAR: when an update to an accepted Grant is
+                  invalid, the accepted revision stays authoritative and only the candidate is
+                  credit-free (§4.3). Without this the two halves of that rule contradict
+                  each other, which is the v4 defect it fixes.
+                type: string
+              conditions:
+                description: |-
+                  Conditions carry Accepted / Quarantined. Quarantine attaches to a WRITE,
+                  never to a principal (§4), so it is reported here on the object that caused
+                  it rather than on the grantee.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              snapshotVersion:
+                description: SnapshotVersion is the snapshot that last incorporated
+                  this Grant.
+                type: string
+            type: object
+        type: object
+        x-kubernetes-validations:
+        - message: end must be after start
+          rule: self.spec.end > self.spec.start
+    served: true
+    storage: true
+    subresources:
+      status: {}

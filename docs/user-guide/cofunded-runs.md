@@ -21,12 +21,13 @@ borrower guardrails provided on each run.
            region: us-west
            cluster: gpu-a
          concurrency: 256
+         start: "2025-11-01T00:00:00Z"
+         end: "2025-12-01T00:00:00Z"
          lending:
            allow: true
            to:
              - org:example:*
            maxConcurrency: 64
-           maxGPUHours: 20480
    ```
 2. **Borrowing run** – the borrower opts-in to borrowing and declares limits:
    ```yaml
