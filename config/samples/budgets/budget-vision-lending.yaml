@@ -16,4 +16,3 @@ spec:
         to:
           - org:example:*
         maxConcurrency: 64
-        maxGPUHours: 20480

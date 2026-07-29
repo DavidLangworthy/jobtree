@@ -138,7 +138,7 @@ kubectl logs deploy/jobtree-controller-manager -n jobtree-system | rg RandomPree
   (`Lease` → `GPULease`) and the k8s version-skew policy are in
   [runbook.md §3](runbook.md#3-upgrade-and-crd-migration).
 * **Quota tuning:** edit Budget envelopes and rely on controller validation to enforce
-  `maxGPUHours ≤ concurrency × window`.
+  a window: `start` and `end` are both required (`INV-WINDOW-REQUIRED`).
 * **Cluster growth:** label new nodes with the same topology keys; packers discover them
   automatically.
 * **Audits:** query Lease objects (immutable) to reconstruct who used which GPUs at any time.

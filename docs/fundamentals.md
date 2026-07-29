@@ -22,7 +22,7 @@ RQΛ is a small operational calculus for quota-aware, topology-aware, auditable 
 ### Budget envelopes
 
 $$
-e ::= \langle \text{id},\; \text{owner}=o,\; \text{flavor}=f,\; \text{selector}=\sigma,\; \text{window}=W?,\; \text{concurrency}=C,\; \text{maxGPUHours}=B?,\; \text{sharing}\in\{\text{family},\text{none}\}?,\; \text{preActivation}?,\; \text{lending}=\langle\text{allow},\text{toACL},\text{lendC}?,\text{lendB}?\rangle? \rangle
+e ::= \langle \text{id},\; \text{owner}=o,\; \text{flavor}=f,\; \text{selector}=\sigma,\; \text{window}=W?,\; \text{concurrency}=C,\; \text{sharing}\in\{\text{family},\text{none}\}?,\; \text{preActivation}?,\; \text{lending}=\langle\text{allow},\text{toACL},\text{lendC}?\rangle? \rangle
 $$
 
 - The **window** is optional: an envelope is open-ended by default. A closed window does not make the envelope ill-formed — work simply coasts as unfunded until a window opens (see §4).
@@ -207,7 +207,7 @@ Run: owner RAI, totalGPUs=128, groupGPUs=64, allowCrossGroupSpread=true. Supply:
 
 ## 9. Mapping to CRDs and controller behavior
 
-- **Budget ↔ envelopes**: selector, concurrency, optional window (`start`/`end`), optional `maxGPUHours`, `sharing`, `preActivation`, `lending` ACLs, and aggregate caps — plus `Budget.spec.parents`, the family DAG from which the whole proximity/sharing/recall order derives.
+- **Budget ↔ envelopes**: selector, concurrency, a required window (`start`/`end`), `sharing`, `preActivation`, `lending` ACLs, and aggregate caps — plus `Budget.spec.parents`, the family DAG from which the whole proximity/sharing/recall order derives.
 - **Run ↔ surface spec**: `totalGPUs`, `groupGPUs`, `allowCrossGroupSpread`, malleable `{min,max,step,desired}`, `spares`, and `funding = {allowBorrow, maxBorrowGPUs, sponsors}`; `checkpoint` bounds the safe-requeue window on an unspared node failure (§ Failure and spares). `Run.status.funding` reports the derived four-class breakdown with per-lender attribution.
 - **Reservation ↔ CRD**: `runRef`, `intendedSlice`, `payingEnvelope`, `earliestStart` (spec immutable). Status evolves **Pending → Released** (reason `Activated`), or **Pending → Failed** for a run that vanished or cannot be kept.
 - **Lease ↔ CRD/event**: `runRef`, nodes (GPU slots), `role` \(\in \{\text{Active},\text{Spare}\}\), `paidByEnvelope`, `interval.start`, `reason` (immutable once recorded; closed with End events). Funding class is **derived**, not a stored field.

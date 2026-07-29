@@ -10,11 +10,12 @@ status, and exposes metrics for observability.
 Each envelope reports:
 
 - **Concurrency headroom** – `spec.concurrency - activeLeaseGPUs`
-- **GPU-hour headroom** – `(spec.maxGPUHours - cumulativeLeaseGPUHours)` when a limit is
-  configured. GPU-hours are computed from Lease start/end times and multiplied by the
-  number of GPUs in the slice.
+- **GPU-hour headroom** – *removed (Ruling 10, DESIGN-v5 §5a).* GPU-hours are metered and
+  reported, never enforced, so there is no cap to have headroom against. What remains is
+  **consumption**: `status.usage[].consumedGPUHours` per envelope, computed from Lease start/end
+  times multiplied by the GPUs in the slice. It is an observation and gates nothing.
 
-Aggregate caps (named groups of envelopes) expose the same headroom fields. Status now
+Aggregate caps (named groups of envelopes) expose the same concurrency headroom. Status now
 includes both per-envelope and per-aggregate headroom along with a timestamp marking
 when the snapshot was computed.
 
@@ -64,7 +65,7 @@ concurrency or integral limits.
 
 Envelopes may include a `lending` policy. When present and `allow: true`, the cover
 planner can allocate GPUs to other owners (borrowers) if they appear in the `to` ACL.
-Sub-caps `maxConcurrency` and `maxGPUHours` restrict how much capacity can be lent at
+The sub-cap `maxConcurrency` restricts how much capacity can be lent at
 any moment. Borrowed capacity is tracked separately to respect these limits.
 
 The cover solver now walks the family graph in location-first order:
