@@ -117,6 +117,25 @@ spec:
                   GPUs, which is the shape of every funding leak on this board.
                 minLength: 1
                 type: string
+              paidByPrincipal:
+                description: |-
+                  PaidByPrincipal is the CONSERVATION JOIN (INV-SUBTREE-CONSERVE, DESIGN-v5
+                  §6). Without it the invariant is not merely awkward to compute — it is
+                  uncomputable.
+
+                  The mismatch is exact: a lease names its payer by namespace NAME and Budget
+                  NAME (the three PaidBy* fields above), while the compiled snapshot keys
+                  principals by `(owner, envelope)` with the namespace identified by its
+                  immutable UID (§3, `boundNamespace.uid`). Names are rebindable and UIDs are
+                  not, so there is no sound way to walk from an open lease to the principal
+                  whose subtree it must be conserved against — a namespace deleted and
+                  recreated under the same name is a DIFFERENT principal, and matching by name
+                  would charge the new tenant for the old one's work.
+
+                  So the sole committer stamps the principal it actually resolved at mint, and
+                  conservation joins on that rather than re-deriving it later from names that
+                  may since have moved.
+                type: string
               reason:
                 type: string
               runRef:
@@ -149,6 +168,25 @@ spec:
                 - nodes
                 - role
                 type: object
+              snapshotVersion:
+                description: |-
+                  SnapshotVersion pins the compiled snapshot this lease was minted against
+                  (INV-VERSION-PINNED-AT-MINT, DESIGN-v5 §6).
+
+                  ITS ONLY JUSTIFICATION IS IN-FLIGHT MINT VERIFICATION. Read that sentence
+                  before deleting this field. A mint is not atomic with respect to the
+                  producer: the scheduler resolves a payer from snapshot N and writes the
+                  lease some time later, by which point the accepted snapshot may be N+1 with
+                  that principal quarantined, reparented, or gone. Recording N is what lets a
+                  reader tell "this lease was authorised, by a document that said so" from
+                  "this lease agrees with the document that happens to be current".
+
+                  It is NOT justified by accrual anchoring. v4 claimed that reason and Ruling
+                  10 deleted the accrual it anchored, so if you find this field and reason
+                  about it as an accounting anchor you will correctly conclude it is dead and
+                  incorrectly delete it. The design says so in §6 in as many words: "record
+                  that, or someone deletes it for the wrong reason."
+                type: string
             required:
             - interval
             - owner
