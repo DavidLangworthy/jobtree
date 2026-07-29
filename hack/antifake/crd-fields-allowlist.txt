@@ -21,4 +21,13 @@ GPULeaseSpec.CompPath reason: declared and deep-copied but written and read by z
 ReservationStatus.CanceledAt reason: newly discovered — declared alongside ActivatedAt/ReleasedAt, which ARE written by controllers/run_controller.go; CanceledAt alone has no writer or reader, implying no cancellation flow is actually wired. Track D triage: wire a real Cancel path or delete the field.
 
 GPULeaseSpec.PaidByPrincipal reason: DESIGN-v5 build item 5, added ahead of its consumer as a batched CRD change. It is the join INV-SUBTREE-CONSERVE needs — a lease names its payer by namespace NAME while the snapshot keys principals by namespace UID — so its reader is build item 8, subtree conservation, which does not exist yet (nothing aggregates descendants today, evaluate.go). The producer (build item 3) is what will have a principal identity to stamp. Delete this entry when conservation lands; do NOT wire a consumer that re-derives the principal from names, which is the exact unsoundness the field exists to avoid.
-GPULeaseSpec.SnapshotVersion reason: DESIGN-v5 build item 5, same batched CRD change. Its ONLY justification is in-flight mint verification (a mint is not atomic with respect to the producer, so a lease must record which accepted snapshot authorised it), and the producer that publishes those versions is build item 3. It is NOT an accrual anchor — v4 claimed that and Ruling 10 deleted the accrual — so anyone triaging this entry by asking what it anchors will reach the wrong answer. Delete this entry when the producer and loader land.
+
+# NOTE on GPULeaseSpec.SnapshotVersion (entry removed 2026-07-28, NOT because it
+# gained a real consumer). This lint's reader scan matches on the FIELD NAME, and
+# DESIGN-v5 build item 3 added QuotaSnapshotSpec.SnapshotVersion and
+# GrantStatus.SnapshotVersion, which the producer genuinely reads. That makes the
+# selector `.SnapshotVersion` appear outside api/v1 and the lease field read as
+# covered. It is not: nothing yet performs the in-flight mint verification that
+# is its only justification. The shrink-only rule requires removing the entry
+# rather than leaving a stale one, so this note stands in its place — do not
+# conclude from the absence of an entry that the lease field has a consumer.
