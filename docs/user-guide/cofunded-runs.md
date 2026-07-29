@@ -21,6 +21,8 @@ borrower guardrails provided on each run.
            region: us-west
            cluster: gpu-a
          concurrency: 256
+         start: "2025-11-01T00:00:00Z"
+         end: "2025-12-01T00:00:00Z"
          lending:
            allow: true
            to:

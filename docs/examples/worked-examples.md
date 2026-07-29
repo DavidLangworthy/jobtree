@@ -70,6 +70,8 @@ spec:
         region: us-west
         cluster: gpu-a
       concurrency: 48
+      start: "2025-11-01T00:00:00Z"
+      end: "2025-12-01T00:00:00Z"
 ```
 
 ```yaml

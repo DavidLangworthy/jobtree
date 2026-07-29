@@ -222,6 +222,11 @@ func labelNodeAsGPU(t *testing.T, ctx context.Context, c client.Client, nodeName
 }
 
 // createBudget creates a minimal single-envelope Budget scoped to the
+var (
+	e2eWindowStart = metav1.NewTime(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC))
+	e2eWindowEnd   = metav1.NewTime(time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC))
+)
+
 // labelNodeAsGPU fixture's topology.
 func createBudget(t *testing.T, ctx context.Context, c client.Client, name, owner string, concurrency int32) {
 	t.Helper()
@@ -230,10 +235,16 @@ func createBudget(t *testing.T, ctx context.Context, c client.Client, name, owne
 		Spec: v1.BudgetSpec{
 			Owner: owner,
 			Envelopes: []v1.BudgetEnvelope{{
-				Name:        "e2e",
-				Flavor:      e2eGPUFlavor,
-				Selector:    e2eNodeSelector(),
+				Name:     "e2e",
+				Flavor:   e2eGPUFlavor,
+				Selector: e2eNodeSelector(),
+				// INV-WINDOW-REQUIRED: both bounds are mandatory, so a fixture
+				// without them is not a legal Budget and the apiserver refuses
+				// it. Wide enough that the window is never what an e2e case is
+				// actually testing.
 				Concurrency: concurrency,
+				Start:       &e2eWindowStart,
+				End:         &e2eWindowEnd,
 			}},
 		},
 	}
