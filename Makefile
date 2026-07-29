@@ -212,10 +212,15 @@ cli-test:
 	go test ./cmd/kubectl-runs/...
 
 TLA2TOOLS := specs/.cache/tla2tools.jar
-# Isolate TLC metadata by Make target. Without this, fast consecutive checks
-# can choose the same timestamped directory and a negative rail can mistake
-# that startup failure for its expected invariant violation.
-TLC = java -XX:+UseParallelGC -cp .cache/tla2tools.jar tlc2.TLC -cleanup -metadir .cache/tlc/$@ -deadlock -workers auto
+# Isolate TLC metadata by INVOCATION, not by target. TLC appends a subdirectory
+# named from the current time at one-second granularity, so per-target isolation
+# is too coarse: targets like physical-capacity-spec-witnesses run several sub-
+# second checks in a row, two land in the same second, and the second one aborts
+# with "that directory already exists". A negative rail can then mistake that
+# startup failure for its expected invariant violation. $$$$ is the shell PID,
+# and Make runs each recipe line in its own shell, so every invocation gets a
+# distinct parent directory no matter how fast the checks are.
+TLC = java -XX:+UseParallelGC -cp .cache/tla2tools.jar tlc2.TLC -cleanup -metadir .cache/tlc/$@/$$$$ -deadlock -workers auto
 APALACHE_VERSION ?= 0.58.3
 APALACHE := specs/.cache/apalache/bin/apalache-mc
 APALACHE_JVM_ARGS ?= -Xmx5500m
