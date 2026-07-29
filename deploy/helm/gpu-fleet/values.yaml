@@ -111,6 +111,20 @@ webhook:
 
 rbac:
   create: true
+  # Leads who may sub-divide their own allocation (DESIGN-v5 build item 1).
+  # Each entry binds the grantor ClusterRole into ONE namespace with a
+  # RoleBinding, which is what scopes a grantor's authority to Grants in their
+  # own namespace. The role can write grants and only READ budgets, so
+  # sub-dividing never becomes self-enlargement.
+  grantors: []
+  #  - namespace: team-a
+  #    subjects:
+  #      - kind: User
+  #        name: alice@example.com
+  #        apiGroup: rbac.authorization.k8s.io
+  # Principals who may read the Grants and Budgets that explain their own
+  # allocation, and write neither.
+  grantees: []
 
 imagePullSecrets: []
 

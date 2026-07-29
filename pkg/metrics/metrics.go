@@ -29,6 +29,7 @@ var (
 	decideLatency       = make(map[string]*histogram)
 	evaluateInputSize   float64
 	ledgerViolations    = make(map[string]float64) // R26: sustained lease/pod/node discrepancies, by kind
+	bindingConflicts    = make(map[string]float64) // R26: namespaces whose owner binding failed safe, by reason
 	ledgerRepairs       = make(map[string]float64) // R26: leases the auditor closed, by reason
 )
 
@@ -196,6 +197,24 @@ func IncSweptLease(rule string) {
 // an open lease charging for a rank that is not running, a lease on a deleted node,
 // or a run with live pods and no lease. Alert on nonzero. Kinds must be enumerated
 // so a kind that drops to zero is REPORTED as zero, not left at its last value.
+// SetBindingConflicts sets the gauge of namespaces whose owner→namespace binding
+// has failed safe to unbound, by reason (R7 §4, wired by R26).
+//
+// Any nonzero value is an ADMIN ERROR that is silently costing someone their
+// funding: a namespace with no derivable owner funds nothing, so fresh runs are
+// refused and pre-existing leases coast Unfunded. The failure is correct and
+// completely invisible without this — which is why DESIGN-v5 §4 makes wiring it a
+// PRECONDITION of quarantine rather than a follow-on. Alert on nonzero.
+// Reasons are enumerated so one that clears is reported as 0, not left stale.
+func SetBindingConflicts(counts map[string]float64) {
+	mu.Lock()
+	defer mu.Unlock()
+	bindingConflicts = make(map[string]float64, len(counts))
+	for reason, n := range counts {
+		bindingConflicts[reason] = n
+	}
+}
+
 func SetLedgerViolations(counts map[string]float64) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -342,6 +361,7 @@ type MetricsSnapshot struct {
 	DecideLatency       map[string]Histogram
 	EvaluateInputSize   float64
 	LedgerViolations    map[string]float64
+	BindingConflicts    map[string]float64
 	LedgerRepairs       map[string]float64
 }
 
@@ -365,6 +385,7 @@ func Snapshot() MetricsSnapshot {
 		DecideLatency:       make(map[string]Histogram, len(decideLatency)),
 		EvaluateInputSize:   evaluateInputSize,
 		LedgerViolations:    make(map[string]float64, len(ledgerViolations)),
+		BindingConflicts:    make(map[string]float64, len(bindingConflicts)),
 		LedgerRepairs:       make(map[string]float64, len(ledgerRepairs)),
 	}
 
@@ -408,6 +429,9 @@ func Snapshot() MetricsSnapshot {
 
 	for kind, count := range ledgerViolations {
 		snap.LedgerViolations[kind] = count
+	}
+	for reason, count := range bindingConflicts {
+		snap.BindingConflicts[reason] = count
 	}
 	for reason, count := range ledgerRepairs {
 		snap.LedgerRepairs[reason] = count
@@ -460,6 +484,7 @@ func Reset() {
 	decideLatency = make(map[string]*histogram)
 	evaluateInputSize = 0
 	ledgerViolations = make(map[string]float64)
+	bindingConflicts = make(map[string]float64)
 	ledgerRepairs = make(map[string]float64)
 }
 
@@ -548,6 +573,9 @@ func WritePrometheus(w io.Writer) {
 	}
 
 	writeHeader(buf, "jobtree_ledger_violations", "Sustained discrepancies between the open-lease ledger and reality (R26 auditor): kind=lease_no_pod|lease_dead_node|pod_no_lease. Any nonzero value is real drift; alert on it.", "gauge")
+	for _, reason := range sortedKeys(snap.BindingConflicts) {
+		writeSample(buf, "jobtree_binding_conflicts", map[string]string{"reason": reason}, formatFloat(snap.BindingConflicts[reason]))
+	}
 	for _, kind := range sortedKeys(snap.LedgerViolations) {
 		writeSample(buf, "jobtree_ledger_violations", map[string]string{"kind": kind}, formatFloat(snap.LedgerViolations[kind]))
 	}

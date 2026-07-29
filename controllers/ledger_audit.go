@@ -69,6 +69,11 @@ type LedgerWorld struct {
 	Leases    []v1.GPULease
 	Pods      []LedgerPod
 	NodeNames map[string]bool // every existing Node object's name (not usability-filtered)
+	// Budgets feed the BINDING audit, not AuditLedger's lease/pod invariants:
+	// owner derivation is a pure function of the admin-placed Budgets (R7 §4),
+	// and the auditor is where its fail-safe becomes operator-visible (R26
+	// wiring, DESIGN-v5 §4). AuditLedger itself does not read this.
+	Budgets []v1.Budget
 }
 
 // LedgerPod is the slice of a jobtree pod the auditor reasons about.

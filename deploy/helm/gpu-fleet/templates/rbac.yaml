@@ -69,3 +69,88 @@ roleRef:
   kind: ClusterRole
   name: {{ include "gpu-fleet.controllerName" . }}
 {{- end }}
+{{- if .Values.rbac.create }}
+---
+# DESIGN-v5 build item 1 (Ruling 17) — the grantor/grantee split.
+#
+# Delegation is a SEPARATE RESOURCE from allocation, and this file is the reason
+# why. RBAC is per-resource, not per-field: if "what I give away" were a field on
+# Budget, then anyone who could delegate could also raise their own concurrency,
+# because both would need `update` on budgets. Splitting Grant out means a lead
+# can sub-divide what they hold without ever holding the verb that would enlarge
+# it.
+#
+# So the load-bearing property of this ClusterRole is what it does NOT contain:
+# there is no create/update/patch/delete on `budgets`. Read-only on budgets is
+# deliberate — a lead must be able to SEE their allocation to divide it sensibly,
+# and must not be able to change it. `hack/ci/helm-assertions.sh` asserts the
+# absence, because an absence nothing checks is an absence that comes back.
+#
+# Bind it with a RoleBinding (not a ClusterRoleBinding), which is what scopes the
+# grantor to their OWN namespace: `Grant` lives in the grantor's namespace and
+# DESIGN-v5 §2c derives the grantor from that namespace's immutable UID rather
+# than from any writable field, so namespace-scoped write access IS the authority
+# check. `.Values.rbac.grantors` renders those bindings.
+#
+# WHAT THIS DOES NOT PROMISE (Ruling 17, verbatim): it does not prevent a lead
+# from enlarging the allocation THEY control. Nothing here models one human
+# holding two principals — an actor with namespaces A and B can write `B -> A`
+# and every check passes. Ruling 9 places that outside Kubernetes. Do not read
+# this Role as a containment guarantee it does not provide.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "gpu-fleet.controllerName" . }}-grantor
+  labels: {{- include "gpu-fleet.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["rq.davidlangworthy.io"]
+    resources: ["grants"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Read-only, on purpose. See the note above: this is the half of the split
+  # that keeps sub-division from becoming self-enlargement.
+  - apiGroups: ["rq.davidlangworthy.io"]
+    resources: ["budgets"]
+    verbs: ["get", "list", "watch"]
+---
+# The grantee half: see what you hold and what authorised it, change neither.
+# A grantee needs to read the Grant naming them to understand why their
+# allocation is what it is ("why is my job Unfunded?", DESIGN-v5 §10), but a
+# grantee who could write Grants could grant to themselves.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "gpu-fleet.controllerName" . }}-grantee
+  labels: {{- include "gpu-fleet.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["rq.davidlangworthy.io"]
+    resources: ["grants", "budgets"]
+    verbs: ["get", "list", "watch"]
+{{- range .Values.rbac.grantors }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "gpu-fleet.controllerName" $ }}-grantor
+  namespace: {{ .namespace }}
+  labels: {{- include "gpu-fleet.labels" $ | nindent 4 }}
+subjects: {{- toYaml .subjects | nindent 2 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "gpu-fleet.controllerName" $ }}-grantor
+{{- end }}
+{{- range .Values.rbac.grantees }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "gpu-fleet.controllerName" $ }}-grantee
+  namespace: {{ .namespace }}
+  labels: {{- include "gpu-fleet.labels" $ | nindent 4 }}
+subjects: {{- toYaml .subjects | nindent 2 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "gpu-fleet.controllerName" $ }}-grantee
+{{- end }}
+{{- end }}
