@@ -53,8 +53,11 @@ merge, and refuses to reopen it:
 | [#89](https://github.com/DavidLangworthy/jobtree/pull/89) two half-plane leaks | [#92](https://github.com/DavidLangworthy/jobtree/pull/92) | stacked base squash-merged as #88 |
 | [#108](https://github.com/DavidLangworthy/jobtree/pull/108) R12 ownerRefs/finalizers | [#118](https://github.com/DavidLangworthy/jobtree/pull/118) | base deleted on merge of #107 |
 
-Note the asymmetry worth fixing: for #80 the note is on the *closed* PR, for #89 and #118 it is only
-on the *winner*. A reader who lands on #89 sees a closed PR with no explanation at all.
+The notes sit inconsistently — #80 carries its own, while #89's and #108's explanation lives only on
+the winner. **Owner ruling (2026-09-10): that is fine here.** The rule in §7 is conditioned on a
+*different* PR replacing the closed one. These three are the same commits re-landed after an
+auto-close, so there is nothing a reader of #89 needs that #92 does not already say. No retroactive
+comments are owed.
 
 ## 3. Codex reviewed, Claude authored the fix
 
@@ -65,7 +68,8 @@ Claude-authored PRs.
 seat on the adversarial panel and ran a **live spike** against the funding path (codex-cli 0.144.1,
 `-m gpt-5.6`). The rationale is the panel's own documented failure mode: the Claude tiers
 (Opus/Sonnet/Fable) are heterogeneous by role but *share a training prior* and fail together. Codex
-returned four candidates:
+returned four candidates in ~90s / ~29 read-grep steps, each with a verbatim citation, all four
+attesting clean — recorded in [`codex-review-panelist-assessment.md`](codex-review-panelist-assessment.md):
 
 | Codex finding | Disposition | Landed as |
 |---|---|---|
@@ -151,15 +155,32 @@ are kept for exactly that reason.
 
 ## 7. Rules this history suggests
 
-1. **Prefer reviewer/author across vendors over racing implementations.** The race (§1) produced one
-   discarded PR and no recorded argument. The review split (§3) produced four confirmed defects, one
-   of them high-severity tenancy, with mutation verification on each.
-2. **A closed PR must name its replacement in a comment on itself**, not only in the winner's body.
-   Two of the five closures fail this today (§2).
-3. **When a design is contested, archive the losing position in the merged PR.** §6 does this; §1 did
+Ratified by David 2026-09-10. A proposed fourth — *"prefer reviewer/author across vendors over racing
+implementations"* — was **rejected as not important**, and rightly: it rested on a single race, over a
+docs task, where the two PRs plausibly differed in effort rather than in kind. One trial is not a
+finding.
+
+1. **A closed PR must name its replacement in a comment on itself — when a *different* PR replaces
+   it.** #23 does this and is the case that matters (§1). It does **not** apply to the same work
+   re-landed after a stack auto-close (§2), where the winner's body is a sufficient record.
+2. **When a design is contested, archive the losing position in the merged PR.** §6 does this; §1 did
    not, and #23's content is now recoverable only from a closed branch.
-4. **Say which limb a cross-vendor finding stands on.** "Traced, not reproduced" (§3) is a different
-   claim from a compiled repro, and it changes whether the fix is a bug fix or a regression gate.
+3. **Say which limb a cross-vendor finding stands on — and save the work where it can be found
+   again.** "Traced, not reproduced" (§3) is a different claim from a compiled repro, and it decides
+   whether the resulting change is a bug fix or a regression gate. Both the claim and the raw output
+   belong in the review archive, not in a PR comment:
+
+   - The limb goes in the finding's **disposition** row, per
+     [`reviews/README.md`](reviews/README.md) — *"a finding without the commit it was found against is
+     unfalsifiable a month later."* The same is true of a finding without the evidence it stood on.
+   - The raw cross-vendor output goes in the review directory beside it. Precedent exists:
+     [`reviews/2026-07-24-r7-pt2-cross-vendor-panel-0b77fbe/codex-hunter-raw.json`](reviews/2026-07-24-r7-pt2-cross-vendor-panel-0b77fbe/).
+   - §3's spike is the worked example of getting this half-right. The four candidates *are* recorded,
+     with verbatim `file:line` citations, in
+     [`codex-review-panelist-assessment.md`](codex-review-panelist-assessment.md) — which is why they
+     were still adjudicable weeks later. But that record ends *"Artifacts in the session scratchpad
+     (`hunter-last.md`, `schema-last.json`)"*, and a session scratchpad is not a place. The raw hunter
+     output is gone; only the table survives.
 
 ## Note on issue numbers
 
