@@ -20,7 +20,6 @@
       "Bash(git push -f *)",
       "Bash(git reset --hard *)",
       "Bash(git clean -fdx *)",
-      "Bash(gh pr merge *)",
       "Bash(gh release *)",
       "Bash(gh repo delete *)",
       "Bash(gh auth *)",
