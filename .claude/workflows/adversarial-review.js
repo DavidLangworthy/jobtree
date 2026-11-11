@@ -121,6 +121,20 @@ const SKEPTIC_QUORUM = A.skepticQuorum || 3
 const MAX_ATTEMPTS = 3
 const DIFF = A.commit ? `git show ${A.commit}` : 'git diff main...HEAD'
 
+// The consequence seats (lens and skeptic) run on Fable 5.2, PINNED by full id. Do not
+// relax this back to the 'fable' alias: the alias resolves by Claude Code VERSION and
+// PROVIDER, not by date — Fable 5.2 needs v2.1.321+, an older CLI silently serves an
+// older Fable under the same alias, and a Claude apps gateway resolves it to Fable 5.
+// A silently substituted seat is a counterfeit vote (lesson 11) and pools 5.2's
+// measurements with 5.1's under one byModel key. Pinned, a CLI that cannot serve 5.2
+// should fail the seat LOUDLY (Claude Code refuses an id it does not support), so the
+// lens BLOCKS — documented behaviour, not yet observed through agent(); check the first
+// run's transcript for the served model. Effort stays 'high': Anthropic's guidance
+// for 5.2 is that most of the gain is already present at high (xhigh costs ~1.6x per
+// task on Artificial Analysis for no index gain). Card notes:
+// ~/.claude/skills/mixed-model-teams/references/model-cards/anthropic.md
+const FABLE_MODEL = 'claude-fable-5-2'
+
 const RULES = `
 HARD RULES (violating any is a task failure):
 - NEVER run a mutating git command (no checkout/restore/revert/stash/add/commit/clean/reset).
@@ -421,7 +435,7 @@ the thing itself.`,
     // asks the question none of the others can: not "is this a bug" but "would fixing
     // it break something that is legal". It exists to be measured — see attribution().
     name: 'std:consequence-and-reapers',
-    model: 'fable', effort: 'high',
+    model: FABLE_MODEL, effort: 'high',
     prompt: `TASK: two questions the other lenses structurally cannot ask.
 
 (a) HALF-PLANE ACTIONS (playbook class 9). This system holds one GPU with two claims: a Lease in the
@@ -805,7 +819,7 @@ Set reproduced=true only if you saw the bad state in test output with your own e
   },
   TRACE_SEAT,
   {
-    role: 'consequence', model: 'fable', effort: 'high',
+    role: 'consequence', model: FABLE_MODEL, effort: 'high',
     lens: `CONSEQUENCE AND REAPER-CHECK. First: assume it is real. Name the budget charged, the GPUs held,
 and for how long. Then INVERT: if we "fixed" this, what LEGAL state would the fix destroy?
 pkg/invariant's package doc lists four invariants rejected for exactly that reason — slot
